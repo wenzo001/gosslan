@@ -30,7 +30,7 @@
 
 | 平台 | 安装包 | 说明 |
 | --- | --- | --- |
-| Windows x64 / ARM64 | `*_x64-setup.exe`、`*_arm64-setup.exe` | 使用系统 WebView2；老机器/离线环境有 `webview2-bundled` 一档 |
+| Windows x64 / ARM64 | `*_x64-setup.exe`、`*_arm64-setup.exe` | 使用系统 WebView2；`*-setup-webview2-bundled.exe` 内嵌固定版 WebView2，供老机器/离线环境 |
 | macOS Apple 芯片 / Intel | `*_aarch64.dmg`、`*_x64.dmg` | 应用内更新读取同一次发布里的签名 `.app.tar.gz` |
 | Android arm64 / armeabi-v7a | `*-arm64-v8a-release.apk`、`*-armeabi-v7a-release.apk` | 不走应用内更新；新版直接覆盖安装 APK |
 
@@ -40,6 +40,9 @@
 
 到 [Releases](https://github.com/wenzo001/gosslan/releases/latest) 下载对应平台的文件。
 这份 README 不抄版本号——上面的徽章永远是当前发布版本。
+
+GitHub 访问不了时走 [Gitee 镜像](https://gitee.com/fwdq/gosslan-releases)：
+每次发布后 CI 会把同一批安装包、APK 和更新清单同步过去。
 
 - **Windows：** 运行 `setup.exe`，按安装器提示下一步。
 - **macOS：** 打开 `.dmg`，把 **小院儿 / Gosslan** 拖进「应用程序」。
@@ -86,7 +89,8 @@
 
 ## 开发
 
-需要 Node.js 22+、Rust stable，以及对应平台的 Tauri v2 前置依赖。
+需要 Node.js 22+（`.node-version` 钉住 22.23.2）、Rust 1.77+
+（`src-tauri/Cargo.toml` 的 `rust-version`），以及对应平台的 Tauri v2 前置依赖。
 
 ```bash
 npm install

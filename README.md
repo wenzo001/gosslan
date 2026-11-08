@@ -31,7 +31,7 @@ TCP. Messages are end-to-end encrypted and stored only on the devices that sent 
 
 | Platform | Package | Notes |
 | --- | --- | --- |
-| Windows x64 / ARM64 | `*_x64-setup.exe`, `*_arm64-setup.exe` | Uses the system WebView2; a `webview2-bundled` build is available for offline/old machines |
+| Windows x64 / ARM64 | `*_x64-setup.exe`, `*_arm64-setup.exe` | Uses the system WebView2; `*-setup-webview2-bundled.exe` embeds a fixed WebView2 for offline or old machines |
 | macOS Apple Silicon / Intel | `*_aarch64.dmg`, `*_x64.dmg` | In-app updates use the signed `.app.tar.gz` from the same release |
 | Android arm64 / armeabi-v7a | `*-arm64-v8a-release.apk`, `*-armeabi-v7a-release.apk` | No in-app updater; install the new APK over the old one |
 
@@ -41,6 +41,10 @@ Bluetooth LE is included in the official builds on all three platforms.
 
 Download the file for your platform from [Releases](https://github.com/wenzo001/gosslan/releases/latest).
 Version numbers are never copied into this README — the badge above always shows the latest release.
+
+If you cannot reach GitHub, the same installers and APKs are mirrored to
+[Gitee releases](https://gitee.com/fwdq/gosslan-releases) — CI copies the release assets
+and the update manifest there after every publish.
 
 - **Windows:** run the `setup.exe` and follow the installer.
 - **macOS:** open the `.dmg` and drag **Gosslan** into `Applications`.
@@ -94,7 +98,8 @@ history as a plain Markdown file from Settings → Files & storage.
 
 ## Development
 
-Requirements: Node.js 22+, Rust stable, and the Tauri v2 prerequisites for your platform.
+Requirements: Node.js 22+ (`.node-version` pins 22.23.2), Rust 1.77+
+(`rust-version` in `src-tauri/Cargo.toml`), and the Tauri v2 prerequisites for your platform.
 
 ```bash
 npm install
