@@ -55,8 +55,8 @@ test("LogRows：模板里渲染的每个 row 字段都必须进 v-memo 判据", 
 test("LogViewer：过滤变化回到顶部（结果变短时不会落在越界滚动位）", () => {
   assert.match(
     SHELL,
-    /watch\(trimmedFilter,\s*\(\)\s*=>\s*\{[\s\S]{0,240}virtualizer\.value\.measure\(\)[\s\S]{0,240}virtualizer\.value\.scrollToOffset\(0\)/,
-    "过滤值一变就清测量缓存并 scrollToOffset(0)",
+    /watch\(\[trimmedFilter, levelFilter\],\s*\(\)\s*=>\s*\{[\s\S]{0,240}virtualizer\.value\.measure\(\)[\s\S]{0,240}virtualizer\.value\.scrollToOffset\(0\)/,
+    "过滤值（词或级别）一变就清测量缓存并 scrollToOffset(0)",
   );
 });
 

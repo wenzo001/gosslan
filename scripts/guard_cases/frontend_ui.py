@@ -1125,10 +1125,27 @@ CASES: list[Case] = [
         "     「只有一份出事」的形状。判据钉的是「行渲染只许住在 LogRows.vue」，不是文案。",
         file=ROOT / "src" / "components" / "LogViewer.vue",
         injections=[(
-            """      <LogRows v-else :items="virtualRows" :total-size="totalSize" :measure="measureRow" />
-    </div>""",
-            """      <LogRows v-else :items="virtualRows" :total-size="totalSize" :measure="measureRow" v-html="raw" />
-    </div>""",
+            """        <LogRows
+          v-else
+          :items="virtualRows"
+          :total-size="totalSize"
+          :measure="measureRow"
+          :selected-key="selectedKey"
+          @select="onSelect"
+        />
+      </div>
+      <LogDetailPanel v-if="selectedRow && wide\"""",
+            """        <LogRows
+          v-else
+          :items="virtualRows"
+          :total-size="totalSize"
+          :measure="measureRow"
+          :selected-key="selectedKey"
+          @select="onSelect"
+          v-html="raw"
+        />
+      </div>
+      <LogDetailPanel v-if="selectedRow && wide\"""",
         )],
         cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
              "src/utils/logViewerVirtual.test.ts"],
@@ -1143,8 +1160,8 @@ CASES: list[Case] = [
         "     注入 = 从依赖数组里摘掉 level（底色那一半）。",
         file=ROOT / "src" / "components" / "LogRows.vue",
         injections=[(
-            """  return [r.time, r.levelText, r.target, r.message, r.level, r.count];""",
-            """  return [r.time, r.levelText, r.target, r.message, r.count];""",
+            """  return [r.time, r.levelText, r.target, r.message, r.level, r.count, v.index, selectedKey === r.key];""",
+            """  return [r.time, r.levelText, r.target, r.message, r.count, v.index, selectedKey === r.key];""",
         )],
         cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
              "src/utils/logViewerVirtual.test.ts"],

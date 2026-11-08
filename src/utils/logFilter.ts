@@ -63,7 +63,7 @@ export interface MergeableLogRow {
 }
 
 /** 剥掉 v-html 的高亮标记，回到屏幕上真正可读的那串字。 */
-const stripTags = (s: string): string => s.replace(/<[^>]+>/g, "");
+export const stripTags = (s: string): string => s.replace(/<[^>]+>/g, "");
 
 /**
  * 合并用的比较键：先把"每次都变的那部分"折成占位符。

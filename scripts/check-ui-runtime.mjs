@@ -15056,7 +15056,7 @@ async function runLogs(cdp, url) {
   await cdp.eval(PAGE_FIXTURE);
   const LOGS = Array.from({ length: 200 }, (_, i) => ({
     ts: 1_700_000_000_000 + i * 1000,
-    level: i % 17 === 0 ? "warn" : "info",
+    level: i % 31 === 0 ? "error" : i % 17 === 0 ? "warn" : "info",
     target: `probe-${i}`,
     message: `日志行 ${String(i).padStart(3, "0")}`,
   }));
@@ -15131,6 +15131,99 @@ async function runLogs(cdp, url) {
   check("日志独立窗：滚到底后渲染换到另一批旧日志（滚动 + 虚拟窗口换页）",
     s.rows > 0 && s.scrollTop > 0 && s.first !== before,
     "scrollTop>0 且首行变化", JSON.stringify({ before, s }));
+
+  // ── 画板 DesktopLogs（2026-11-08）：行号 gutter / 级别 chips / 详情面板（含窄窗回退）
+  //    这三件只在运行时才判得准：gutter 必须与虚拟索引同源，chips 走真实点击，详情面板靠媒体查询换位。
+  const gutter = await cdp.eval(`(() => {
+    const rows = [...document.querySelectorAll('[data-index]')];
+    return {
+      n: rows.length,
+      pairs: rows.slice(0, 6).map((r) => {
+        const no = r.querySelector('[data-log-no]');
+        return { idx: Number(r.getAttribute('data-index')), no: no ? no.textContent.trim() : null };
+      }),
+    };
+  })()`);
+  check("日志行号 gutter：行号 = 虚拟索引 + 1，且随虚拟行一起渲染（不是第二条独立滚动列）",
+    gutter.n > 0 && gutter.n < 100 && gutter.pairs.every((p) => p.no === String(p.idx + 1)),
+    "前 6 个虚拟行 no === index+1", JSON.stringify(gutter));
+
+  const chipClick = await cdp.eval(`(() => {
+    const b = document.querySelector('[data-log-level="warn"]');
+    if (!b) return { found: false };
+    b.click();
+    return { found: true };
+  })()`);
+  await sleep(350);
+  const lv = await cdp.eval(`(() => {
+    const rows = [...document.querySelectorAll('[data-index]')];
+    const texts = rows.slice(0, 30).map((r) => r.innerText || "");
+    return {
+      n: rows.length,
+      active: document.querySelector('[data-log-level="warn"]')?.getAttribute('aria-pressed'),
+      anyInfo: texts.some((x) => /\\bINFO\\b/.test(x)),
+      anyWarn: texts.some((x) => /\\bWARN\\b/.test(x)),
+    };
+  })()`);
+  check("日志级别 chips：点 WARN 后只剩 WARN 行且 chip 进入选中态（INFO 被滤掉）",
+    chipClick.found && lv.active === "true" && lv.anyWarn && !lv.anyInfo,
+    "aria-pressed=true 且视野内无 INFO", JSON.stringify({ chipClick, lv }));
+  await cdp.eval(`document.querySelector('[data-log-level="all"]')?.click()`);
+  await sleep(350);
+
+  // 详情面板：宽窗贴右侧（画板 760 下本就是底部条，这里显式给到 1200 验「右侧」这一支）
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1200, height: 760, deviceScaleFactor: 1, mobile: false });
+  await sleep(400);
+  const hit = await cdp.eval(`(() => {
+    const row = document.querySelector('[data-log-key]');
+    if (!row) return { found: false };
+    row.click();
+    return { found: true, key: row.getAttribute('data-log-key') };
+  })()`);
+  await sleep(350);
+  const side = await cdp.eval(`(() => {
+    const d = document.querySelector('[data-log-detail]');
+    return {
+      placement: d ? d.getAttribute('data-log-detail') : null,
+      text: d ? (d.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 60) : "",
+      w: window.innerWidth,
+    };
+  })()`);
+  check("日志详情面板：选中行后宽窗贴右侧，内容是这一行的 target / 时间 / 正文",
+    hit.found && side.placement === "side" && /probe-\d+/.test(side.text),
+    "placement=side 且含 probe-N", JSON.stringify({ hit, side }));
+
+  const logsShots = path.join(ROOT, "test-results", "logs-shots");
+  fs.mkdirSync(logsShots, { recursive: true });
+  const shotWide = await cdp.send("Page.captureScreenshot", { format: "png" });
+  fs.writeFileSync(path.join(logsShots, "desktop-1200x760-detail.png"), Buffer.from(shotWide.data, "base64"));
+
+  // 窄窗回退：同一份详情在窄档（≤ 767px）落到画板的底部条
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 720, height: 760, deviceScaleFactor: 1, mobile: false });
+  await sleep(400);
+  const narrow = await cdp.eval(`(() => {
+    const d = document.querySelector('[data-log-detail]');
+    return { placement: d ? d.getAttribute('data-log-detail') : null, w: window.innerWidth };
+  })()`);
+  check("日志详情面板窄窗回退：窄档（720px ≤ 767）从右侧改为底部条，不把日志列挤到不可用",
+    narrow.placement === "bottom" && narrow.w === 720,
+    "placement=bottom @720", JSON.stringify(narrow));
+  const shotNarrow = await cdp.send("Page.captureScreenshot", { format: "png" });
+  fs.writeFileSync(path.join(logsShots, "mobile-720x760-detail.png"), Buffer.from(shotNarrow.data, "base64"));
+  await cdp.send("Emulation.clearDeviceMetricsOverride");
+  await sleep(300);
+
+  // 再点同一行 ⇒ 详情收起（不新增关闭按钮；关闭键仍由共用标题栏承担）
+  const toggleOff = await cdp.eval(`(() => {
+    const row = document.querySelector('[data-log-key]');
+    if (!row) return { found: false };
+    row.click();
+    return { found: true };
+  })()`);
+  await sleep(300);
+  const gone = await cdp.eval("!!document.querySelector('[data-log-detail]')");
+  check("日志详情面板：再点同一行即收起（不新增重复的关闭按钮）",
+    toggleOff.found && gone === false, "再次点击后无 [data-log-detail]", JSON.stringify({ toggleOff, gone }));
 
   // ── §6.79 归因段：LogViewer.vue:174 那条 `useEventListener(document, "visibilitychange", onVisibility)`
   //    是 §6.73 交给库的 7 处里只剩静态凭据的一个。要让「切回来立刻补一次」这件事**只可能**由它做成，
@@ -19653,7 +19746,7 @@ async function runStage4Mobile(cdp, url) {
   };
   const LOGS = Array.from({ length: 200 }, (_, i) => ({
     ts: 1_700_000_000_000 + i * 1000,
-    level: i % 17 === 0 ? "warn" : "info",
+    level: i % 31 === 0 ? "error" : i % 17 === 0 ? "warn" : "info",
     target: `probe-${i}`,
     message: `日志行 ${String(i).padStart(3, "0")}`,
   }));
