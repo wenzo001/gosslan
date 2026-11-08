@@ -5,7 +5,9 @@ import BubbleTail from "@/components/message/BubbleTail.vue";
 import { computed, nextTick, ref, watch, type CSSProperties } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "@/stores/useAppStore";
-import { PREVIEW_LINES } from "@/utils/previewMetrics";
+import { PREVIEW_LINES, textColumns } from "@/utils/previewMetrics";
+import { clampPreview } from "@/utils/previewTruncate";
+import { usePreviewColumns } from "@/composables/usePreviewColumns";
 import { useMessageSegments } from "@/composables/useMessageSegments";
 import MessageLinkText from "@/components/message/MessageLinkText.vue";
 import { mentionHighlightBg, mentionHighlightColor } from "@/utils/chatStyle";
@@ -69,7 +71,12 @@ watch(
 
 const app = useAppStore();
 
-/** 截断行数由 PREVIEW_LINES 驱动，避免 Tailwind 类名与估算常量各写一份。 */
+/** 截断行数由 PREVIEW_LINES 驱动，避免 Tailwind 类名与估算常量各写一份。
+ *
+ *  ⚠️ 2026-11-08 起它只是**几何兜底**，不再是「截断」本身：正文在进 DOM 前已按字符预算
+ *  切短（见 `preview`），正常情况下这里一行都不会溢出、也不会由浏览器再补一个省略号。
+ *  留着是因为「量到的列数」要等挂载后才知道，首帧与极端窄窗仍需要它保证「永远不超过 5 行」。
+ *  用户要的「真的点点点」来自 `preview.text` 结尾的 U+2026，不是这里的 `-webkit-line-clamp`。 */
 const clampStyle = computed<CSSProperties>(() =>
   props.clamped
     ? {
@@ -95,11 +102,32 @@ const parsed = computed(() => {
 });
 
 /**
+ * 截断预算的列数：首帧用 `textColumns(fontSize)` 的估算值，挂载后换成这一格的**实测**列数
+ * （窄窗 / 宽窗 / 用户改了正文字号都能自动跟上）。量的是正文 div 自己。
+ */
+const bodyEl = ref<HTMLElement | null>(null);
+const columns = usePreviewColumns(() => bodyEl.value, textColumns(app.chatStyle.fontSize));
+
+/**
+ * 进 DOM 的正文：只有 `clamped` 才切，装得下就一个字符都不动。
+ * 结尾的「…」是**真的字符**（`ELLIPSIS`），不是 `text-overflow` 画的。
+ */
+const preview = computed(() => {
+  if (!props.clamped) return { text: parsed.value.body, truncated: false };
+  return clampPreview(parsed.value.body, { lines: PREVIEW_LINES, columns: columns.value });
+});
+
+/**
  * 渲染段：text / link / mention / emoji，按段渲染（不拼 HTML，天然防 XSS）。
  * 切段循环单源在 `composables/useMessageSegments`（DUP-06：这三份拷贝曾逐字相同）。
+ *
+ * ⚠️ 送进去的是 `preview.text` **不是**原文（2026-11-08）：长文本在进 DOM 之前就按
+ * 「5 行 × 本格实际列数」的字符预算截短、结尾补真实「…」。整段塞进 DOM 再让 CSS 裁
+ * 会让每一条长消息都带着完整正文（以及其中的链接/表情 `<img>`）参与排版与重排。
+ * 因为截断发生在切段**之前**，链接/表情 token 不会被切出半个标签。
  */
 const segments = useMessageSegments(
-  () => parsed.value.body,
+  () => preview.value.text,
   () => props,
 );
 
@@ -176,6 +204,8 @@ async function openLink(href: string) {
          ⚠️ 不挂在气泡根上：根里还有「展开/复制」操作条和尖角，全选会把按钮文字也框进去。 -->
     <div ref="contentEl">
       <div
+        ref="bodyEl"
+        data-msg-body=""
         class="gosslan-selectable whitespace-pre-wrap break-words"
         :style="{ wordBreak: 'break-word', ...clampStyle }"
       >

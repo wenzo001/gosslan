@@ -3715,6 +3715,140 @@ window.__probe = (() => {
       vw: window.innerWidth, vh: window.innerHeight,
     };
   };
+  /**
+   * 消息列表「长文本 / 超长代码」截断夹具（--only=previewbudget，2026-11-08）。
+   *
+   * 判据是「进 DOM 之前就按字符预算截短，结尾是真实省略号；不是整段塞进 DOM 再让 CSS 裁」，
+   * 所以必须摆出真实的两个气泡：MessageTextBubble（长文本）+ MessageCodeBubble（几百行代码），
+   * 且 clamped 由**产品同一个判据**（textNeedsClamp / codeNeedsClamp）决定。
+   *
+   * 一次挂 nText 条文本 + nCode 条代码，量三件事：首屏挂载耗时、进 DOM 的字符数、DOM 节点数。
+   * 改前/改后用同一份夹具跑，差值就是这一刀省下来的量。
+   */
+  H.previewMount = async (optsJson) => {
+    const o = JSON.parse(optsJson || '{}');
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: 'no-vue' };
+    const Text = (await import('/src/components/message/MessageTextBubble.vue')).default;
+    const Code = (await import('/src/components/message/MessageCodeBubble.vue')).default;
+    const Store = await import('/src/stores/useAppStore.ts');
+    const Metrics = await import('/src/utils/previewMetrics.ts');
+    const text = ('长文本截断读数：这一段会被重复很多次，用来量 DOM 压力，末尾不该整段进 DOM。\\n')
+      .repeat(o.textRepeat ?? 900);
+    const codeLines = o.codeLines ?? 300;
+    const code = Array.from({ length: codeLines }, function (_, i) {
+      return '  const v' + i + ' = compute(' + i + '); // 第 ' + i + ' 行';
+    }).join('\\n');
+    if (window.__pinia) Store.useAppStore(window.__pinia).setAppearance(o.dark ? 'dark' : 'light');
+    if (window.__probe.app) { try { window.__probe.app.unmount(); } catch { /* 已卸载 */ } }
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'previewbudget-host';
+    document.body.appendChild(host);
+    const textClamped = Metrics.textNeedsClamp(text, 'md');
+    const codeClamped = Metrics.codeNeedsClamp(code);
+    const nText = o.textMessages ?? 20;
+    const nCode = o.codeMessages ?? 10;
+    const W = o.width || window.innerWidth;
+    const bubbleW = Math.min(560, W - 24);
+    const t0 = performance.now();
+    const app = V.createApp({
+      setup() {
+        const kids = [];
+        for (let i = 0; i < nText; i += 1) {
+          kids.push(V.h('div', {
+            'data-pb-text': '',
+            style: { width: bubbleW + 'px', margin: '12px', display: 'flex', justifyContent: 'flex-start' },
+          }, [
+            V.h(Text, {
+              content: text, bubbleStyle: {}, cardStyle: {}, clamped: textClamped, copied: false,
+              mine: false, tail: true,
+              onExpand: function () {}, onCopy: function () {}, onLocate: function () {},
+            }),
+          ]));
+        }
+        for (let i = 0; i < nCode; i += 1) {
+          kids.push(V.h('div', {
+            'data-pb-code': '',
+            style: { width: bubbleW + 'px', margin: '12px', display: 'flex', justifyContent: 'flex-start' },
+          }, [
+            V.h(Code, {
+              code: code, clamped: codeClamped, copied: false, dark: !!o.dark, mine: false, tail: true,
+              language: 'javascript', canSwitchLang: false, switching: false, expanded: false,
+              onExpand: function () {}, onCopy: function () {}, onSwitchLang: function () {},
+            }),
+          ]));
+        }
+        return function () {
+          return V.h('div', {
+            id: 'pb-scroller',
+            style: {
+              position: 'fixed', inset: '0', overflowY: 'auto', overflowX: 'hidden',
+              background: o.dark ? '#0f172a' : '#fafafa',
+            },
+          }, kids);
+        };
+      },
+    });
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    window.__probe.app = app;
+    window.__probe.previewSrc = { text: text, code: code };
+    await V.nextTick(); await V.nextTick();
+    const mountMs = +(performance.now() - t0).toFixed(1);
+    const firstPaintNodes = document.querySelectorAll('#pb-scroller *').length;
+    // 等 Shiki 高亮回填（Worker 异步）：截断后只高亮 8 行，改前是整段。
+    await new Promise(function (r) { setTimeout(r, o.settle ?? 900); });
+    return {
+      ok: true, mountMs: mountMs, firstPaintNodes: firstPaintNodes,
+      textChars: text.length, codeChars: code.length, codeLines: codeLines,
+      textClamped: textClamped, codeClamped: codeClamped, nText: nText, nCode: nCode,
+    };
+  };
+  /** 截断读数：进 DOM 的字符数 / DOM 节点数 / 结尾是不是真的省略号 / 有没有退回渐变遮罩。 */
+  H.previewMeasure = () => {
+    const texts = Array.from(document.querySelectorAll('[data-pb-text]'));
+    const codes = Array.from(document.querySelectorAll('[data-pb-code]'));
+    // data-msg-body 是 2026-11-08 才加的探针标记；改前树没有它，回落到可选中正文的类名，
+    // 这样同一份夹具在改前/改后两棵树上都能量到读数（否则改前直接量不到，没有对照）。
+    const body = texts[0]
+      ? (texts[0].querySelector('[data-msg-body]') || texts[0].querySelector('.gosslan-selectable'))
+      : null;
+    const fold = codes[0] ? codes[0].querySelector('[data-code-fold="clamped"]') : null;
+    const pre = fold ? fold.querySelector('pre.code-pre')
+      : (codes[0] ? codes[0].querySelector('pre.code-pre') : null);
+    const t = body ? String(body.textContent || '') : '';
+    const c = pre ? String(pre.textContent || '') : '';
+    const nodes = function (el) { return el ? el.querySelectorAll('*').length : 0; };
+    const sum = function (roots, sel) {
+      return roots.reduce(function (n, el) { return n + el.querySelectorAll(sel).length; }, 0);
+    };
+    return {
+      present: !!(body && pre),
+      text: {
+        domChars: t.length,
+        domNodes: nodes(body),
+        dots: t.endsWith('\\u2026'),
+        tail: t.slice(-10),
+        clientH: body ? body.clientHeight : 0,
+        scrollH: body ? body.scrollHeight : 0,
+        lineClamp: body ? (getComputedStyle(body).webkitLineClamp || '') : '',
+        allNodes: sum(texts, '*'),
+      },
+      code: {
+        domChars: c.length,
+        domNodes: nodes(pre),
+        dots: c.endsWith('\\u2026'),
+        tail: c.slice(-10),
+        preH: pre ? pre.clientHeight : 0,
+        preScrollH: pre ? pre.scrollHeight : 0,
+        allNodes: sum(codes, '*'),
+      },
+      fade: !!document.querySelector('.code-clip-fade'),
+      scrollerH: (document.querySelector('#pb-scroller') || {}).scrollHeight || 0,
+      vw: window.innerWidth,
+    };
+  };
   /** 全文弹窗读数：只有超过上限才可滚（短内容 scrollHeight == clientHeight）。 */
   H.codefoldModal = () => {
     const dialog = document.querySelector('[role="dialog"]');
@@ -4466,6 +4600,7 @@ async function main() {
     const modaltitle = want("modaltitle");
     const codeblock = want("codeblock");
     const codefold = want("codefold");
+    const previewbudget = want("previewbudget");
     const langdd = want("langdd");
     const inputpanel = want("inputpanel");
     const winsafe = want("winsafe");
@@ -4713,6 +4848,7 @@ async function main() {
     await runSegment("modaltitle", modaltitle, () => runModalTitle(cdp, url));
     await runSegment("codeblock", codeblock, () => runCodeBlock(cdp, url));
     await runSegment("codefold", codefold, () => runCodeFold(cdp, url));
+    await runSegment("previewbudget", previewbudget, () => runPreviewBudget(cdp, url));
     await runSegment("langdd", langdd, () => runLangDd(cdp, url));
     await runSegment("inputpanel", inputpanel, () => runInputPanels(cdp, url));
     await runSegment("winsafe", winsafe, () => runWindowSafe(cdp, url));
@@ -8422,6 +8558,136 @@ async function runCodeFold(cdp, url) {
     );
   }
   console.log(`  📷 折叠/展开截图 → ${shotDir}/folded-<size>-<theme>.png / expanded-<size>-<theme>.png`);
+}
+
+/**
+ * 消息列表长文本 / 超长代码的**截断读数**（--only=previewbudget，2026-11-08）。
+ *
+ * 用户报：「长文本、超长代码在聊天框里没有真正截断，不要让整个界面有这个长文本渲染压力」。
+ * 单看代码看不出来：截断（`-webkit-line-clamp` / 固定高度裁切）确实"看得见效果"，
+ * 但**整段正文仍在 DOM 里**，每条长消息都参与排版与重绘。所以这里量的是三件真事：
+ *   ① 首屏挂载耗时（20 条长文本 + 10 段 300 行代码一次挂上去）；
+ *   ② 一个气泡**进 DOM 的字符数**（`textContent.length`）与它相对原文的比例；
+ *   ③ DOM 节点数（Shiki 高亮之后，折叠态只有 8 行）。
+ * 外加两条外观判据：结尾必须是真实 U+2026、且不能退回渐变遮罩。
+ *
+ * 改前/改后共用这一份夹具（组件 props 没变），差值就是这一刀省下来的量。
+ */
+async function runPreviewBudget(cdp, url) {
+  const SIZES = [
+    { id: "1280", w: 1280, h: 900 },
+    { id: "390", w: 390, h: 800, mobile: true },
+  ];
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 900, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const boot = await cdp.eval(
+    `window.__probe.install('/src/components/UnreadBadge.vue', '', '{"count":3}')`,
+  );
+  check("截断段入口：页面 vue/pinia 已就绪", !!boot && boot.ok === true, "install ok", JSON.stringify(boot));
+
+  const table = [];
+  for (const size of SIZES) {
+    for (const dark of [false, true]) {
+      const tag = `${size.id}-${dark ? "dark" : "light"}`;
+      await cdp.send("Emulation.setDeviceMetricsOverride", {
+        width: size.w, height: size.h, deviceScaleFactor: size.mobile ? 2 : 1, mobile: !!size.mobile,
+      });
+      await cdp.send("Emulation.setTouchEmulationEnabled", {
+        enabled: !!size.mobile, maxTouchPoints: 1,
+      }).catch(() => {});
+      await sleep(200);
+
+      const opts = { dark, width: size.w, height: size.h };
+      const mounted = await cdp.eval(
+        `window.__probe.previewMount(${JSON.stringify(JSON.stringify(opts))})`,
+      );
+      check(`[${tag}] 截断夹具挂得起来`, !!mounted && mounted.ok === true, "mount ok", JSON.stringify(mounted));
+      const m = await cdp.eval("window.__probe.previewMeasure()");
+      if (!m || m.present !== true) {
+        check(`[${tag}] 两个气泡都渲染出来了`, false, "text+code present", JSON.stringify(m));
+        continue;
+      }
+      const textRatio = +(m.text.domChars / mounted.textChars).toFixed(3);
+      const codeRatio = +(m.code.domChars / mounted.codeChars).toFixed(3);
+      table.push({
+        tag,
+        mountMs: mounted.mountMs,
+        textChars: mounted.textChars,
+        textDom: m.text.domChars,
+        textRatio,
+        textNodes: m.text.domNodes,
+        textDots: m.text.dots,
+        textTail: m.text.tail,
+        textClientH: m.text.clientH,
+        textScrollH: m.text.scrollH,
+        textClamp: m.text.lineClamp,
+        codeChars: mounted.codeChars,
+        codeDom: m.code.domChars,
+        codeRatio,
+        codeNodes: m.code.domNodes,
+        codeDots: m.code.dots,
+        codeTail: m.code.tail,
+        codePreH: m.code.preH,
+        codePreScrollH: m.code.preScrollH,
+        fade: m.fade,
+        firstPaintNodes: mounted.firstPaintNodes,
+      });
+
+      check(
+        `[${tag}] 长文本结尾是**真实省略号**（不是 CSS 画的）`,
+        m.text.dots === true,
+        "textContent 以 U+2026 收尾",
+        JSON.stringify({ tail: m.text.tail, dots: m.text.dots }),
+      );
+      check(
+        `[${tag}] 长文本进 DOM 前已截短（≤ 原文 1/20）`,
+        m.text.domChars <= Math.max(200, mounted.textChars / 20),
+        `domChars=${m.text.domChars} / 原文 ${mounted.textChars}`,
+        `ratio=${textRatio}`,
+      );
+      check(
+        `[${tag}] 折叠态仍在 5 行以内（clientH ≤ scrollH，无第 6 行）`,
+        m.text.clientH > 0 && m.text.scrollH <= m.text.clientH + 1,
+        `clientH=${m.text.clientH} scrollH=${m.text.scrollH}`,
+        JSON.stringify({ clamp: m.text.lineClamp }),
+      );
+      check(
+        `[${tag}] 超长代码结尾是**真实省略号**`,
+        m.code.dots === true,
+        "pre.textContent 以 U+2026 收尾",
+        JSON.stringify({ tail: m.code.tail, dots: m.code.dots }),
+      );
+      check(
+        `[${tag}] 超长代码进 DOM 前已截短（≤ 原文 1/10）`,
+        m.code.domChars <= Math.max(400, mounted.codeChars / 10),
+        `domChars=${m.code.domChars} / 原文 ${mounted.codeChars}`,
+        `ratio=${codeRatio}`,
+      );
+      check(
+        `[${tag}] 不再用渐变遮罩糊截断（.code-clip-fade 必须不存在）`,
+        m.fade === false,
+        "fade=false",
+        `fade=${m.fade}`,
+      );
+    }
+  }
+
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+  console.log("  · 长文本/长代码截断读数表：");
+  for (const r of table) {
+    console.log(
+      `    ${r.tag}: 挂载 ${r.mountMs}ms 首帧节点 ${r.firstPaintNodes}`
+      + ` | 文本 DOM ${r.textDom}/${r.textChars} 字符 (${(r.textRatio * 100).toFixed(1)}%)`
+      + ` 节点 ${r.textNodes} 省略号=${r.textDots} H=${r.textClientH}/${r.textScrollH} lineClamp=${r.textClamp}`
+      + ` | 代码 DOM ${r.codeDom}/${r.codeChars} 字符 (${(r.codeRatio * 100).toFixed(1)}%)`
+      + ` 节点 ${r.codeNodes} 省略号=${r.codeDots} preH=${r.codePreH}/${r.codePreScrollH} fade=${r.fade}`,
+    );
+  }
 }
 
 /**

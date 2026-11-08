@@ -39,11 +39,17 @@ const props = defineProps<{
   fill?: boolean;
   /** 代码区最大高度（全文弹窗：把滚动留在代码区，外层不再滚）。 */
   maxHeight?: string;
+  /**
+   * 头部「· N 行」用的行数。缺省按 `code` 自己算。
+   * 折叠态传的是**截断后**的预览（只有 8 行），头部必须显真实总行数，
+   * 否则一条 681 行的消息会自称「8 行」，展开与否失去可发现信号。
+   */
+  totalLines?: number;
 }>();
 
 const emit = defineEmits<{ (e: "switch-language", value: string | null): void }>();
 
-const lineCount = computed(() => props.code.split("\n").length);
+const lineCount = computed(() => props.totalLines ?? props.code.split("\n").length);
 
 /**
  * 首帧只渲染**转义后的纯文本**，高亮在 Worker 里算完再回填。

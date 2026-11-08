@@ -57,15 +57,16 @@
 |---|----------------------|------|------|----------|------|
 | 36 | A① 窗口不在前台时第一下点击被吃掉：代码块/长文本弹窗、崩溃恢复条的按钮要点第二下 | 已完成 | `b3ad5bf5`（5.18.76） | **CF-01**（`node --test src/utils/designGuards.test.ts` → 369/369）：核对 `tauri.conf.json` 的 `acceptFirstMouse` 与六处 `WebviewWindowBuilder` 的 `.accept_first_mouse(true)`；两条反例（配置改回 `false`、删掉某扇窗那行）必红 | 待真机（macOS）：切到别的应用 → 直接点恢复条「知道了」，第一击应关闭 |
 | 37 | A② 启动画面「小院儿 · 正在启动中」被 macOS 红绿灯 / Windows 三键压住 | 已完成 | `3c23d2d6`（5.18.75） | **SK-03**（同一测试文件）：按声明的对齐方式算出 brand 盒（768 × 保守最宽 160），与 macOS `0–78`、Windows 右侧 `132` 求交；删掉 `justify-content: center` 必红 | 待真机（冷启动首帧）：骨架在真实 DOM 挂载前就淡出，运行时探针取不到首帧矩形，只能几何推导 |
-| 38 | A③ 崩溃恢复条/各类提示贴视口边，压到安卓状态栏与圆角 | 已完成·待真机 | `74e2629c`（5.18.72） | **SA-01/02/03**（同一测试文件）：在状态栏 24px + 圆角 24px + 视口 390×844 下判定矩形不侵入「圆外被切区域」；「统一出口」扫全仓，组件裸写 `env()` 必红 | 待真机（安卓）：`env()` 真值只有安卓 WebView 上报，桌面 Chrome 恒 0 |
+| 38 | A③ 崩溃恢复条/各类提示贴视口边，压到安卓状态栏与圆角 | 已完成·已验收（真机） | `74e2629c`（5.18.72） | **SA-01/02/03**（同一测试文件）：在状态栏 24px + 圆角 24px + 视口 390×844 下判定矩形不侵入「圆外被切区域」；「统一出口」扫全仓，组件裸写 `env()` 必红 | **真机验收，验收人：用户，日期 2026-11-08**：提示条不压状态栏与手势条 —— 通过（`env()` 真值只有安卓 WebView 上报，本机桌面 Chrome 恒 0，故此前只能待真机） |
 | 39 | B④ 输入框删表情：一次退格把两个表情一起删掉 | 已完成·待真机 | `478a7766`（5.18.74） | `node --test src/utils/graphemes.test.ts`（9 条：两个连着表情、ZWJ 家庭、肤色、旗帜、VS16…）；另外 `deleteOneUnitBeforeCaret` 覆盖 token 三种 caret 落位 | 待真机（安卓）：WebView 的 caret 落位形态与 IME 组合由系统决定 |
 | 40 | B⑤ 「任务中心」更名「传输队列」；移动端任务列表页页头 / `0/1 已完成` / 筛选 / 列表四套竖线并回同一条 16px | 已完成 | `da03c1c7`（5.18.78） | 文案：中英两册同步（`node scripts/check-i18n.mjs`）；几何：`GroupTasksBoard.vue` 的 `pageInset` 只输出 `px-[var(--gosslan-scroll-inset)]`，无字面 px（㊶ 守卫禁任意值） | 真机像素表未取：本批只保证「同一个 token」，实际竖线位置需截图量 |
 | 41 | B⑥ 网络诊断页双层滚动条 | 已完成 | `da03c1c7`（5.18.78）；子列表 `e6ec21a3`（5.19.6） | 第一层 5.18.78 去掉；5.19.6 把剩下 4 处**子列表**（蓝牙退避 / 对端版本 / 连接活性 / 群文件日志）的 `max-h-48 + overflow-y-auto` 一并去掉——用户口径「一页只有一层滚动条，子列表不应再套一层」，随内容展开，长列表靠数据源上界兜底（群文件日志只留 50 行）。判据 PG-03 从只盯 `max-h-[75vh]` 扩到全文件任意 `class="… max-h-* / overflow-*-auto …"`，新增反例「子列表 `max-h-48` 必红」；运行时探针 `--only=diag` 5/5：`shellH 335 / shellSH 2359`（壳确实在滚）、`inner 0`；把 `max-h-48` 写回一处 ⇒ FAIL 并报 `sh 316 / ch 192` | — |
-| 42 | C⑦ 触屏长按正文不弹消息面板 | 已完成·待真机 | `da03c1c7`（5.18.78） | `node --test src/utils/longPress.test.ts`（11/11：5 环链 + 逐环反例）与 `contextMenu.test.ts`（断言 `onSelectableText: false`）；结构判据：源码再出现 `hitSelectable` / `lastTouchTextCol` 即红。口径变更见 [decision-longpress-2026-11-07.md](./decision-longpress-2026-11-07.md) | 待真机（安卓）：「选择文字」点下去后能否真的选中并复制 |
+| 42 | C⑦ 触屏长按正文不弹消息面板 | 已完成·已验收（真机） | `da03c1c7`（5.18.78） | `node --test src/utils/longPress.test.ts`（11/11：5 环链 + 逐环反例）与 `contextMenu.test.ts`（断言 `onSelectableText: false`）；结构判据：源码再出现 `hitSelectable` / `lastTouchTextCol` 即红。口径变更见 [decision-longpress-2026-11-07.md](./decision-longpress-2026-11-07.md) | **真机验收，验收人：用户，日期 2026-11-08**：长按文字后「选择文字」能选中复制 —— 通过 |
 | 43 | C⑧ 弹窗标题 / 固定头部 / 页脚的横向与纵向基线各写一套 | 已完成 | `da03c1c7`（5.18.78） | `BaseModal.vue` 标题、header 插槽、footer 统一 `--gosslan-modal-gap`（16px），fullscreen header 横向走 `--gosslan-scroll-inset`；`designGuards` 抓任意值写法 | 真机对比截图未取：设置 / 日志 / 群任务 / 预览四个窗口需各看一眼 |
-| 44 | C⑨ Windows 图标：软件内升级后仍是旧图标；Windows 11 不给应用图标加圆角 | 已完成·待真机 | 升级不刷新 `12519540`（5.18.73）；圆角 `da03c1c7`（5.18.78） | 升级：`rg -n "SHChangeNotify" src-tauri/nsis/hooks.nsh` = 1（`SHCNE_ASSOCCHANGED` 让外壳重读图标）；圆角：`icon.ico` 4368 → **6897 B**，由 `scripts/build-app-icons.mjs` 从圆角源图重出 | 待真机（Windows）：覆盖安装后桌面/任务栏图标；必要时 `ie4uinit.exe -show` 前后对照 |
-| 45 | C⑩ Windows 标题栏头像簇应在左侧，与左 R 角同圆心 | 已完成·待真机 | `f0c0e45b`（5.18.73） | **TB-01 / TB-02**（`designGuards`）：平台→头像簇侧、组内顺序、标题绝对居中、`--gosslan-caption-avatar` 与 `--gosslan-caption-inset` 同源；四条反例必红 | 待真机（Windows）：角部 4× 特写；TB-02 只是平台模拟读数 |
+| 44 | C⑨ Windows 图标：软件内升级后仍是旧图标；Windows 11 不给应用图标加圆角 | 已完成·已验收（真机） | 升级不刷新 `12519540`（5.18.73）；圆角 `da03c1c7`（5.18.78） | 升级：`rg -n "SHChangeNotify" src-tauri/nsis/hooks.nsh` = 1（`SHCNE_ASSOCCHANGED` 让外壳重读图标）；圆角：`icon.ico` 4368 → **6897 B**，由 `scripts/build-app-icons.mjs` 从圆角源图重出 | **真机验收，验收人：用户，日期 2026-11-08**：覆盖安装后桌面图标已刷新 —— 通过（未额外跑 `ie4uinit.exe -show`） |
+| 45 | C⑩ Windows 标题栏头像簇应在左侧，与左 R 角同圆心 | 已完成·已验收（真机） | `f0c0e45b`（5.18.73） | **TB-01 / TB-02**（`designGuards`）：平台→头像簇侧、组内顺序、标题绝对居中、`--gosslan-caption-avatar` 与 `--gosslan-caption-inset` 同源；四条反例必红 | **真机验收，验收人：用户，日期 2026-11-08**：标题栏右上（镜像后为左上）头像簇与 R 角的观感 —— 可接受（TB-02 的角部 4× 特写未取，按观感验收） |
 | 46 | C⑪ 背景动效 Windows 与 macOS 观感不一致，需要可复制的读数 | 已完成·待真机 | `da03c1c7`（5.18.78） | `src/utils/ambientProbe.ts` 13 行取样（平台 / 四个媒体查询 / `pointer: coarse` / `html[data-ambient]` / `backdrop-filter` / 三个 `--ambient-*` / DPR / 视口）+ `DevDiagPanel` 展示与一键复制；视图层裸写 `matchMedia` 由 `designGuards` ㉟ 拦住 | 待真机（Windows）：需要用户复制一段读数回传 —— 这是唯一能证明差异的一半 |
+| 47 | 长文本 / 超长代码在聊天框里没有真正截断；结尾要真实「…」，且不许整段塞进 DOM 再让 CSS 裁 | `MessageTextBubble`、`MessageCodeBubble`、`CodeBlock`（新增 `totalLines`）、新增 `utils/previewTruncate.ts` 与 `composables/usePreviewColumns.ts` | 已完成 | 本笔 | `--only=previewbudget` 29/29 绿（1280/390 × 亮/暗）。单条文本进 DOM **38700 → 120 字符（0.3%）**、单段 300 行代码 **11669 → 272 字符（2.3%）**、高亮节点 **1201 → 33**；`scrollHeight` 从 **36000px / 6012px** 落到与 `clientHeight` 相等（= 正文不再参与排版）。两处结尾都是真实 U+2026，`.code-clip-fade` 已删除。`previewTruncate.test.ts` 21 条（字素簇/全角/行满回退 + 「整段塞回 DOM 必红」反例自证） | 展开/复制仍是原文（`emit('expand', content)` 未改）；列数靠挂载后实测，首帧用估算值兜底 |
 
 **A③ 的 TabBar 是「继承变量」，不是漏改**（证据链，三处都能现查）：
 
@@ -167,6 +168,10 @@
   ⑤ 文档：本表 #35、[density-and-scroll.md §8](../../design-language/density-and-scroll.md)、
   [decisions.md v2.3](../../../designs/gosslan-redesign/docs/decisions.md)。
   ⑥ 截图：`test-results/skeleton-sync/`（5 界面 × 骨架/加载 × 1440；主窗加 390×844）。
+- 2026-11-08：**#38 / #42 / #44 / #45 由「已完成·待真机」改为「已完成·已验收（真机）」**。
+  **真机验收，验收人：用户，日期 2026-11-08**：A③ 提示条不压状态栏与手势条（安卓）—— 通过；
+  C⑦ 长按「选择文字」可选中复制（安卓）—— 通过；C⑨ 覆盖安装后桌面图标已刷新（Windows）—— 通过；
+  C⑩ 标题栏镜像后头像簇与 R 角观感（Windows）—— 可接受。仍待真机的 5 条：#36 / #37 / #39 / #43 / #46。
 - 2026-11-07：**追加 11 条登记**（#36–#46，A①–C⑪），每条带状态 / SHA / 自测方式 / 缺口。
   其中 6 条标 **已完成·待真机**（A③、B④、C⑦、C⑨、C⑩、C⑪）—— 代码与判据都落地，
   但本机是 macOS，Windows WebView2 与安卓 WebView 的结论只能由用户设备验收，
