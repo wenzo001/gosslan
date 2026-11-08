@@ -1008,6 +1008,18 @@ body {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
+/* 横排容器（标签条 / 工具行 / 状态条 / 面包屑）**只许横向滚**：纵向永远不长出滚动条或槽位。
+   `overflow-x: auto` 会把另一轴的 `visible` 计算成 `auto` ⇒ 任何越界的绝对定位装饰都会实打实
+   长出 8px 纵向滚动条（用户 2026-11-08 截图：群任务页签上挂着一条竖滚动条；实测读数
+   `barW=8 / vOver=1 / overflowY=auto`，元凶是页签下划线写的是 `-bottom-px`，只越界 1px）。
+   要纵向滚的是另一族（上面的 `.overflow-y-auto` / `.gosslan-scroll`），两者不叠用；
+   守卫：designGuards `SC-04`（静态扫描 + 反例自证）、check-ui-runtime `taskpane`
+   「横排容器无纵向滚动条/槽位」（运行时读数 + 两条反例自证）。 */
+.overflow-x-auto,
+.overflow-x-scroll {
+  overflow-y: hidden;
+  scrollbar-gutter: auto;
+}
 /* 面板级滚动容器（内容页统一口径，2026-11-07 第二轮）：
      `scrollbar-gutter: stable both-edges` → 有/无滚动条时内容盒宽度逐像素相等、左右对称；
      `padding-inline: var(--gosslan-scroll-gap)` → 内容与滚动条带之间固定留 8px 空隙。

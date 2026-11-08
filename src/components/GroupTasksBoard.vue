@@ -552,6 +552,14 @@ const detailItem = computed(
   () => (detailId.value ? (todos.value.find((x) => x.todoId === detailId.value) ?? null) : null),
 );
 const detailArchived = computed(() => (detailItem.value ? isEffectivelyArchived(detailItem.value) : false));
+/**
+ * 详情流水的**唯一一份**计算结果。
+ *
+ * `historyFor` 每次都要扫全量任务行（`buildTodoHistory` 按 todoId 过滤），
+ * 直接写在模板里意味着父组件每重渲染一次就扫一遍 —— 两栏形态下右栏常驻，
+ * 任何状态变化都会走到这里。computed 只在 `detailItem` 或任务行变化时重算。
+ */
+const detailHistory = computed(() => historyFor(detailItem.value));
 
 function openDetail(x: TodoItem) {
   // 两栏形态里右栏常驻：换选另一条时，把上一条按来源打开的相册收掉，
@@ -1462,9 +1470,12 @@ watch(
           v-if="counts[f.key] !== undefined"
           class="ml-1 tabular-nums opacity-70"
         >{{ counts[f.key] }}</span>
+        <!-- 下划线必须留在**内容盒内**（`bottom-0`，不再是 `-bottom-px`）：越出 1px 就会被
+             `overflow-x-auto` 隐含的 `overflow-y: auto` 记成纵向溢出，页签上长出 8px 竖滚动条
+             （用户 2026-11-08 截图，探针实测 barW=8 / vOver=1）。 -->
         <span
           v-if="filter === f.key"
-          class="absolute inset-x-1 -bottom-px h-0.5 rounded-full bg-current"
+          class="absolute inset-x-1 bottom-0 h-0.5 rounded-full bg-current"
           aria-hidden="true"
         ></span>
       </button>
@@ -1791,7 +1802,7 @@ watch(
             :name-of="(id: string) => memberProfile(id).name"
             :mention-names="mentionNames"
             :self-mention="selfMention"
-            :history="historyFor(detailItem)"
+            :history="detailHistory"
             :source-key="`task:${detailItem.todoId}`"
             @status="(s: TodoStatus) => detailItem && setStatus(detailItem, s)"
             @priority="(p: TodoPriority) => detailItem && setPriority(detailItem, p)"
@@ -1826,7 +1837,7 @@ watch(
   <TodoDetailDialog
     :open="!!detailItem && !twoPaneMode"
     :item="detailItem"
-    :history="historyFor(detailItem)"
+    :history="detailHistory"
     :archived="detailArchived"
     :can-change-status="detailItem ? canChangeStatus(detailItem) : false"
     :can-archive="detailItem ? canArchive(detailItem) : false"
