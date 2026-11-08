@@ -44,11 +44,14 @@ function onOpenChange(id: string, open: boolean) {
       <Icon name="x-circle" v-else-if="toast.data?.kind === 'error'" class="h-4 w-4 shrink-0" aria-hidden="true" />
       <Icon name="info" v-else class="h-4 w-4 shrink-0" aria-hidden="true" />
       <ToastTitle class="min-w-0" />
-      <!-- 同 key 重复时只加计数，不叠新条（A1 裁决）。 -->
+      <!-- 同 key 重复时只加计数，不叠新条（A1 裁决）。
+           计数 chip 必须是**暗**的叠层（2026-11-08 按场景普查量出来的）：白字压在 danger 实底上
+           本来 4.9，叠 20% 白后有效底被提亮到 3.7 ⇒ 11px 的「×N」读不动。叠 25% 黑把底压深，
+           白字回到 7.x；普通 toast 的 hud 底同理。 -->
       <span
         v-if="(toast.data?.count ?? 1) > 1"
         data-toast-count
-        class="shrink-0 rounded-[var(--gosslan-radius-sm)] bg-white/20 px-1.5 py-0.5 text-xs font-medium tabular-nums"
+        class="shrink-0 rounded-[var(--gosslan-radius-sm)] bg-black/25 px-1.5 py-0.5 text-xs font-medium tabular-nums"
       >×{{ toast.data!.count }}</span>
       <!--
         只有"说得出下一步"的失败才带按钮（目前只有辅助窗口创建失败）。
@@ -56,7 +59,7 @@ function onOpenChange(id: string, open: boolean) {
       -->
       <ToastClose
         v-if="toast.data?.action"
-        class="ml-2 shrink-0 rounded-[var(--gosslan-radius-sm)] bg-white/20 px-2 py-0.5 text-xs font-medium hover:bg-white/30"
+        class="ml-2 shrink-0 rounded-[var(--gosslan-radius-sm)] bg-black/25 px-2 py-0.5 text-xs font-medium hover:bg-black/35"
         @click="toast.data.action.run()"
       >
         {{ toast.data.action.label }}

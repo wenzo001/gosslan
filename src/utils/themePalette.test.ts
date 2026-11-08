@@ -134,6 +134,18 @@ function audit(tokens: Record<string, string>, mode: ThemeMode): Fail[] {
   pair("--gosslan-warning", "--gosslan-panel", F.icon, 3.0);
   pair("--gosslan-success", "--gosslan-panel", F.icon, 3.0);
   pair("--gosslan-rail-text-active", "--gosslan-rail-active", F.icon, 3.0);
+
+  // 表情回应胶囊四态（用户 2026-11-08 实测：「数字在蓝色下面看不清」）：
+  // 文字对**每一档底**都要达标 —— hover 只换一层底、不改文字色，所以它也是文字的真实背景。
+  for (const bg of ["--gosslan-react-bg", "--gosslan-react-bg-hover"]) {
+    pair("--gosslan-react-ink", bg, F.secondary, 4.5);
+  }
+  for (const bg of ["--gosslan-react-bg-mine", "--gosslan-react-bg-mine-hover"]) {
+    pair("--gosslan-react-ink-mine", bg, F.secondary, 4.5);
+  }
+  // 胶囊压在**自己的主色气泡**上时，分隔靠"色阶差"而不是 3:1：胶囊是 M3 意义上的 tonal fill，
+  // 亮色种子（#00b578 一类）下浅胶囊 vs 亮填充恰好 2.x —— 想同时压住 3:1 就只能把胶囊做到中灰，
+  // 在聊天界面里会变成一块重色块。所以这里不做非文字断言，只保证**文字**四态全过（上面四行）。
   return fails;
 }
 
@@ -160,7 +172,7 @@ test("全部内置主题 + 极端输入 + 随机采样：亮/暗两套矩阵全�
 });
 
 test("运行时覆盖集与全量地图同源：seedTokens 的每一项都等于 buildThemeTokens", () => {
-  assert.equal(SEED_TOKENS.length, 6, "运行时覆盖集固定 6 项（改数量等于改性能/首帧契约）");
+  assert.equal(SEED_TOKENS.length, 12, "运行时覆盖集固定 12 项（6 个主色档 + 6 个表情胶囊档；改数量等于改性能/首帧契约）");
   for (const mode of ["light", "dark"] as const) {
     for (const seed of ALL_SEEDS) {
       const all = buildThemeTokens(seed, mode);
@@ -201,6 +213,38 @@ test("反例自证：摘掉校正（旧固定比例 + 恒白字）在极端输�
     hits.some((h) => h === "light #ffffff --gosslan-on-primary on --gosslan-primary"),
     `没抓到白底白字这一格：${hits.slice(0, 8).join(" | ")}`,
   );
+});
+
+test("反例自证：胶囊文字改回固定浅色 / 底色退回「透明叠层」必须报红", () => {
+  const hits: string[] = [];
+  for (const mode of ["light", "dark"] as const) {
+    const base = buildThemeTokens(DEFAULT_SEED, mode);
+    // ① 旧实现形态：文字写死浅色（不去对胶囊底求解）
+    for (const ink of ["#ffffff", "#f2f3f5"]) {
+      const fixed = { ...base, "--gosslan-react-ink": ink, "--gosslan-react-ink-mine": ink };
+      hits.push(
+        ...audit(fixed, mode)
+          .filter((f) => f.pair.startsWith("--gosslan-react"))
+          .map((f) => `${mode} fixedInk(${ink}) ${f.pair}`),
+      );
+    }
+    // ② 旧实现形态：默认底是「5%/6% 墨迹叠在主色气泡上」的**透明层** —— 有效色在 token 表里不存在，
+    //    旧代码正是这样让计数字压在自己的蓝气泡上（用户 2026-11-08 截图）。
+    const overlay = mode === "light" ? mixHex(base["--gosslan-primary"], [15, 23, 42], 0.05) : mixHex(base["--gosslan-primary"], [248, 250, 252], 0.06);
+    const layered = {
+      ...base,
+      "--gosslan-react-bg": overlay,
+      "--gosslan-react-ink": mode === "light" ? "#4d4f51" : "#cdced1",
+    };
+    hits.push(
+      ...audit(layered, mode)
+        .filter((f) => f.pair.startsWith("--gosslan-react"))
+        .map((f) => `${mode} layered ${f.pair}`),
+    );
+  }
+  assert.ok(hits.length > 0, "胶囊四态的反例一个都没红 —— 那几行判据空转了");
+  assert.ok(hits.some((h) => h.includes("fixedInk")), `没抓到「文字改回固定浅色」：${hits.slice(0, 8).join(" | ")}`);
+  assert.ok(hits.some((h) => h.includes("layered")), `没抓到「透明叠层当底」：${hits.slice(0, 8).join(" | ")}`);
 });
 
 test("极端输入收敛：输出始终是合法 hex，且不会打出 NaN", () => {

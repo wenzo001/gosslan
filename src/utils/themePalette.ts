@@ -12,7 +12,8 @@
  * （仓库既有护栏是 WCAG 口径：正文 7 / 次文本 4.55 / 占位 4.68 / 非文字 3.02）。
  * 双约束是必要的：只按 APCA 45 派生的图标档换算成 WCAG 只有 2.3~4.2，落码时会当场把既有护栏打红。
  *
- * 落码位置：`applyTheme` 用本模块算出的 6 个种子相关 token 覆盖 style.css 的同名声明；
+ * 落码位置：`applyTheme` 用本模块算出的 12 个种子相关 token（主色 6 档 + 表情胶囊 6 档）覆盖
+ * style.css 的同名声明；
  * style.css 里剩下的静态数值也必须等于 `buildThemeTokens(出厂蓝)` 的输出 —— 这一条由
  * `themePalette.test.ts` 逐 token 断言（两份实现漂了会红）。
  */
@@ -415,6 +416,31 @@ export function buildThemeTokens(seedHex: string, mode: ThemeMode): Record<strin
     };
   }
 
+  // ---- 表情回应胶囊：底色必须**不透明** ----
+  // 它压在任何气泡上：自己的消息气泡是主色实底、别人的是卡片。旧的默认态用 `--gosslan-hover`
+  // （5% 黑 + 透明）叠在气泡上 ⇒ 自己的蓝气泡上就变成"灰字压蓝底"，读数掉到 2.x（用户 2026-11-08 实测截图）。
+  // 现在四态（默认 / hover / 已选 / 已选+hover）都由主色求解成**实色**，文字对最差的那一档（hover）求解，
+  // hover 只换一层底、不叠第二层。胶囊与"自己那颗主色气泡"的边界另由 tokenContrast 的 react 契约行判。
+  const reactC = seed.achromatic ? 0 : clamp(seed.C * 0.02 * 2, 0.002, 0.012);
+  const mineC = Math.min(fillC * 0.30, 0.055);
+  const reactBgL = mode === "light" ? 0.934 : 0.300;
+  const reactBgHoverL = mode === "light" ? 0.890 : 0.345;
+  const reactMineL = mode === "light" ? 0.905 : 0.372;
+  const reactMineHoverL = mode === "light" ? 0.858 : 0.415;
+  const reactBg = hex(reactBgL, reactC);
+  const reactBgHover = hex(reactBgHoverL, reactC);
+  const reactBgMine = hex(reactMineL, mineC);
+  const reactBgMineHover = hex(reactMineHoverL, mineC);
+  // 文字一律对**最差的那一档底**求解：亮色 hovers 更深、暗色 hovers 更亮，同一支求解各取各的方向。
+  const reactInk =
+    mode === "light"
+      ? solveDarkText(hexToRgb(reactBgHover), tC, seed.H, S.targets.secondary)
+      : solveLightText(hexToRgb(reactBgHover), tC, seed.H, S.targets.secondary);
+  const reactInkMine =
+    mode === "light"
+      ? solveDarkText(hexToRgb(reactBgMineHover), Math.min(seed.C, 0.10), seed.H, S.targets.secondary)
+      : solveLightText(hexToRgb(reactBgMineHover), Math.min(seed.C, 0.10), seed.H, S.targets.secondary);
+
   // 开关未选中轨道：除了"vs 面板/卡片 3:1"，白色滑块压在它上面也必须读得出来（同一对判据的另一维）。
   // ⚠️ 这里只挂 WCAG 3.0、不挂 APCA 45：深色面板上同时满足「轨道 vs 面板 Lc 45」与
   //    「白滑块 vs 轨道 3:1」是不可能的（实测 Lc 45 需要 L≈0.72，那时白滑块只剩 2.5:1）。
@@ -467,16 +493,24 @@ export function buildThemeTokens(seedHex: string, mode: ThemeMode): Record<strin
     "--gosslan-success-solid": sem.success.solid,
     "--gosslan-status-offline": solveIcon(seed.H, 0.006, hexToRgb(surf.panel), S.targets.icon, mode),
     "--gosslan-toggle-off": toggleOff,
+    "--gosslan-react-bg": reactBg,
+    "--gosslan-react-bg-hover": reactBgHover,
+    "--gosslan-react-bg-mine": reactBgMine,
+    "--gosslan-react-bg-mine-hover": reactBgMineHover,
+    "--gosslan-react-ink": reactInk,
+    "--gosslan-react-ink-mine": reactInkMine,
   };
 }
 
 /**
  * `applyTheme` 在运行时真正要覆盖的那一族。
  *
- * 只覆盖这几个而不是全部 42 项：其余 token（面/文字/语义）与种子的关系弱到色相不影响可读性
+ * 只覆盖这几个而不是全部 48 项：其余 token（面/文字/语义）与种子的关系弱到色相不影响可读性
  * （中性面只继承 2% 彩度、语义色色相恒定），把它们也塞进内联样式只会让"拖动取色器时每帧
  * 重写 42 条声明"变成卡顿源；而全局观感仍由 style.css 的出厂值保证。
- * 这 6 项恰好就是过去靠 `color-mix(in srgb, …)` 现派生的那一族 —— 换掉它等于换掉整套派生方式。
+ * 这 12 项恰好就是过去靠 `color-mix(in srgb, …)` 现派生的那一族（6 个主色档 + 6 个表情胶囊档）——
+ * 换掉它等于换掉整套派生方式。胶囊那 6 项必须跟着主色走：换主题色后它们若还停在出厂蓝，
+ * 就会变成"胶囊跟气泡不是一个色系"（用户 2026-11-08 报的第二条）。
  */
 export const SEED_TOKENS = [
   "--gosslan-primary",
@@ -485,9 +519,15 @@ export const SEED_TOKENS = [
   "--gosslan-on-primary",
   "--gosslan-accent-ink",
   "--gosslan-primary-light",
+  "--gosslan-react-bg",
+  "--gosslan-react-bg-hover",
+  "--gosslan-react-bg-mine",
+  "--gosslan-react-bg-mine-hover",
+  "--gosslan-react-ink",
+  "--gosslan-react-ink-mine",
 ] as const;
 
-/** 运行时覆盖集：给定种子与外观，返回这 6 个 token 的最终取值。 */
+/** 运行时覆盖集：给定种子与外观，返回这 12 个 token 的最终取值。 */
 export function seedTokens(seedHex: string, mode: ThemeMode): Record<string, string> {
   const all = buildThemeTokens(seedHex, mode);
   const out: Record<string, string> = {};

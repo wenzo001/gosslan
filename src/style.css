@@ -251,6 +251,18 @@
      白滑块压它 3.67。选中态仍走 `--gosslan-primary`（vs 面板 3.68、白滑块 3.68），两档同量级。
      （设置页分组实际是 `--gosslan-panel`，见 SettingsGroup.vue；契约里原先那条"压卡片"是错锚点，已删。） */
   --gosslan-toggle-off: #91949a;
+  /* 表情回应胶囊四态（用户 2026-11-08 实测：计数字压在主色淡底上看不清、容器与 hover 跟主题色不搭）。
+     旧实现默认态用 `--gosslan-hover`（5% 黑 + 透明）⇒ 叠在**自己的主色气泡**上就是"灰字压蓝底"，
+     读数掉到 2.x；且它压在气泡上，token 表里根本查不到"实际生效的颜色"。
+     新做法：四态都是**不透明实色**、都由主色在 OKLCH 里派生（色相跟着主题，只走明度阶梯），
+     hover 只换一层底（不叠第二层）。文字一律对最差的那一档（hover）求解，见 utils/themePalette.ts。 */
+  --gosslan-react-bg: #e6e9ef;
+  --gosslan-react-bg-hover: #d8dbe1;
+  /* 我自己也点了：主色淡底（带主色彩度），hover 再深一档。 */
+  --gosslan-react-bg-mine: #d0e0ff;
+  --gosslan-react-bg-mine-hover: #bed1f5;
+  --gosslan-react-ink: #414245;
+  --gosslan-react-ink-mine: #152d63;
   --gosslan-focus-ring: color-mix(in srgb, var(--gosslan-primary) 55%, transparent);
 
   /* 动效令牌（iOS 取向）：
@@ -680,8 +692,14 @@
      占位符不该和真输入值同一个亮度。 `.dark` 不覆盖就会继承亮色的 #68696c。 */
   --gosslan-placeholder: #bfc1c4;
   --gosslan-hover: rgba(248, 250, 252, 0.06);
-  /* 深色下 press 要"提亮"而不是压暗（暗面上再压暗几乎看不出反馈） */
-  --gosslan-pressed: rgba(248, 250, 252, 0.11);
+  /* 按压层：**压暗**而不是提亮（2026-11-08 改，原先提亮 11%）。
+     原注释的顾虑（"暗面上再压暗几乎看不出反馈"）只对**中性面板**成立；对主色/危险**实底**
+     却是反的：实底上叠一层白，`--gosslan-on-primary`（暗色=深墨）或白字的地基直接被抬亮。
+     实测危险按钮按下：白字压 #d44b5a 只剩 Lc 74 / WCAG **4.26**（对比度普查 `危险按钮·active`）。
+     改压暗后，实底越按越沉、前景对比反而上升；中性面板仍有 12% + 下面 `brightness(0.94)`
+     两级合计 ≈17% 明度变化 —— 反馈没有丢，只是方向回到了 M3 的"按进表面"。
+     ⚠️ `.dark` 里 `:active` 的 `brightness` 也必须跟着改向，两处成对（见下方规则）。 */
+  --gosslan-pressed: rgba(0, 0, 0, 0.12);
   /* Apple 系统色（dark）：红/橙/绿都比浅色档更亮，因为深底上需要更高亮度才"跳得出来"。
      红取 #ff5548 而不是 #ff453a：后者当**文字**只有 4.29（不够 4.5），
      再亮又会拖低"白字压红底"（未读徽标）的对比，4.63 / 3.16 是两者的平衡点。 */
@@ -715,6 +733,15 @@
      ⚠️ 它比 `--gosslan-border` 亮得多，这是有意的：边界那一族的"该淡"是给分隔线的，
      不是给一个必须看得出开/关两态的控制件的（亮色那一档同理）。 */
   --gosslan-toggle-off: #75787e;
+  /* 表情回应胶囊四态（暗色）：与 :root 成对出现，漏一档就会在暗色下继承亮色的浅底。
+     暗色不是"亮色反过来"：这里四档都**抬亮**到比气泡更亮一层（抬升靠更亮的表面，不靠描边），
+     文字随之换成浅墨；已选态同样带主色彩度。 */
+  --gosslan-react-bg: #2b2e33;
+  --gosslan-react-bg-hover: #37393e;
+  --gosslan-react-bg-mine: #31405e;
+  --gosslan-react-bg-mine-hover: #3c4b6a;
+  --gosslan-react-ink: #d1d3d6;
+  --gosslan-react-ink-mine: #ccddff;
   --gosslan-status-offline: #a0a2a6;
   --gosslan-app-bg: #141517;
   --gosslan-window-ring: rgba(248, 250, 252, 0.09);
@@ -1240,10 +1267,12 @@ button:not(:disabled):active,
   /* 用 filter 而不是改背景色：一处生效、不参与布局、也不覆盖各组件自己的 hover 底色 */
   filter: brightness(0.95);
 }
-/* 深色面上再压暗几乎看不出反馈 → 深色下改为提亮 */
+/* 深色面按下：与亮色同向（压暗 6%）。原先这里提亮 15%，理由"暗面上压暗看不见"，
+   但实底按钮（主色 / 危险）上提亮 = 把字后面的地基抬亮 ⇒ 白字/深墨前景对比掉档
+   （实测危险按钮按下 白字 WCAG 4.26）。见 `.dark` 的 `--gosslan-pressed` 那段。 */
 .dark button:not(:disabled):active,
 .dark [role="button"]:not([aria-disabled="true"]):active {
-  filter: brightness(1.15);
+  filter: brightness(0.94);
 }
 /* 可点击的"行"（会话行 / 好友行 / 消息行用的是 <div>，不是 <button>）也要有按下反馈。
    按 Tailwind 的 cursor-pointer 约定选：写这个类就意味着"这里是可点的"。
@@ -1253,7 +1282,7 @@ button:not(:disabled):active,
   filter: brightness(0.95);
 }
 .dark .cursor-pointer:active {
-  filter: brightness(1.15);
+  filter: brightness(0.94);
 }
 /* 键盘焦点环：只对 :focus-visible 生效（鼠标点击不出现焦点环）。
    ⚠️ **不含文本输入类**（`input` / `textarea` / `select` / `[contenteditable]`）：
@@ -1394,9 +1423,14 @@ progress {
 /* 上面那条只认 `<button>`。本应用大量点击目标是**图标级 tap 区**（`.tap-safe`，46 个文件在用）
    和 role 化的 div —— 它们按下去此前**没有任何反馈**。这里补一条底色通道而不是缩放：
    这些元素的命中区靠 `::after` 扩到 44px，缩放会连命中区一起缩（§11.3.1 禁止动画改命中区）。
-   `:where()` 零特异性 ⇒ 组件自己的 `active:` 工具类仍能覆盖。 */
+   ⚠️ 必须用 **background-image 叠层**，不能换 `background-color`：`style.css` 不在任何
+   `@layer` 里，而未分层的规则**在层叠顺序上压过 Tailwind 的 utilities 层**（与特异性无关，
+   `:where()` 零特异性这条注释原先的假设在这里不成立）。实测后果：主色/危险实底按钮
+   一按下底色被换成 9%–11% 的 pressed 墨，白字立刻掉到 Lc 10.8 / W1.2
+   （`scripts/check-ui-runtime.mjs --only=palette` 的按钮 `:active` 那一格）。叠层保留原底色，
+   只是在其**之上**加一层状态色 —— M3 / UIKit 的 state layer 就是这个语义。 */
 :where(.tap-safe, [role="button"], [role="option"], [role="tab"], .gosslan-tappable):active {
-  background-color: var(--gosslan-pressed);
+  background-image: linear-gradient(var(--gosslan-pressed), var(--gosslan-pressed));
 }
 /* 禁用 / 只读 / 忙碌三态的统一视觉出口（值由各组件自己决定，这里只兜底光标与可感知性）。 */
 :where(button:disabled) {

@@ -10,5 +10,13 @@
  */
 export const QUOTE_BORDER = "color-mix(in srgb, currentColor 35%, transparent)";
 export const QUOTE_BG = "color-mix(in srgb, currentColor 8%, transparent)";
-/** 引用文字：继承气泡主色再降到 72%，保证和正文同档对比又不抢戏。 */
-export const QUOTE_TEXT_STYLE = "color: currentColor; opacity: 0.72;";
+/**
+ * 引用文字：继承气泡字色再降到 85%，保证和正文同档对比又不抢戏。
+ *
+ * 为什么是 85% 而不是 72%（2026-11-08 对比度普查实测）：72% 让文字自身只剩 72% 的 alpha，
+ * 合成到气泡底上后，暗色画布下最差一档只有 **APCA Lc 57.1**（低于弱文本档 60），
+ * 用户看到的"引用那行灰得发虚"就是它。85% 在同一组底上回到 ≥60，
+ * 视觉上仍明显弱于正文（正文是 100% currentColor）。
+ * 判据在 `scripts/check-ui-runtime.mjs --only=palette` 的「引用条文字」格。
+ */
+export const QUOTE_TEXT_STYLE = "color: currentColor; opacity: 0.85;";
