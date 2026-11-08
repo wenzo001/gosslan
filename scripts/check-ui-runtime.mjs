@@ -753,6 +753,8 @@ window.__probe = (() => {
         onOpenLogs: () => events.push(['open-logs']),
         onRestart: () => events.push(['restart']),
         onReEnableBle: () => events.push(['re-enable-ble']),
+        // 环境类启动失败的「修复 WebView2 运行时」入口（2026-11-08）。
+        onFixWebview: () => events.push(['fix-webview']),
         onDismiss: () => events.push(['dismiss']),
         onWait: () => events.push(['wait']),
         }),
@@ -4353,6 +4355,62 @@ async function runCrashNotice(cdp, url) {
   check("崩溃横幅：五个动作各 emit 一次（顺序固定）",
     r.events === JSON.stringify([["copy"], ["open-logs"], ["restart"], ["re-enable-ble"], ["dismiss"]]),
     "5 次", r.events);
+
+  // 环境类启动失败（`reason: ENV_WEBVIEW_CREATE_TIMEOUT`）：标题与正文必须按"环境"口径说，
+  // 并且有**可执行**的修复入口（打开 WebView2 下载页）—— 2026-11-08 用户要求
+  // "兜不住的必须准确标成环境原因，语气不能像我们的 bug"。
+  const envProps = JSON.stringify(JSON.stringify({
+    report: { ...report, kind: "panic", reason: "ENV_WEBVIEW_CREATE_TIMEOUT", bleSuspect: false, hang: null },
+    mobile: false,
+  }));
+  const env = await cdp.eval(`(async () => {
+    const H = window.__probe;
+    H.reset();
+    const mounted = await H.install('/src/components/CrashNotice.vue', '', ${envProps});
+    const i18n = await import('/src/i18n/index.ts');
+    const text = document.body.innerText;
+    const buttons = [...document.querySelectorAll('.crash-btn')];
+    for (const b of buttons) b.click();
+    return {
+      mounted: !!mounted && mounted.ok === true,
+      title: text.includes(i18n.t('crash.titleEnv')),
+      body: text.includes(i18n.t('crash.envWebviewTimeout')),
+      cta: text.includes(i18n.t('crash.fixWebview')),
+      labels: buttons.map((b) => b.textContent.trim()),
+      events: JSON.stringify(H.events),
+    };
+  })()`);
+  check("崩溃横幅（环境类）：标题与正文按环境口径说，不写得像我们的 bug",
+    env.mounted && env.title && env.body, "titleEnv + envWebviewTimeout", JSON.stringify(env).slice(0, 400));
+  check("崩溃横幅（环境类）：修复 WebView2 的入口可点，且排在第一个动作",
+    env.cta && env.events === JSON.stringify([["fix-webview"], ["copy"], ["open-logs"], ["restart"], ["dismiss"]]),
+    "fix-webview 第一", JSON.stringify({ labels: env.labels, events: env.events }));
+
+  // 反例自证：后端**没给**归因码时，环境专属标题与修复入口都不许出现 ——
+  // 否则这两条判据会退化成"永远为真"（把任何崩溃都说成环境问题、诱导用户去重装运行时）。
+  const plainProps = JSON.stringify(JSON.stringify({
+    report: { ...report, reason: null, bleSuspect: false, hang: null },
+    mobile: false,
+  }));
+  const plain = await cdp.eval(`(async () => {
+    const H = window.__probe;
+    H.reset();
+    const mounted = await H.install('/src/components/CrashNotice.vue', '', ${plainProps});
+    const i18n = await import('/src/i18n/index.ts');
+    const text = document.body.innerText;
+    const buttons = [...document.querySelectorAll('.crash-btn')];
+    for (const b of buttons) b.click();
+    return {
+      mounted: !!mounted && mounted.ok === true,
+      envTitle: text.includes(i18n.t('crash.titleEnv')),
+      cta: text.includes(i18n.t('crash.fixWebview')),
+      events: JSON.stringify(H.events),
+    };
+  })()`);
+  check("崩溃横幅（反例）：没有归因码时不冒充环境问题、不给修复运行时入口",
+    plain.mounted && !plain.envTitle && !plain.cta
+      && !plain.events.includes("fix-webview"),
+    "无 titleEnv / 无 fixWebview", JSON.stringify(plain).slice(0, 300));
 }
 
 /** --only=hangnotice：卡顿条的 10s 档 / 30s 档与两个动作。 */

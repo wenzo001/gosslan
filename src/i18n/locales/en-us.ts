@@ -341,13 +341,21 @@ export const enUS: MessageDict = {
 
   // ---- crash / hang / boot failure ----
   "crash.title": "Last run exited unexpectedly",
+  "crash.titleEnv": "Last launch could not finish (environment issue)",
+  "crash.titleExternal": "Last run was ended by the system",
   "crash.body":
-    "Gosslan crashed at {time} (version {version}). Crash location: {location}. The report is in the logs; your chat history is intact.",
+    "The run that started at {time} crashed (version {version}). Crash location: {location}. The report is in the logs; your chat history is intact.",
   "crash.panicCount": "This is the {n}th abnormal exit recently.",
   "crash.bleHeld":
     "The crash happened in the Bluetooth module. Auto-start is paused for this launch; you can enable it manually in Settings → Network.",
   "crash.silentKill":
-    "The last run did not end normally (force quit, power loss, or out of memory), so no specific location was recorded.",
+    "The last run left no exit record — system shutdown, Task Manager or security software force-quit, power loss, or running out of memory all look like this — so no crash location was recorded. Your chat history and local data are unaffected.",
+  "crash.earlyExit":
+    "The last launch ended during initialization, before the window appeared. There is no exit record and no crash report — usually the runtime was not ready yet, or the process was ended by the system or security software.",
+  "crash.envWebviewTimeout":
+    "The last launch got stuck initializing the rendering runtime (WebView2) and timed out. This is an environment problem, not an application defect, and your data was not changed. Repair the runtime with the button below, then launch again.",
+  "crash.lastSeen": "Last recorded at {time}.",
+  "crash.fixWebview": "Repair WebView2 runtime",
   "crash.startupFailed":
     "The last startup was safely aborted (database/identity check failed). The database was not modified.",
   "crash.abort":
