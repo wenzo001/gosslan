@@ -217,8 +217,28 @@ function cssCode(text: string): string {
 }
 
 function widthQueries(text: string): Array<{ px: number; raw: string }> {
-  return [...text.matchAll(WIDTH_QUERY)].map((m) => ({ px: Number(m[1]), raw: m[0] }));
+  return [...text.matchAll(WIDTH_QUERY)]
+    // `@container (max-width: …)` 是**容器**查询（组件自己的宽度，如页脚这种局部区域），
+    // 与「移动布局只有一个视口档」无关；只跳它，普通 `@media` 一律照抓（下面有量具自证）。
+    .filter((m) => {
+      const at = m.index ?? 0;
+      const before = text.slice(Math.max(0, at - 60), at);
+      const ruleStart = Math.max(before.lastIndexOf("{"), before.lastIndexOf("}"), before.lastIndexOf(";"));
+      return !before.slice(ruleStart + 1).includes("@container");
+    })
+    .map((m) => ({ px: Number(m[1]), raw: m[0] }));
 }
+
+test("宽度查询量具：@container 不算视口断点，@media 仍然算（否则这条判据会空转）", () => {
+  assert.deepEqual(widthQueries("@container (max-width: 240px) { .a { color: red } }"), []);
+  assert.deepEqual(widthQueries("@container card (min-width: 200px) { .a { color: red } }"), []);
+  assert.deepEqual(widthQueries("@media (max-width: 240px) { .a { color: red } }"), [
+    { px: 240, raw: "(max-width: 240px)" },
+  ]);
+  assert.deepEqual(widthQueries("@media (min-width: 768px) { .a { color: red } }"), [
+    { px: 768, raw: "(min-width: 768px)" },
+  ]);
+});
 
 /** 样式载体：src 下全部 .css 与 .vue 的 `<style>` 块 + 根 index.html（骨架内联时也要算进来）。 */
 function styleCarriers(): Array<{ rel: string; abs: string; vue: boolean }> {

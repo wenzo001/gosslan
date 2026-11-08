@@ -30,6 +30,7 @@ import { APP_ACTION, onAction } from "@/api";
 import { groupByInitial } from "@/utils/nameGroup";
 import { isSelfConversation, selfFriendOf } from "@/utils/selfChat";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
+import { formatQueueCount } from "@/utils/queueCount";
 import { createInitScope } from "@/utils/initScope";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { isMac } from "@/utils/platform";
@@ -155,6 +156,8 @@ onMounted(() => {
 });
 /** 页脚任务入口上的未完成数：与面板同一份读模型（`chat.operations`），不另算。 */
 const taskCount = computed(() => chat.operations.length);
+/** 只给眼睛看的上限（999 本身照常，1000 起 `999+`）；无障碍标签仍读真实条数。 */
+const taskCountLabel = computed(() => formatQueueCount(taskCount.value));
 /** 回车打开搜索页之前的输入法守卫（见 composable 注释） */
 const ime = useImeEnterGuard();
 
@@ -828,7 +831,7 @@ useEventListener(document, "click", closeFriendMenu);
       <!-- 页脚 = 任务入口 + 右端版本号（用户 2026-11-07 决策：主界面要能一瞟看到当前版本，
            桌面与移动共用这一个落点；「关于」里那份保留）。
            ⚠️ 版本号必须是**纯展示**：`pointer-events-none` ⇒ 不吃点击，也绝不包成「关于」的入口。 -->
-      <div class="flex items-center">
+      <div class="conv-footer-row flex items-center gap-2 pr-3">
         <button
           type="button"
           data-task-entry
@@ -841,11 +844,13 @@ useEventListener(document, "click", closeFriendMenu);
           <span class="shrink-0 font-medium">{{ t("task.center") }}</span>
           <template v-if="taskCount > 0">
             <span class="shrink-0 opacity-50">·</span>
+            <!-- 数字上限见 utils/queueCount.ts：999 本身照常显示，1000 起 `999+`，
+                 否则四位数会把整行撑开、把「任务中心」挤窄。 -->
             <span
               data-task-count
               class="shrink-0 text-caption font-semibold tabular-nums text-[var(--gosslan-text)]"
             >
-              {{ taskCount }}
+              {{ taskCountLabel }}
             </span>
           </template>
           <span class="flex-1"></span>
@@ -853,10 +858,13 @@ useEventListener(document, "click", closeFriendMenu);
         </button>
         <!-- 版本号：11px 最小一档 + 第二档灰（`--gosslan-text-3` 从来没定义过，见
              docs/architecture/refactor-5.0-report.md；要更浅就得新造色档并过对比度账）。
-             数据源只有 package.json 一处（与「关于」同一个 import），判据见 appVersion.test.ts。 -->
+             数据源只有 package.json 一处（与「关于」同一个 import），判据见 appVersion.test.ts。
+             宽度按最长形态（`v` + 三段三位数，共 12ch）预留：`tabular-nums` 下每位等宽，
+             短版本也不会让右边的 hover 区跟着变宽；`shrink-0` + `whitespace-nowrap`
+             保证它永不被压缩、永不换行（用户 2026-11-08）。 -->
         <span
           data-app-version
-          class="pointer-events-none shrink-0 select-none pr-3 text-caption tabular-nums text-[var(--gosslan-text-2)] opacity-70"
+          class="pointer-events-none min-w-[12ch] shrink-0 select-none whitespace-nowrap text-right text-caption tabular-nums text-[var(--gosslan-text-2)] opacity-70"
           aria-hidden="true"
         >{{ appVersion }}</span>
       </div>
@@ -929,3 +937,23 @@ useEventListener(document, "click", closeFriendMenu);
     />
   </div>
 </template>
+
+<style scoped>
+/*
+ * 极窄容器先让出版本号（用户 2026-11-08）：宽度不够时**保留任务入口**，别两边一起挤成不可读。
+ *
+ * 用容器查询而不是视口宽度 —— 桌面侧栏宽 280–400（`ResponsiveLayout` 的 LIST_W_MIN/MAX），
+ * 与视口无关；移动端整列铺满，窗口再窄也不会把两者叠到一起。
+ * 阈值 240px ≈ 「图标 + 任务中心 + 计数 + chevron + 两侧内边距」(≈140) + 版本号 12ch(≈73) + 间距；
+ * 低于它版本号先消失。桌面最低 280px 时两者都放得下，所以正常情况下看不到这一步。
+ */
+.conv-footer-row {
+  container-type: inline-size;
+}
+
+@container (max-width: 240px) {
+  .conv-footer-row [data-app-version] {
+    display: none;
+  }
+}
+</style>
