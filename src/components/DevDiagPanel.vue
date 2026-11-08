@@ -182,8 +182,12 @@ function ageText(ms: number | null): string {
 
 <template>
   <BaseModal :open="open" :title="t('diag.title')" width="max-w-3xl" @close="emit('close')">
-    <!-- 只保留 BaseModal 内容区那一层滚动（`.gosslan-scroll`）。这里再套 `max-h + overflow-y-auto`
-         会同时出现两条滚动条（用户 2026-11-07：「网络诊断页双层滚动条」）。 -->
+    <!-- 一页只有一层滚动条（用户 2026-11-07 / 2026-11-08 两次点名）：
+         滚动全部交给 BaseModal 内容区的 `.gosslan-scroll`，**子列表也不许再套**
+         （此前对端版本 / 蓝牙退避 / 连接活性 / 群文件日志四处各带 `max-h-48 + overflow-y-auto`，
+         滚轮停在子列表上只滚那半屏，下面的内容得像剥洋葱一样一格一格滑）。
+         去掉限高后靠数据源自带的上界兜底：群文件日志只留最近 50 行（`media.ts` 的
+         `GROUP_FILE_DIAG_MAX`），其余三处是设备 / 连接数，天然有限。 -->
     <div class="space-y-5 text-xs leading-relaxed">
       <!-- 刷新 -->
       <div class="flex items-center justify-between">
@@ -372,7 +376,7 @@ function ageText(ms: number | null): string {
             {{ t("diag.btBackoffList", { n: bt.backoff.length }) }}
           </h4>
           <p v-if="bt.backoff.length === 0" class="opacity-50">{{ t("diag.btBackoffEmpty") }}</p>
-          <div v-else class="max-h-48 space-y-0.5 overflow-y-auto font-mono text-caption">
+          <div v-else class="space-y-0.5 font-mono text-caption">
             <div v-for="b in bt.backoff" :key="b.id" class="flex gap-3">
               <span class="min-w-0 flex-1 truncate opacity-70" :title="b.id">{{ b.id }}</span>
               <span class="shrink-0">{{ t("diag.btBackoffItem", { n: b.failures, s: Math.round(b.remaining_ms / 1000) }) }}</span>
@@ -392,7 +396,7 @@ function ageText(ms: number | null): string {
           <p v-if="diag.peer_versions.length === 0" class="mt-1 opacity-50">
             {{ t("diag.peerVersionsEmpty") }}
           </p>
-          <div v-else class="mt-1 max-h-48 space-y-0.5 overflow-y-auto font-mono text-caption">
+          <div v-else class="mt-1 space-y-0.5 font-mono text-caption">
             <div v-for="p in diag.peer_versions" :key="p.device_id" class="flex gap-3">
               <span class="min-w-0 flex-1 truncate opacity-70" :title="p.device_id">
                 {{ peerLabel(p) }}
@@ -415,7 +419,7 @@ function ageText(ms: number | null): string {
           <p v-if="diag.conn_health.length === 0" class="opacity-50">
             {{ t("diag.connHealthEmpty") }}
           </p>
-          <div v-else class="max-h-48 space-y-1 overflow-y-auto font-mono text-caption">
+          <div v-else class="space-y-1 font-mono text-caption">
             <div
               v-for="c in diag.conn_health"
               :key="c.conn_id"
@@ -451,7 +455,7 @@ function ageText(ms: number | null): string {
           <p v-if="chat.groupFileDiag.length === 0" class="opacity-50">
             {{ t("diag.groupFileLogEmpty") }}
           </p>
-          <div v-else class="mt-1 max-h-48 space-y-0.5 overflow-y-auto font-mono text-caption">
+          <div v-else class="mt-1 space-y-0.5 font-mono text-caption">
             <div v-for="(d, i) in chat.groupFileDiag" :key="`${d.ts}-${i}`" class="flex gap-3">
               <span class="shrink-0 opacity-60">{{ fmtClock(d.ts) }}</span>
               <span class="min-w-0 flex-1 break-all">{{ d.line }}</span>

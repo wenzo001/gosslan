@@ -60,7 +60,7 @@
 | 38 | A③ 崩溃恢复条/各类提示贴视口边，压到安卓状态栏与圆角 | 已完成·待真机 | `74e2629c`（5.18.72） | **SA-01/02/03**（同一测试文件）：在状态栏 24px + 圆角 24px + 视口 390×844 下判定矩形不侵入「圆外被切区域」；「统一出口」扫全仓，组件裸写 `env()` 必红 | 待真机（安卓）：`env()` 真值只有安卓 WebView 上报，桌面 Chrome 恒 0 |
 | 39 | B④ 输入框删表情：一次退格把两个表情一起删掉 | 已完成·待真机 | `478a7766`（5.18.74） | `node --test src/utils/graphemes.test.ts`（9 条：两个连着表情、ZWJ 家庭、肤色、旗帜、VS16…）；另外 `deleteOneUnitBeforeCaret` 覆盖 token 三种 caret 落位 | 待真机（安卓）：WebView 的 caret 落位形态与 IME 组合由系统决定 |
 | 40 | B⑤ 「任务中心」更名「传输队列」；移动端任务列表页页头 / `0/1 已完成` / 筛选 / 列表四套竖线并回同一条 16px | 已完成 | `da03c1c7`（5.18.78） | 文案：中英两册同步（`node scripts/check-i18n.mjs`）；几何：`GroupTasksBoard.vue` 的 `pageInset` 只输出 `px-[var(--gosslan-scroll-inset)]`，无字面 px（㊶ 守卫禁任意值） | 真机像素表未取：本批只保证「同一个 token」，实际竖线位置需截图量 |
-| 41 | B⑥ 网络诊断页双层滚动条 | 已完成 | `da03c1c7`（5.18.78） | 源码：内容区不再套外层 `max-h + overflow-y-auto`，滚动只留 `BaseModal` 的 `.gosslan-scroll`。`rg -n 'max-h\|overflow-y-auto' src/components/DevDiagPanel.vue` 仍剩 4 处，都是**子列表**（对端版本/日志尾部，`max-h-48`），不是页面第二层滚动 | 待真机：滚动条应只有一条（右侧） |
+| 41 | B⑥ 网络诊断页双层滚动条 | 已完成 | `da03c1c7`（5.18.78）；子列表 `本笔`（5.19.5） | 第一层 5.18.78 去掉；本笔把剩下 4 处**子列表**（蓝牙退避 / 对端版本 / 连接活性 / 群文件日志）的 `max-h-48 + overflow-y-auto` 一并去掉——用户口径「一页只有一层滚动条，子列表不应再套一层」，随内容展开，长列表靠数据源上界兜底（群文件日志只留 50 行）。判据 PG-03 从只盯 `max-h-[75vh]` 扩到全文件任意 `class="… max-h-* / overflow-*-auto …"`，新增反例「子列表 `max-h-48` 必红」；运行时探针 `--only=diag` 5/5：`shellH 335 / shellSH 2359`（壳确实在滚）、`inner 0`；把 `max-h-48` 写回一处 ⇒ FAIL 并报 `sh 316 / ch 192` | — |
 | 42 | C⑦ 触屏长按正文不弹消息面板 | 已完成·待真机 | `da03c1c7`（5.18.78） | `node --test src/utils/longPress.test.ts`（11/11：5 环链 + 逐环反例）与 `contextMenu.test.ts`（断言 `onSelectableText: false`）；结构判据：源码再出现 `hitSelectable` / `lastTouchTextCol` 即红。口径变更见 [decision-longpress-2026-11-07.md](./decision-longpress-2026-11-07.md) | 待真机（安卓）：「选择文字」点下去后能否真的选中并复制 |
 | 43 | C⑧ 弹窗标题 / 固定头部 / 页脚的横向与纵向基线各写一套 | 已完成 | `da03c1c7`（5.18.78） | `BaseModal.vue` 标题、header 插槽、footer 统一 `--gosslan-modal-gap`（16px），fullscreen header 横向走 `--gosslan-scroll-inset`；`designGuards` 抓任意值写法 | 真机对比截图未取：设置 / 日志 / 群任务 / 预览四个窗口需各看一眼 |
 | 44 | C⑨ Windows 图标：软件内升级后仍是旧图标；Windows 11 不给应用图标加圆角 | 已完成·待真机 | 升级不刷新 `12519540`（5.18.73）；圆角 `da03c1c7`（5.18.78） | 升级：`rg -n "SHChangeNotify" src-tauri/nsis/hooks.nsh` = 1（`SHCNE_ASSOCCHANGED` 让外壳重读图标）；圆角：`icon.ico` 4368 → **6897 B**，由 `scripts/build-app-icons.mjs` 从圆角源图重出 | 待真机（Windows）：覆盖安装后桌面/任务栏图标；必要时 `ie4uinit.exe -show` 前后对照 |
@@ -211,6 +211,23 @@
 - **CI 预警**：push 事件判据仍会看到 `8130a4ee..65ad570d` 这个窗口 ⇒ 判据 3 会在这一次 CI 上红一次
   （负责人已接受该信号）；按 `scripts/check-change-budget.mjs` 注释的处置口径，**下一次推送的新范围**
   窗口自然清空。
+
+## 收口记录（2026-11-08 · 诊断页子列表）
+
+- **改的是什么**：`DevDiagPanel.vue` 四处子列表（蓝牙退避 / 对端版本 / 连接活性 / 群文件日志）
+  的 `max-h-48 + overflow-y-auto` 全去掉。它们不是 5.18.78 那层页面滚动，而是"滚轮停在半屏小格上
+  只能滚那一格"的第二、三、四层；用户口径「一页只有一层滚动条，子列表不应再套一层」。
+  群文件日志仍由 `media.ts` 只留最近 50 行（`GROUP_FILE_DIAG_MAX`）—— 长列表靠数据源上界，
+  不靠 CSS 限高。
+- **判据（源码）**：`designGuards.test.ts` 的 PG-03 从只盯 `max-h-[75vh]` 扩到全文件任意
+  `class="… max-h-* / overflow-*-auto …"`；新增反例「子列表写回 `max-h-48`」。
+  `node --test src/utils/designGuards.test.ts` → 374 pass / 0 fail。
+- **判据（渲染）**：`scripts/check-ui-runtime.mjs` 的 diag 段新增第 ⑤ 条，夹具把三份列表各塞 16 条，
+  先证弹窗壳自己溢出，再要求「壳内可滚容器 = 0」。
+  - 绿：`shellH 335 / shellSH 2359`、`inner []` → `--only=diag` 5/5。
+  - 反例自证：把 `max-h-48` 写回蓝牙退避一处 → FAIL，读数 `inner [{cls:"max-h-48 …", sh:316, ch:192}]`，
+    随后还原。
+- **未改**：`.screenshots/`、`docs/notes/ui-pulse-redesign/candidates/` 两个未跟踪目录未动。
 
 ## 待做（发版后动作，勿提前执行）
 
