@@ -30,12 +30,15 @@ defineProps<{
   totalSize: number;
   /** 行高实测：TanStack 的 `measureElement`，由外壳持有 virtualizer。 */
   measure: (el: Element | { $el?: Element } | null) => void;
+  /** 当前选中的行（详情面板跟着它展开）；null = 没有选中。 */
+  selectedKey?: string | null;
 }>();
+const emit = defineEmits<{ (e: "select", key: string): void }>();
 
 /** 这一行渲染出来的全部内容 —— 也是 `v-memo` 唯一的判据来源。 */
-function memoDeps(v: VirtualItem) {
+function memoDeps(v: VirtualItem, selectedKey?: string | null) {
   const r = v.row;
-  return [r.time, r.levelText, r.target, r.message, r.level, r.count];
+  return [r.time, r.levelText, r.target, r.message, r.level, r.count, v.index, selectedKey === r.key];
 }
 
 /** 级别 → 文字色（仅 level 列彩色，message 不继承） */
@@ -64,11 +67,21 @@ const rowLevelBg = (lv: string) =>
       :ref="measure"
       :style="{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${v.start}px)` }"
     >
-      <div
-        v-memo="memoDeps(v)"
-        class="flex gap-2 rounded px-1 py-0.5 transition"
-        :class="[rowLevelBg(v.row.level), 'hover:bg-[var(--gosslan-hover)]']"
+      <button
+        type="button"
+        v-memo="memoDeps(v, selectedKey)"
+        class="flex w-full cursor-pointer items-start gap-2 rounded px-1 py-0.5 text-left transition"
+        :class="[rowLevelBg(v.row.level), selectedKey === v.row.key ? 'bg-[var(--gosslan-primary-light)]' : 'hover:bg-[var(--gosslan-hover)]']"
+        :data-log-key="v.row.key"
+        @click="emit('select', v.row.key)"
       >
+        <!-- 行号 gutter（画板 DesktopLogs）：随虚拟行一起渲染，不另起一列同步滚动；
+             `select-none` 保证「复制全部」与页面选区里不会混进行号。 -->
+        <span
+          class="w-7 shrink-0 select-none text-right text-caption text-[var(--gosslan-text-2)]"
+          data-log-no
+          aria-hidden="true"
+        >{{ v.index + 1 }}</span>
         <span class="shrink-0 select-none text-[var(--gosslan-text-2)]" v-html="v.row.time"></span>
         <span class="w-12 shrink-0 select-none font-semibold" :class="levelTextClass(v.row.level)" v-html="v.row.levelText"></span>
         <span class="min-w-0 flex-1 break-all">
@@ -82,7 +95,7 @@ const rowLevelBg = (lv: string) =>
         >
           ×{{ v.row.count }}
         </span>
-      </div>
+      </button>
     </div>
   </div>
 </template>

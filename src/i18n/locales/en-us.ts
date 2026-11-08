@@ -63,6 +63,7 @@ export const enUS: MessageDict = {
   "logs.filter": "Filter logs",
   "logs.filterPlaceholder": "Type to filter…",
   "logs.window": "Window",
+  "logs.levelAll": "All",
   "logs.windowAll": "All",
   "logs.window1m": "1 min",
   "logs.window2m": "2 min",

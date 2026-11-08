@@ -11,13 +11,15 @@ import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import LogRows from "@/components/LogRows.vue";
+import LogDetailPanel from "@/components/LogDetailPanel.vue";
 import { detailText } from "@/composables/useErrorText";
 import { useAppStore } from "@/stores/useAppStore";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
 import { formatBytes } from "@/utils/format";
 import { highlightText } from "@/utils/highlight";
 import { INPUT_DEFER_MS } from "@/utils/defer";
-import { refDebounced } from "@vueuse/core";
+import { refDebounced, useMediaQuery } from "@vueuse/core";
+import { NARROW_LAYOUT_QUERY } from "@/utils/platform";
 import { useBackLayer } from "@/composables/useBackLayer";
 import {
   LOG_LEVEL_TEXT,
@@ -85,6 +87,26 @@ const confirmClear = ref(false);
 /** 绑在过滤框上的原值（立即更新）。 */
 const filter = ref("");
 /**
+ * 级别筛选（画板 DesktopLogs 的 chips）：后端只有 info / warn / error 三档
+ * （`LOG_LEVEL_TEXT`），不另造级别；`all` = 不过滤。
+ */
+const levelFilter = ref<"all" | "info" | "warn" | "error">("all");
+const levelChips = computed(() => [
+  { value: "all" as const, text: t("logs.levelAll"), dot: "" },
+  { value: "info" as const, text: LOG_LEVEL_TEXT.info, dot: "bg-[var(--gosslan-primary)]" },
+  { value: "warn" as const, text: LOG_LEVEL_TEXT.warn, dot: "bg-[var(--gosslan-warning)]" },
+  { value: "error" as const, text: LOG_LEVEL_TEXT.error, dot: "bg-[var(--gosslan-danger)]" },
+]);
+
+/** 选中的日志行（详情面板跟着它）：宽窗（≥ Tailwind md）贴右侧，窄窗与移动端落底部。 */
+const selectedKey = ref<string | null>(null);
+/** 宽度档只有一家：`platform.ts` 的 `NARROW_LAYOUT_QUERY`，不在这里手抄媒体查询。 */
+const narrowLayout = useMediaQuery(NARROW_LAYOUT_QUERY);
+const wide = computed(() => !narrowLayout.value);
+function onSelect(key: string) {
+  selectedKey.value = selectedKey.value === key ? null : key;
+}
+/**
  * 延迟镜像：过滤 + 每行 4 处高亮都用它。
  * 日志动辄上千行，`rows` 每次重算都要重建上千个 `v-html` 节点；连发粘贴时若每个
  * 字符都算一遍，主线程会被占满 ⇒ 过滤框打字/粘贴一顿一顿（见 utils/defer.ts 说明）。
@@ -123,20 +145,26 @@ const matched = computed(() => filterLogLines(lines.value, deferredFilter.value)
  */
 /** 渲染行：命中处加高亮标记（复用会话搜索同一套 `highlightText`，视觉语言一致）。 */
 const rows = computed(() =>
-  matched.value.map((l) => ({
-    key: l.key,
-    level: l.level,
-    time: highlightText(l.time, trimmedFilter.value),
-    levelText: highlightText(LOG_LEVEL_TEXT[l.level] ?? l.level, trimmedFilter.value),
-    target: highlightText(`[${l.target}]`, trimmedFilter.value),
-    message: highlightText(l.message, trimmedFilter.value),
-  })),
+  matched.value
+    .filter((l) => levelFilter.value === "all" || l.level === levelFilter.value)
+    .map((l) => ({
+      key: l.key,
+      level: l.level,
+      time: highlightText(l.time, trimmedFilter.value),
+      levelText: highlightText(LOG_LEVEL_TEXT[l.level] ?? l.level, trimmedFilter.value),
+      target: highlightText(`[${l.target}]`, trimmedFilter.value),
+      message: highlightText(l.message, trimmedFilter.value),
+    })),
 );
-
 /** 合并同类行（判据与理由都在 `utils/logFilter.ts::mergeLogRows`：
  *  归一化掉每次都变的量 + 允许非相邻但限一个时间窗）。关掉 mergeDup 时逐条透传。 */
 const mergedRows = computed(() =>
   mergeDup.value ? mergeLogRows(rows.value) : rows.value.map((r) => ({ ...r, count: 1 })),
+);
+
+/** 选中行的详情数据；该行被过滤掉/被合并掉时自动收起（不额外维护一份选中副本）。 */
+const selectedRow = computed(() =>
+  mergedRows.value.find((r) => r.key === selectedKey.value) ?? null,
 );
 
 const logScroll = ref<HTMLElement | null>(null);
@@ -157,8 +185,8 @@ function measureRow(el: Element | { $el?: Element } | null) {
   if (node && node.getBoundingClientRect().height > 0) virtualizer.value.measureElement(node);
 }
 const totalSize = computed(() => virtualizer.value.getTotalSize());
-// 过滤词一变，旧滚动位置可能已越界（新结果更短）⇒ 回到顶部，否则视口落在空白区。
-watch(trimmedFilter, () => {
+// 过滤条件（词或级别）一变，旧滚动位置可能已越界（新结果更短）⇒ 回到顶部，否则视口落在空白区。
+watch([trimmedFilter, levelFilter], () => {
   // 过滤改变的是"行内容与换行高度"：旧实测值不能套到新结果上（宽度没变也可能换行变了）。
   virtualizer.value.measure();
   virtualizer.value.scrollToOffset(0);
@@ -326,6 +354,18 @@ function close() {
       </span>
 
       <div class="ml-auto flex items-center gap-0.5">
+        <!-- 自动刷新开关（画板 filters 行右侧）：与移动端同一枚 aria-pressed 出口。 -->
+        <button
+          class="tap-safe flex h-7 items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 text-caption transition hover:bg-[var(--gosslan-hover)]"
+          :class="autoRefresh ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
+          :title="t('logs.autoRefresh')"
+          :aria-label="t('logs.autoRefresh')"
+          :aria-pressed="autoRefresh"
+          @click="autoRefresh = !autoRefresh; syncTimer()"
+        >
+          <Spinner v-if="autoRefresh" size-class="h-3.5 w-3.5" decorative />
+          <Icon name="refresh-cw" v-else class="h-3.5 w-3.5" />
+        </button>
         <button
           class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
           :title="t('logs.refresh')"
@@ -366,6 +406,19 @@ function close() {
     <div
       class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3.5 py-1.5"
     >
+      <!-- 级别筛选 chips（画板 DesktopLogs）：后端只有 info/warn/error，不另造级别。 -->
+      <button
+        v-for="c in levelChips"
+        :key="c.value"
+        class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
+        :class="levelFilter === c.value ? 'bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        :data-log-level="c.value"
+        :aria-pressed="levelFilter === c.value"
+        @click="levelFilter = c.value"
+      >
+        <span v-if="c.dot" class="h-1.5 w-1.5 rounded-full" :class="c.dot"></span>{{ c.text }}
+      </button>
+      <span class="mx-1 h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
       <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("logs.window") }}</span>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
@@ -419,22 +472,33 @@ function close() {
       </div>
     </div>
 
-    <!-- 日志列表 -->
-    <div ref="logScroll" class="gosslan-scroll gosslan-selectable min-h-0 flex-1 overflow-y-auto py-2 font-mono text-caption leading-relaxed">
-      <StateBlock
-        v-if="logs.length === 0 && loadError"
-        kind="error"
-        :title="t('logs.loadFail')"
-        :detail="loadError"
-        :retry-label="t('common.retry')"
-        @retry="load()"
-      />
-      <StateBlock v-else-if="logs.length === 0" kind="empty" :title="t('logs.empty')" />
-      <StateBlock v-else-if="mergedRows.length === 0" kind="empty" :title="t('logs.filterEmpty')" />
-      <!-- 虚拟行模板只有一份（`LogRows.vue`）：桌面与移动两种外壳在同一时刻只挂一个，
-           行内容、级别配色与 `v-memo` 判据必须完全一致（2026-10-29 审计 DUP-05）。 -->
-      <LogRows v-else :items="virtualRows" :total-size="totalSize" :measure="measureRow" />
+    <!-- 日志区：宽窗（≥ Tailwind md）右侧常驻详情面板；窄窗退回画板的底部详情条。 -->
+    <div class="flex min-h-0 flex-1">
+      <div ref="logScroll" class="gosslan-scroll gosslan-selectable min-h-0 flex-1 overflow-y-auto py-2 font-mono text-caption leading-relaxed">
+        <StateBlock
+          v-if="logs.length === 0 && loadError"
+          kind="error"
+          :title="t('logs.loadFail')"
+          :detail="loadError"
+          :retry-label="t('common.retry')"
+          @retry="load()"
+        />
+        <StateBlock v-else-if="logs.length === 0" kind="empty" :title="t('logs.empty')" />
+        <StateBlock v-else-if="mergedRows.length === 0" kind="empty" :title="t('logs.filterEmpty')" />
+        <!-- 虚拟行模板只有一份（`LogRows.vue`）：桌面与移动两种外壳在同一时刻只挂一个，
+             行内容、级别配色与 `v-memo` 判据必须完全一致（2026-10-29 审计 DUP-05）。 -->
+        <LogRows
+          v-else
+          :items="virtualRows"
+          :total-size="totalSize"
+          :measure="measureRow"
+          :selected-key="selectedKey"
+          @select="onSelect"
+        />
+      </div>
+      <LogDetailPanel v-if="selectedRow && wide" :row="selectedRow" placement="side" />
     </div>
+    <LogDetailPanel v-if="selectedRow && !wide" :row="selectedRow" placement="bottom" />
 
     <!-- 底部状态条（画板 34px）：刷新状态 / 可见行数 / 路径与诊断包。
          路径与诊断包都只读后端给的真实落点，前端不拼路径、不猜目录。 -->
@@ -518,6 +582,23 @@ function close() {
 
       <div
         class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3 py-1"
+        data-log-levels
+      >
+        <!-- 级别筛选 chips（移动端单独一行：390 宽下与时间窗挤同一行会把后面几枚按钮顶出视口）。 -->
+        <button
+          v-for="c in levelChips"
+          :key="c.value"
+          class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
+          :class="levelFilter === c.value ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          :data-log-level="c.value"
+          :aria-pressed="levelFilter === c.value"
+          @click="levelFilter = c.value"
+        >
+          <span v-if="c.dot" class="h-1.5 w-1.5 rounded-full" :class="c.dot"></span>{{ c.text }}
+        </button>
+      </div>
+      <div
+        class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3 py-1"
       >
         <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("logs.window") }}</span>
         <button
@@ -585,8 +666,17 @@ function close() {
         />
         <StateBlock v-else-if="logs.length === 0" kind="empty" :title="t('logs.empty')" />
         <StateBlock v-else-if="mergedRows.length === 0" kind="empty" :title="t('logs.filterEmpty')" />
-        <LogRows v-else :items="virtualRows" :total-size="totalSize" :measure="measureRow" />
+        <LogRows
+          v-else
+          :items="virtualRows"
+          :total-size="totalSize"
+          :measure="measureRow"
+          :selected-key="selectedKey"
+          @select="onSelect"
+        />
       </div>
+      <!-- 移动端：详情落底部（窄窗回退，画板 detail 的同一份内容）。 -->
+      <LogDetailPanel v-if="selectedRow" :row="selectedRow" placement="bottom" />
     </MobilePageFrame>
   </Transition>
 </template>

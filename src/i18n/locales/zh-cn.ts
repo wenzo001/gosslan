@@ -62,6 +62,7 @@ export const zhCN: MessageDict = {
   "logs.filter": "过滤日志",
   "logs.filterPlaceholder": "输入文本过滤…",
   "logs.window": "窗口",
+  "logs.levelAll": "全部",
   "logs.windowAll": "全部",
   "logs.window1m": "1 分钟",
   "logs.window2m": "2 分钟",
