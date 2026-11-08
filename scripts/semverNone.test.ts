@@ -4,6 +4,7 @@
 // （判据 4 的原话：装饰性声明比没有声明更糟）。
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -125,4 +126,55 @@ test("集成：判据 4 接受合法 none（退 0）、拒绝混入代码的 non
   assert.equal(bad.status, 1, "混进 src/ 的 none 必须让门禁退 1");
   assert.match(bad.stdout + bad.stderr, /声明了 `Version-Bump: none` 但不成立/);
   assert.match(bad.stdout + bad.stderr, /不在纯文档白名单内/);
+});
+
+/**
+ * 钩子路径（`--staged --commit-msg-file`）的回归：**纯文档提交不许被要求补 `Version-Bump`**。
+ *
+ * 2026-11-08 实测过一次空转：`missing` 只在"写了 bump 声明"时才计算，于是没写 trailer 的提交
+ * `missing` 恒为 `[]` ⇒ `unbumped` 恒真 ⇒ 只改两个 README 的提交被要求补版本声明。
+ * 这是"检查还在跑、但判据已查不到东西"的典型形状，所以两头都要钉：
+ * ① 纯文档 + 无 trailer ⇒ 放行；② 四个版本清单都动 + 无 trailer ⇒ 仍必须红（别顺手把闸关掉）。
+ * 用临时 git 仓库跑，不碰本仓暂存区。
+ */
+test("钩子路径：纯文档无 trailer 放行；四个清单都动却无声明仍红", () => {
+  const dir = mkdtempSync(path.join(ROOT, ".tmp-budget-hook-"));
+  const git = (...args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  const gate = (msgFile: string) =>
+    spawnSync(
+      process.execPath,
+      [path.join(ROOT, "scripts/check-change-budget.mjs"), "--staged", "--commit-msg-file", msgFile],
+      { cwd: dir, encoding: "utf8" },
+    );
+  try {
+    git("init", "-q");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "t");
+    const manifests = VERSION_FILES.filter((p) => p !== "src-tauri/Cargo.lock");
+    for (const p of [...manifests, "src/utils/a.ts"]) {
+      mkdirSync(path.dirname(path.join(dir, p)), { recursive: true });
+      writeFileSync(path.join(dir, p), "{}\n");
+    }
+    writeFileSync(path.join(dir, "README.md"), "# a\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "chore: base");
+
+    const msgFile = path.join(dir, "msg.txt");
+    // ① 只改 README（含中文 README），不写 trailer ⇒ 必须放行
+    writeFileSync(path.join(dir, "README.zh-CN.md"), "# b\n");
+    git("add", "README.zh-CN.md");
+    writeFileSync(msgFile, "docs(readme): 对齐\n");
+    const ok = gate(msgFile);
+    assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+
+    // ② 四个版本清单都动、仍不写 trailer ⇒ 必须红（证明这一档没被顺手关掉）
+    for (const p of manifests) appendFileSync(path.join(dir, p), "\n");
+    git("add", "-A");
+    writeFileSync(msgFile, "chore: 改版本号\n");
+    const red = gate(msgFile);
+    assert.equal(red.status, 1, red.stdout + red.stderr);
+    assert.match(red.stdout + red.stderr, /四个版本清单文件都动了却没声明/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -144,7 +144,7 @@ export function isAppCodePath(p) {
  */
 export const PURE_DOC_PREFIXES = ["docs/", "assets/", "public/"];
 export const PURE_DOC_FILES = new Set([
-  "README.md", "CHANGELOG.md", "LICENSE", "LICENSE.md", "CONTRIBUTING.md",
+  "README.md", "README.zh-CN.md", "CHANGELOG.md", "LICENSE", "LICENSE.md", "CONTRIBUTING.md",
   "SECURITY.md", "AGENTS.md", "CLAUDE.md", "QODER.md", ".gitignore",
 ]);
 export function isPureDocPath(p) {
