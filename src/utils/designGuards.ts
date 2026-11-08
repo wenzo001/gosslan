@@ -3762,79 +3762,69 @@ export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssu
 }
 
 /* ============================================================================
- * BT —— 「回到最新」悬浮钮不许压在时间/未读分割行上（2026-11-06 用户拍板）
+ * BT —— 「回到最新」悬浮钮的位置必须恒定（2026-11-08 用户报"一直在上下跳动"后改）
  *
- * 判据来源：用户截图里 36×36 圆钮正好盖住滚到消息区底部的 `10月27日 16:21`。
- * 修法是**实测驱动**：可见时取自己与视口内 `[data-time-divider]` /
- * `[data-unread-divider]` 的 `getBoundingClientRect`，相交才按「行高 + 8px」上移
- * （最多 3 步），不相交回基准位 —— 不做固定 `bottom` 抬高，也不改 `gap>150` 出现阈值。
+ * 判据来源：2026-11-06 曾按用户截图做成"实测分割行、逐级上移"的避让。运行时探针
+ * `--only=backjump` 实测：连滚 0→800px 时按钮 `top` 序列出现 `372 → 336 → 300 → 372`
+ * （唯一值 3 个、跨度 72px）—— 分割行滚过按钮就跳一格，滚回去又跳回来。
  *
- * 这一层是静态回归闸：像素/矩形读数在运行时探针里（六档 × 亮/暗）；
- * 纯函数判据（避让后重叠面积 = 0）在 `utils/backToLatest.test.ts`。
+ * 现在位移只由 `calc(1rem + bottomOffset)` 决定：不读滚动位置、不量分割行、
+ * 不挂 scroll/resize 监听；出现/消失只走透明度。
+ * 这一层是静态回归闸；像素读数在运行时探针 `--only=backjump`（唯一值必须只有 1 个）。
  * ========================================================================== */
 
-export interface BackToLatestAvoidSources {
+export interface BackToLatestSources {
   button: string;
-  messageItem: string;
 }
 
-export function checkBackToLatestAvoidance(src: BackToLatestAvoidSources): GuardIssue[] {
+/** 跟随滚动位置重算位移的痕迹：任意一处出现都说明"位置又跟着滚动动了"。 */
+const BACK_TO_LATEST_DRIFT_RE = /\bavoidOffset\b|computeBackToLatestAvoidOffset|addEventListener\(\s*["']scroll["']|requestAnimationFrame|getBoundingClientRect/;
+
+export function checkBackToLatestStable(src: BackToLatestSources): GuardIssue[] {
   const out: GuardIssue[] = [];
   const btn = src.button;
+  // 注释里解释历史不算违规，先剥注释再扫。
+  const code = stripMarkupComments(btn);
 
-  // BT-01：位移必须来自 `computeBackToLatestAvoidOffset`，且写回的是 `avoidOffset`。
-  // 反例锚点：把这一行换成 `avoidOffset.value = 0;`（=关掉避让）必须红。
-  const call = [...btn.matchAll(/avoidOffset\.value\s*=\s*computeBackToLatestAvoidOffset\(/g)][0];
-  if (!call) {
+  // BT-01：不许有任何"按滚动位置重算位移"的入口。
+  // 反例锚点：把 `avoidOffset` 或 scroll 监听加回来必须红（用户报的跳动就是它们造成的）。
+  const drift = code.match(BACK_TO_LATEST_DRIFT_RE);
+  if (drift) {
     out.push({
-      line: 0,
+      line: lineAt(btn, Math.max(0, btn.indexOf(drift[0]))),
       message:
-        "BT-01：「回到最新」没有把实测结果写进 `avoidOffset`（`avoidOffset.value = computeBackToLatestAvoidOffset(...)` 找不到）—— " +
-        "圆钮会重新压住滚动到底部的时间/未读分割行。",
-    });
-  }
-  if (!/\bcomputeBackToLatestAvoidOffset\b[\s\S]*from\s*["']@\/utils\/backToLatest["']/.test(btn)) {
-    out.push({
-      line: 0,
-      message: "BT-01：「回到最新」没有从 `@/utils/backToLatest` 引用避让计算 —— 无法证明它按实测矩形上移。",
+        `BT-01：「回到最新」又出现了跟随滚动位置重算位移的痕迹（\`${drift[0]}\`）—— ` +
+        "圆钮会重新随滚动上下跳动。位置只允许由 `bottomOffset` 决定。",
     });
   }
 
-  // BT-02：实测必须覆盖两类分割行（时间 + 未读）；MessageItem 必须给出未读行的钩子。
-  if (!btn.includes("[data-time-divider]")) {
-    out.push({ line: 0, message: "BT-02：「回到最新」避让没查 `[data-time-divider]` —— 时间行仍会被压住。" });
-  }
-  if (!btn.includes("[data-unread-divider]")) {
-    out.push({ line: 0, message: "BT-02：「回到最新」避让没查 `[data-unread-divider]` —— 未读行仍会被压住。" });
-  }
-  if (!src.messageItem.includes("data-unread-divider")) {
-    out.push({
-      line: 0,
-      message: "BT-02：MessageItem 的未读分割线缺少 `data-unread-divider` 钩子 —— 按钮无从实测它的矩形。",
-    });
-  }
-
-  // BT-03：位移只能通过 `bottom` 生效；没有 `:style` 绑定等于算完不落地。
+  // BT-02：位置表达式只能是 `calc(1rem + bottomOffset)`，且必须真的绑到 `bottom`。
   const styleBind = btn.match(/:style="([^"]*)"/)?.[1] ?? "";
-  if (!styleBind.includes("calc(1rem +") || !styleBind.includes("avoidOffset")) {
+  if (!styleBind.includes("calc(1rem +") || !styleBind.includes("bottomOffset")) {
     out.push({
       line: lineAt(btn, btn.indexOf(":style") === -1 ? 0 : btn.indexOf(":style")),
-      message: "BT-03：「回到最新」的 `avoidOffset` 没有绑到 `bottom`（`calc(1rem + …)` 找不到）—— 避让不会生效。",
+      message:
+        "BT-02：「回到最新」的 `bottom` 不是 `calc(1rem + bottomOffset)` —— " +
+        "要么没给悬浮输入区让位、要么又接上了变量位移。",
+    });
+  }
+  if (!btn.includes("bottomOffset?: number")) {
+    out.push({
+      line: 0,
+      message: "BT-02：「回到最新」没有 `bottomOffset?: number` prop —— 输入卡高度变化时会被压住或错位。",
     });
   }
 
-  // BT-05：悬浮输入区让位（`bottomOffset`）必须真的进入同一个 `bottom` 表达式。
-  // 输入卡脱离流之后，这条按钮的基准位在消息区底部，不让位就会被输入卡压住。
-  if (!styleBind.includes("bottomOffset") || !btn.includes("bottomOffset?: number")) {
-    out.push({
-      line: 0,
-      message: "BT-05：「回到最新」没有把悬浮输入区实测高度 `bottomOffset` 绑进 `bottom` —— 按钮会被输入卡压住。",
-    });
+  // BT-03：出现/消失只走透明度，不许叠竖向位移。
+  if (!btn.includes("gosslan-back-to-latest")) {
+    out.push({ line: 0, message: "BT-03：「回到最新」丢了出现动画类 `gosslan-back-to-latest`（只剩透明度这一层反馈）。" });
+  }
+  if (/\btranslate-y-|\btransition-transform\b|\banimate-/.test(code)) {
+    out.push({ line: 0, message: "BT-03：「回到最新」出现了竖向位移/位移动画（`translate-y-*` / `transition-transform` / `animate-*`）—— 出现只许走透明度。" });
   }
 
   // BT-04：上一轮的硬约束不能被这次改动破坏（热区/不可见态/无新增过渡属性）。
-  // 注释里解释「没有 ::after」不算违规，先剥注释再扫。
-  if (/\btap-safe\b|::after|\bafter:/.test(stripMarkupComments(btn))) {
+  if (/\btap-safe\b|::after|\bafter:/.test(code)) {
     out.push({
       line: 0,
       message: "BT-04：「回到最新」出现了扩热区写法（`tap-safe` / `::after` / `after:`）—— 36×36 就是全部命中区。",
