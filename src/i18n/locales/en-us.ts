@@ -1039,8 +1039,13 @@ export const enUS: MessageDict = {
   "msg.forwardTo": "Forward To",
   "msg.searchConversation": "Search conversations",
   "msg.noMatch": "No matching conversations",
-  "msg.lightbox.multiHint": "{i} / {n} · ←/→ switch · Scroll to zoom · Esc to close",
+  "msg.lightbox.multiHint": "←/→ switch · Scroll to zoom · Double-click to reset · Esc to close",
   "msg.lightbox.singleHint": "Scroll to zoom · Drag after zoom · Double-click to reset · Esc to close",
+  "msg.lightbox.thumbLabel": "Image {i}",
+  "msg.lightbox.zoomIn": "Zoom in",
+  "msg.lightbox.zoomOut": "Zoom out",
+  "msg.lightbox.zoomFit": "Fit",
+  "msg.lightbox.originalSize": "Original · {w} × {h}",
 
   // ---- Groups ----
   // ---- Group files list ----
