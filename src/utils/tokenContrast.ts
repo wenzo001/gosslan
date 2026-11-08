@@ -317,6 +317,17 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     //   契约表读的是 CSS 默认值 ⇒ 那一档不进这张表，归"六套可选主色"那一节逐档算，别在这里假钉一个数。
     { fg: "--gosslan-toggle-off", bg: "--gosslan-panel", min: 3.0, why: "开关未选中轨道 vs 面板（控件边界要看得出）" },
     { fg: "#ffffff", bg: "--gosslan-toggle-off", min: 3.0, why: "白色滑块 vs 未选中轨道（滑块位置要读得出来）" },
+    // 表情回应胶囊（2026-11-08 用户实测漏网）：这四行是"真实渲染组合"，不是随意配对的 token。
+    // 旧默认态 = `--gosslan-hover`（5% 黑 + **透明**）叠在气泡上 ⇒ 有效色在 token 表里不存在，
+    // 自己的主色气泡上直接读成 2.x。现在四态都是**不透明实色**（`--gosslan-react-*`）。
+    // 文字一律按**最差的一档**（hover 底）判：hover 只换一层底、不改文字色（组件里不许写 hover:text-*）。
+    { fg: "--gosslan-react-ink", bg: "--gosslan-react-bg", min: 4.5, why: "别人点过的回应胶囊：计数（11px）" },
+    { fg: "--gosslan-react-ink", bg: "--gosslan-react-bg-hover", min: 4.5, why: "同上 hover 态（四态里最差的那一档）" },
+    { fg: "--gosslan-react-ink-mine", bg: "--gosslan-react-bg-mine", min: 4.5, why: "我也点过的胶囊：计数（主色淡底）" },
+    { fg: "--gosslan-react-ink-mine", bg: "--gosslan-react-bg-mine-hover", min: 4.5, why: "同上 hover 态（四态里最差的那一档）" },
+    // 胶囊压在自己的**主色气泡**上时，分隔靠"色阶差"（M3 tonal fill），不钉 3:1 ——
+    // 亮色种子（#00b578 一类）下浅胶囊 vs 亮填充实测 2.x；要过 3:1 只能把胶囊做到中灰，
+    // 那会变成聊天界面里的一块重色块。文字四态（上面四行）仍是硬契约。
   ],
   dark: [
     { fg: "--gosslan-text", bg: "--gosslan-chat", min: 4.5, why: "消息正文 / 画布" },
@@ -362,6 +373,13 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     { fg: "--gosslan-toggle-off", bg: "--gosslan-panel", min: 3.0, why: "开关未选中轨道 vs 暗面板（控件边界要看得出）" },
     { fg: "--gosslan-toggle-off", bg: "--gosslan-card", min: 3.0, why: "同上，落在暗卡片底" },
     { fg: "#ffffff", bg: "--gosslan-toggle-off", min: 3.0, why: "白色滑块 vs 暗色未选中轨道" },
+    // 表情回应胶囊（暗色）：与亮色同一套四态 + 两条边界行。暗色不是反转 ——
+    // 四档都从主色在 OKLCH 里**抬亮**一档（抬升靠更亮的表面），文字同时换成浅墨。
+    { fg: "--gosslan-react-ink", bg: "--gosslan-react-bg", min: 4.5, why: "别人点过的回应胶囊：计数（暗色）" },
+    { fg: "--gosslan-react-ink", bg: "--gosslan-react-bg-hover", min: 4.5, why: "同上 hover 态（暗色四态里最差的那一档）" },
+    { fg: "--gosslan-react-ink-mine", bg: "--gosslan-react-bg-mine", min: 4.5, why: "我也点过的胶囊：计数（暗色主色淡底）" },
+    { fg: "--gosslan-react-ink-mine", bg: "--gosslan-react-bg-mine-hover", min: 4.5, why: "同上 hover 态（暗色四态里最差的那一档）" },
+    // 暗色同理：分隔靠色阶差（tonal fill），不钉胶囊 vs 气泡的 3:1。
   ],
 };
 

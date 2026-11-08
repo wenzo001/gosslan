@@ -25,10 +25,15 @@
  *   （旧注释写的是"现在只有 1:1"，那是 2026-09-24 之前的口径，已经不对了。）
  * 名单不抢戏：不显示头像、不常驻、只有一行文字，因为这条的第一信息是"有几个、我点没点"。
  *
- * ## 胶囊的长相（用户 2026-09-29：「表情回应样式参考图片样式做」）
- * 贴飞书那一种：**没有阴影**、别人点的用一层墨迹淡底（`--gosslan-hover`）而不是一圈边框，
- * 只有"我自己也点了"那一枚描主色边 + 主色淡底。两态**都带 border**（别人那枚是透明边），
- * 否则我点一下会让胶囊宽窄跳 2px。表情比数字大一档，让表情本身是主角。
+ * ## 胶囊的长相（用户 2026-09-29：「表情回应样式参考图片样式做」；2026-11-08 重做派生）
+ * 贴飞书那一种：**没有阴影**、别人点的用一层淡底、只有"我自己也点了"那一枚用带主色彩度的淡底。
+ * 两态**都带 border**（别人那枚是透明边），否则我点一下会让胶囊宽窄跳 2px。表情比数字大一档。
+ * ⚠️ 2026-11-08 用户实测：旧默认态用 `--gosslan-hover`（5% 黑 + **透明**）叠在气泡上 ⇒
+ * 压在自己的主色气泡时变成"灰字压蓝底"，计数字读不动；且胶囊/hover 都看不出跟主题色有关系。
+ * 现在四态（默认 / hover / 已选 / 已选+hover）全部是 `--gosslan-react-*` 的**不透明实色**，
+ * 由主色在 OKLCH 里派生（色相见 utils/themePalette.ts），hover 只换一层底、**不叠第二层**；
+ * 文字一律对最差的那一档（hover 底）求解 ⇒ 这里不许再写 `hover:text-*`。
+ * 这四态的实际渲染组合由 `scripts/check-ui-runtime.mjs` 的 `palette` 段在真浏览器里量着。
  */
 import { computed, onUnmounted, ref } from "vue";
 import { t } from "@/i18n";
@@ -207,8 +212,8 @@ onUnmounted(clearPress);
             :data-hover-capable="String(canHover)"
             class="tap-safe flex h-7 items-center gap-1 rounded-full border px-1.5 text-meta leading-none transition"
             :class="c.mine
-              ? 'border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] text-[var(--gosslan-primary)]'
-              : 'border-transparent bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-border)] hover:text-[var(--gosslan-text)]'"
+              ? 'border-[var(--gosslan-react-ink-mine)] bg-[var(--gosslan-react-bg-mine)] text-[var(--gosslan-react-ink-mine)] hover:bg-[var(--gosslan-react-bg-mine-hover)]'
+              : 'border-transparent bg-[var(--gosslan-react-bg)] text-[var(--gosslan-react-ink)] hover:bg-[var(--gosslan-react-bg-hover)]'"
             :title="chipTitle(c)"
             :aria-label="t('msg.reactionToggle', { emoji: c.emoji })"
             :aria-expanded="openEmoji === c.emoji"

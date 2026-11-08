@@ -45,7 +45,7 @@
         // 主题色可读性算法（utils/themePalette.ts 的**第二份实现**）
         //
         // 本脚本必须先于 bundle 执行，import 不到那个模块 —— 复制是平台约束。
-        // 两边的输出（`seedTokens` 那 6 个 CSS 变量）由 themePalette.test.ts 逐例真跑对照，漂移即红。
+        // 两边的输出（`seedTokens` 那 12 个 CSS 变量）由 themePalette.test.ts 逐例真跑对照，漂移即红。
         // 算法说明见 docs/design-language/theme-contrast.md：OKLCH 里沿 L 轴取「刚好达标的第一档」，
         // 每档同时过 APCA |Lc| 与 WCAG 比值双约束。改这里必须同步 themePalette.ts，反之亦然。
         function clamp(v, lo, hi) {
@@ -209,6 +209,20 @@
           var accent = dark
             ? solveLightText(seedRgb(hex(0.304, tC)), Math.min(ok.C, 0.17), H, T_SECONDARY, 0.58, 0.97)
             : solveDarkText(seedRgb(hex(0.917, tC)), Math.min(ok.C, 0.17), H, T_SECONDARY, 0.58, 0.16);
+          // 表情回应胶囊四态（与 themePalette.ts 同一套公式，漂移由 themePalette.test.ts 判红）：
+          // 底色必须不透明 —— 它压在别人的卡片气泡上也压在自己的主色气泡上。
+          var reactC = achromatic ? 0 : clamp(ok.C * 0.02 * 2, 0.002, 0.012);
+          var mineC = Math.min(fillC * 0.30, 0.055);
+          var reactBgL = dark ? 0.300 : 0.934;
+          var reactHoverL = dark ? 0.345 : 0.890;
+          var reactMineL = dark ? 0.372 : 0.905;
+          var reactMineHoverL = dark ? 0.415 : 0.858;
+          var reactInk = dark
+            ? solveLightText(seedRgb(hex(reactHoverL, reactC)), tC, H, T_SECONDARY, 0.58, 0.97)
+            : solveDarkText(seedRgb(hex(reactHoverL, reactC)), tC, H, T_SECONDARY, 0.58, 0.16);
+          var reactInkMine = dark
+            ? solveLightText(seedRgb(hex(reactMineHoverL, mineC)), Math.min(ok.C, 0.10), H, T_SECONDARY, 0.58, 0.97)
+            : solveDarkText(seedRgb(hex(reactMineHoverL, mineC)), Math.min(ok.C, 0.10), H, T_SECONDARY, 0.58, 0.16);
           return {
             "--gosslan-primary": fill.hex,
             "--gosslan-primary-hover": dark ? hex(Math.min(0.92, fill.L + 0.035), fillC) : hex(Math.max(0.3, fill.L - 0.035), fillC),
@@ -216,6 +230,12 @@
             "--gosslan-on-primary": dark ? hex(0.19, tC) : "#ffffff",
             "--gosslan-accent-ink": accent,
             "--gosslan-primary-light": dark ? hex(0.32, Math.min(fillC * 0.22, 0.045)) : hex(0.948, Math.min(fillC * 0.22, 0.04)),
+            "--gosslan-react-bg": hex(reactBgL, reactC),
+            "--gosslan-react-bg-hover": hex(reactHoverL, reactC),
+            "--gosslan-react-bg-mine": hex(reactMineL, mineC),
+            "--gosslan-react-bg-mine-hover": hex(reactMineHoverL, mineC),
+            "--gosslan-react-ink": reactInk,
+            "--gosslan-react-ink-mine": reactInkMine,
           };
         }
         var el = document.documentElement;

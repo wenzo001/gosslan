@@ -4,7 +4,7 @@
 
 - 静态数值写在 [src/style.css](../../src/style.css)，是"JS 还没跑"时的首帧；
 - 运行时由 [src/utils/themePalette.ts](../../src/utils/themePalette.ts) 现算，`applyTheme` 把与主色相关的
-  6 项写到 `<html>`（填充 / hover / active / 前景 / accent-ink / 浅底）；
+  12 项写到 `<html>`（主色 6 档 + 表情胶囊 6 档）；
 - 两边必须逐 token 相同 —— [themePalette.test.ts](../../src/utils/themePalette.test.ts) 的「防两份实现漂移」
   一条会逐项比对，手改其中一边就会红。
 
@@ -62,3 +62,25 @@ WCAG 护栏当场变红（APCA 45 换算成 WCAG 只有 2.3~4.2）。
 - 暗色 warning/success 的**文字档**取 `#ffc690 / #56eba7` 一类浅色，视觉上比系统色粉一档 —— 换来在小字号下稳过 4.5。
 - 轨道（`--gosslan-toggle-off`）只判 WCAG 3.0 两维（vs 面板、白滑块 vs 轨道），不挂 APCA 45：
   暗色面板上两者数学上不可同时成立。
+
+## 5. 表情回复胶囊（2026-11-08 用户实测后重做）
+
+用户实测：计数压在蓝底上看不清；容器与 hover 像固定色、跟主色没关系。根因不是某个 token
+取错，而是**旧实现的有效色根本不在 token 表里**——默认态用 `--gosslan-hover`（5% 墨 + 透明）
+叠在气泡上，hover 再叠一层；校验只做 token 对 token 的配对，看不见这种"叠出来的颜色"。
+
+现在的契约（[MessageReactionBar.vue](../../src/components/message/MessageReactionBar.vue)）：
+
+- **四态全是不透明实色**，由主色在 OKLCH 派生（`--gosslan-react-bg / -bg-hover / -bg-mine /
+  -bg-mine-hover / -ink / -ink-mine`），色相与主色同源；中性灰种子（`C < 0.004`）保持无彩。
+- 亮色沿 L 轴 `0.934 / 0.890 / 0.905 / 0.858`，暗色 `0.300 / 0.345 / 0.372 / 0.415` ——
+  每次只动一档，**hover 只换一层底**，不再往上叠第二层。
+- 文字对**最差的那一档**（hover 底）求解：`react-ink` 过次文本 70/4.55，`react-ink-mine` 同档。
+  所以模板里不许再写 `hover:text-*`。
+- 胶囊 vs 主色气泡**不钉 3:1**：这是 M3 的 tonal fill 语义，靠色阶差分隔；实测在
+  `#00b578 / #0ea5e9 / #ff6b35` 这些亮种子上，两者同时满足"白字 4.55"与"胶囊 vs 气泡 3.0"数学上做不到
+  （要 3:1 只能把胶囊做成中灰，那就不跟主色了）。
+- 校验方式：`scripts/check-ui-runtime.mjs --only=palette` 在真浏览器里取**实际 computed
+  `background-color` + `color`**（含透明叠层、渐变叠层、父层 opacity 的有效色），
+  跑 6 个内置主色 × 亮/暗 × 11 类场景；三条反例自证（固定浅色文字 / hover 透出气泡 / 降档阈值）。
+

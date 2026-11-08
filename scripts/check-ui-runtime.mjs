@@ -4710,6 +4710,7 @@ async function main() {
     const menufit = want("menufit");
     const popclamp = want("popclamp");
     const fieldcontrast = want("fieldcontrast");
+    const palette = want("palette");
     const crashnotice = want("crashnotice");
     const hangnotice = want("hangnotice");
     const recoverynotice = want("recoverynotice");
@@ -4933,6 +4934,7 @@ async function main() {
     await runSegment("menufit", menufit, () => runMenuFit(cdp, url));
     await runSegment("popclamp", popclamp, () => runPopClamp(cdp, url));
     await runSegment("fieldcontrast", fieldcontrast, () => runFieldContrast(cdp, url));
+    await runSegment("palette", palette, () => runPalette(cdp, url));
     await runSegment("diag", diag, () => runDiag(cdp, url));
     await runSegment("updater", updater, () => runUpdater(cdp, url));
     await runSegment("avatar", avatar, () => runAvatar(cdp, url));
@@ -28196,6 +28198,479 @@ async function runConcentric(cdp, url) {
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
+}
+
+// ---------------------------------------------------------------------------
+// `--only=palette`：配色**按场景普查**（2026-11-08）
+// ---------------------------------------------------------------------------
+//
+// 触发事件：用户实测截图 —— 表情回应胶囊的计数字压在主色淡底上看不清、容器/hover 跟主题色不搭。
+// 根因不是某个 token 选错，而是**尺子的形状错了**：tokenContrast 只做「token 对 token」的配对，
+// 而真实渲染出来的组合经常是「主色 + 透明度/color-mix 叠出来的有效色 + hover 再叠一层」，
+// 这些颜色在 token 表里根本不存在（旧默认态 = `--gosslan-hover` 的 5% 墨迹，叠在自己的蓝气泡上
+// 就变成"灰字压蓝底"，读数 2.x）。所以这一段不读 token，只读**真元素合成的 computed 颜色**：
+//   ① 页面里按亮/暗 × 内置主色逐档写入运行时 token（等价 applyTheme 的终态）；
+//   ② `bgOf()` 从元素往上把每一层 background（含 alpha）合成到不透明，`measure()` 再把
+//      文字自身的 color alpha × 链上 opacity 合成到那个有效底上；
+//   ③ 用 themePalette 的 APCA/WCAG 双约束判（阈值仍取 APCA_LIMITS，不在本文件里另写一份）。
+// 场景清单按用户点名的 9 类：表情胶囊四态（两种气泡）/ 气泡内链接 / 引用条 / 时间分割线 /
+// 未读徽标 / 按钮 hover+active / 列表选中行 / 代码块 / toast 两变体（含计数）/ 占位符 / 传输队列计数。
+// 反例自证三条：胶囊文字改回固定浅色、胶囊 hover 叠成透明透出气泡、阈值降档 —— 每条都必须让判据翻红。
+
+/** 内置主色档：从设置页 presets 现解析（加一档自动进矩阵，不用手工同步第二份清单）。 */
+const PALETTE_PRESETS = (() => {
+  const src = fs.readFileSync(path.join(ROOT, "src/components/settings/AppearanceSection.vue"), "utf8");
+  const m = /const presets\s*=\s*\[([^\]]*)\]/.exec(src);
+  return [...(m?.[1] ?? "").matchAll(/"(#[0-9a-fA-F]{3,6})"/g)].map((x) => x[1]);
+})();
+
+/**
+ * 页面侧量具（**只装一次**）。缺 `::placeholder` 这类伪元素时用第二参读它的 computed 颜色。
+ * 阈值表在页面里从 `APCA_LIMITS` 现取 —— 本文件不存第二份数字。
+ */
+const PAL_HELPERS = `(async () => {
+  if (window.__pal) return "kept";
+  const T = await import("/src/utils/themePalette.ts");
+  const C = await import("/src/utils/color.ts");
+  const parse = (s) => {
+    const str = String(s || "").trim();
+    if (!str || str === "transparent" || str === "none") return [0, 0, 0, 0];
+    const cm = /color\\(srgb\\s+([^\\s/)]+)\\s+([^\\s/)]+)\\s+([^\\s/)]+)(?:\\s*\\/\\s*([^)]+))?\\)/.exec(str);
+    if (cm) return [Number(cm[1]) * 255, Number(cm[2]) * 255, Number(cm[3]) * 255, cm[4] == null ? 1 : Number(cm[4])];
+    const m = /rgba?\\(([^)]+)\\)/.exec(str);
+    if (!m) return [0, 0, 0, 0];
+    const p = m[1].split(/[,\\s\\/]+/).filter((v) => v !== "").map(Number);
+    return [p[0], p[1], p[2], p.length > 3 && !Number.isNaN(p[3]) ? p[3] : 1];
+  };
+  const over = (top, bottom) => [0, 1, 2].map((i) => top[i] * top[3] + bottom[i] * (1 - top[3]));
+  /** 从元素往上把每层 background 合成到不透明（这正是 token 表里不存在的那一层）。 */
+  const bgOf = (el) => {
+    const chain = [];
+    let n = el;
+    while (n && n.nodeType === 1) { chain.push(n); n = n.parentElement; }
+    let out = [255, 255, 255];
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      const st = getComputedStyle(chain[i]);
+      const c = parse(st.backgroundColor);
+      if (c[3] > 0) out = over(c, out);
+      // 同一道渐变（两端同色）等价于一层纯色叠层 —— :active 的 pressed 状态用的就是它。
+      // 多色渐变/图片没有单一"有效色"，这里不猜（保持 background-color 的结果）。
+      const img = String(st.backgroundImage || "");
+      if (img.indexOf("linear-gradient(") === 0) {
+        const stops = img.match(/rgba?\\([^)]*\\)|color\\([^)]*\\)/g) || [];
+        if (stops.length > 1 && stops.every((s) => s === stops[0])) {
+          const o = parse(stops[0]);
+          if (o[3] > 0) out = over(o, out);
+        }
+      }
+    }
+    return out;
+  };
+  const NEED = {
+    body: [T.APCA_LIMITS.body, 7],
+    secondary: [T.APCA_LIMITS.secondary, 4.5],
+    weak: [T.APCA_LIMITS.weak, 4.65],
+    onSolid: [T.APCA_LIMITS.button, 4.55],
+    nontext: [T.APCA_LIMITS.icon, 3.0],
+    solid: [0, 4.5],
+    // 气泡内容（正文/链接/引用条）：气泡配色由 chatStyle 自己的契约管（白字 ≥4.8、
+    // 「我方 accent 实底 vs 对方气泡」≥3.45 的可归属性），不可能同时满足 APCA 85 的正文档。
+    // 这里按 APCA 对内容的最低档 60 + WCAG 4.5 断言 —— 不是放宽门禁，是**换参照物**：
+    // 主题 token 那一路（按钮/徽标/列表/占位符/toast）仍然是严格档。
+    content: [T.APCA_LIMITS.weak, 4.5],
+  };
+  window.__pal = {
+    apply(seed, dark, canvas) {
+      // ⚠️ 必须同时改 **store**，不能只改 CSS 变量：气泡的 mine 底色/文字是
+      // resolveChatColors(preset, app.themeColor, app.dark) 在 JS 里算出来的
+      // （utils/chatStyle.ts）。只切 .dark 类会让"页面是亮色、气泡却是暗色"——
+      // 实测量到 mineText #d4d4d4 压 #234baf 这种根本不存在于任何一套主题的组合。
+      const S = window.__pinia && window.__pinia._s && window.__pinia._s.get("app");
+      if (S) { try { S.appearance = dark ? "dark" : "light"; S.themeColor = seed; } catch (e) { /* 只读则忽略 */ } }
+      C.applyTheme(seed, "", !!dark);
+      document.documentElement.classList.toggle("dark", !!dark);
+      document.body.style.background = canvas || "var(--gosslan-chat)";
+      return true;
+    },
+    measure(sel, idx, target, pseudo) {
+      const list = document.querySelectorAll(sel);
+      const el = list[idx || 0];
+      if (!el) return { miss: sel + "#" + (idx || 0), count: list.length };
+      const bg = bgOf(el);
+      const raw = parse(getComputedStyle(el, pseudo || null).color);
+      let a = raw[3];
+      let n = el;
+      while (n && n.nodeType === 1) { a *= Number(getComputedStyle(n).opacity || 1); n = n.parentElement; }
+      const fg = [0, 1, 2].map((i) => raw[i] * a + bg[i] * (1 - a));
+      const lc = Math.abs(T.apcaLc(fg, bg));
+      const ratio = T.wcagRatio(fg, bg);
+      const need = NEED[target];
+      // 诊断层：读数对不上 token 表里的值时，必须先分清是取色口径（叠层/透明度/父层）
+      // 还是 token 本身没写进去。raw 与 layers 只能靠量，不能靠猜。
+      const layers = [];
+      let m = el;
+      while (m && m.nodeType === 1 && layers.length < 4) {
+        layers.push(m.tagName.toLowerCase() + ":" + getComputedStyle(m).backgroundColor);
+        m = m.parentElement;
+      }
+      const vars = {};
+      for (const v of ["--gosslan-react-bg", "--gosslan-react-bg-hover", "--gosslan-react-bg-mine",
+        "--gosslan-react-bg-mine-hover", "--gosslan-react-ink", "--gosslan-react-ink-mine",
+        "--gosslan-primary", "--gosslan-primary-active", "--gosslan-on-primary"]) {
+        vars[v.replace("--gosslan-", "")] = String(getComputedStyle(document.documentElement).getPropertyValue(v)).trim();
+      }
+      return {
+        lc: +lc.toFixed(1), ratio: +ratio.toFixed(2), need,
+        ok: lc >= need[0] && ratio >= need[1],
+        fg: fg.map((v) => Math.round(v)), bg: bg.map((v) => Math.round(v)),
+        tag: el.tagName.toLowerCase(),
+        cls: String(el.className || "").slice(0, 70),
+        opa: +a.toFixed(2),
+        raw: getComputedStyle(el, pseudo || null).color,
+        layers, vars,
+      };
+    },
+  };
+  return "fresh";
+})()`;
+
+async function runPalette(cdp, url) {
+  const shotDir = path.join(ROOT, "test-results", "theme-shots");
+  fs.mkdirSync(shotDir, { recursive: true });
+
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1120, height: 900, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(2_500);
+  await cdp.eval(PAGE_FIXTURE);
+  const helper = await cdp.eval(PAL_HELPERS);
+  check("palette 量具装上（有效色合成 + APCA/WCAG 双约束，阈值取 themePalette.APCA_LIMITS）",
+    helper === "fresh" || helper === "kept", "fresh|kept", String(helper));
+  // ⚠️ 量颜色时**必须停掉过渡**：胶囊与按钮都带 `transition`，`apply` 之后 70ms 读到的是
+  // 「上一个主题 → 这个主题」的中间帧（实测 `--gosslan-react-bg` 明明是 #312d2b，量到 #474341）。
+  // 这不是产品缺陷，是量具把动画帧当成了终态。停掉过渡后读到的才是 CSS 最终计算值，
+  // 与用户最终看到的颜色一致（截图取证时同样适用）。
+  await cdp.eval(`(() => {
+    const old = document.getElementById('__pal_still'); if (old) old.remove();
+    const st = document.createElement('style'); st.id = '__pal_still';
+    st.textContent = '*,*::before,*::after{transition:none!important;animation:none!important}';
+    document.head.appendChild(st);
+    return true;
+  })()`);
+  // ⚠️ `hover:` 工具类在 Tailwind v4 里包在 `@media (hover: hover)` 里：headless 默认报
+  // `hover: none` ⇒ 所有 hover 档都会量成"和默认态一样"，是**量具假绿**而不是产品没 hover。
+  // 显式声明"细指针 + 可悬停"，等价桌面鼠标。
+  await cdp.send("Emulation.setEmulatedMedia", {
+    media: "",
+    features: [{ name: "hover", value: "hover" }, { name: "pointer", value: "fine" }, { name: "any-hover", value: "hover" }],
+  }).catch(() => {});
+  check("palette 量具环境 = 可悬停（否则 `hover:` 工具类整类不生效，四态只会量到两态）",
+    await cdp.eval("matchMedia('(hover: hover)').matches === true"), "hover:hover", "matchMedia");
+  await cdp.send("DOM.enable").catch(() => {});
+  await cdp.send("CSS.enable").catch(() => {});
+
+  // 裸浏览器里没有 `__TAURI_INTERNALS__`：`ConversationList` 在 setup 里同步调
+  // `getCurrentWebview().onDragDropEvent(...)`，缺 metadata 会当场 TypeError，整段从那一行起断掉。
+  // 打桩只做"让 setup 跑通"，不改变任何颜色口径（invoke 永不回包 ⇒ 拖拽监听挂空）。
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = window.__TAURI_INTERNALS__ || {
+      metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+      invoke: async () => new Promise(() => {}), transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+    };
+    return true;
+  })()`);
+
+  const install = async (cmp, props) => {
+    const r = await cdp.eval(`window.__probe.install(${JSON.stringify(cmp)}, '', ${JSON.stringify(JSON.stringify(props || {}))})`);
+    await sleep(260);
+    return r;
+  };
+
+  /** forcePseudoState 用 DOM.querySelectorAll 拿 nodeId（一个场景装一次，档位循环里复用）。 */
+  const sceneNodeIds = async (specs) => {
+    const ids = new Map();
+    if (!specs.some((s) => s.pseudo)) return ids;
+    const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+    for (const sp of specs) {
+      if (!sp.pseudo) continue;
+      const r = await cdp.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: sp.sel }).catch(() => null);
+      ids.set(sp.label, (r && r.nodeIds && r.nodeIds[sp.idx || 0]) || 0);
+    }
+    return ids;
+  };
+
+  let cells = 0;
+  const sweep = async (name, canvas, specs) => {
+    const ids = await sceneNodeIds(specs);
+    const worst = new Map();
+    const missing = [];
+    for (const seed of PALETTE_PRESETS) {
+      for (const dark of [false, true]) {
+        await cdp.eval(`window.__pal.apply(${JSON.stringify(seed)}, ${dark}, ${JSON.stringify(canvas)})`);
+        await sleep(70);
+        for (const sp of specs) {
+          const nodeId = ids.get(sp.label) || 0;
+          if (nodeId) await cdp.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: [sp.pseudo] }).catch(() => {});
+          const r = await cdp.eval(`window.__pal.measure(${JSON.stringify(sp.sel)}, ${sp.idx || 0}, ${
+            JSON.stringify(sp.target)}, ${JSON.stringify(sp.pseudo || "")})`);
+          if (nodeId) await cdp.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: [] }).catch(() => {});
+          cells += 1;
+          if (!r || r.miss) { missing.push(`${sp.label}@${seed}/${dark ? "dark" : "light"}`); continue; }
+          const margin = Math.min(r.need[0] > 0 ? r.lc / r.need[0] : Infinity, r.ratio / r.need[1]);
+          const cur = worst.get(sp.label);
+          if (!cur || margin < cur.margin) worst.set(sp.label, { seed, dark, r, margin });
+        }
+      }
+    }
+    const fails = [...worst.values()].filter((v) => !v.r.ok);
+    const hex = (rgb) => "#" + rgb.map((v) => v.toString(16).padStart(2, "0")).join("");
+    const detail = [...worst.entries()]
+      .map(([k, v]) => `${k} ${hex(v.r.fg)}→${hex(v.r.bg)}(α${v.r.opa}) Lc${v.r.lc}/W${v.r.ratio}${
+        v.r.ok ? "" : ` FAIL raw=${v.r.raw} layers=${JSON.stringify(v.r.layers)} vars=${JSON.stringify(v.r.vars)}`}@${v.seed}${v.dark ? "暗" : "亮"}`)
+      .join(" · ");
+    const missDetail = missing.length === 0 ? "" : ` · 缺席：${[...new Set(missing.map((m) => m.split("@")[0]))].join(",")}`
+      + `（前 ${Math.min(4, missing.length)} 格：${missing.slice(0, 4).join(" / ")}）`;
+    check(`palette·${name}：${PALETTE_PRESETS.length} 内置主色 × 亮/暗 × ${specs.length} 项全部达标`,
+      missing.length === 0 && fails.length === 0,
+      "缺席 0 且 全部 ok=true",
+      `缺席 ${missing.length} 未达标 ${fails.length}${missDetail} · 最差档：${detail}`);
+    return { name, worst, missing, fails };
+  };
+
+  const CHIPS = [
+    { emoji: "👍", count: 3, mine: false, actors: ["peer-b"], latest: "peer-b" },
+    { emoji: "🎉", count: 5, mine: true, actors: ["me-1", "peer-b"], latest: "me-1" },
+  ];
+  const peerProps = {
+    message: {
+      msg_id: "m-pal-peer", sender_id: "peer-a", kind: "text",
+      content: "「引用 张三：被引用的原话|m-pal-src」\n这条要量链接 https://example.com/pal 与胶囊四态，正文写得稍长一些。",
+      ts: 1700000000000, conv_id: "group:g1", seq: 1,
+    },
+    canReact: true, isGroup: true, senderName: "测试者", reactions: CHIPS,
+  };
+  const ownProps = JSON.parse(JSON.stringify(peerProps));
+  ownProps.message.msg_id = "m-pal-own";
+  ownProps.message.sender_id = "dev-me";
+
+  const PILL = [
+    { label: "胶囊·默认", sel: "[data-reaction-chip]", idx: 0, target: "secondary" },
+    { label: "胶囊·hover", sel: "[data-reaction-chip]", idx: 0, target: "secondary", pseudo: "hover" },
+    { label: "胶囊·已选", sel: "[data-reaction-chip]", idx: 1, target: "secondary" },
+    { label: "胶囊·已选+hover", sel: "[data-reaction-chip]", idx: 1, target: "secondary", pseudo: "hover" },
+  ];
+
+  // ① 别人的气泡：四态 + 链接 + 引用条 + 时间分割线
+  const peerMount = await install("/src/components/MessageItem.vue", peerProps);
+  check("palette·别人的气泡挂出来了（四态胶囊才有得量）", !!peerMount && peerMount.ok === true, "install ok", JSON.stringify(peerMount));
+  // ⚠️ seedDevice 读的是 `window.__pinia`，而 pinia 是 install 才建的 ⇒ 必须在挂载**之后**种身份。
+  // 反过来（先种再装）会得到 `ok:false / 先跑 install`，于是「自己的气泡」实际渲染成别人的气泡：
+  // 那样四态胶囊量的是 peer 底色，读数看着像"深字浅底"，红/绿都不可信。
+  const seeded = await cdp.eval("window.__probe.seedDevice('dev-me')");
+  check("palette 夹具设备 = dev-me（「我发的」气泡与 mine 胶囊才成立）",
+    !!seeded && seeded.ok === true && seeded.at === "dev-me", "device=dev-me", JSON.stringify(seeded));
+  check("palette 主色矩阵非空：内置 presets 至少 6 档（少一档等于漏跑一套主题）",
+    PALETTE_PRESETS.length >= 6, "presets >= 6", JSON.stringify(PALETTE_PRESETS));
+  await sleep(200);
+  const peerScene = await sweep("别人的气泡", "var(--gosslan-chat)", [
+    ...PILL,
+    { label: "气泡正文", sel: "[data-msg-body]", idx: 0, target: "content" },
+    { label: "气泡内链接", sel: "[data-msg-body] a", idx: 0, target: "content" },
+    { label: "引用条文字", sel: ".quote-text", idx: 0, target: "content" },
+    { label: "时间分割线", sel: "[data-time-divider]", idx: 0, target: "secondary" },
+  ]);
+
+  // ② 自己的气泡（主色实底）：同一套四态 + 正文链接
+  // 每次 install 默认新建一份 pinia ⇒ 上一段种的身份会跟着丢，所以这里挂完再种一次。
+  const ownMount = await install("/src/components/MessageItem.vue", ownProps);
+  check("palette·自己的气泡挂出来了", !!ownMount && ownMount.ok === true, "install ok", JSON.stringify(ownMount));
+  const seededOwn = await cdp.eval("window.__probe.seedDevice('dev-me')");
+  check("palette·自己的气泡身份 = dev-me（否则量到的是左列）",
+    !!seededOwn && seededOwn.ok === true && seededOwn.at === "dev-me", "device=dev-me", JSON.stringify(seededOwn));
+  await sleep(120);
+  await sweep("自己的气泡", "var(--gosslan-chat)", [
+    ...PILL.map((p) => ({ ...p, label: p.label.replace("胶囊", "胶囊·自己的气泡") })),
+    { label: "自己气泡正文", sel: "[data-msg-body]", idx: 0, target: "content" },
+    { label: "自己气泡内链接", sel: "[data-msg-body] a", idx: 0, target: "content" },
+  ]);
+
+  // ③ 未读徽标（danger 实底 + 白字；WCAG 口径，不追加 APCA —— 红实底 APCA 天然偏低）
+  const badgeMount = await install("/src/components/UnreadBadge.vue", { count: 12 });
+  check("palette·未读徽标挂出来了", !!badgeMount && badgeMount.ok === true, "install ok", JSON.stringify(badgeMount));
+  await sweep("未读徽标", "var(--gosslan-list)", [
+    { label: "未读徽标计数", sel: "#probe-host > *", idx: 0, target: "solid" },
+  ]);
+
+  // ④ 三档按钮：默认 / hover / active（`ForcePseudoState`，等价真鼠标按下与悬停的 CSS）
+  for (const btn of [
+    { file: "/src/components/ui/PrimaryBtn.vue", name: "主色按钮", tone: "onSolid" },
+    { file: "/src/components/ui/SecondaryBtn.vue", name: "次按钮", tone: "secondary" },
+    { file: "/src/components/ui/DangerBtn.vue", name: "危险按钮", tone: "solid" },
+  ]) {
+    const m = await install(btn.file, {});
+    check(`palette·${btn.name}挂出来了`, !!m && m.ok === true, "install ok", JSON.stringify(m));
+    await sweep(btn.name, "var(--gosslan-panel)", [
+      { label: `${btn.name}·默认`, sel: "#probe-host button", idx: 0, target: btn.tone },
+      { label: `${btn.name}·hover`, sel: "#probe-host button", idx: 0, target: btn.tone, pseudo: "hover" },
+      { label: `${btn.name}·active`, sel: "#probe-host button", idx: 0, target: btn.tone, pseudo: "active" },
+    ]);
+  }
+
+  // ⑤ 列表选中行（标题 + 预览；预览带 `opacity-90`，有效色同样要合成）
+  const rowMount = await install("/src/components/conversation/ConversationListItem.vue", {
+    conv: {
+      id: "c-pal-1", kind: "group", name: "配色普查群", avatar: null,
+      last_msg: "这条预览文字要在选中行上读得清", last_ts: 1700000000000,
+      unread: 3, mentioned: 0, pinned: 0, muted: 0, members: ["dev-me"],
+    },
+    active: true, online: null,
+  });
+  check("palette·列表选中行挂出来了", !!rowMount && rowMount.ok === true, "install ok", JSON.stringify(rowMount));
+  await sweep("列表选中行", "var(--gosslan-list)", [
+    { label: "选中行标题", sel: "[data-conv-name]", idx: 0, target: "body" },
+    { label: "选中行预览", sel: "#probe-host .text-fine", idx: 0, target: "secondary" },
+  ]);
+
+  // ⑥ 代码块（自带固定深底，不跟主题走 —— 正好证明我们没把它覆盖掉）
+  const codeMount = await install("/src/components/CodeBlock.vue", {
+    code: "const seed = '#2f6bff';\nconsole.log(seed);\n", language: "ts", attached: true,
+  });
+  check("palette·代码块挂出来了", !!codeMount && codeMount.ok === true, "install ok", JSON.stringify(codeMount));
+  await sweep("代码块", "var(--gosslan-chat)", [
+    { label: "代码块正文", sel: ".code-pre", idx: 0, target: "secondary" },
+  ]);
+
+  // ⑦ toast 两变体（普通 = hud 底、错误 = danger 底）+ 计数 chip
+  const toastMount = await install("/src/components/ToastHud.vue", {});
+  check("palette·ToastHud 挂出来了", !!toastMount && toastMount.ok === true, "install ok", JSON.stringify(toastMount));
+  await cdp.eval(`(async () => { const m = await import('/src/utils/toastManager.ts');
+    window.__pushPalToast = (k, kind) => { m.pushToast(k, kind); m.pushToast(k, kind); }; return true; })()`);
+  await cdp.eval("window.__pushPalToast('配色普查普通', 'info'); window.__pushPalToast('配色普查错误', 'error')");
+  await sleep(260);
+  await sweep("toast", "var(--gosslan-chat)", [
+    { label: "toast 正文", sel: "li[data-status] .min-w-0", idx: 0, target: "solid" },
+    { label: "toast 计数", sel: "[data-toast-count]", idx: 0, target: "solid" },
+  ]);
+
+  // ⑧ 会话列表：搜索框占位符 + 传输队列计数
+  const listMount = await install("/src/components/ConversationList.vue", { view: "chats" });
+  check("palette·会话列表挂出来了", !!listMount && listMount.ok === true, "install ok", JSON.stringify(listMount));
+  await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    // 必须绑**这一份** pinia：每次 install 都新建 pinia，裸调 useChatStore() 得到的是另一份，
+    // 组件里的 taskCount 永远读不到 ⇒ 「传输队列计数」整格缺席（首跑就是这样）。
+    const chat = useChatStore(window.__pinia);
+    chat.conversations = [
+      { id: 'c-pal-1', kind: 'group', name: '配色普查群', avatar: null, last_msg: '预览文字',
+        last_ts: 1700000000000, unread: 2, mentioned: 0, pinned: 0, muted: 0, members: ['dev-me'] },
+    ];
+    // ⚠️ 种的是 transfers，不是 operations：operations 是 useChatStore 里的 **computed**
+    // （deriveOperations(transfers/…)，见 useChatStore.ts 那段注释），赋值会被静默丢掉 ⇒
+    // taskCount 恒为 0 ⇒ 「传输队列计数」整格缺席（首跑就是这样，缺 12 格）。
+    chat.transfers = [
+      { id: 't-pal', peer_id: 'p1', name: '配色普查.pdf', size: 1000, direction: 'send',
+        status: 'active', path: null, progress: 0.4, blocked_reason: null, created_at: 5 },
+    ];
+    return true;
+  })()`);
+  await sleep(260);
+  await sweep("会话列表", "var(--gosslan-list)", [
+    { label: "搜索框占位符", sel: "#probe-host input", idx: 0, target: "weak", pseudo: "::placeholder" },
+    { label: "传输队列计数", sel: "[data-task-count]", idx: 0, target: "body" },
+  ]);
+
+  check("palette 矩阵不是空转：至少量到 9 类场景 × 12 档（≥ 190 格）",
+    cells >= 190, "cells >= 190", `cells=${cells}`);
+
+  // ---- 反例自证（三条都必须翻红）----
+  // 回到"自己的气泡"：这是用户实测那张截图的位置（胶囊压在主色实底上）。
+  // 新装一份 pinia ⇒ 必须重新种身份，否则下面量到的又是左列（那样三条反例的证据都不成立）。
+  await install("/src/components/MessageItem.vue", ownProps);
+  await cdp.eval("window.__probe.seedDevice('dev-me')");
+  await sleep(150);
+  await cdp.eval("window.__pal.apply('#2f6bff', false, 'var(--gosslan-chat)')");
+  await sleep(120);
+  const inject = async (css) => {
+    await cdp.eval(`(() => { const old = document.getElementById('__pal_mut'); if (old) old.remove();
+      const st = document.createElement('style'); st.id = '__pal_mut'; st.textContent = ${JSON.stringify(css)};
+      document.head.appendChild(st); return true; })()`);
+    await sleep(90);
+  };
+  const clearMut = async () => {
+    await cdp.eval("document.getElementById('__pal_mut')?.remove(); true");
+    await clearForced();
+  };
+  const forcedNode = async (sel) => {
+    const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+    const r = await cdp.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: sel }).catch(() => null);
+    return (r && r.nodeIds && r.nodeIds[0]) || 0;
+  };
+  const clearForced = async () => {
+    const id = await forcedNode("[data-reaction-chip]");
+    if (id) await cdp.send("CSS.forcePseudoState", { nodeId: id, forcedPseudoClasses: [] }).catch(() => {});
+  };
+  const palRead = (target) => cdp.eval(`window.__pal.measure("[data-reaction-chip]", 0, ${JSON.stringify(target)}, "")`);
+
+  // 变异 ①：胶囊文字改回固定浅色（旧实现里的"跟气泡走"）
+  await inject("[data-reaction-chip]{color:#e6e9ef!important}");
+  const fixedInk = await palRead("secondary");
+  await clearMut();
+  check("palette 反例①：胶囊文字注回固定浅色 ⇒ 默认态读数必须翻红",
+    !!fixedInk && !fixedInk.miss && fixedInk.ok === false,
+    "ok=false", JSON.stringify(fixedInk));
+
+  // 变异 ②：hover 叠成"透明"（透出下面的气泡 ⇒ 等于第二层底/没有底）
+  const hoverNode = await forcedNode("[data-reaction-chip]");
+  await inject("[data-reaction-chip]:hover{background-color:transparent!important}");
+  if (hoverNode) await cdp.send("CSS.forcePseudoState", { nodeId: hoverNode, forcedPseudoClasses: ["hover"] }).catch(() => {});
+  await sleep(70);
+  const stacked = await palRead("secondary");
+  await clearMut();
+  check("palette 反例②：胶囊 hover 透出气泡（叠成第二层/没有底）⇒ 读数必须翻红",
+    !!stacked && !stacked.miss && stacked.ok === false,
+    "ok=false", JSON.stringify(stacked));
+
+  // 变异 ③：同一份证据，把阈值降到 Lc30/W2.0 就该判绿 —— 证"红"是阈值卡出来的，不是读数本身乱红。
+  // 用一张**中等对比**的证据（灰字压胶囊浅底：实测 Lc≈55/W≈2.3），而不是 ② 里那种"底都没了"的极端帧：
+  // 极端帧在降档阈值下仍然红，那只能证明读数烂，证明不了阈值在起作用。
+  await inject("[data-reaction-chip]{color:#8f8f8f!important}");
+  const midTone = await palRead("secondary");
+  await clearMut();
+  const realRed = !!midTone && !midTone.miss && midTone.ok === false && midTone.lc < 70 && midTone.ratio < 4.5;
+  const laxGreen = !!midTone && !midTone.miss && midTone.lc >= 30 && midTone.ratio >= 2.0;
+  check("palette 反例③：同一格中等对比证据，真阈值必须红、降到 Lc30/W2.0 必须绿（判据确实卡在阈值上）",
+    realRed && laxGreen, "真红 + 降档绿", JSON.stringify(midTone));
+
+  // ---- 修前/修后取证帧（只在 --shot= 给路径时写，避免平时多落文件）----
+  if (SHOT_PATH) {
+    const clipShot = async (tag) => {
+      const rect = await cdp.eval(`(() => { const c = document.querySelector("[data-reaction-strip]");
+        if (!c) return null; const r = c.getBoundingClientRect();
+        return { x: Math.max(0, r.left - 16), y: Math.max(0, r.top - 16), width: r.width + 32, height: r.height + 32, scale: 1 }; })()`);
+      if (!rect) return;
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png", clip: rect });
+      fs.writeFileSync(path.join(shotDir, `palette-pill-${tag}.png`), Buffer.from(shot.data, "base64"));
+    };
+    for (const tag of ["after-light", "after-dark"]) {
+      await cdp.eval(`window.__pal.apply('#2f6bff', ${tag === "after-dark"}, 'var(--gosslan-chat)')`);
+      await sleep(150);
+      await clipShot(tag);
+    }
+    // 修前：把旧实现的三种颜色注回去（默认 = `--gosslan-hover` 5% 墨迹 + `--gosslan-text-2` 字，
+    // 已选 = `--gosslan-primary-light` 底 + `--gosslan-primary` 字）—— 与用户截图同一个形态
+    await cdp.eval("window.__pal.apply('#2f6bff', false, 'var(--gosslan-chat)')");
+    await inject(`[data-reaction-chip]{background:var(--gosslan-hover)!important;color:var(--gosslan-text-2)!important;border-color:transparent!important}`);
+    await sleep(160);
+    await clipShot("before-light");
+    await clearMut();
+    console.log("  📷 胶囊取证帧 → " + shotDir + "/palette-pill-{before-light,after-light,after-dark}.png");
+  }
+
+  await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  console.log(`· palette：${PALETTE_PRESETS.length} 内置主色 × 亮/暗 × 11 类场景，共 ${cells} 格读数`);
 }
 
 await main();
