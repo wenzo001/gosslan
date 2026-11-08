@@ -111,7 +111,7 @@ mod dot {
     /// ⚠️ 这里写死十六进制而不是读 CSS 变量：托盘图标是 **Rust 侧**画的，拿不到样式表。
     /// 改 `--gosslan-danger` 时这里要一起改（`unread_dot_is_the_app_badge_red` 测试会在色值
     /// 与样式表不一致时报错）。
-    pub(super) const UNREAD_RED: (u8, u8, u8) = (0xDF, 0x31, 0x46);
+    pub(super) const UNREAD_RED: (u8, u8, u8) = (0xCF, 0x35, 0x46);
 
     /// 红点几何：半径 = 最小边的 8.5%，圆心在 (82%, 18%)。
     ///
@@ -199,13 +199,13 @@ mod dot {
         fn unread_dot_is_the_app_badge_red() {
             let css = include_str!("../../src/style.css");
             assert!(
-                css.contains("--gosslan-danger: #df3146"),
+                css.contains("--gosslan-danger: #cf3546"),
                 "样式表里的未读红改了？本测试与 UNREAD_RED 要一起更新"
             );
             assert_eq!(
                 UNREAD_RED,
-                (0xDF, 0x31, 0x46),
-                "托盘红点必须等于 --gosslan-danger（#df3146）"
+                (0xCF, 0x35, 0x46),
+                "托盘红点必须等于 --gosslan-danger（#cf3546）"
             );
         }
 
