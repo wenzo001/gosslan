@@ -1078,8 +1078,6 @@ export const zhCN: MessageDict = {
   "msg.forwardTo": "转发到",
   "msg.searchConversation": "搜索会话",
   "msg.noMatch": "无匹配会话",
-  "msg.lightbox.multiHint": "←/→ 切换 · 滚轮缩放 · 双击复位 · Esc 关闭",
-  "msg.lightbox.singleHint": "滚轮缩放 · 放大后拖动 · 双击复位 · Esc 关闭",
   "msg.lightbox.thumbLabel": "第 {i} 张",
   "msg.lightbox.zoomIn": "放大",
   "msg.lightbox.zoomOut": "缩小",

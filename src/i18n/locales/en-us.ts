@@ -1040,8 +1040,6 @@ export const enUS: MessageDict = {
   "msg.forwardTo": "Forward To",
   "msg.searchConversation": "Search conversations",
   "msg.noMatch": "No matching conversations",
-  "msg.lightbox.multiHint": "←/→ switch · Scroll to zoom · Double-click to reset · Esc to close",
-  "msg.lightbox.singleHint": "Scroll to zoom · Drag after zoom · Double-click to reset · Esc to close",
   "msg.lightbox.thumbLabel": "Image {i}",
   "msg.lightbox.zoomIn": "Zoom in",
   "msg.lightbox.zoomOut": "Zoom out",
