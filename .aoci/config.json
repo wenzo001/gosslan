@@ -198,6 +198,7 @@
   "automation": {
     "mode": "auto"
   },
+  "maintain_transport_budget_bytes": 65536,
   "ai": {
     "enabled": false,
     "provider": "openai-compatible",
