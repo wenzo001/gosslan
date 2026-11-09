@@ -991,6 +991,17 @@ const cardLikeBubble = computed(
     props.message.kind === "image",
 );
 /**
+ * 正文「长文本」画出来的是**卡片配色**：`MessageTextBubble` 在 `clamped` 时把
+ * `finalStyle` 换成 `cardStyle`（对方 = 中性卡底 + `--gosslan-card-line`，自己 = 主题气泡色）。
+ *
+ * 尾巴与底栏的取色必须跟着**实际画出来的那张卡**走；只按 `bubbleStyle` 取的话，
+ * 对方长文本气泡就是「浅色卡底 + 主题色尾巴」两块颜色（用户 2026-11-09 截图：
+ * 长文本气泡的尾巴颜色和气泡底色对不上，看起来还错位）。
+ */
+const textUsesCardSurface = computed(
+  () => props.message.kind === "text" && isLongText.value,
+);
+/**
  * 这一条最终画出来的气泡**有没有 1px 描边**（决定底栏要不要补边框）。
  *
  * 气泡的边框来源只有两处：文本/兜底/未知 = `bubbleStyle.border`（自己的消息是透明边）、
@@ -1009,12 +1020,16 @@ const bubbleHasBorder = computed(() => {
 /** 底栏三边描边的颜色：与它上面那条气泡**同一条线**（自己的卡片是透明边）。 */
 const stripBorderColor = computed(() => {
   if (!bubbleHasBorder.value) return "transparent";
-  if (cardLikeBubble.value) return String(cardStyle.value["--bubble-line"] ?? "transparent");
+  if (cardLikeBubble.value || textUsesCardSurface.value) {
+    return String(cardStyle.value["--bubble-line"] ?? "transparent");
+  }
   return mine.value ? "transparent" : "var(--gosslan-border)";
 });
 const reactionSurface = computed(() => {
   if (props.message.kind === "code") return app.dark ? CODE_SURFACE.dark : CODE_SURFACE.light;
-  if (cardLikeBubble.value) return String(cardStyle.value["--bubble-bg"] ?? "var(--gosslan-card)");
+  if (cardLikeBubble.value || textUsesCardSurface.value) {
+    return String(cardStyle.value["--bubble-bg"] ?? "var(--gosslan-card)");
+  }
   return String(bubbleStyle.value["--bubble-bg"] ?? "transparent");
 });
 
@@ -1036,19 +1051,31 @@ const tailSide = computed<"left" | "right" | null>(() => {
 });
 const showTail = computed(() => tailSide.value !== null);
 
+/** 尾巴描边色（同时也是气泡边框色）：卡片面走卡片线，自己的正文/卡片是透明。 */
+const bubbleLineToken = computed(() =>
+  props.message.kind === "code"
+    ? "var(--gosslan-card-line)"
+    : cardLikeBubble.value || textUsesCardSurface.value
+      ? String(cardStyle.value["--bubble-line"] ?? "transparent")
+      : mine.value
+        ? "transparent"
+        : "var(--gosslan-border)",
+);
+
+/**
+ * 描边看不见时（自己的消息，`--bubble-line` 是 transparent），叶形填充必须自己画到气泡底边：
+ * 叶形路径停在 y=13.5、气泡底边在 14，那 0.5px 原本由 1px 描边补；描边透明就没人补 ⇒
+ * 尾巴根部与底边之间留一条背景色缝（自己的文件/合并/群任务卡片都吃这一格）。
+ * 判据：运行时探针 `--only=rowpair` 的「可见墨迹下沿贴住气泡下沿（±0.25px）」。
+ */
+const tailFillFlush = computed(() => bubbleLineToken.value === "transparent");
+
 /** 外壳只负责两件事：尾巴取色（`--bubble-bg` / `--bubble-line`）与给底栏一层定位。 */
 const shellStyle = computed<CSSProperties>(
   () =>
     ({
       "--bubble-bg": reactionSurface.value,
-      "--bubble-line":
-        props.message.kind === "code"
-          ? "var(--gosslan-card-line)"
-          : cardLikeBubble.value
-            ? String(cardStyle.value["--bubble-line"] ?? "transparent")
-            : mine.value
-              ? "transparent"
-              : "var(--gosslan-border)",
+      "--bubble-line": bubbleLineToken.value,
     }) as CSSProperties,
 );
 
@@ -1062,7 +1089,7 @@ const reactionStripStyle = computed<CSSProperties>(() => {
   const radii =
     props.message.kind === "code"
       ? { borderBottomLeftRadius: "var(--gosslan-radius-md)", borderBottomRightRadius: "var(--gosslan-radius-md)" }
-      : cardLikeBubble.value
+      : cardLikeBubble.value || textUsesCardSurface.value
         ? { borderBottomLeftRadius: "var(--gosslan-bubble-radius, 4px)", borderBottomRightRadius: "var(--gosslan-bubble-radius, 4px)" }
         : {
             borderBottomLeftRadius: bubbleStyle.value.borderBottomLeftRadius,
@@ -2091,7 +2118,7 @@ async function copyFileToClipboard() {
               />
             </div>
             <!-- 尾巴挂在整块外壳上：有回应条时它落在底栏的左下/右下角，与底栏同一底色。 -->
-            <BubbleTail v-if="showTail" :mine="mine" :skin="skinTail" :box="skinBox" />
+            <BubbleTail v-if="showTail" :mine="mine" :skin="skinTail" :box="skinBox" :flush="tailFillFlush" />
           </div>
         </div>
       </div>

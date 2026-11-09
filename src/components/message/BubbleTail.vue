@@ -49,12 +49,28 @@ const props = withDefaults(
     skin?: boolean;
     /** 皮肤坐标系 = 外壳（气泡 border-box）的尺寸与四角圆角，CSS px。 */
     box?: BubbleSkinBox | null;
+    /**
+     * 描边不可见（这条消息的 `--bubble-line` 是 transparent）⇒ 填充必须自己画到底边。
+     *
+     * 叶形的填充/描边路径都停在 y=13.5（气泡底边在 14），差的 0.5px 本来靠 1px 描边盖住；
+     * 而「自己的卡片」那一族边框是透明的 ⇒ 没人补 ⇒ 尾巴根部与气泡底边之间留一条 0.5px
+     * 的背景色缝（与 2026-11-05 自己文本气泡那条浅色缝是同一个几何缺陷，只是那一格用
+     * 单填充皮肤绕过了，卡片这一族没绕过）。flush 时把填充的底边画到 14，正好与气泡底边重合。
+     */
+    flush?: boolean;
   }>(),
-  { mine: false, skin: false, box: null },
+  { mine: false, skin: false, box: null, flush: false },
 );
 
 const skinD = computed(() => (props.skin && props.box ? bubbleSkinPath(props.box) : null));
 const skinLineD = computed(() => (props.skin && props.box ? bubbleSkinLinePath(props.box) : null));
+
+/** 叶形填充：flush 时底边停在 14（气泡底边），否则停在 13.5（余下 0.5px 由 1px 描边补）。 */
+const leafFillD = computed(() =>
+  props.flush
+    ? "M10.5 4C10.5 7 6 10.5 2 13.5L13.5 14L13.5 4Z"
+    : "M10.5 4C10.5 7 6 10.5 2 13.5L13.5 13.5L13.5 4Z",
+);
 </script>
 
 <template>
@@ -84,7 +100,7 @@ const skinLineD = computed(() => (props.skin && props.box ? bubbleSkinLinePath(p
          ⚠️ 尾巴根部不能只画到气泡边缘：1px 边框在边缘内侧，只画到 x=10 会把那条
          竖线留在尾巴根部（用户连续两轮报的"小揪揪"）。填充盖进气泡 3px（到 13.5），
          再由描边把底边补回，竖边框、尾巴外缘、尖端、底边框才是同一条线。 -->
-    <path class="tail-fill" d="M10.5 4C10.5 7 6 10.5 2 13.5L13.5 13.5L13.5 4Z" />
+    <path class="tail-fill" :d="leafFillD" />
     <path class="tail-line" d="M10.5 4C10.5 7 6 10.5 2 13.5L13.5 13.5" />
     </svg>
   </span>
