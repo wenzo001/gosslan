@@ -25,6 +25,7 @@ CONTEXT.md[SB6T]: F:规范术语表：只定义词在本仓指什么、不指什
 LICENSE[SG5T]: F:MIT 许可证全文：授权免费使用、修改、分发并要求保留版权声明 | R:- | A:再分发与修改的授权条件 | S:这是唯一的法律文本；README 的 License 段只是指路，改授权先改这里。
 README.zh-CN.md[SG8S]: F:中文门面，与英文 README 同构的卖点/安装/隐私边界/FAQ 对照页 | R:code:README.md,code:LICENSE | A:中文用户的安装与设计边界说明 | S:与 README.md 同构两册，改一边必须同批改另一边；同样不抄版本号。
 ruff.toml[FQ7T]: F:Python lint 配置（ruff）：py311、行宽 100，规则集刻意从最小可守开始 | R:code:scripts/verify.mjs,code:docs/architecture/backend-modernization.md | A:select/ignore 的规则集按批次加严 | S:只开会让脚本直接坏掉或名字写错的规则（E9/F63 等）；全仓默认规则有 106 条历史债（67 ISC004、12 EXE001、11 F401），一次性扫全会红，按批次清。
+preview.html[EU4T]: F:独立图片预览窗口的文档入口（label=preview，全局唯一）：只加载看图那一份组件，不牵入聊天组件树；相册靠一次 IPC 取 | R:code:src/entries/preview.ts | A:窗口由 Rust 侧创建并加载本文；主题首帧与骨架与主窗口共用同一份 | S:跨文档不能共享主窗口数组，必须走 IPC；把它当主窗口复用会把聊天树整棵拉起来。
 
 ===/Users/wendongfu/Documents/code/gosslan/.github/===
 PULL_REQUEST_TEMPLATE.md[SQ4T]: F:PR 正文骨架：改动摘要、plan 与 impact 两段、门禁自检表、按 domains.data.mjs 勾选涉及领域 | R:code:scripts/check-change-budget.mjs,code:docs/VERSIONING.md | A:人工填写的 PR 描述结构；L1 三段全 N/A，L2 必填 [plan]，L3 或碰 crypto.rs / protocol.rs 必填 [impact] | S:真正拦人的是 commit 标题上的 [plan]/[impact] 标记（commit-msg hook 判），缺了照样 exit 1。
@@ -51,6 +52,7 @@ version-ledger.md[SV6M]: F:逐提交的定档台账：commit、类型、级别�
 aoci-usage.md[SG8M]: F:AOCI 认知层操作手册：触发时机、9 个工具、Entry 写法、重新索引路线与被拒命令表，以及 §9 的存量偏差拍板 | R:code:AGENTS.md,code:README.md,code:docs/AI_ENGINEERING_INDEX.md | A:换机器两步、CLI 只读命令、收尾三件套、§8 被拒命令对照表与 §9 达标口径 | S:合同本体在 AGENTS.md，这份只补操作。CLI 没有 aoci header（字典现读口是 MCP aoci_header），也没有顶层 guide（真位置 index agent guide，--agent 必填）。别拿 /tmp 副本验可移植性（macOS 符号链接、判 Git 边界不符）；单条 update-entry 可用（批量仍走 MCP）；数字全挂现算命令。S 有 token 与 rune 两层配额，越界整批零写入。
 large-file-split-plan.md[SG8L]: F:大文件拆分的计划、两轮结果与「搬家同批必须改口的 14 处尺子」表 | R:code:src-tauri/src/network/transport.rs,code:scripts/verify-guards.py,code:AI_RULES.md,code:scripts/check-domain-deps.mjs | A:下刀顺序、恒等判据与每行尺子的复跑命令 | S:§7 那张表把「搬家要同批改几处」变成可复跑清单；每条命令要原样跑，旧 PAIR_MAX=12 已是空命令，第 11 行改锚点 count==1。§1 按文件名剔生成物 ⇒ 手写 3,000+ 行的 baseline.json 会永久隐身。2026-10-07 起轮次块要认全整行 ^if (X) {。
 updates.md[SG7S]: F:自动更新（Tauri Updater + GitHub Releases）：平台矩阵、签名密钥、发布流程与产物一致性 | R:code:src-tauri/tauri.conf.json,code:scripts/updater-manifest.mjs,code:package.json,code:CHANGELOG.md | A:latest.json 的固定地址与各平台是否进入更新清单；发布失败的三种真形状 | S:Windows 内置 WebView2 档不进更新清单；macOS 公证与真实安装重启未验，别写成已通。
+todo-tags.md[SU4T]: F:群任务标签的领域规格：数据模型、删除语义、候选池清理阈值、上限与老版本兼容 | R:code:src/utils/todos.ts | A:改标签存储/清理/兼容逻辑前先读 | S:删除是软删除且老版本要能读；改阈值等于改用户可见行为，需单独裁决。
 
 ===/Users/wendongfu/Documents/code/gosslan/docs/acceptance/===
 1.0-release.md[SQ8S]: F:给 AI 的 v1.0 验收指令：目标、P0 地基与 mesh 清单、禁止事项、bug 固定流程与报告要求 | R:code:AI_RULES.md,code:docs/acceptance/stability-smoke-matrix.md,code:scripts/verify.mjs | A:"算不算做完"的判据来源；每条任务至少跑哪些门禁 | S:步骤名与条数一律看脚本收尾输出，本文件刻意不手写清单（曾写 15 步而实际 16 步，漏了 db 锁作用域守卫）；权威立场在 AI_RULES §1/§2/§3。verify:full 的护栏非空转只是前端子集，含 Rust 全量要 --full。
@@ -260,6 +262,7 @@ probe-a-tier-friends-error.mjs[XQ8S]: F:A 档错误态的真窗口探针：好�
 silent-drops-baseline.json[XQ8T]: F:`.ok();` 静默丢弃的每文件计数棘轮基线，只许降 | R:code:scripts/check-silent-drops.mjs | A:JSON {generatedBy,note,total,files:{裸文件名:次数}} | S:键是裸文件名，同名文件会串；按文件计数 ⇒ 同文件删一处新增一处不会红；只由 --update 生成，硬零族规则写在脚本头而不在这里。
 updater-manifest.mjs[XV8M]: F:生成 Tauri updater 的 latest.json：产物与 .sig 配对、映射平台键、校验四平台齐全 | R:code:.github/workflows/updater-manifest.yml,code:docs/updates.md,code:scripts/publish-release-assets.sh | A:--dir/--tag/--repo/--out/--check-only；导出 REQUIRED_PLATFORMS 与 mapPlatformAssets | S:缺平台会被客户端读成「这个平台没有更新」，比不发更难查；webview2 档与 .sig 不配对的产物不进清单；同平台多候选取 .nsis.zip 优先。
 verify-startup-error.mjs[XQ8L]: F:启动失败路径的真窗口验收入口：按场景搭隔离环境并输出机器读数 | R:code:scripts/ax-tree.mjs,code:src-tauri/src/startup_error.rs | A:launch/status/stop/clean/list/press 子命令；退出码 0=取到读数（不判红绿）、2=环境不具备 | S:退出码 0 只表示取到读数，判据在调用方；closable(false) 窗口的三按钮只能由真实鼠标事件点；每场景独立 HOME + 实例号 91/92（避开 harness 1/2/3 与 AX 41），只 kill 自己 spawn 且校验可执行路径，全程无 pkill。
+build-app-icons.mjs[XV5T]: F:全平台图标生成唯一入口（npm run icon）：1024 SVG 直出、macOS .icns 在源图画 22.37% 圆角、Android 自适应三层与 monochrome | R:code:package.json | A:改图标走本脚本，不直接跑 tauri icon | S:macOS 圆角必须画进源图（系统会二次裁切）；Android 漏 monochrome 时 themed icon 不生效。
 
 ===/Users/wendongfu/Documents/code/gosslan/src-tauri/===
 Cargo.lock[FP3L]: F:Rust 依赖锁（含 gosslan 本包版本落点） | R:code:src-tauri/Cargo.toml,code:scripts/version.mjs | A:构建期解析出的依赖版本集合 | S:gosslan 版本由 version.mjs 断言；Cargo 自动生成，手改即伪造版本事实。
@@ -1202,3 +1205,24 @@ verification.md[SU4T]: F:v1 验证记录：结构校验、浏览器渲染、交�
 
 ===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/screenshots/===
 README.md[SU4T]: F:参考截图索引：画布总览、边界、移动列表/联系人/头部、地基与布局、设计系统封面、应用图标、吉祥物与界面图标 | R:code:designs/gosslan-redesign/HANDOFF.md | A:快速建立视觉印象 | S:截图不是实现规格；实现以 HANDOFF/tokens/画板/代码为准。
+
+===/Users/wendongfu/Documents/code/gosslan/docs/notes/ui-pulse-redesign/===
+change-budget-acceptance-2026-11-07.md[SU4T]: F:Change Budget 判据 3 的负责人接受记录（2026-11-07）：红色原文、为什么是真信号但可接受、处置与第二次接受 | R:code:docs/notes/ui-pulse-redesign/tasks.md | A:再遇到同域连修时先读本文的接受理由与防堆积措施 | S:接受的是「本条可接受」而不是放宽阈值；阈值与窗口一个字都没改。
+change-budget-acceptance-2026-11-08.md[SU4T]: F:Change Budget 判据 3 的第二次负责人接受记录（2026-11-08）：当前窗口读数、可接受理由、后续防堆积与推送后实测 | R:code:docs/notes/ui-pulse-redesign/change-budget-acceptance-2026-11-07.md | A:判断「这次红能不能接受」时按本文格式记账 | S:记账必须写清窗口内是哪几笔、为何不是放宽；只写「已接受」等于把门禁静默关掉。
+decision-longpress-2026-11-07.md[SU4T]: F:触屏长按正文的语义裁决（2026-11-07）：原决定（10-23 直接原生选字）→ 新决定（先弹面板，「选择文字」再进原生选字）、原因、影响面与可验证链 | R:code:src/components/MessageItem.vue | A:改长按/选字相关代码前读本文的可验证链 | S:这是对旧裁决的**覆盖**；只改代码不更新本文会让两处语义并存。
+device-acceptance-checklist.md[SU4S]: F:5.18.78 真机验收清单：安装版本确认 + 安卓状态栏/手势条、长按选字、Windows 新图标与标题栏布局等逐项步骤 | R:code:docs/notes/ui-pulse-redesign/tasks.md | A:真机按条目顺序验，记录设备与系统版本 | S:清单绑定具体版本号；版本变了要换清单，不能拿旧清单验新包。
+requirements-audit-2026-11-07.md[SU4S]: F:需求 vs 实现 vs 设计稿全量对账（2026-11-07）：UI Pulse 台账 #1–#29、unslop 审查与窄窗白条、设计稿已确认 5 项偏差 | R:code:docs/notes/ui-pulse-redesign/tasks.md | A:查「某条需求落没落地、差在哪」 | S:结论口径区分「已实现/已记账未改/设计偏差」，别把记账项当已修。
+review-2026-11-09.md[SU4S]: F:5.19.24 批次 review（2026-11-09）：改了什么、查到但本批不改的记账、没发现问题的范围、判据 3 处置与推送前最终读数 | R:code:docs/notes/ui-pulse-redesign/tasks.md | A:复核该批次的取舍与遗漏 | S:文末「更正上格」是自我更正记录，引用结论要用更正后的读数。
+tasks.md[SU4M]: F:UI Pulse 重构任务台账：第二批 11 条（A①–C⑪）、状态变更、合入与多轮收口记录 | R:code:docs/notes/ui-pulse-redesign/requirements-audit-2026-11-07.md | A:领任务/查某条为何这样改先读对应条目与收口记录 | S:台账按批次追加，状态变更要写明日期与判据；覆盖旧行会让历史对不上。
+
+===/Users/wendongfu/Documents/code/gosslan/docs/notes/ui-pulse-review-2026-11-07/===
+plan.md[SU4S]: F:UI Pulse 审查后续可执行计划（2026-11-07）：必修 B-1/M-1/M-2/M-3/M-6 的顺序、复现与修法 | R:code:docs/notes/ui-pulse-review-2026-11-07/report.md | A:按 B → M1 → M2 → M3 → M6 顺序修 | S:计划绑定 8130a4ee..353a634d 区间；换基线要重跑审查而不是照搬。
+report.md[SU4M]: F:UI Pulse 重构独立审查报告（8130a4ee..353a634d）：Blocker 与 Major（列宽压零、骨架漂移、判据空转、扫描域漏项）及证据 | R:code:docs/notes/ui-pulse-review-2026-11-07/plan.md | A:审查结论的原始读数与复现命令 | S:Blocker 与 Major 分开记；修完要在 plan 里回填而不是改报告原文。
+
+===/Users/wendongfu/Documents/code/gosslan/docs/notes/unslop-review-2026-11-06/===
+light-surface-diagnosis.md[SU4S]: F:亮色表面诊断：到底是阴影、玻璃还是别的（一句话结论、复现方式、表面链从计算值到最终像素） | R:code:docs/notes/unslop-review-2026-11-06/report.md | A:再查「亮色发灰/层级不清」先按本文的表面链采样法定位 | S:一次性探针放 /tmp 不进仓库；结论依赖当轮 token，token 改了要重采样。
+plan.md[SU4S]: F:unslop 改造方案草案与 Gosslan 专属约束：总原则与分阶段（决策/失败态与通知/空态与品牌…） | R:code:docs/notes/unslop-review-2026-11-06/report.md | A:按阶段推进，阶段 0 只决策不动代码 | S:草案不是已批准范围；进入实现前要在 tasks 台账登记。
+report.md[SU4M]: F:gosslan × unslop 只读审查（2026-11-06）：结论、技能加载与调用证据、量具与环境读数、截图清单、按优先级的发现 | R:code:docs/notes/unslop-review-2026-11-06/plan.md | A:引用发现时回到本文看原始读数与截图路径 | S:截图目录就是探针产物，跑全量探针会覆盖它们（见交接 §2.6.2）。
+
+===/Users/wendongfu/Documents/code/gosslan/docs/redesign-pulse/===
+scope-and-stage1.md[SU4M]: F:Pulse 界面重构范围地图：44 块画板清单与交叉冲突、六段提交边界、第一段已落地的 tokens 取值对照 | R:code:designs/gosslan-redesign/design-manifest.json | A:排批次与判断「这块归哪一段」 | S:范围地图与画板一一对应；新增画板要同时更新本文与 design-manifest。
