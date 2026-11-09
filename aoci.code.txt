@@ -709,9 +709,14 @@ MarkdownText.vue[EU4S]: F:更新说明 Markdown 的唯一 v-html 落点：先 re
 NavIcon.vue[EU4T]: F:一级导航图标唯一出口：PC rail 与移动底栏共用，名字映射在 navIcons.ts | R:code:src/components/ui/navIcons.ts | A:选中态由外层 .nav-glyph-btn（药丸底+主题色）表达，不自绘 path | S:四处名字必须与 NAV_ICONS 对齐；没有额外 fallback 分支。
 SecondaryBtn.vue[EU4S]: F:次要按钮：幽灵底 + 悬停浅填充；variant=outline 是「次要·最弱档」而非第四种语义 | R:code:src/components/ui/PrimaryBtn.vue,code:src/components/ui/DangerBtn.vue | A:语义恒为 primary/secondary/danger 三种 | S:不允许在组件外手写 outline 按钮（designGuards 钉住）；这族曾被报「按钮文字上下没居中」。
 SettingsSelect.vue[EU4T]: F:设置页统一下拉：Reka Select 的薄封装，面板与项吃 .gosslan-menu token | R:code:src/components/ui/Icon.vue | A:触发器/选项/指示器共用一套样式 | S:不要再造第二份下拉外观；菜单面板规格已统一在 .gosslan-menu。
+Spinner.vue[EU4T]: F:全应用唯一加载指示器：旋转收在一个类里，reduce 档停动画但保留 role=status 与可访问名 | R:code:src/components/ui/Icon.vue | A:旁边有文字时用 decorative 避免重复播报 | S:reduce 下旧 animate-spin 会被冻成静止帧，加载与卡死不可区分。
+StateBlock.vue[EU5S]: F:公共异步状态块：加载/空/错误+重试，三种密度对应三种容器（整页、栏内、紧凑） | R:code:src/components/ui/Spinner.vue,code:src/components/ui/Icon.vue | A:默认 flex-1 抢满剩余高度；辅助窗口统一用这个落点 | S:盘点时 20 个文件有 ≥5 套内联空态；预览窗失败/空相册曾完全不画东西。
+iconRegistry.ts[FU5S]: F:全应用图标唯一登记表：只允许 Icon.vue 读，组件一律 <Icon name>；静态 import 保 tree-shake | R:code:src/components/ui/Icon.vue | A:新增图标只在这里加一行，值来自 lucide-vue-next 具名导出 | S:MessageItem/MessageCodeBubble 是 feat/code-fold 冲突豁免，别把别处也当豁免。
+navIcons.ts[FU4T]: F:一级导航图标造型表：四枚侧栏轮廓（会话气泡/双人/书签/链环）与 rail 23 / tab 21 两档尺寸 | R:code:src/components/ui/iconRegistry.ts,code:src/components/ui/NavIcon.vue | A:名字必须是 iconRegistry 的 kebab 键；选中态由外层药丸表达 | S:不再自绘 path；画板口径是「收藏=书签不是星标」。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/window/===
 AuxWindowShell.vue[EU6T]: F:辅助窗口的共用外壳 | R:code:src-tauri/src/macos_window.rs | A:窗口 caption 与圆角时机 | S:圆角必须在 onMounted 设：wry 载入后才替换 contentView，setup 阶段设下去会被丢掉。非 macOS 或命令不可用就静默忽略，不影响功能。
+PreviewWindow.vue[EU5S]: F:独立图片预览窗口根组件：替换内容而不是再开窗；换图立刻清旧图进 loading 占位 | R:code:src/entries/preview.ts,code:src/stores/useImagePreview.ts | A:新建挂载取一次相册，已开着由 preview-gallery 事件叫醒再取 | S:窗实例全局唯一；换图走 replace，旧图不允许闪一下。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/composables/===
 useBackLayer.ts[EU9S]: F:移动端页面层级的返回栈（push/pop 与系统返回联动） | R:code:src/components/ui/BackArrow.vue,code:src/components/message/ImageLightbox.vue | A:push 的落点回报与 pop 行为 | S:应用是单页 WebView：Android 侧滑或系统返回在 canGoBack() 为真时 goBack()，否则直接结束 Activity（退出应用）。所以 push 必须如实回报落点是 pushState 还是 hash——退化成 location.hash 会让返回行为错位。瞬时浮层（表情面板、右键菜单）不压条目，否则返回键要按好几下才有反应。
@@ -726,6 +731,13 @@ useMessageFile.ts[EU9M]: F:文件消息的展示与状态组合 | R:code:src/uti
 useSearchKeyword.ts[EU6T]: F:搜索关键词的延迟镜像 | R:- | A:输入态镜像 | S:这里只镜像输入、不发请求——用户 2026-09-12 明确要求搜索要回车后进结果页；保留延迟镜像是为了输入框本身不闪。
 useShortcuts.ts[EU7T]: F:应用内快捷键绑定 | R:code:src-tauri/src/menu.rs | A:按键到动作的映射 | S:macOS 有原生菜单栏负责 ⌘, / ⌘N / ⌘F 的可见性，而 Windows 与 Linux 用自绘标题栏、没有菜单栏，快捷键必须在这一层自己接住。
 useWindowLauncher.ts[EU7T]: F:独立窗口打开的模块级单例 | R:code:src-tauri/src/commands/logs.rs | A:openSettings 等动作的共用状态 | S:模块级单例是有意的：导航栏、菜单事件等多个入口都走同一个动作枚举，它们必须共用同一份「正在打开 / 刚打开过」的状态，否则连点会重复请求建窗。
+useAuxWindowFailureReport.ts[EU4T]: F:辅助窗口创建失败的统一上报：接词典、toast（带按钮）与既有重启路径 | R:code:src/utils/auxWindowFailure.ts,code:src/api/index.ts | A:判据认码不认字，四类窗口共用 | S:不改窗口结构与降级策略，只负责说清原因并给动作。
+useDropSend.ts[EU4S]: F:拖拽发送的唯一链路：读元数据→冻住「发给谁」→确认框→逐条发送 | R:code:src/components/chat/DropSendConfirm.vue,code:src/utils/format.ts | A:聊天面板与左侧会话列表两个落点共用 | S:两处各写一遍会漂出第二套真源（例：列表那条忘了剔目录）。
+useErrorText.ts[EU4T]: F:错误文案拼装：utils/errors 分类 + i18n 词典，把两者接起来 | R:code:src/utils/errors.ts,code:src/i18n/index.ts | A:不是组合式：无响应式状态、不碰生命周期 | S:utils/errors 要能被 node --test 直跑、不能 value-import i18n，所以拼装必须单独一格。
+useMessageSegments.ts[EU4S]: F:消息正文两级切段：先按表情 token 切，文本段再交 linkify（链接/@提及） | R:code:src/utils/emoji.ts,code:src/utils/linkify.ts | A:MentionText / MessageTextBubble / MessageContentModal 三处共用 | S:DUP-06：三份拷贝里有一份没带 name，照那份写就会少字段。
+usePressMenu.ts[EU4S]: F:列表行「长按=右键菜单」手势唯一实现：计时器/位移容差/click 抑制 | R:code:src/utils/pressGesture.ts | A:组件只绑三个处理器 + 一个 click 抑制判断 | S:不用库：vueuse 没有 useLongPress，手势包会 preventDefault 让列表失去「按住能滚」。
+usePreviewColumns.ts[EU4S]: F:「一行能放多少半角列」的实测来源：读内容宽 + canvas 按真实字体量半角宽 | R:code:src/utils/previewMetrics.ts | A:字形宽按 font 串缓存，一屏几十条也只量一两次 | S:不能拿 COLUMNS_PER_LINE=35 估算值切内容：窄窗切少被 CSS 再裁、宽窗切多只剩一两个字。
+useSubmitGuard.ts[EU4T]: F:提交防重：双击、回车与失焦重入只放行一次；busy 可直接绑 disabled | R:code:src/components/GroupCreateModal.vue,code:src/components/settings/ProfileSection.vue | A:run 在已有在途提交时返回 undefined | S:不是通用表单框架，提交逻辑仍留在各自业务组件。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/data/===
 emojis.ts[FL6L]: F:抖音评论区表情映射（name 到图片文件） | R:code:scripts/scrape-douyin-emoji.py | A:EMOJI_META 与 EmojiMeta | S:生成物：由 scripts 抓下来的 emojis.json 生成，手改会被下一次生成覆盖；要改表情得改源 JSON 再重新生成。
@@ -736,6 +748,9 @@ logs.ts[EE6T]: F:日志窗口的入口 | R:code:src/components/LogViewer.vue,cod
 main.ts[EE6T]: F:主窗口入口 | R:code:src/boot/boot.ts,code:src/layouts/ResponsiveLayout.vue | A:主窗口启动装配 | S:-
 settings.ts[EE7T]: F:设置窗口入口 | R:code:src/components/SettingsWindow.vue,code:src/boot/boot.ts | A:设置窗口的启动与焦点重拉 | S:焦点刷新是这个窗口的补救通道（每次重新显示都重拉一遍会变的环境数据），所以它必须在「挂载前初始化失败」时也注册上——这正是 mountAuxWindow 不再外抛的理由。
 todos.ts[EE7T]: F:群任务窗口入口 | R:code:src/components/GroupTodosWindow.vue,code:src/boot/boot.ts | A:任务窗口的启动装配 | S:⚠️ 不在这一道门里等数据（用户报过「弹窗弹出很慢」）；取数与订阅放在根组件。绝不调聊天 store 的 init：它会注册第二套事件监听。
+preview.ts[EU4T]: F:独立图片预览窗口入口：只跑 app.init（只读主题/语言/设备），不调 chat.init/bindEvents | R:code:src/components/window/PreviewWindow.vue,code:src/api/index.ts | A:相册由本窗口按 msgId/cid 自取字节 | S:连聊天 store 都不 import；多注册一套后端监听会重复通知、重复计未读、重复发群已读回执。
+startup-error.css[EU4M]: F:启动失败窗口的独立样式：不引主 style.css，深浅色只靠系统偏好，取值与 Pulse 令牌同源 | R:code:src/entries/startup-error.ts | A:页面越小越稳，只保留卡片与按钮 | S:别把主 style.css 引进来：整套布局与令牌在 DB 未开时是负担。
+startup-error.ts[EU5S]: F:启动失败独立窗口入口（label=startup-error）：不初始化 store、不订阅事件，只做读文案/重试/开数据目录/退出 | R:code:src/api/index.ts,code:src/entries/startup-error.css | A:四件事全部走 src/api 门面 | S:这扇窗出现时 DB 根本没开；window.onerror 直接把异常写进状态行，否则错误窗口里一片安静。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/i18n/===
 index.ts[EL8S]: F:语言与词典层：偏好、检测与 t() | R:code:src/i18n/locales.ts,code:src/utils/configBool.ts | A:Locale、t、applyPreference、refreshSystemLocale | S:自写而不是引 vue-i18n：本项目文案量有限、无复数与日期等复杂需求。判定语言时只在调用方没注入列表时才用自己的表——注入了的契约是「就按这个列表判定」。
@@ -1271,3 +1286,16 @@ scope-and-stage1.md[SU4M]: F:Pulse 界面重构范围地图：44 块画板清单
 
 ===/Users/wendongfu/Documents/code/gosslan/scripts/probes/===
 settings-gutter-wk.swift[XV4S]: F:设置窗口滚动几何探针（真实 WKWebView）：量化 scrollbar-gutter: stable both-edges 在 WK 与 Chromium 的差异（两类分区卡片左右缘） | R:code:src/components/SettingsPanel.vue | A:swift 跑本探针并给 --port/--theme/--shot；退出码 0=逐像素相等、1=不等、2=页面没起来 | S:WK 只在真滚动时留 gutter，Chromium 恒留 ⇒ 本机绿不代表真机；量前清过渡残渣。
+
+===/Users/wendongfu/Documents/code/gosslan/src/directives/===
+pressRipple.ts[EU4T]: F:按压涟漪指令 v-press-ripple：只挂主操作按钮与发送键；直径 max(短边,240px)、560ms、最多 2 个 | R:code:src/utils/platform.ts | A:只动 transform/opacity，被按钮 overflow 裁掉 | S:不做全局监听；reduce 档直接关闭涟漪。
+
+===/Users/wendongfu/Documents/code/gosslan/src/router/===
+main.ts[EU4T]: F:主窗口 router 工厂：按平台选 hash/history，导出 MAIN_ROUTES 与类型 | R:code:src/router/mainRoutes.ts | A:桌面用 history、Web/移动用 hash | S:路由文件只建 router，不挂页面组件。
+mainRoutes.ts[EU4S]: F:主窗口路由表（纯数据，不碰 window/history）：meta.pane/overlay/depth 驱动面板、覆盖层与进场方向 | R:code:src/layouts/ResponsiveLayout.vue | A:深→浅=反向转场；overlay 不改变底层 tab 与面板 | S:页面渲染不由路由挂载，别在这里 import 页面组件。
+settings.ts[EU4T]: F:设置窗口独立路由：hash 模式，节清单来自 settingsManifest | R:code:src/utils/settingsManifest.ts | A:用 hash：path 模式在重启/刷新时会落到不存在的文档路径 | S:节清单唯一来源是 settingsManifest，别在这里另列一份。
+
+===/Users/wendongfu/Documents/code/gosslan/src/stores/chat/===
+contacts.ts[EU5M]: F:联系人模块：附近节点探测、好友名单与申请、密钥轮换、收藏 | R:code:src/stores/chat/runtime.ts,code:src/api/index.ts | A:只读写「人的名录」与申请状态 | S:会话行刷新交给 conversations；跨模块写会绕开它的排序/未读口径。
+conversations.ts[EU6L]: F:会话列表/未读与已读/会话内分页/群历史同步：行与未读水位、首载翻页、投递摘要、删除与置顶 | R:code:src/stores/chat/messaging.ts,code:src/api/index.ts | A:消息入账与乐观投影在 messaging；排序只走 sortConversations | S:清未读要 pruneUnreadClears 防回涨；行刷新不要绕过本模块直接改数组。
+groups.ts[EU4S]: F:群模块：创建/改名/成员/转让/退群/被移出，以及群公告发布与生效标记 | R:code:src/stores/chat/runtime.ts,code:src/api/index.ts | A:只做群元数据与公告 | S:会话行刷新交 conversations、消息入账交 messaging；跨模块写会绕开对方口径。
