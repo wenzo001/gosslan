@@ -132,7 +132,9 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("FILE_NOT_OWNED_BY_MESSAGE", "commands/helpers.rs", "这个文件不属于这条消息，已拒绝保存"),
     ("OPEN_PATH_NOT_OWNED", "commands/files.rs", "这个文件不属于这条消息，已拒绝打开"),
     ("OPEN_PATH_UNVERIFIED", "commands/files.rs", "无法确认这个文件属于本应用，已拒绝打开"),
-    ("GFILE_MY_STATUS_READ_FAILED", "commands/files.rs", "群文件「我的状态」读不出来（transfer={}）"),
+    // 2026-11-09：群文件面板恒红修复后，这里补上底层 err，方便区分真实读库故障；
+    // 判据本身没放宽，仍要求这处触发点"码 + 原文"同现在同一 `coded(...)` 调用里。
+    ("GFILE_MY_STATUS_READ_FAILED", "commands/files.rs", "群文件「我的状态」读不出来（transfer={} err={e}）"),
     // ── B6 第八批：外链 / 共享（本笔）───────────────────────────────────
     ("LINK_URL_EMPTY", "commands/external_links.rs", "网址不能为空"),
     ("LINK_URL_INVALID", "commands/external_links.rs", "网址格式不正确"),
