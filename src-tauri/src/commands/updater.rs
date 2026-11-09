@@ -537,8 +537,12 @@ mod desktop {
             st.error = None;
         });
         // **更新装完那次"没有关停标记的运行结尾"不是崩溃**（2026-10-27 现场里 01:39 那一趟
-        // 就是这样被读成一次不明死法）。Windows 的 NSIS 安装器成功后直接接管并结束本进程，
-        // 走不到任何 shutdown 钩子 ⇒ 必须在交棒**之前**把它写进不轮转的现场文件。
+        // 就是这样被读成一次不明死法）。2026-11-09 按插件源码复核了"到底是谁结束进程"
+        // （tauri-plugin-updater 2.14.0，`updater.rs` 的 Windows `install_inner`）：
+        // `ShellExecuteW` 拉起 NSIS 之后**插件自己** `std::process::exit(0)`，`install`
+        // 在 Windows 上根本不返回 ⇒ 走不到任何 shutdown 钩子，也走不到下面的
+        // `UPDATER_INSTALL_DONE`（那一行只服务 macOS/Linux 的 restart 路径）。
+        // 所以必须在这里、交棒**之前**把它写进不轮转的现场文件。
         // 版本号只在 BEGIN 里给：`update` 马上要被 `move` 进阻塞任务，为了 DONE 那一行
         // 再 clone 一份会直接撞上本函数那条 PERF-01 判据（安装路径里除错误文案外不许 clone）。
         crate::logging::crash_note(&format!(
@@ -589,8 +593,10 @@ mod desktop {
         }
         // 成功：两样都已随安装一起用掉（`take` 之后会话里本来就是空的，不必再 clear）。
         installing.armed = false;
+        // Windows 走不到这里（`install` 在插件内部就 exit(0) 了，见上面 BEGIN 处的说明）；
+        // 这一行服务 macOS/Linux：`install` 返回后本进程自己 restart。
         crate::logging::crash_note(
-            ">>> code=UPDATER_INSTALL_DONE（本进程接下来会被结束：Windows 由安装器、其它平台由 restart）",
+            ">>> code=UPDATER_INSTALL_DONE（本进程接下来由 restart 结束）",
         );
         state.set_status(&app, |st| {
             st.phase = "idle".to_string();

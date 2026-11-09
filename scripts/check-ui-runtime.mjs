@@ -4657,6 +4657,8 @@ async function main() {
     const tododelete = want("tododelete");
     const todoarchive = want("todoarchive");
     const taskpaste = want("taskpaste");
+    const tododraft = want("tododraft");
+    const emojiscroll = want("emojiscroll");
     const modaltitle = want("modaltitle");
     const codeblock = want("codeblock");
     const codefold = want("codefold");
@@ -4910,6 +4912,8 @@ async function main() {
     await runSegment("tododelete", tododelete, () => runTodoDelete(cdp, url));
     await runSegment("todoarchive", todoarchive, () => runTodoArchive(cdp, url));
     await runSegment("taskpaste", taskpaste, () => runTaskPaste(cdp, url));
+    await runSegment("tododraft", tododraft, () => runTodoDraft(cdp, url));
+    await runSegment("emojiscroll", emojiscroll, () => runEmojiScroll(cdp, url));
     await runSegment("modaltitle", modaltitle, () => runModalTitle(cdp, url));
     await runSegment("codeblock", codeblock, () => runCodeBlock(cdp, url));
     await runSegment("codefold", codefold, () => runCodeFold(cdp, url));
@@ -8160,6 +8164,396 @@ async function runTaskPaste(cdp, url) {
   check("图片上限 20 张：第 21 张起不再落盘、也不再增加图片",
     !!capped && capped.calls === 20 && capped.thumbs === 20,
     "落盘 20 次 + 图片区 20 张", JSON.stringify(capped));
+}
+
+/**
+ * 群任务「新建 / 编辑」草稿弹窗的尺寸与长文录入（`--only=tododraft`，用户 2026-11-09）。
+ *
+ * 用户原话：「新增编辑这个框框太窄了」「描述录入长文变编辑的时候上下滚动编辑很不方便」。
+ * 这里量三件事，全部读真矩形与溢出量，不读 class：
+ *   ① 弹窗宽度与描述框宽度（宽窗 ≥640 / 窄窗仍留在视口内）；
+ *   ② 描述框最小高度，以及长文后**高度真的变大**（不是内部冒出一条小滚动条）；
+ *   ③ 整页只有一层滚动（弹窗内容区），描述框自身 `scrollHeight == clientHeight`。
+ * 修前/修后各跑一次，`--shot=/tmp/x.png` 会在同一目录留下 wide/narrow + empty/long 四张真图。
+ */
+async function runTodoDraft(cdp, url) {
+  const shot = async (name) => {
+    if (!SHOT_PATH) return;
+    const p = SHOT_PATH.replace(/\.png$/, `-${name}.png`);
+    const s = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(p, Buffer.from(s.data, "base64"));
+    console.log("  📷 群任务草稿取证帧 → " + p);
+  };
+
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 900, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: {
+        currentWindow: { label: 'main' },
+        currentWebview: { label: 'main', windowLabel: 'main' },
+      },
+      invoke: async () => null,
+      transformCallback: (cb) => cb,
+      convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+  await cdp.eval(`window.__probe.install('/src/components/MessageItem.vue', '', ${
+    JSON.stringify(JSON.stringify({
+      message: { msg_id: 'warm-draft', conv_id: 'warm', sender_id: 'dev-me', kind: 'text', content: 'warm', ts: 1, seq: 1 },
+    }))})`);
+  await cdp.eval(`(async () => {
+    const { api } = await import('/src/api/index.ts');
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const group = { id: 'group-draft', name: '草稿探针群', creator: 'dev-me', members: ['dev-me'] };
+    api.getGroupTodoMessages = async () => [];
+    api.getGroups = async () => [group];
+    api.getGroupReads = async () => [];
+    api.getFriends = async () => [];
+    api.getPeers = async () => [];
+    chat.groups = [group];
+  })()`);
+  const mounted = await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${
+    JSON.stringify(JSON.stringify({ reusePinia: true, groupId: 'group-draft', open: true, fill: true }))})`);
+  check("群任务看板挂得起来（草稿弹窗尺寸这条判据的入口）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+
+  const createLabel = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    return t('todo.create');
+  })()`);
+  const opened = await cdp.eval(`(() => {
+    const b = [...document.querySelectorAll('button')]
+      .find((x) => (x.textContent || '').trim() === ${JSON.stringify(createLabel)});
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  await sleep(500);
+
+  /** 一次读全：弹窗、滚动层、描述框，以及"还有谁在滚"。 */
+  const read = () => cdp.eval(`(() => {
+    const card = document.querySelector('.glass-3');
+    if (!card) return { ok: false, reason: 'no-card', text: (document.body.innerText || '').slice(-240) };
+    const scroller = card.querySelector('.gosslan-scroll');
+    const ta = card.querySelector('textarea');
+    if (!scroller || !ta) return { ok: false, reason: 'no-scroll-or-textarea' };
+    const cr = card.getBoundingClientRect();
+    const tr = ta.getBoundingClientRect();
+    const ts = getComputedStyle(ta);
+    const ss = getComputedStyle(scroller);
+    // "还有谁在滚"：弹窗内容区之外的任何纵向可滚动元素都是第二层（描述框自己也算）。
+    const others = [...card.querySelectorAll('*')].filter((el) => {
+      if (el === scroller) return false;
+      const st = getComputedStyle(el);
+      return /(auto|scroll)/.test(st.overflowY) && el.scrollHeight > el.clientHeight + 1;
+    }).map((el) => el.tagName.toLowerCase() + (el === ta ? '[description]' : ''));
+    return {
+      ok: true,
+      viewport: { w: innerWidth, h: innerHeight },
+      card: {
+        w: +cr.width.toFixed(2), h: +cr.height.toFixed(2),
+        left: +cr.left.toFixed(2), right: +cr.right.toFixed(2),
+        radius: getComputedStyle(card).borderRadius,
+      },
+      ta: {
+        w: +tr.width.toFixed(2), h: +tr.height.toFixed(2), rows: ta.rows,
+        scrollH: ta.scrollHeight, clientH: ta.clientHeight,
+        overflowY: ts.overflowY, resize: ts.resize,
+      },
+      taInnerScroll: ta.scrollHeight > ta.clientHeight + 1,
+      scroller: {
+        clientW: scroller.clientWidth, offsetW: scroller.offsetWidth,
+        clientH: scroller.clientHeight, scrollH: scroller.scrollHeight,
+        scrollW: scroller.scrollWidth,
+        gutter: ss.scrollbarGutter, padL: ss.paddingLeft, padR: ss.paddingRight,
+        scrollable: scroller.scrollHeight > scroller.clientHeight + 1,
+      },
+      otherYScrollables: others,
+      horizOverflow: scroller.scrollWidth - scroller.clientWidth,
+    };
+  })()`);
+
+  const wideEmpty = await read();
+  await cdp.eval("document.querySelector('.glass-3 textarea')?.scrollIntoView({ block: 'center' })");
+  await sleep(200);
+  await shot("wide-empty");
+
+  const LONG = Array.from(
+    { length: 24 },
+    (_, i) => `第 ${i + 1} 行：这是用来验证描述框能舒适写长文的一段说明，内容多了应当让弹窗内容区滚动，而不是在框里再滚一层。`,
+  ).join("\n");
+  await cdp.eval(`(async () => {
+    const ta = document.querySelector('.glass-3 textarea');
+    if (!ta) return false;
+    ta.focus();
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(ta, ${JSON.stringify(LONG)});
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 350));
+    ta.scrollIntoView({ block: 'center' });
+    await new Promise((r) => setTimeout(r, 150));
+    return true;
+  })()`);
+  const wideLong = await read();
+  await shot("wide-long");
+
+  check("宽窗：草稿弹窗按内容放宽（≥640px，不是旧 max-w-lg 的 512）",
+    !!wideEmpty && wideEmpty.ok === true && wideEmpty.card.w >= 640,
+    "card.w ≥ 640", JSON.stringify(wideEmpty && wideEmpty.card));
+  check("宽窗：描述框也跟着弹窗变宽（≥600px）",
+    !!wideEmpty && wideEmpty.ok === true && wideEmpty.ta.w >= 600,
+    "textarea.w ≥ 600", JSON.stringify(wideEmpty && wideEmpty.ta));
+  check("描述框有舒适的最小高度（≥128px，不是旧 rows=3 的 ~88px）",
+    !!wideEmpty && wideEmpty.ok === true && wideEmpty.ta.h >= 128,
+    "textarea.h ≥ 128", JSON.stringify(wideEmpty && wideEmpty.ta));
+  check("长文让描述框**长高**，而不是内部出现小滚动条",
+    !!wideLong && wideLong.ok === true
+      && wideLong.ta.h > wideEmpty.ta.h + 120
+      && wideLong.taInnerScroll === false,
+    "h 明显变大 + 内部无滚动", JSON.stringify({
+      emptyH: wideEmpty && wideEmpty.ta.h,
+      longH: wideLong && wideLong.ta.h,
+      inner: wideLong && wideLong.taInnerScroll,
+    }));
+  check("整页只有一层滚动（弹窗内容区）；描述框自身不在可滚名单里",
+    !!wideLong && wideLong.ok === true
+      && wideLong.otherYScrollables.length === 0
+      && wideLong.scroller.scrollable === true,
+    "only modal scrolls", JSON.stringify(wideLong && {
+      others: wideLong.otherYScrollables,
+      scroller: wideLong.scroller.scrollable,
+    }));
+  check("弹窗内容区走统一滚动口径：both-edges + 两侧 8px 空隙，且无横向溢出",
+    !!wideLong && wideLong.ok === true
+      && /both-edges/.test(wideLong.scroller.gutter)
+      && wideLong.scroller.padL === "8px" && wideLong.scroller.padR === "8px"
+      && wideLong.horizOverflow === 0,
+    "gutter=both-edges / pad=8px / hOverflow=0",
+    JSON.stringify(wideLong && { gutter: wideLong.scroller.gutter, padL: wideLong.scroller.padL, padR: wideLong.scroller.padR, h: wideLong.horizOverflow }));
+
+  // 窄窗回退：同一套表单在 420px 宽窗口里必须仍留在视口内，不能横向溢出。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 420, height: 820, deviceScaleFactor: 1, mobile: false,
+  });
+  await sleep(600);
+  await cdp.eval("document.querySelector('.glass-3 textarea')?.scrollIntoView({ block: 'center' })");
+  await sleep(200);
+  const narrowLong = await read();
+  await shot("narrow-long");
+
+  check("窄窗：草稿弹窗留在视口内（左/右都不越界，宽度 ≥360）",
+    !!narrowLong && narrowLong.ok === true
+      && narrowLong.card.left >= 0 && narrowLong.card.right <= narrowLong.viewport.w
+      && narrowLong.card.w >= 360,
+    "0 ≤ left, right ≤ viewport, w ≥ 360", JSON.stringify(narrowLong && {
+      card: narrowLong.card, viewport: narrowLong.viewport,
+    }));
+  check("窄窗：描述框仍足够宽（≥300px）且长文不长出内部滚动条",
+    !!narrowLong && narrowLong.ok === true
+      && narrowLong.ta.w >= 300 && narrowLong.taInnerScroll === false
+      && narrowLong.otherYScrollables.length === 0
+      && narrowLong.horizOverflow === 0,
+    "ta.w ≥ 300 / 无内部滚动 / 仅一层",
+    JSON.stringify(narrowLong && { ta: narrowLong.ta, inner: narrowLong.taInnerScroll, others: narrowLong.otherYScrollables, h: narrowLong.horizOverflow }));
+
+  // 清空后回到最小高度（长文留下的死高度不允许回不去）。
+  await cdp.eval(`(() => {
+    const ta = document.querySelector('.glass-3 textarea');
+    if (!ta) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(ta, '');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`);
+  await sleep(300);
+  await cdp.eval("document.querySelector('.glass-3 textarea')?.scrollIntoView({ block: 'center' })");
+  await sleep(150);
+  const narrowEmpty = await read();
+  await shot("narrow-empty");
+  const brief = (x) => (x && x.ok ? {
+    cardW: x.card.w, cardLeft: x.card.left, cardRight: x.card.right,
+    taW: x.ta.w, taH: x.ta.h, taRows: x.ta.rows,
+    taScrollH: x.ta.scrollH, taClientH: x.ta.clientH,
+    taInnerScroll: x.taInnerScroll, others: x.otherYScrollables,
+    modalScrolls: x.scroller.scrollable, padL: x.scroller.padL, padR: x.scroller.padR,
+    gutter: x.scroller.gutter, horizOverflow: x.horizOverflow,
+  } : x);
+  console.log("  · 群任务草稿读数 " + JSON.stringify({
+    wideEmpty: brief(wideEmpty),
+    wideLong: brief(wideLong),
+    narrowLong: brief(narrowLong),
+    narrowEmpty: brief(narrowEmpty),
+  }));
+  check("清空长文后描述框缩回最小高度（不是被死高度钉住）",
+    !!narrowEmpty && narrowEmpty.ok === true && narrowEmpty.ta.h <= wideEmpty.ta.h + 1,
+    "h ≤ 空态高度 + 1", JSON.stringify(narrowEmpty && narrowEmpty.ta));
+}
+
+/**
+ * 表情面板滚动条的真布局（`--only=emojiscroll`，用户 2026-11-09）。
+ *
+ * 用户原话：「这个面板的滚动条怪怪的」。这一段不靠目测：量面板/网格两层各留了几 px、
+ * 滚动条带与内容/边框/圆角的距离、是否出现第二层（面板自己 + 网格各一条）、
+ * 有没有横向溢出、滚动时内容盒宽度是否变化。
+ * 判据与反例都读真矩形；`--shot=/tmp/x.png` 存一张面板右缘取证帧。
+ */
+async function runEmojiScroll(cdp, url) {
+  const shot = async (name) => {
+    if (!SHOT_PATH) return;
+    const p = SHOT_PATH.replace(/\.png$/, `-${name}.png`);
+    const s = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(p, Buffer.from(s.data, "base64"));
+    console.log("  📷 表情面板滚动条取证帧 → " + p);
+  };
+
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 2, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const table = await cdp.eval(
+    "(async () => { const m = await import('/src/utils/emoji.ts');" +
+      " return { tokens: m.EMOJIS.slice(0, 8).map((e) => e.displayName) }; })()",
+  );
+  const seed = {};
+  table.tokens.forEach((tk, i) => { seed[tk] = { n: 90 - i, t: 1 }; });
+  await cdp.eval(
+    `localStorage.setItem('gosslan.emojiUsage.v1', ${JSON.stringify(JSON.stringify(seed))})`,
+  );
+  await cdp.eval(`window.__probe.install('/src/components/EmojiPicker.vue',
+    '<button id="trigger" data-probe-panel>触发按钮</button>')`);
+  await cdp.eval("window.__probe.focusTrigger()");
+  await cdp.eval("window.__probe.setOpen(true)");
+  await sleep(400);
+
+  const read = () => cdp.eval(`(() => {
+    const panel = document.querySelector('[data-emoji-panel]');
+    const grid = panel && panel.querySelector('.grid');
+    if (!panel || !grid) return { ok: false, reason: 'no-panel-or-grid' };
+    const pr = panel.getBoundingClientRect();
+    const gr = grid.getBoundingClientRect();
+    const ps = getComputedStyle(panel);
+    const gs = getComputedStyle(grid);
+    const cells = [...grid.querySelectorAll('button')];
+    const last = cells[cells.length - 1] || null;
+    const lastR = last ? last.getBoundingClientRect() : null;
+    const maxCellRight = cells.length
+      ? Math.max(...cells.map((b) => b.getBoundingClientRect().right))
+      : null;
+    // 滚动条带左缘 = grid 的 client 区右缘（clientWidth 已扣掉滚动条与 gutter）。
+    const trackLeft = gr.left + grid.clientLeft + grid.clientWidth;
+    return {
+      ok: true,
+      panel: {
+        w: +pr.width.toFixed(2), h: +pr.height.toFixed(2),
+        top: +pr.top.toFixed(2), right: +pr.right.toFixed(2),
+        radius: ps.borderRadius, overflowY: ps.overflowY, overflowX: ps.overflowX,
+        gutter: ps.scrollbarGutter, padding: ps.padding,
+        scrollH: panel.scrollHeight, clientH: panel.clientHeight,
+      },
+      panelBarW: panel.offsetWidth - panel.clientWidth,
+      panelBorderW: parseFloat(ps.borderLeftWidth) + parseFloat(ps.borderRightWidth),
+      panelScrollbarW: panel.offsetWidth - panel.clientWidth
+        - parseFloat(ps.borderLeftWidth) - parseFloat(ps.borderRightWidth),
+      panelScrollable: panel.scrollHeight > panel.clientHeight + 1,
+      grid: {
+        w: +gr.width.toFixed(2), h: +gr.height.toFixed(2),
+        top: +gr.top.toFixed(2), bottom: +gr.bottom.toFixed(2),
+        gutter: gs.scrollbarGutter, padL: gs.paddingLeft, padR: gs.paddingRight,
+        overflowX: gs.overflowX, overflowY: gs.overflowY,
+        scrollH: grid.scrollHeight, clientH: grid.clientHeight,
+        scrollW: grid.scrollWidth, clientW: grid.clientWidth,
+      },
+      gridBarW: grid.offsetWidth - grid.clientWidth,
+      gridScrollable: grid.scrollHeight > grid.clientHeight + 1,
+      hOverflow: grid.scrollWidth - grid.clientWidth,
+      trackLeft: +trackLeft.toFixed(2),
+      lastCellRight: lastR ? +lastR.right.toFixed(2) : null,
+      maxCellRight: maxCellRight === null ? null : +maxCellRight.toFixed(2),
+      // 用**最右一列**的右缘，而不是 DOM 里最后一个按钮（最后一行可能没排满）。
+      contentToTrack: maxCellRight === null ? null : +(trackLeft - maxCellRight).toFixed(2),
+      trackTop: +gr.top.toFixed(2),
+      trackBottom: +gr.bottom.toFixed(2),
+      cornerInsetTop: +(gr.top - pr.top).toFixed(2),
+      cornerInsetBottom: +(pr.bottom - gr.bottom).toFixed(2),
+      cells: cells.length,
+    };
+  })()`);
+
+  const before = await read();
+  // 滚动一下：内容盒宽度与轨道位置不许变（否则就是用户说的"滚动时跳一下"）。
+  await cdp.eval(`(() => {
+    const grid = document.querySelector('[data-emoji-panel] .grid');
+    if (grid) grid.scrollTop = 120;
+    return true;
+  })()`);
+  await sleep(200);
+  const afterScroll = await read();
+  await shot("panel");
+  const brief = (x) => (x && x.ok ? {
+    panelW: x.panel.w, panelH: x.panel.h, panelRadius: x.panel.radius,
+    panelBarW: x.panelBarW, panelBorderW: x.panelBorderW,
+    panelScrollbarW: x.panelScrollbarW, panelScrollable: x.panelScrollable,
+    panelGutter: x.panel.gutter, panelOverflowY: x.panel.overflowY,
+    gridW: x.grid.w, gridH: x.grid.h, gridBarW: x.gridBarW,
+    gridGutter: x.grid.gutter, gridPadL: x.grid.padL, gridPadR: x.grid.padR,
+    contentToTrack: x.contentToTrack, lastCellRight: x.lastCellRight,
+    maxCellRight: x.maxCellRight,
+    trackLeft: x.trackLeft, trackTop: x.trackTop, trackBottom: x.trackBottom,
+    cornerInsetTop: x.cornerInsetTop, cornerInsetBottom: x.cornerInsetBottom,
+    hOverflow: x.hOverflow, gridScrollable: x.gridScrollable,
+    gridClientW: x.grid.clientW, gridScrollTop: x.grid.scrollTop,
+  } : x);
+  console.log("  · 表情面板滚动条读数 " + JSON.stringify({
+    before: brief(before),
+    afterScroll: brief(afterScroll),
+  }));
+  check("表情面板只有网格这一层滚动（面板自己不预留第二条第带）",
+    !!before && before.ok === true && before.panelScrollbarW === 0
+      && before.panelScrollable === false && before.gridScrollable === true,
+    "panelScrollbarW=0 / panel 不滚 / grid 滚", JSON.stringify(before && {
+      panelScrollbarW: before.panelScrollbarW,
+      panelBarW: before.panelBarW,
+      panelScrollable: before.panelScrollable,
+      gridScrollable: before.gridScrollable,
+    }));
+  check("滚动条带宽 = token 8px（不是平台默认宽度）",
+    !!before && before.ok === true && before.gridBarW === 8,
+    "gridBarW=8", JSON.stringify(before && { gridBarW: before.gridBarW }));
+  check("内容与滚动条带有 ≥8px 空隙（不压住最后一列表情）",
+    !!before && before.ok === true && before.contentToTrack >= 8,
+    "contentToTrack ≥ 8", JSON.stringify(before && {
+      last: before.lastCellRight, trackLeft: before.trackLeft, gap: before.contentToTrack,
+    }));
+  check("网格没有横向溢出（不出现横向滚动条/第二层）",
+    !!before && before.ok === true && before.hOverflow === 0,
+    "hOverflow=0", JSON.stringify(before && { hOverflow: before.hOverflow, scrollW: before.grid.scrollW, clientW: before.grid.clientW }));
+  check("滚动条带不横跨面板圆角（上/下各留 ≥8px）",
+    !!before && before.ok === true
+      && before.cornerInsetTop >= 8 && before.cornerInsetBottom >= 8,
+    "top/bottom inset ≥ 8", JSON.stringify(before && {
+      radius: before.panel.radius, top: before.cornerInsetTop, bottom: before.cornerInsetBottom,
+    }));
+  check("滚动时内容盒宽度与轨道位置不变（不跳）",
+    !!afterScroll && afterScroll.ok === true
+      && afterScroll.grid.clientW === before.grid.clientW
+      && afterScroll.trackLeft === before.trackLeft,
+    "clientW / trackLeft 前后相等", JSON.stringify({
+      before: before && { clientW: before.grid.clientW, trackLeft: before.trackLeft },
+      after: afterScroll && { clientW: afterScroll.grid.clientW, trackLeft: afterScroll.trackLeft },
+    }));
 }
 
 /**
@@ -20556,12 +20950,30 @@ async function runSettingsMobile(cdp, url) {
         return r.right > innerWidth + 1 || r.left < -1;
       });
       const text = document.body.innerText || '';
-      const input = document.querySelector('input[type=color]');
-      const row = input ? input.closest('[class*="px-4"][class*="py-3"]') : null;
+      // 判据锚点从「input 的某个 px-4/py-3 祖先」搬到控件自身的 [data-theme-color-picker]：
+      // 行类名改过一次，旧选择器在 2026-11-09 已经查不到行（presets=0 空转）。没有新锚点时
+      // 退回 input[type=color] 所在行 —— 这样同一段探针能把「修前」的旧形状也量出来做反例自证。
+      const picker = document.querySelector('[data-theme-color-picker]');
+      const input = document.querySelector('[data-custom-color-entry] input[type=color]')
+        || document.querySelector('input[type=color]');
+      const row = picker ? picker.closest('.settings-card-row')
+        : (input ? input.closest('.settings-card-row') : null);
       const rowR = row ? row.getBoundingClientRect() : null;
-      const inR = input ? input.getBoundingClientRect() : null;
-      const presets = row ? [...row.querySelectorAll('button[aria-pressed]')] : [];
+      const presets = picker
+        ? [...picker.querySelectorAll('[data-preset-color]')]
+        : (row ? [...row.querySelectorAll('button[aria-pressed]')] : []);
       const presetRects = presets.map((b) => b.getBoundingClientRect()).filter((r) => r.width > 0);
+      const entry = document.querySelector('[data-custom-color-entry]');
+      const surface = entry ? entry.querySelector('button[aria-pressed]') : null;
+      const wheel = entry ? entry.querySelector('.custom-color-wheel') : null;
+      const inR = input ? input.getBoundingClientRect() : null;
+      const entryR = (entry || input) ? (entry || input).getBoundingClientRect() : null;
+      const hexOf = (b) => {
+        const own = b.getAttribute('data-preset-color');
+        if (own) return own;
+        const m = /#[0-9a-f]{6}/i.exec(b.getAttribute('aria-label') || '');
+        return m ? m[0] : null;
+      };
       return {
         vw: innerWidth,
         scrollW: document.documentElement.scrollWidth,
@@ -20574,14 +20986,31 @@ async function runSettingsMobile(cdp, url) {
         reduceOptions: buttons.filter((b) => /^(减少透明|Reduce)$/.test((b.textContent || '').trim())).length,
         colorPresets: presets.length,
         colorPresetWidths: presetRects.map((r) => +r.width.toFixed(1)),
-        colorInputRight: inR ? +inR.right.toFixed(1) : null,
-        colorInputWidth: inR ? +inR.width.toFixed(1) : null,
-        colorInputHeight: inR ? +inR.height.toFixed(1) : null,
-        colorInputRadius: input ? getComputedStyle(input).borderRadius : null,
-        colorPresetRadii: presets.map((b) => getComputedStyle(b).borderRadius),
         colorPresetHeights: presetRects.map((r) => +r.height.toFixed(1)),
+        colorPresetRadii: presets.map((b) => getComputedStyle(b).borderRadius),
         colorLastPresetRight: presetRects.length ? +Math.max(...presetRects.map((r) => r.right)).toFixed(1) : null,
         colorRowRight: rowR ? +rowR.right.toFixed(1) : null,
+        // 选中态归属：aria-pressed 是唯一判据（预置色与自定义入口互斥）。
+        selectedPresets: presets.filter((b) => b.getAttribute('aria-pressed') === 'true').map(hexOf),
+        customEntryWidth: entryR ? +entryR.width.toFixed(1) : null,
+        customEntryHeight: entryR ? +entryR.height.toFixed(1) : null,
+        customEntryRight: entryR ? +entryR.right.toFixed(1) : null,
+        customSurfaceRadius: surface ? getComputedStyle(surface).borderRadius
+          : (input ? getComputedStyle(input).borderRadius : null),
+        customSelected: entry ? entry.getAttribute('data-selected') : null,
+        customAriaPressed: surface ? surface.getAttribute('aria-pressed') : null,
+        customAriaLabel: surface ? surface.getAttribute('aria-label') : null,
+        customLabelVisible: entry ? /自定义|Custom/i.test(entry.textContent || '') : false,
+        // 未选中自定义时入口填充是色轮（background-image），选中后才是当前自定义色（纯色）。
+        customWheelBg: wheel ? getComputedStyle(wheel).backgroundColor : null,
+        customWheelImage: wheel ? getComputedStyle(wheel).backgroundImage : null,
+        customOutlineStyle: surface ? getComputedStyle(surface).outlineStyle : null,
+        customOutlineWidth: surface ? getComputedStyle(surface).outlineWidth : null,
+        customInputValue: input ? input.value : null,
+        customTabbables: picker
+          ? [...picker.querySelectorAll('button, input')]
+            .filter((e) => e.tabIndex >= 0 && e.getClientRects().length > 0).length
+          : null,
       };
     })()`);
     let s = await read();
@@ -20615,27 +21044,133 @@ async function runSettingsMobile(cdp, url) {
     check("移动端设置：进入「外观」二级页，字体默认档可见且无横向溢出",
       clicked === true && s.hasFont && s.scrollW <= s.vw + 1 && s.outside.length === 0,
       "外观页含系统默认 + 无溢出", JSON.stringify(s));
+    // ── 主题色控件取证帧（亮/暗各一组，裁到控件所在行）────────────────────
+    const shotRow = async (name) => {
+      if (!SHOT_PATH) return null;
+      const rect = await cdp.eval(`(() => {
+        const p = document.querySelector('[data-theme-color-picker]');
+        const target = p || (document.querySelector('input[type=color]')
+          && document.querySelector('input[type=color]').closest('.settings-card-row'));
+        if (!target) return null;
+        const r = target.getBoundingClientRect();
+        return {
+          x: +Math.max(0, r.x + scrollX - 12).toFixed(1),
+          y: +Math.max(0, r.y + scrollY - 10).toFixed(1),
+          width: +(r.width + 24).toFixed(1),
+          height: +(r.height + 20).toFixed(1),
+        };
+      })()`);
+      if (!rect) return null;
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png", clip: { ...rect, scale: 2 } });
+      const p = SHOT_PATH.replace(/\.png$/, `-${name}.png`);
+      fs.writeFileSync(p, Buffer.from(shot.data, "base64"));
+      console.log("  📷 主题色控件取证帧 → " + p);
+      return p;
+    };
+    await shotRow("themecolor-light-default");
+
+    // 用户 2026-11-09：① 自定义入口看不出来（曾是第 7 个同形状圆点）② 点预置色时它也一起变。
+    // 判据不再要求「与 preset 同尺寸同形状」（B3），而是**必须不同**：宽 ≥64、有文字、有色轮，
+    // 且未选自定义时填充是色轮而不是当前生效色 —— 这是换参照物，不是放宽（旧判据正是缺陷本身）。
+    const colorsBase = s;
     const colorsOk = s.colorPresets === 6
       && s.colorPresetWidths.length === 6 && s.colorPresetWidths.every((w) => w >= 20)
-      && s.colorInputWidth >= 24
       && s.colorRowRight !== null
-      && s.colorInputRight <= s.colorRowRight - 1
       && s.colorLastPresetRight <= s.colorRowRight - 1
-      // B3（2026-11-06）：自定义色入口必须与 6 个 preset **同尺寸同形状** —— 原生
-      // `<input type="color">` 不许再画出独立的圆角方块。尺寸与 preset 对齐，圆角一致。
-      && s.colorInputHeight === s.colorPresetHeights[0]
-      && s.colorPresetHeights.every((h) => h === s.colorInputHeight)
-      && Math.abs(s.colorInputWidth - s.colorPresetWidths[0]) <= 0.5
-      && s.colorInputRadius === s.colorPresetRadii[0]
-      && s.colorPresetRadii.every((r) => r === s.colorInputRadius);
-    check("移动端外观：6 个预设色与自定义色都完整可见，且自定义色与预设同尺寸同形状（没有把最后一个色块挤没/裁掉）",
+      && s.selectedPresets.length === 1 && s.selectedPresets[0] === '#2f6bff'
+      && s.customEntryWidth >= 64
+      && s.customEntryHeight === s.colorPresetHeights[0]
+      && s.customSurfaceRadius === s.colorPresetRadii[0]
+      && s.customEntryRight <= s.colorRowRight - 1
+      && s.customSelected === 'false' && s.customAriaPressed === 'false'
+      && s.customOutlineStyle === 'none'
+      && /自定义|Custom/i.test(String(s.customAriaLabel))
+      && s.customLabelVisible === true
+      && s.customTabbables === 7
+      && /conic-gradient/.test(String(s.customWheelImage));
+    check("移动端外观：预置色一排 6 档且选中态互斥；自定义是独立入口（宽≥64 / 有文字 / 色轮）并保持未选",
       colorsOk,
-      "6 个预设宽度≥20 + 自定义色≥24、与预设同宽高同圆角、且在行内",
+      "6 预置宽度≥20 + 唯一选中 #2f6bff + 自定义宽≥64 有文字有色轮、aria-pressed=false、无 outline、行内",
       JSON.stringify({ presets: s.colorPresets, widths: s.colorPresetWidths,
-        inputW: s.colorInputWidth, inputH: s.colorInputHeight, inputRadius: s.colorInputRadius,
-        presetHeights: s.colorPresetHeights, presetRadii: s.colorPresetRadii,
-        inputRight: s.colorInputRight,
-        lastRight: s.colorLastPresetRight, rowRight: s.colorRowRight }));
+        selected: s.selectedPresets, entryW: s.customEntryWidth, entryH: s.customEntryHeight,
+        entryRadius: s.customSurfaceRadius, entryRight: s.customEntryRight, rowRight: s.colorRowRight,
+        ariaPressed: s.customAriaPressed, ariaLabel: s.customAriaLabel, label: s.customLabelVisible,
+        tabbables: s.customTabbables, wheel: s.customWheelBg, wheelImage: s.customWheelImage,
+        lastRight: s.colorLastPresetRight }));
+
+    // 点一个预置色：选中态搬家，自定义入口必须**纹丝不动**（用户报的"它也跟着变"）。
+    const clickPreset = async (hex) => cdp.eval(`(() => {
+      const picker = document.querySelector('[data-theme-color-picker]');
+      const b = (picker && picker.querySelector('[data-preset-color="${hex}"]'))
+        || [...document.querySelectorAll('button[aria-pressed]')]
+          .find((x) => (x.getAttribute('aria-label') || '').includes('${hex}'));
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    const presetClicked = await clickPreset('#ff6b35');
+    await sleep(300);
+    s = await read();
+    const presetNotFollowing = s.customWheelImage === colorsBase.customWheelImage
+      && s.customWheelBg === colorsBase.customWheelBg
+      && s.customInputValue === colorsBase.customInputValue;
+    check("移动端外观：点预置色后选中态只属于该预置色；自定义入口保持未选且填充/取色器值不跟着变",
+      presetClicked === true
+        && s.selectedPresets.length === 1 && s.selectedPresets[0] === '#ff6b35'
+        && s.customSelected === 'false' && s.customAriaPressed === 'false'
+        && s.customOutlineStyle === 'none'
+        && presetNotFollowing,
+      "selected=['#ff6b35'] + customSelected=false + 色轮/取色器值完全不变",
+      JSON.stringify({ selected: s.selectedPresets, customSelected: s.customSelected,
+        customPressed: s.customAriaPressed, wheelBg: s.customWheelBg, wheelBefore: colorsBase.customWheelBg,
+        wheelImage: String(s.customWheelImage).slice(0, 48),
+        value: s.customInputValue, valueBefore: colorsBase.customInputValue }));
+    await shotRow("themecolor-light-preset");
+
+    // 选自定义色：预置色全部取消，入口变成"选中 + 显示当前自定义色"。
+    const customSet = await cdp.eval(`(() => {
+      const i = document.querySelector('[data-custom-color-entry] input[type=color]');
+      if (!i) return false;
+      i.value = '#123456';
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    await sleep(300);
+    s = await read();
+    check("移动端外观：选自定义色后预置色全部取消选中、入口显示当前自定义色（互斥）",
+      customSet === true && s.selectedPresets.length === 0
+        && s.customSelected === 'true' && s.customAriaPressed === 'true'
+        && s.customOutlineStyle === 'solid' && s.customOutlineWidth === '2px'
+        && s.customWheelBg === 'rgb(18, 52, 86)'
+        && s.customInputValue === '#123456',
+      "selected=[] + aria-pressed=true + outline 2px + 色轮=#123456",
+      JSON.stringify({ selected: s.selectedPresets, customSelected: s.customSelected,
+        pressed: s.customAriaPressed, outline: s.customOutlineStyle + "/" + s.customOutlineWidth,
+        wheelBg: s.customWheelBg, value: s.customInputValue }));
+    await shotRow("themecolor-light-custom");
+
+    // 暗色：同一选中态下必须仍然"看得出选中"（outline 来自 token，不是写死的浅色）。
+    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] }).catch(() => {});
+    await cdp.eval("document.documentElement.classList.add('dark')");
+    await sleep(400);
+    const darkShot = await shotRow("themecolor-dark-custom");
+    const darkRead = await read();
+    check("移动端外观：暗色下自定义选中态仍清楚（2px outline + 仍是当前自定义色）",
+      (!SHOT_PATH || darkShot !== null)
+        && darkRead.customSelected === 'true'
+        && darkRead.customOutlineStyle === 'solid' && darkRead.customOutlineWidth === '2px'
+        && darkRead.customWheelBg === 'rgb(18, 52, 86)',
+      "dark: selected=true + outline 2px + wheel=#123456",
+      JSON.stringify({ shot: darkShot, selected: darkRead.customSelected,
+        outline: darkRead.customOutlineStyle + "/" + darkRead.customOutlineWidth,
+        wheelBg: darkRead.customWheelBg }));
+
+    // 回到默认预置色 + 亮色，避免污染后续「减少透明效果」与返回键检查。
+    await clickPreset('#2f6bff');
+    await cdp.eval("document.documentElement.classList.remove('dark')");
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+    await sleep(300);
+    s = await read();
 
     // 「减少透明效果」：受影响段就是外观页这一行。点了之后必须真的落到 DOM
     // （`data-reduced-transparency=true` → CSS 退实底），且动效背景冻结到 static、布局不溢出。

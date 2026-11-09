@@ -28,6 +28,7 @@ import {
   countPreWrapSites,
   checkTextFieldFocusRing,
   checkGlassTiers,
+  checkSolidChromeSeparation,
   checkAmbientMotion,
   checkSkeletonStatic,
   checkComposerSurface,
@@ -48,6 +49,7 @@ import {
   countCommonLayerPlatformImports,
   findImgTags,
   checkTodoCardImageLimit,
+  checkTodoDraftForm,
   findLiteralRadiusClasses,
   findDirectLucideImports,
   findUnknownIconNames,
@@ -1544,6 +1546,52 @@ test("反例：删掉 @supports not (backdrop-filter) 降级块 → 报红", () 
   );
   const msgs = checkGlassTiers(css).map((i) => i.message);
   assert.ok(msgs.some((m) => m.includes("不支持 backdrop-filter")), msgs.join("\n"));
+});
+
+// ---------------- 方案 A「明度阶梯」：实底档只留明度差分，不留第二、三种分界线 ----------------
+//
+// 用户 2026-11-09 实测：`data-reduced-transparency="true"` + `data-ambient="off"` 时，
+// 标题栏 / 左栏 / 列表三处交界对比 1.00:1（回退色直接借用列表色），
+// 而 1px 内描边 + 顶部高光 + 24px 外投影全都还在 ⇒ 界面又脏又糊。
+test("真实的 style.css：实底档 chrome 面走明度阶梯、两条降级路径阴影清零 → 0 条报红", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.deepEqual(
+    checkSolidChromeSeparation(css),
+    [],
+    checkSolidChromeSeparation(css)
+      .map((i) => `L${i.line} ${i.message}`)
+      .join("\n"),
+  );
+});
+
+// 反例 ①：回退色指回列表色 ⇒ 1.00:1，等于没有分界（用户看到的"糊成一块"）。
+test("反例：glass-1 fallback 指回 --gosslan-list → 报红", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8").replace(
+    /--gosslan-glass-1-fallback:\s*var\(--gosslan-chrome-solid\);/g,
+    "--gosslan-glass-1-fallback: var(--gosslan-list);",
+  );
+  const msgs = checkSolidChromeSeparation(css).map((i) => i.message);
+  assert.ok(msgs.some((m) => m.includes("--gosslan-chrome-solid")), msgs.join("\n"));
+});
+
+// 反例 ②：应用内降级块没清零 elevation ⇒ 实底上仍压着 24px 投影灰带。
+test("反例：应用内降级块漏掉 --gosslan-glass-1-elevation: none → 报红", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8").replace(
+    /html\[data-reduced-transparency="true"\] \{[\s\S]*?\n\}/,
+    (block) => block.replace(/\s*--gosslan-glass-1-elevation: none;/, ""),
+  );
+  const msgs = checkSolidChromeSeparation(css).map((i) => i.message);
+  assert.ok(msgs.some((m) => m.includes("elevation")), msgs.join("\n"));
+});
+
+// 反例 ③：系统媒体查询那条路径漏清零 ⇒ 两条降级路径观感漂移（一条干净一条脏）。
+test("反例：系统 prefers-reduced-transparency 块漏掉 elevation 清零 → 报红", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8").replace(
+    /@media \(prefers-reduced-transparency: reduce\) \{[\s\S]*?\n\}/,
+    (block) => block.replace(/\s*--gosslan-glass-1-elevation: none;/, ""),
+  );
+  const msgs = checkSolidChromeSeparation(css).map((i) => i.message);
+  assert.ok(msgs.some((m) => m.includes("prefers-reduced-transparency")), msgs.join("\n"));
 });
 
 // ---------------- ⑫ 浮层 z 序阶梯：弹窗必须盖住整页下钻页，但不能盖住菜单/预览/toast ----------------
@@ -3901,6 +3949,53 @@ test("字体默认档不得用空串 option value（Reka SelectItem 不渲染空
     "存储值到哨兵的映射必须存在（否则默认档匹配不到）");
   assert.match(src, /value === SYSTEM_FONT \? "" : value/,
     "落库前必须把哨兵映射回空串（不许把哨兵写进设置）");
+});
+
+// 用户 2026-11-09：「自定义颜色的按钮看不出来，和其他有啥区别；并且其他选择颜色他也跟着变，
+// 感觉像 bug」。这条钉三件事，任何一件回退都必须红：
+//   ① 预置色固定 6 档（第 7 颗只能来自自定义入口 ⇒ 正是"看不出区别"的形状）；
+//   ② 自定义入口有独立标记 + 文字标签（不是第六/第七个圆点）；
+//   ③ 取色器的 value 走独立种子 `customPickerValue`，**不许**直接绑当前生效色
+//      `app.themeColor`（那会让它跟着预置色一起变）。
+// 反例自证：三件各做一次变异，`problems()` 都必须报出对应句子。
+test("主题色：自定义入口是独立入口，且不跟随当前生效色（与预置色互斥）", () => {
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "components", "settings", "AppearanceSection.vue"), "utf8");
+  const problems = (s: string): string[] => {
+    const out: string[] = [];
+    const presetList = /const presets\s*=\s*\[([^\]]*)\]/.exec(s);
+    const presetCount = presetList ? presetList[1].split(",").map((x) => x.trim()).filter(Boolean).length : 0;
+    if (presetCount !== 6) out.push(`预置色应为 6 档，实际 ${presetCount}（自定义混进色板就会变成第 7 个圆点）`);
+    if (!s.includes("data-custom-color-entry")) out.push("自定义入口缺独立标记 data-custom-color-entry");
+    if (!/<span class="custom-color-label">[\s\S]*?<\/span>/.test(s)) out.push("自定义入口缺文字标签（读屏与肉眼都只剩一个圆点）");
+    if (!/:aria-pressed="isCustomThemeColor"/.test(s)) out.push("自定义入口缺 aria-pressed 选中语义");
+    if (/:value="app\.themeColor"/.test(s)) out.push("自定义取色器绑了当前生效色 ⇒ 会跟随预置色变");
+    if (!/:value="customPickerValue"/.test(s)) out.push("自定义取色器没有用独立种子值 customPickerValue");
+    return out;
+  };
+  assert.deepEqual(problems(src), [], "自定义入口回退成了「第 7 个圆点 / 跟随当前色」的形状");
+
+  // 反例 1：取色器改回当前生效色（用户报的 bug 原形）⇒ 必须红
+  const follows = src.replace(':value="customPickerValue"', ':value="app.themeColor"');
+  assert.notEqual(follows, src, "反例锚点漂了：:value=\"customPickerValue\" 不见了");
+  assert.ok(problems(follows).some((p) => p.includes("跟随")), "取色器绑回当前生效色后判据必须报红");
+
+  // 反例 2：去掉独立标记与文字 ⇒ 退化成一个没有说明的圆点 ⇒ 必须红
+  const asDot = src
+    .replace("data-custom-color-entry", "")
+    .replace(/<span class="custom-color-label">[\s\S]*?<\/span>/, "");
+  assert.ok(
+    problems(asDot).some((p) => p.includes("独立标记") || p.includes("文字标签")),
+    "去掉独立标记/文字后判据必须报红",
+  );
+
+  // 反例 3：把自定义色混进 presets（7 档色板）⇒ 必须红
+  const seven = src.replace(
+    /const presets\s*=\s*\[[^\]]*\]/,
+    'const presets = ["#2f6bff", "#00b578", "#ff6b35", "#8b5cf6", "#e53e3e", "#0ea5e9", "#123456"]',
+  );
+  assert.notEqual(seven, src, "反例锚点漂了：presets 声明不见了");
+  assert.ok(problems(seven).some((p) => p.includes("6 档")), "预置色变 7 档后判据必须报红");
 });
 
 test("文件角标只有一处实现：组件里不许裸用 fileExt( 自己拼", () => {
@@ -9283,4 +9378,36 @@ test("PG-05 「传输队列」改名与图标：中英文与入口一起换，�
   assert.match(list, /name="arrow-right-left"/, "入口图标没换成传输语义");
   // 反例自证：旧名一旦写回，匹配器必须咬住。
   assert.match('"task.center": "任务中心"', /任务中心/);
+});
+
+test("TD-01 群任务草稿弹窗：宽度放宽，描述框最小高度 + 随内容长高（只留一层滚动）", () => {
+  const src = readFileSync(join(PG_SRC, "components", "GroupTasksBoard.vue"), "utf8");
+  assert.deepEqual(checkTodoDraftForm(src), [], "真实源码必须零告警");
+});
+
+test("TD-01 反例自证：弹窗宽度改回 max-w-lg 必须红", () => {
+  const src = readFileSync(join(PG_SRC, "components", "GroupTasksBoard.vue"), "utf8");
+  const narrowed = src.replace('width="max-w-2xl"', 'width="max-w-lg"');
+  assert.notEqual(narrowed, src, "fixture 没替换成功 ⇒ 这条在测空气");
+  const issues = checkTodoDraftForm(narrowed);
+  assert.ok(issues.some((i) => /TD-01/.test(i.message)), "宽度改回旧值后判据仍为绿 ⇒ 判据空转");
+});
+
+test("TD-01 反例自证：给描述框加死高度（h-24）必须红", () => {
+  const src = readFileSync(join(PG_SRC, "components", "GroupTasksBoard.vue"), "utf8");
+  const fixed = src.replace(
+    'class="min-h-[8.5rem] w-full resize-none overflow-y-hidden',
+    'class="h-24 min-h-[8.5rem] w-full resize-none overflow-y-hidden',
+  );
+  assert.notEqual(fixed, src, "fixture 没替换成功 ⇒ 这条在测空气");
+  const issues = checkTodoDraftForm(fixed);
+  assert.ok(issues.some((i) => /TD-02/.test(i.message) && /死高度/.test(i.message)), "死高度没被抓到 ⇒ 判据空转");
+});
+
+test("TD-01 反例自证：描述框去掉 overflow-y-hidden / 改回 resize-y 必须红", () => {
+  const src = readFileSync(join(PG_SRC, "components", "GroupTasksBoard.vue"), "utf8");
+  const broken = src.replace("resize-none overflow-y-hidden", "resize-y overflow-y-auto");
+  assert.notEqual(broken, src, "fixture 没替换成功 ⇒ 这条在测空气");
+  const issues = checkTodoDraftForm(broken);
+  assert.ok(issues.some((i) => /TD-02/.test(i.message) && /框里再滚一层/.test(i.message)), "内层滚动没被抓到 ⇒ 判据空转");
 });

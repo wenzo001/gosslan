@@ -43,6 +43,8 @@ test("只有异常/启动中止才提示；正常退出不打扰", () => {
   assert.equal(shouldShowCrashNotice("sigterm"), false);
   // 2026-11-08（用户口径「我们主动结束不许与被外部杀死混用」）：
   // 更新安装器接管、单实例交接都是**正常路径**，弹横幅等于把正常流程说成事故。
+  // 2026-11-09 扩充：`updater` 这一格现在也覆盖**安装器强杀**（覆盖安装 / 卸载时安装器写的
+  // `INSTALLER_TAKEOVER`）以及安装器路标兜底 —— 升级后首次启动不该弹这个框。
   assert.equal(shouldShowCrashNotice("updater"), false);
   assert.equal(shouldShowCrashNotice("single_instance"), false);
 });

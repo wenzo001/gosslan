@@ -144,14 +144,14 @@
      对白 panel / 白 chat 只有 **1.11:1**、对 list #f7f8fa **1.04:1**、对 bg **1.00:1**
      （等于没有边界；亮色最差）。现在两道一起给：
        · 填充 #edeff3：对白 1.16（"下陷的槽"，只是辅助）
-       · 边框 `--gosslan-field-border` 直接复用既有 `--gosslan-divider-strong`（#7c8798）：
-         对白 3.64 / 对 list 3.42 / 对 bg 3.27 —— 四类相邻面全部 ≥3.0（WCAG 1.4.11 非文本档，
-         与工程里「开关未选中轨道 / 主色按钮 vs 面板」用的是同一档，不新造颜色）。
-         高对比模式下 divider-strong 有覆盖档，边框会跟着一起变强。
+       · 边框 `--gosslan-field-border`（#87888b）：对白 3.54 / 对 list 3.42 / 对 bg 3.27 ——
+         四类相邻面全部 ≥3.0（WCAG 1.4.11 非文本档，与工程里「开关未选中轨道 / 主色按钮 vs 面板」
+         用的是同一档）。**2026-11-09 起它不再复用 `--gosslan-divider-strong`**：那个 token
+         现在是"结构缝"（分栏线），只该有 ≈1.4:1；两者共值会把一条缝画成控件边框那么重。
      填充已经到顶：再深一档（#e9ecf0）placeholder #5f6b7a 就只剩 4.58，
      跌破既有判据「占位符在字段底 ≥4.65」；#edeff3 是 4.71，是"看得见 + 提示字仍达标"的平衡点。 */
   --gosslan-field: #edeef2;
-  --gosslan-field-border: var(--gosslan-divider-strong);
+  --gosslan-field-border: #87888b;
   /* 中性卡片气泡底（文件 / 代码 / 无类型兜底）：不跟随主题色的那类气泡。
      必须与聊天画布**最终合成色**差一档（画布 = chat 白 + 16% 薄纱，实测 ≈#eaeef2），
      否则气泡等于没有（见 utils/previewMetrics.ts 的历史坑）。#e0e4e9 对合成画布 ≈1.10。
@@ -162,11 +162,14 @@
   --gosslan-card-line: rgba(0, 0, 0, 0.06);
   --gosslan-border: #e5e6e9;
   --gosslan-divider: #eef0f3;
-  /* 专用**分栏分隔线**：只给搜索对话框左右两列用（两列都透明，没有底色差，
-     发丝线 1.16:1 撑不起"这是两栏"的层次）。全站 `--gosslan-divider` 仍是发丝线 —— 
-     它承担的是列表行之间的"轻分隔"，一次改成 3:1 会把上百处行分隔变成表格线。
-     取值按采样底色算到 ≥3:1（亮底 ≈#f5f5f7 → 3.3:1，暗底 ≈#1e293b → 3.6:1）。 */
-  --gosslan-divider-strong: #87888b;
+  /* 专用**分栏分隔线**：只给搜索对话框左右两列用（两列都透明，没有底色差）。
+     ⚠️ 2026-11-09 从 3.33:1 降到 ≈1.4:1（#d6d7da，对白 1.44 / 对 list 1.35）。
+     旧值把它画成了"控件边框"那么重 —— 用户看到的倒挂：搜索框外框 3.33:1、分栏缝也 3.33:1，
+     而真正的行分隔只有 1.14:1，三种"线"的强弱完全错位。控件边界由 `--gosslan-field-border`
+     独立守 3.0，不再借用这一档。
+     全站 `--gosslan-divider` 仍是发丝线：它承担列表行之间的"轻分隔"，
+     一次改成 3:1 会把上百处行分隔变成表格线。 */
+  --gosslan-divider-strong: #d6d7da;
   --gosslan-text: #0f1012;
   /* 次要文字（说明文案 / 会话摘要 / 辅助图标）：11~13px 小字同样按正文标准 4.5 判。
      原 #64748b 只达 4.34（列表底）/ 4.11（卡片底），不达标 → 按项目既有的 Slate 梯度下走一档。
@@ -570,8 +573,17 @@
   --gosslan-tabbar-bg: var(--gosslan-glass-1-bg);
   --gosslan-glass-1-highlight: rgba(255, 255, 255, 0.6);
   --gosslan-glass-1-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.08);
+  /* 三种"分层手段"合成一档，供「减少透明」两条降级路径**整体清零**（改为 none）：
+     1px 内描边 + 顶部高光 + 外投影。拆成三个 token 时只能逐条改值，
+     没法一次性证明"这一档一层阴影都不剩"；合成一档后降级只写 `none`（= 0 层）。 */
+  --gosslan-glass-1-elevation: inset 0 0 0 1px var(--gosslan-glass-1-border), inset 0 1px 0
+    var(--gosslan-glass-1-highlight), var(--gosslan-glass-1-shadow);
   --gosslan-glass-1-blur: saturate(140%) blur(16px);
-  --gosslan-glass-1-fallback: var(--gosslan-list);
+  /* 降级实底（方案 A「明度阶梯」，2026-11-09）：chrome 面不再借用列表色，改用**独立的实底档**。
+     借用列表色时三处交界对比 1.00:1（= 没有分界），用户看到的"分层"只剩 24px 投影灰带；
+     换成 #eceef2 后 chrome vs 列表 1.09、chrome vs 聊天画布 1.16 —— 只靠明度差分，不再画线。 */
+  --gosslan-chrome-solid: #eceef2;
+  --gosslan-glass-1-fallback: var(--gosslan-chrome-solid);
 
   /* 复用 --gosslan-panel-frost（0.85）而不是另起一个 0.88：
      那个 token 同时是 `utils/tokenContrast.ts` 里"菜单条目压列表底"的对比度基准（1.32 下限），
@@ -674,8 +686,9 @@
      "玻璃(0.92) + 最差背景"（白/黑/三个漂移色相各叠一遍），#6b7f9e 在白底那档只剩 **2.56**；
      而设置里的漂浮背景本来就可能漂到浅色色团。这里给输入框专用一档 #788dae：
      对暗 panel 3.98 / chat 4.50 / list 4.83 / bg 5.41，对最差合成底（玻璃叠白）**3.09**。
-     只动这个专用 token，全站分隔线（divider-strong）保持原值 —— 分隔线不该为输入框的边界背锅。 */
-  --gosslan-field-border: var(--gosslan-divider-strong);
+     只动这个专用 token，全站分隔线（divider-strong）保持原值 —— 分隔线不该为输入框的边界背锅。
+     2026-11-09 起它是**独立 literal**（求解器给 #a1a2a5），divider-strong 已降成"结构缝"（≈1.4:1）。 */
+  --gosslan-field-border: #a1a2a5;
   --gosslan-card: #232426;
   --gosslan-card-ink: #e8eaed;
   --gosslan-card-line: rgba(255, 255, 255, 0.08);
@@ -684,8 +697,9 @@
      ⚠️ 只动 border，分隔线（--gosslan-divider）保持更淡 —— 分隔线是"分栏"，边框是"控件"。 */
   --gosslan-border: #353739;
   --gosslan-divider: #2e2f31;
-  /* 暗色分栏线比亮色抬亮一档：暗底上同样要 ≥3:1（详见 :root 里的同名 token 注释）。 */
-  --gosslan-divider-strong: #a1a2a5;
+  /* 暗色结构缝：与亮色同一口径 ≈1.4:1（#3b3c3e，对 chat 1.37 / 对 list 1.48）。
+     旧值 #a1a2a5 是"控件边框"的强度，被借来画分栏线就成了倒挂。 */
+  --gosslan-divider-strong: #3b3c3e;
   --gosslan-text: #e8eaed;
   --gosslan-text-2: #cdced1;
   /* 占位符：求解器给出比次要文字**再暗一档**的值（#bfc1c4 vs #cdced1）——
@@ -757,7 +771,9 @@
   --gosslan-glass-1-border: rgba(248, 250, 252, 0.14);
   --gosslan-glass-1-highlight: rgba(248, 250, 252, 0.2);
   --gosslan-glass-1-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.36);
-  --gosslan-glass-1-fallback: var(--gosslan-list);
+  /* 暗色 chrome 实底档：与亮色同一套"明度阶梯"（chrome vs 列表 1.09、vs 聊天画布 1.17）。 */
+  --gosslan-chrome-solid: #17181b;
+  --gosslan-glass-1-fallback: var(--gosslan-chrome-solid);
   --gosslan-glass-2-bg: var(--gosslan-panel-frost);
   /* TabBar 暗态沿用 frost（glass-2），与改前逐像素一致。 */
   --gosslan-tabbar-bg: var(--gosslan-glass-2-bg);
@@ -1875,10 +1891,8 @@ progress {
   background: var(--gosslan-glass-1-bg);
   -webkit-backdrop-filter: var(--gosslan-glass-1-blur);
   backdrop-filter: var(--gosslan-glass-1-blur);
-  box-shadow:
-    inset 0 0 0 1px var(--gosslan-glass-1-border),
-    inset 0 1px 0 var(--gosslan-glass-1-highlight),
-    var(--gosslan-glass-1-shadow);
+  /* 三层合成一档（见 `--gosslan-glass-1-elevation` 注释）：降级档写 `none` 就能证明 0 层。 */
+  box-shadow: var(--gosslan-glass-1-elevation);
 }
 
 /* `.frost` = glass-2 的历史别名（12 处菜单/下拉在用）：保留类名，换成 float 档规格 */
@@ -2442,6 +2456,16 @@ img {
   scrollbar-gutter: stable;
 }
 
+/* 表情面板自己不是滚动层（用户 2026-11-09：「这个面板的滚动条怪怪的」）。
+   `.gosslan-pop-clamp` 的 overflow + stable 会给面板右缘先留一条 8px 带，
+   而真正的滚动发生在内层网格 ⇒ 视觉上是两条轨道叠在圆角边上，其中面板那条
+   横跨 14px 圆角、没有滑块，看起来像被圆角切掉。这里只保留 `.gosslan-pop-clamp`
+   的限宽/限高，把滚动完全交给内层网格（网格的 `my-2` 让唯一那条带避开圆角）。 */
+.gosslan-emoji-panel {
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+
 .gosslan-menu-item {
   display: flex;
   width: 100%;
@@ -2628,6 +2652,11 @@ img {
 }
 
 @media (prefers-reduced-transparency: reduce) {
+  /* chrome 面退回实底时，1px 内描边 / 顶部高光 / 外投影三层一起清零（写 `none` = 0 层）。
+     只摘背景与 blur 会把三种"分界线"都留着 —— 实底之后它们叠在纯色上，就是用户说的"脏"。 */
+  :root {
+    --gosslan-glass-1-elevation: none;
+  }
   /* 三档玻璃 + 历史别名 `.frost` 一并退回实底（liquid-glass.md §5.3 的第 2 条）。
      ⚠️ 这里必须**逐个类名列出**：只写 `.frost` 会漏掉 chrome 与 modal 两档。 */
   .glass-1,
@@ -2675,6 +2704,8 @@ html[data-reduced-transparency="true"] {
   --gosslan-glass-2-blur: none;
   --gosslan-glass-3-blur: none;
   --gosslan-blur: none;
+  /* 与系统媒体查询逐字一致：实底档下 chrome 面 0 层阴影，只剩明度差分。 */
+  --gosslan-glass-1-elevation: none;
 }
 /* `.glass` 只用在 BaseModal 的遮罩上（直接写 rgba，没有 token）：去模糊后改用更实的压暗，
    与上面系统媒体查询里的同一条逐字一致。 */
@@ -2701,6 +2732,8 @@ html[data-reduced-transparency="true"] .gosslan-sticky-veil {
     --gosslan-border: #94a3b8;
     --gosslan-divider: #a7b6c8;
     --gosslan-divider-strong: #475569;
+    /* 控件边框不再跟随 divider-strong（它已是"结构缝"），高对比档单独提档到同一实值。 */
+    --gosslan-field-border: #475569;
     --gosslan-list-hover: rgba(15, 23, 42, 0.09);
     --gosslan-hover: rgba(15, 23, 42, 0.11);
     --gosslan-window-ring: rgba(15, 23, 42, 0.45);
@@ -2710,11 +2743,12 @@ html[data-reduced-transparency="true"] .gosslan-sticky-veil {
     --gosslan-divider: #6b7f9e;
     --gosslan-divider-strong: #b7c4d6;
     /* 输入框专用边框在高对比档必须一起抬（2026-11-07 审计第 8 条）。
-       常规暗色的 #788dae 是"玻璃叠在浅色色团"那一档的最低值；高对比档里玻璃已退回
-       实底（见本块末尾 `.glass-*`），不存在浅底合成，于是直接跟随 divider-strong。
-       反例：删掉这一行 → 高对比档边框退回 #788dae，`--only=fieldcontrast` 的
+       常规暗色的 #a1a2a5 是"玻璃叠在浅色色团"那一档的最低值；高对比档里玻璃已退回
+       实底（见本块末尾 `.glass-*`），于是独立给到同一实值（2026-11-09 起不再借用
+       divider-strong —— 那个 token 已是"结构缝"≈1.4:1）。
+       反例：删掉这一行 → 高对比档边框退回 #a1a2a5，`--only=fieldcontrast` 的
        "比常规暗色更亮"读数会翻假。 */
-    --gosslan-field-border: var(--gosslan-divider-strong);
+    --gosslan-field-border: #b7c4d6;
     --gosslan-list-hover: rgba(248, 250, 252, 0.12);
     --gosslan-hover: rgba(248, 250, 252, 0.14);
     --gosslan-window-ring: rgba(248, 250, 252, 0.5);
