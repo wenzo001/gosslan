@@ -263,6 +263,9 @@ silent-drops-baseline.json[XQ8T]: F:`.ok();` 静默丢弃的每文件计数棘�
 updater-manifest.mjs[XV8M]: F:生成 Tauri updater 的 latest.json：产物与 .sig 配对、映射平台键、校验四平台齐全 | R:code:.github/workflows/updater-manifest.yml,code:docs/updates.md,code:scripts/publish-release-assets.sh | A:--dir/--tag/--repo/--out/--check-only；导出 REQUIRED_PLATFORMS 与 mapPlatformAssets | S:缺平台会被客户端读成「这个平台没有更新」，比不发更难查；webview2 档与 .sig 不配对的产物不进清单；同平台多候选取 .nsis.zip 优先。
 verify-startup-error.mjs[XQ8L]: F:启动失败路径的真窗口验收入口：按场景搭隔离环境并输出机器读数 | R:code:scripts/ax-tree.mjs,code:src-tauri/src/startup_error.rs | A:launch/status/stop/clean/list/press 子命令；退出码 0=取到读数（不判红绿）、2=环境不具备 | S:退出码 0 只表示取到读数，判据在调用方；closable(false) 窗口的三按钮只能由真实鼠标事件点；每场景独立 HOME + 实例号 91/92（避开 harness 1/2/3 与 AX 41），只 kill 自己 spawn 且校验可执行路径，全程无 pkill。
 build-app-icons.mjs[XV5T]: F:全平台图标生成唯一入口（npm run icon）：1024 SVG 直出、macOS .icns 在源图画 22.37% 圆角、Android 自适应三层与 monochrome | R:code:package.json | A:改图标走本脚本，不直接跑 tauri icon | S:macOS 圆角必须画进源图（系统会二次裁切）；Android 漏 monochrome 时 themed icon 不生效。
+check-scroll-contrast.mjs[XV4S]: F:滚动条三态对比度读数：把 text-2 按 thumb/-active/track 的百分比混到 panel 上，按 WCAG 相对亮度算亮/暗两套对比度 | R:code:src/style.css,code:docs/design-language/density-and-scroll.md | A:任何一套低于 3:1 就 exit 1（SC 1.4.11 非文本下限） | S:token 直接从 style.css 现读、不另抄一份；混色基准是 panel 而不是画布。
+dump-theme-tokens.mjs[XV4T]: F:打印「出厂种子」求解出的亮/暗两档 token 块，用来同步 style.css 的首帧静态值 | R:code:src/utils/themePalette.ts | A:改求解器后运行本脚本，把输出贴进 style.css，再跑 npm test | S:手抄 42×2 个 hex 必漂；themePalette.test 的防漂移一条会逐项比对。
+sync-gitee.mjs[XO6L]: F:把 GitHub Release 产物镜像到 Gitee 并维护固定路径 updates/latest.json（客户端检查更新以 Gitee 清单为准） | R:code:scripts/build-macos-release.sh | A:--tag/--assets-dir/--keep/--dry-run/--shard；令牌只读 GITEE_TOKEN，错误信息脱敏 | S:单附件 100MB、总量 1G ⇒ WebView2 包不传；当前版本永不删；空仓库要先写占位提交才能建 tag/release。
 
 ===/Users/wendongfu/Documents/code/gosslan/src-tauri/===
 Cargo.lock[FP3L]: F:Rust 依赖锁（含 gosslan 本包版本落点） | R:code:src-tauri/Cargo.toml,code:scripts/version.mjs | A:构建期解析出的依赖版本集合 | S:gosslan 版本由 version.mjs 断言；Cargo 自动生成，手改即伪造版本事实。
@@ -1226,3 +1229,6 @@ report.md[SU4M]: F:gosslan × unslop 只读审查（2026-11-06）：结论、技
 
 ===/Users/wendongfu/Documents/code/gosslan/docs/redesign-pulse/===
 scope-and-stage1.md[SU4M]: F:Pulse 界面重构范围地图：44 块画板清单与交叉冲突、六段提交边界、第一段已落地的 tokens 取值对照 | R:code:designs/gosslan-redesign/design-manifest.json | A:排批次与判断「这块归哪一段」 | S:范围地图与画板一一对应；新增画板要同时更新本文与 design-manifest。
+
+===/Users/wendongfu/Documents/code/gosslan/scripts/probes/===
+settings-gutter-wk.swift[XV4S]: F:设置窗口滚动几何探针（真实 WKWebView）：量化 scrollbar-gutter: stable both-edges 在 WK 与 Chromium 的差异（两类分区卡片左右缘） | R:code:src/components/SettingsPanel.vue | A:swift 跑本探针并给 --port/--theme/--shot；退出码 0=逐像素相等、1=不等、2=页面没起来 | S:WK 只在真滚动时留 gutter，Chromium 恒留 ⇒ 本机绿不代表真机；量前清过渡残渣。
