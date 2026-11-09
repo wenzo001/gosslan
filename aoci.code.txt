@@ -837,6 +837,17 @@ imageThumbnail.ts[EL7T]: F:气泡缩略图的浏览器侧转码器（真实解�
 memberName.ts[EU9T]: F:「这个 device_id 显示成什么名字」的唯一判据（纯函数） | R:code:src/stores/useChatStore.ts,code:src/composables/useMemberProfile.ts | A:resolveMemberName、memberIdTail、MemberNameSource、MemberNameText | S:永不返回裸 device_id（用户 2026-10-14 报的「显示设备名」就是它）；顺序：自己→好友备注→在线自报→最后见到的名字→「未知成员+后四位」；空白值不算「有名字」
 memberNameCache.ts[EL8S]: F:「最后一次见到的名字」本机缓存（只用于显示，不参与信任判断） | R:code:src/utils/memberName.ts,code:src/stores/useChatStore.ts | A:readMemberNames、observeMemberNames、writeMemberNames、MEMBER_NAME_CACHE_MAX | S:没有真变化必须返回 null 让调用方不写盘（peers 刷新反复跑，直写等于每 333ms 落一次）；读失败退空表、写失败静默 —— 它挂在消息面板的渲染路径上，抛错等于白屏
 todoCustomIcons.ts[EL7T]: F:自定义类型图标键 → 组件的映射与文案键 | R:code:src/utils/todos.ts,code:src/components/TodoIconPicker.vue | A:TODO_CUSTOM_ICON_COMPONENTS、TODO_CUSTOM_ICON_LABEL_KEY | S:故意不放进 todos.ts：那份要在 Node 里单测，拖进图标库等于让所有纯逻辑判据依赖浏览器侧依赖（决策/执行分两册）；键集合与白名单双向一致由 todoCustomIcons.test 钉
+addFriendProbe.ts[EU4T]: F:「搜索未命中」时是否按需推一拍 who_has 的节流判据 | R:code:src/utils/defer.ts | A:只在无结果时触发，节流执行 | S:不节流会让每次输入都走 routed 单播。
+ambient.ts[EO5M]: F:环境动态层：挂 body 直属、#app 之前、z-index -1；实现 AM-01…AM-12 规格 | R:code:src/utils/ambientCapability.ts,code:docs/design-language/ambient-motion.md | A:写 html[data-ambient]；失焦/交互暂停与 reduce 冻结 | S:z-index 必须为负：0 的定位层会盖住非定位正文（spec 写 0 是等价说法）。
+ambientCapability.ts[EU4S]: F:背景动效能力判定（不是用户偏好）：不支持时档位显示 off、控件置灰并写原因 | R:code:src/utils/ambient.ts | A:能力不支持不写库，用户显式值仍留存储 | S:「用户主动选过」与「能力不支持」必须分开，合并就分不清没设过与设成默认。
+ambientProbe.ts[EU4S]: F:背景动效差异取样器：媒体查询、backdrop-filter 能力与 data-ambient 实际档位 | R:code:src/utils/ambient.ts | A:只取样不判断，视图原样展示与复制 | S:平台真正会分叉的就是这几项，取样器里别写「应该哪档」。
+auxWindowFailure.ts[EU4S]: F:辅助窗口（设置/日志/外链/看图）创建失败的统一出口：认码不认字 | R:code:src/composables/useAuxWindowFailureReport.ts | A:归类后给原因与动作，四类窗口共用 | S:不要再透传后端中文串（Windows 会露出 WebView2 HRESULT）。
+backToLatest.ts[EU4T]: F:「回到最新」按钮可见判据：按几何间隙算，不复用 VirtualList 的 pinned | R:code:src/components/VirtualList.vue | A:收敛窗口内 pinned 故意不更新，按钮仍要正确 | S:复用 pinned 会让按钮在 settling 窗口常驻并压住最新图片。
+bleAvailability.ts[EU4T]: F:「蓝牙为什么不可用」的唯一判据（纯函数）：未编入 vs 硬件/系统不可用 | R:code:src/api/index.ts | A:两种原因分开说，各给下一步 | S:对发布包说「当前版本暂不支持」是错的（发布包一定带蓝牙）。
+bubbleSkinPath.ts[EU4S]: F:气泡「单填充皮肤」外轮廓路径：气泡与尾巴共用一条描边，消掉同色叠合处的双边缝 | R:code:src/components/message/BubbleTail.vue | A:输出 SVG path 与盒子几何 | S:根因是两条各自抗锯齿的边；只调间距/圆角修不掉接缝。
+cancelFeedback.ts[EU4T]: F:「取消文件传输」后该说哪句话的四个分支判据 | R:code:src/api/index.ts | A:后端返回 notifiedPeer 决定措辞 | S:本机停手≠对面停手；老端不支持取消时一条通知都不发，界面别只说「已取消」。
+cancelSend.ts[EU4T]: F:「这条消息能不能取消、走哪条通道」的唯一判据：transfer（停字节）vs message（停 outbox 行） | R:code:src/types.ts | A:按 msg id 前缀 file-/gfile- 判 transfer | S:两条通道是两件事，合并会让文本消息去调文件取消。
+chatSearchQuery.ts[EU4T]: F:「搜索聊天记录」的 TanStack Query 策略：关键词/发送人/日期都是 query key | R:code:src/components/search/ChatSearchDialog.vue | A:组件只留交互（进入即搜、回车重搜、打开高亮项） | S:响应只写回发起它的键；别退回手写 seq 竞态那一版。
 
 ===/Users/wendongfu/Documents/code/gosslan/tools/===
 gen_icon.py[XV4T]: F:手写 PNG 编码器生成占位应用图标 | R:code:src-tauri/icons/icon.png | A:inside_rrect、inside_circle、chunk | S:不依赖 Pillow，手工拼 IHDR/IDAT/IEND；固定覆盖 src-tauri/icons/icon.png。
@@ -1299,3 +1310,21 @@ settings.ts[EU4T]: F:设置窗口独立路由：hash 模式，节清单来自 se
 contacts.ts[EU5M]: F:联系人模块：附近节点探测、好友名单与申请、密钥轮换、收藏 | R:code:src/stores/chat/runtime.ts,code:src/api/index.ts | A:只读写「人的名录」与申请状态 | S:会话行刷新交给 conversations；跨模块写会绕开它的排序/未读口径。
 conversations.ts[EU6L]: F:会话列表/未读与已读/会话内分页/群历史同步：行与未读水位、首载翻页、投递摘要、删除与置顶 | R:code:src/stores/chat/messaging.ts,code:src/api/index.ts | A:消息入账与乐观投影在 messaging；排序只走 sortConversations | S:清未读要 pruneUnreadClears 防回涨；行刷新不要绕过本模块直接改数组。
 groups.ts[EU4S]: F:群模块：创建/改名/成员/转让/退群/被移出，以及群公告发布与生效标记 | R:code:src/stores/chat/runtime.ts,code:src/api/index.ts | A:只做群元数据与公告 | S:会话行刷新交 conversations、消息入账交 messaging；跨模块写会绕开对方口径。
+media.ts[EU5M]: F:附件与媒体模块：文件/图片发送、传输停滞标记、进度与终态事件、群文件诊断尾部 | R:code:src/stores/chat/messaging.ts,code:src/stores/chat/taskCenter.ts | A:只做传输链路的前端投影；消息入账复用 messaging | S:传输台账归 taskCenter，别在这里另存一份。
+messaging.ts[EU6L]: F:消息收发模块：批量入账、乐观上屏与回滚、1:1 撤回、表情回应、删除、渲染模式 | R:code:src/stores/chat/conversations.ts,code:src/utils/optimistic.ts | A:会话摘要回滚判据在 utils/optimistic，这里只决定调哪条 | S:三分法判据与动作归类只在 useChatStore 入口注释，本文件不许另抄。
+notifications.ts[EU5M]: F:系统通知/未读外显/强提醒/窗口抖动：只决定要不要打扰、怎么打扰 | R:code:src/stores/chat/messaging.ts,code:src/stores/chat/conversations.ts | A:发送回执走 messaging、打开会话走 conversations | S:不改消息与会话数据；提示是否过期由 isStaleNudge 判。
+runtime.ts[EU4S]: F:chat store 拆分后的运行时外壳：ChatState 唯一一份状态 + ChatApi 晚绑定动作注册表 | R:code:src/stores/useChatStore.ts | A:模块创建时拿转发函数，真正调用发生在 init 之后 | S:不许在这里加状态或业务逻辑，这里只描述形状。
+taskCenter.ts[EU5S]: F:任务中心投影：传输/内容/待发队列/更新下载四份台账的只读拼装与乐观任务行 | R:code:src/utils/optimistic.ts,code:src/types.ts | A:乐观行只插 sending 形状，failed 永远来自后端 | S:状态仍由 useChatStore 创建，这里只写同一批 ref；不改消息时间线。
+todos.ts[EU5M]: F:群任务模块：徽标计数、看板全表读、独立窗口读路径、任务定义变更、置顶 | R:code:src/utils/staleGuard.ts,code:src/utils/singleFlight.ts | A:读由入口持有 groupTodoRows，这里只写；写发后端并入账 | S:时间线渲染交 messaging/ChatWindow；并发读走 StaleGuard + 单飞。
+
+===/Users/wendongfu/Documents/code/gosslan/src/styles/===
+hljs-theme.css[FU4S]: F:highlight.js 主题静态 CSS：light=github 原样，dark=每条选择器加 .dark 前缀 | R:code:src/components/CodeBlock.vue | A:构建期引入；改主题重新生成整份文件 | S:Tauri CSP 是 style-src 'self'，运行时 <style> 会被挡；别在组件里再注入主题。
+
+===/Users/wendongfu/Documents/code/gosslan/src/updater/===
+androidAdapter.ts[EU4T]: F:安卓升级适配层：把 androidService 的抽象动作接到真实 Tauri 命令 | R:code:src/updater/androidService.ts,code:src/api/index.ts | A:非 Android 后端是 ANDROID_UPDATE_UNSUPPORTED 桩 | S:命令名/事件名/失败码与桌面不同，绝不能与 tauriAdapter 混用。
+androidInstance.ts[EU4T]: F:全局唯一的安卓更新服务实例 | R:code:src/updater/androidAdapter.ts,code:src/updater/androidService.ts | A:currentVersion 取 package.json（与 versionName 同源） | S:不要再走一次 IPC 取当前版本；实例只能一份。
+androidService.ts[EU6M]: F:安卓应用内升级状态机（纯逻辑）：比桌面多 verifying 与 installStep(preparing/launching/waiting-user) | R:code:src/updater/androidAdapter.ts | A:下载完成必须复算 sha256 并解析包名/版本/签名 | S:preparing/launching 时系统安装器还没露面，弹窗不能关；不能并进桌面状态机。
+instance.ts[EU4T]: F:桌面更新服务单例（每个窗口一份 UI 状态） | R:code:src/updater/service.ts,code:src/updater/tauriAdapter.ts | A:真正的检查/下载任务由 Rust 侧串行化 | S:跨窗口也只允许一个下载任务，UI 状态才按窗口分。
+schedule.ts[EU4T]: F:启动后一次低优先级更新检查：不阻塞挂载、不轮询、失败静默、不重试 | R:code:src/updater/service.ts,code:src/utils/platform.ts | A:只在主窗口入口调用 | S:设置/日志窗口不自动检查；移动端不进入应用内更新，直接不调度。
+service.ts[EU6M]: F:桌面更新状态机（纯逻辑，不 import Tauri）：单飞、超时、取消、错误分类、稍后处理 | R:code:src/updater/tauriAdapter.ts | A:真实网络与安装由 adapter 提供，node --test 用假适配器 | S:别把 IPC/平台判断塞进状态机，否则离线/超时/取消无法单测。
+tauriAdapter.ts[EU4T]: F:Rust 命令适配层：所有 IPC 仍走 src/api 门面 | R:code:src/updater/service.ts,code:src/api/index.ts | A:check/download/cancel/recheckReady/install/close 六个动作 | S:组件与工具层不许直接 invoke。
