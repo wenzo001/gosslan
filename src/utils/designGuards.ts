@@ -1063,6 +1063,71 @@ export function checkGlassTiers(css: string): GuardIssue[] {
   return out.sort((a, b) => a.line - b.line);
 }
 
+/**
+ * 方案 A「明度阶梯」（2026-11-09）：实底档的 chrome 面必须靠**明度差分**分层，且不留任何第二种分界线。
+ *
+ * 背景（用户实测）：`data-reduced-transparency` 打开时，降级块只摘了 `background` 与 `blur` ——
+ * `box-shadow` 里的 1px 内描边 / 顶部高光 / 24px 外投影**一条不少**，而实底回退值又直接指向
+ * 列表色 `--gosslan-list` ⇒ 标题栏 / 左栏 / 列表三处交界对比 1.00（等于没有分界），
+ * 用户看到的"分层"只剩压在内容上的投影灰带。这就是"脏"的来源，不是形容词。
+ *
+ * 判据四件（每件都有反例自测，见 designGuards.test.ts 的「方案 A 四红」）：
+ *   ① `--gosslan-glass-1-fallback` 在两套外观里都指 `--gosslan-chrome-solid`（不许再指列表色）；
+ *   ② `.glass-1` 的 box-shadow 只经由 `--gosslan-glass-1-elevation` 一档表达，不再内联三层；
+ *   ③ 系统 `prefers-reduced-transparency` 块里 `--gosslan-glass-1-elevation: none`；
+ *   ④ 应用内 `html[data-reduced-transparency="true"]` 块里同上（两条路径同源）。
+ * ① 的"值是否真的分得开（≥1.06:1）"由 tokenContrast.ts 的 CHROME_SOLID 两行判 —— 这里只判指向。
+ */
+export function checkSolidChromeSeparation(css: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+
+  const fallbackDefs = [...css.matchAll(/--gosslan-glass-1-fallback\s*:\s*([^;]+);/g)];
+  const pointsToChrome = fallbackDefs.filter((m) => m[1].replace(/\s+/g, "") === "var(--gosslan-chrome-solid)");
+  if (pointsToChrome.length !== 2) {
+    out.push({
+      line: 0,
+      message:
+        `--gosslan-glass-1-fallback 必须在亮/暗两套里都指 var(--gosslan-chrome-solid)（现有 ${fallbackDefs.length} 处定义、` +
+        `${pointsToChrome.length} 处正确 —— 指回 --gosslan-list 就是 1.00:1，等于没有分界）`,
+    });
+  }
+
+  const glass1At = lastTopLevelDefIndex(css, "\\.glass-1");
+  if (glass1At >= 0) {
+    const block = stripComments(blockAt(css, glass1At));
+    if (!/box-shadow\s*:\s*var\(--gosslan-glass-1-elevation\)/.test(block)) {
+      out.push({
+        line: lineAt(css, glass1At),
+        message:
+          ".glass-1 的阴影没有走 `--gosslan-glass-1-elevation` —— 内联三层时降级档没法一次清零，" +
+          "实底上会留下 1px 描边 / 高光 / 24px 投影三套分界线（就是用户说的「脏」）",
+      });
+    }
+  }
+
+  const reducedPaths: [string, RegExp][] = [
+    ["系统 prefers-reduced-transparency", /@media\s*\(\s*prefers-reduced-transparency:\s*reduce\s*\)/g],
+    ['应用内 data-reduced-transparency="true"', /html\[data-reduced-transparency="true"\]/g],
+  ];
+  for (const [label, re] of reducedPaths) {
+    const matches = [...css.matchAll(re)];
+    if (matches.length === 0) {
+      out.push({ line: 0, message: `style.css 缺少「${label}」降级块` });
+      continue;
+    }
+    // 注释与其他段落也会提到同一个选择器 ⇒ 取**所有**命中块，只要有一块真的清了零就算通过。
+    const blocks = matches.map((m) => stripComments(blockAt(css, m.index ?? 0)));
+    if (!blocks.some((b) => /--gosslan-glass-1-elevation\s*:\s*none/.test(b))) {
+      out.push({
+        line: lineAt(css, matches[0].index ?? 0),
+        message: `「${label}」块没有把 --gosslan-glass-1-elevation 清零 —— 实底档仍留阴影层`,
+      });
+    }
+  }
+
+  return out.sort((a, b) => a.line - b.line);
+}
+
 /** `@media (pointer: coarse)` 块内直接声明 `position` 的选择器（`:where()` 包裹的除外）。 */
 function findOverridingPositionInCoarsePointer(css: string): GuardIssue[] {
   const out: GuardIssue[] = [];
@@ -4670,5 +4735,69 @@ export function checkComposerUnitDelete(o: ComposerUnitDeleteSources): GuardIssu
     out.push({ line: 0, message: "ED-01：`graphemes.ts` 的 `graphemeStartBefore` / `needsGraphemeDelete` 必须存在。" });
   }
 
+  return out;
+}
+
+/**
+ * 群任务「新建 / 编辑」草稿弹窗的尺寸判据（用户 2026-11-09：「这个框框太窄了」）。
+ *
+ * 用户要的是「描述能舒适写长文」+「整页只有一层滚动」，不是某一处截图好看：
+ *   - 弹窗宽度按内容放宽（`max-w-2xl`），新增/编辑共用同一个 BaseModal，窄窗由 `w-full` 回退；
+ *   - 描述框有最小高度、不许死高度、不许内部再滚一层（`resize-none` + `overflow-y-hidden`）；
+ *   - 自动长高必须真的接在 `scrollHeight` 上。
+ * 反例自证：宽度改回 `max-w-lg`、给描述框加 `h-24`，都必须红（见 designGuards.test.ts）。
+ */
+export function checkTodoDraftForm(src: string): Array<{ line: number; message: string }> {
+  const out: Array<{ line: number; message: string }> = [];
+  const modal = /<BaseModal\b[^>]*\bwidth="([^"]+)"/.exec(src);
+  if (!modal) {
+    out.push({
+      line: 0,
+      message: "TD-01：找不到带 `width` 的群任务草稿 BaseModal —— 尺寸规则的落点漂了。",
+    });
+  } else if (modal[1] !== "max-w-2xl") {
+    out.push({
+      line: lineAt(src, modal.index),
+      message:
+        `TD-01：群任务草稿弹窗宽度必须是 \`max-w-2xl\`（当前 \`${modal[1]}\`）。` +
+        "旧 `max-w-lg` = 512px，长文描述只剩 480px 宽；改窄会让这条判据红。",
+    });
+  }
+
+  const ta = src.indexOf("<textarea");
+  if (ta < 0) {
+    out.push({ line: 0, message: "TD-02：找不到描述 textarea —— 判据落点漂了。" });
+  } else {
+    const block = src.slice(ta, src.indexOf("</textarea>", ta));
+    const clsM = /\bclass="([^"]*)"/.exec(block);
+    if (!clsM) {
+      out.push({ line: lineAt(src, ta), message: "TD-02：描述 textarea 没有 class —— 尺寸规则无处生效。" });
+    } else {
+      const cls = clsM[1].split(/\s+/);
+      const line = lineAt(src, ta);
+      if (!cls.includes("resize-none")) {
+        out.push({ line, message: "TD-02：描述框必须 `resize-none` —— 手动拖小会重新变成内部小滚动条。" });
+      }
+      if (!cls.includes("overflow-y-hidden")) {
+        out.push({ line, message: "TD-02：描述框必须 `overflow-y-hidden` —— 长文只能在弹窗内容区滚，不许框里再滚一层。" });
+      }
+      if (!cls.some((c) => c.startsWith("min-h-"))) {
+        out.push({ line, message: "TD-02：描述框必须给最小高度（`min-h-[8.5rem]`）—— 否则又是一条 3 行高的小格子。" });
+      }
+      const dead = cls.find((c) => c.startsWith("h-") || c.startsWith("max-h-") || c === "overflow-y-auto");
+      if (dead) {
+        out.push({
+          line,
+          message: `TD-02：描述框不许死高度/内部滚动（命中 \`${dead}\`）—— 长文会被钉在一个固定高度里。`,
+        });
+      }
+    }
+    if (!/@input="fitDraftDesc"/.test(block)) {
+      out.push({ line: lineAt(src, ta), message: "TD-02：描述框必须把 `@input` 接到 `fitDraftDesc` —— 否则长高只在打开那一下发生。" });
+    }
+  }
+  if (!/scrollHeight/.test(src)) {
+    out.push({ line: 0, message: "TD-02：找不到 `scrollHeight` —— 描述框没有按内容长高的实现。" });
+  }
   return out;
 }

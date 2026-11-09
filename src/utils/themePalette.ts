@@ -242,7 +242,7 @@ const LIGHT: ModeSpec = {
     card: 0.917, field: 0.950, rail: 0.940, railActive: 0.905,
     listActive: 0.945, caption: 0.935,
   },
-  border: { border: 0.925, divider: 0.954, dividerStrong: 0.615 },
+  border: { border: 0.925, divider: 0.954, seam: 0.880 },
   text: { body: 0.240, off: 0.620, toggle: 0.615, rail: 0.400 },
   targets: LIGHT_TARGETS,
 };
@@ -253,7 +253,7 @@ const DARK: ModeSpec = {
     card: 0.260, field: 0.264, rail: 0.245, railActive: 0.275,
     listActive: 0.304, caption: 0.245,
   },
-  border: { border: 0.335, divider: 0.304, dividerStrong: 0.592 },
+  border: { border: 0.335, divider: 0.304, seam: 0.355 },
   text: { body: 0.960, off: 0.650, toggle: 0.610, rail: 0.650 },
   targets: DARK_TARGETS,
 };
@@ -342,7 +342,11 @@ export function buildThemeTokens(seedHex: string, mode: ThemeMode): Record<strin
   const bd: Record<string, string> = {};
   for (const [k, L] of Object.entries(S.border)) bd[k] = hex(L, nC());
   // 边界色按「最差的那层底」求解：亮色字段底更暗、暗色面板底更亮。
-  bd.dividerStrong = solveIcon(seed.H, nC(), hexToRgb(surf[mode === "light" ? "field" : "panel"]), S.targets.icon, mode);
+  bd.fieldBorder = solveIcon(seed.H, nC(), hexToRgb(surf[mode === "light" ? "field" : "panel"]), S.targets.icon, mode);
+  // 结构缝（2026-11-09 与控件边框**解耦**）：分栏线只需要一条"看得见但压不过控件"的浅缝，
+  // 由 `border.seam` 直接给 L（≈1.4:1，按聊天画布算）。两者共用一个值时，结构缝会被画成
+  // 控件边框那么重 —— 就是用户看到的倒挂（搜索框外框 3.33:1，比一条真分栏缝重一倍）。
+  // 控件边框仍由上面那行守 3.0 非文本档（`--gosslan-field-border` 现在是独立 literal）。
 
   /** 暗色填充上的深墨（= .dark 里的 --gosslan-app-bg 那一档）。 */
   const inkNeutral: RGB = mode === "light" ? [18, 18, 20] : rgb(0.190, tC);
@@ -465,10 +469,10 @@ export function buildThemeTokens(seedHex: string, mode: ThemeMode): Record<strin
     "--gosslan-card": surf.card,
     "--gosslan-card-ink": body,
     "--gosslan-field": surf.field,
-    "--gosslan-field-border": bd.dividerStrong,
+    "--gosslan-field-border": bd.fieldBorder,
     "--gosslan-border": bd.border,
     "--gosslan-divider": bd.divider,
-    "--gosslan-divider-strong": bd.dividerStrong,
+    "--gosslan-divider-strong": bd.seam,
     "--gosslan-text": body,
     "--gosslan-text-2": text2,
     "--gosslan-placeholder": weak,
