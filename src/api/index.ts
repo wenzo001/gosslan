@@ -463,6 +463,12 @@ export const api = {
   windowMinimize: () => invoke<void>("window_minimize"),
   windowToggleMaximize: () => invoke<boolean>("window_toggle_maximize"),
   windowIsMaximized: () => invoke<boolean>("window_is_maximized"),
+  /**
+   * 标题栏双击：按平台/系统偏好执行一次（macOS 跟随「双击窗口标题栏」设置：
+   * 缩放 / 最小化 / 不做任何事），返回执行的动作 `maximize | minimize | none`。
+   * 与图片区域的 `windowToggleFullscreen` **是两件事**，一个手势只有一个含义。
+   */
+  windowCaptionDoubleClick: () => invoke<string>("window_caption_double_click"),
   /** 切换**当前窗口**全屏（预览窗双击的唯一含义，2026-11-09）；返回切换后的状态。 */
   windowToggleFullscreen: () => invoke<boolean>("window_toggle_fullscreen"),
   windowClose: () => invoke<void>("window_close"),

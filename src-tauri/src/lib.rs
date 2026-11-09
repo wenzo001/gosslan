@@ -150,14 +150,15 @@ pub const WINDOW_LABELS: &[&str] = &[
 /// 照样铺满可见区、`set_maximized(false)` 照样还原 —— **能力一直在，只是判据说谎**。
 /// 完整推导见 `commands/window.rs::window_toggle_maximize` 的注释。
 ///
-/// 受影响的只有 `WINDOW_MAIN`：`logs.rs` 里设置/日志/群任务/预览四扇辅助窗都在 builder 上
-/// 显式写了 `.maximizable(false)`（小窗口不给放大），那才是"不能最大化"的可信来源。
-/// 本清单与那四处 builder 由 `window_maximizable_matches_builder` 测试交叉核对
+/// 受影响的只有 `WINDOW_MAIN` 与 `WINDOW_PREVIEW`：`logs.rs` 里设置/日志/群任务三扇辅助窗仍在
+/// builder 上显式写了 `.maximizable(false)`（小窗口不给放大），那才是"不能最大化"的可信来源。
+/// 预览窗 2026-11-09 起允许最大化（用户实测「标题栏双击不变大小」，要求与主界面一致）。
+/// 本清单与那些 builder 由 `window_maximizable_matches_builder` 测试交叉核对
 /// （改一边忘另一边会红）。
 ///
 /// ⚠️ 只在桌面有意义；移动端没有窗口概念，`window_toggle_maximize` 走另一个桩。
 #[cfg(desktop)]
-pub const MAXIMIZABLE_WINDOWS: &[&str] = &[WINDOW_MAIN];
+pub const MAXIMIZABLE_WINDOWS: &[&str] = &[WINDOW_MAIN, WINDOW_PREVIEW];
 
 /// 安装 panic hook：把 panic（位置 + 消息）写进应用日志文件，并打到 stderr。
 ///
@@ -880,6 +881,7 @@ pub fn run() {
             commands::window_minimize,
             commands::window_toggle_maximize,
             commands::window_is_maximized,
+            commands::window_caption_double_click,
             commands::window_toggle_fullscreen,
             commands::window_close,
             commands::set_native_titlebar_buttons_hidden,

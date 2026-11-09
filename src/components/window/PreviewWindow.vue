@@ -135,7 +135,8 @@ function closeSelf() {
 </script>
 
 <template>
-  <AuxWindowShell :title="t('preview.title')">
+  <!-- 标题栏双击 = 最大化/还原（与主窗口同一条路）；图片区域双击仍是全屏，两者不重叠。 -->
+  <AuxWindowShell :title="t('preview.title')" dblclick-maximize>
     <!-- `contents` 包装只为给探针留一套稳定读数（`data-preview-status=loading` 时
          窗口里是占位、不是旧图）；`display: contents` 不参与布局，尺寸与层级都不变。 -->
     <div

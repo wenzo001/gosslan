@@ -12,7 +12,7 @@ import Icon from "@/components/ui/Icon.vue";
  * - `showMaximize` / `showMinimize`：小窗口不给最大化（OS 层也设了 `.maximizable(false)`）；
  * - `isMobile`：移动端不画这条（由调用方传入，避免共享组件反向依赖 app store）。
  */
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "@/api";
@@ -26,6 +26,14 @@ const props = withDefaults(
     title?: string;
     /** 是否渲染「最大化/还原」（Win/Linux 按钮 + macOS 绿灯）。小窗口传 false。 */
     showMaximize?: boolean;
+    /**
+     * 标题栏双击是否响应，**默认跟随 `showMaximize`**。
+     *
+     * 预览窗没有最大化按钮（`show-maximize=false`），但用户 2026-11-09 要求它的标题栏双击
+     * 与主窗口同一行为（双击最大化 / 再双击回退到双击前的尺寸与位置）⇒ 宿主单独把它打开。
+     * 能力判断仍在后端白名单（`MAXIMIZABLE_WINDOWS`），这里只管"这一格手势接不接"。
+     */
+    dblclickMaximize?: boolean;
     /** 是否渲染「最小化」。 */
     showMinimize?: boolean;
     /** 移动端不渲染标题栏。 */
@@ -37,6 +45,17 @@ const props = withDefaults(
 );
 
 const maximized = ref(false);
+
+/**
+ * 标题栏双击是否生效：默认跟随 `showMaximize`，预览窗由宿主单独打开（见 prop 注释）。
+ *
+ * ⚠️ 这里必须是 `||`，不能写 `props.dblclickMaximize ?? props.showMaximize`：
+ * Vue 对**未传**的 `Boolean` prop 会补成 `false`（不是 `undefined`），`??` 永远拿不到
+ * `showMaximize` 那一侧 ⇒ 主窗口的双击被自己的默认值关掉。2026-11-09 真机读数：
+ * 主窗 caption 两下 `mousedown` 的 `dt=183ms`（判定 `secondPress=true`）、`en=false`，
+ * 手势接上了却被这格闸门挡回，界面上看就是"双击没反应"。
+ */
+const dblclickEnabled = computed(() => props.dblclickMaximize || props.showMaximize);
 
 /**
  * 「这一扇窗口顶部有自绘 caption」由**画它的人**宣布 —— CSS 的 `--gosslan-window-safe-top`
@@ -99,6 +118,27 @@ async function toggleMaximize() {
 }
 
 /**
+ * 标题栏双击的**唯一出口**（主窗口与预览窗共用，2026-11-09）。
+ *
+ * 「双击该做什么」不是前端能定的事：macOS 有系统偏好（系统设置 → 桌面与程序坞 →
+ * 双击窗口标题栏：缩放 / 最小化 / 不做任何事），我们的窗口是自绘 caption，那一格到不了 AppKit。
+ * 分派整段放在 Rust `window_caption_double_click` 里（读 `AppleActionOnDoubleClick`），
+ * 前端只负责"哪个区域被双击" —— 与 `refreshMaximized` 那条「能力判断留在后端」同一口径。
+ *
+ * ⚠️ 这一格与图片区域的 `windowToggleFullscreen` **不是一回事**：标题栏双击只管最大化/还原，
+ * 图片区域双击只管全屏，一个手势只有一个含义（用户 2026-11-09 的口径）。
+ */
+async function captionDoubleClick() {
+  try {
+    const action = await api.windowCaptionDoubleClick();
+    // 只有真的做了缩放才刷新字形；最小化 / 无操作不该改写最大化状态。
+    if (action === "maximize") await refreshMaximized();
+  } catch {
+    /* 移动端 / 命令不可用：忽略 */
+  }
+}
+
+/**
  * 窗口是否聚焦（macOS 红绿灯的**失焦变灰**是原生行为）。
  *
  * 用户 2026-09-12 反馈：「mac 自己写的三个关闭按钮，和原生的关闭按钮的样式好像不太一样，
@@ -131,7 +171,8 @@ function captionJustToggledByPress() {
  *  · 本应用所有窗口都是 `decorations: false`（caption 由前端自绘），Windows 上根本没有系统标题栏。
  * ⇒ 症状就是用户 2026-10-14 真机报的「Mac 双击能放大缩小，Windows 不行」。
  *
- * 现在两平台都走**与绿灯同一个出口** `toggleMaximize()` → 后端 `window_toggle_maximize`，
+ * 现在两平台都走同一个出口 `captionDoubleClick()` → 后端 `window_caption_double_click`
+ * （macOS 按系统偏好分派缩放/最小化/无操作，其它平台缩放），
  * 「这扇窗能不能最大化」仍由后端那份 `MAXIMIZABLE_WINDOWS` 白名单判（小窗口点了也是 no-op），
  * 前端不拿平台当闸门 —— 与 `refreshMaximized` 那条"别把能力判断写回前端"的口径一致。
  *
@@ -144,10 +185,10 @@ function captionJustToggledByPress() {
  * **一次双击只翻一次**（翻两次＝放大又还原，界面上看就是"点了没反应"）。
  */
 function onTitlebarDblClick() {
-  if (props.isMobile || !props.showMaximize) return;
+  if (props.isMobile || !dblclickEnabled.value) return;
   if (captionJustToggledByPress()) return;
   lastCaptionToggleAt = performance.now();
-  void toggleMaximize();
+  void captionDoubleClick();
 }
 
 /**
@@ -171,9 +212,9 @@ function onDragStart(e: MouseEvent) {
   const now = performance.now();
   const secondPress = now - lastCaptionPressAt < CAPTION_DOUBLE_PRESS_MS;
   lastCaptionPressAt = now;
-  if (secondPress && props.showMaximize) {
+  if (secondPress && dblclickEnabled.value) {
     lastCaptionToggleAt = now;
-    void toggleMaximize();
+    void captionDoubleClick();
     return;
   }
   try {

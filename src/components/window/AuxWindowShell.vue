@@ -11,6 +11,8 @@
  * 2. 系统不再画窗口描边 ⇒ 自己用 1px inset ring 画（与主窗口 `ResponsiveLayout` 同款）。
  *
  * 小窗口不给最大化：`show-maximize=false`（OS 层也在 builder 上设了 `.maximizable(false)`）。
+ * 预览窗是例外：不画最大化按钮，但**标题栏双击**与主窗口同一条路（`dblclick-maximize`，
+ * 2026-11-09 用户实测「预览窗标题栏双击不变大小」）；OS 层那扇窗也已改成可最大化。
  * 日志窗口结构不同（同一组件要兼移动端整页形态），因此它直接用 `TitleBar`，不套这个壳。
  */
 import { onMounted, watch } from "vue";
@@ -20,7 +22,11 @@ import { useDocumentDark } from "@/composables/useDocumentDark";
 import { api } from "@/api";
 import { isMac } from "@/utils/platform";
 
-defineProps<{ title: string }>();
+defineProps<{
+  title: string;
+  /** 标题栏双击是否响应（默认不响应；只有可最大化的那扇辅助窗传 true）。 */
+  dblclickMaximize?: boolean;
+}>();
 
 const dark = useDocumentDark();
 
@@ -45,7 +51,12 @@ watch(dark, applyShape);
     class="ambient-canvas flex h-screen flex-col overflow-hidden bg-[var(--gosslan-app-bg)] font-gosslan text-[var(--gosslan-text)] ring-1 ring-inset ring-[var(--gosslan-window-ring)]"
     style="--ambient-canvas-base: var(--gosslan-app-bg)"
   >
-    <TitleBar :title="title" :show-maximize="false" :close-to-tray="false" />
+    <TitleBar
+      :title="title"
+      :show-maximize="false"
+      :dblclick-maximize="dblclickMaximize"
+      :close-to-tray="false"
+    />
     <slot />
     <!-- Toast 宿主：**辅助窗口的统一反馈通道**。
          `ToastHud` 是应用内唯一的轻量反馈层（成功/失败都靠它）。此前只在主窗口与群任务

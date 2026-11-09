@@ -151,7 +151,7 @@
     /// 数量立刻对不上 ⇒ 红。
     ///
     /// ⚠️ 这条守卫本身也按同一套规矩验证过非空转：把 `WINDOW_SETTINGS` 加进白名单会红
-    /// （4 扇 builder vs 3 扇白名单外窗口），把未登记的 `WINDOW_LINK` 加进去也会红
+    /// （3 扇 builder vs 2 扇白名单外窗口），把未登记的 `WINDOW_LINK` 加进去也会红
     /// （子集断言）。
     #[test]
     fn window_maximizable_matches_builder() {
@@ -167,7 +167,7 @@
             }
             // 双向绑定：builder 里显式禁掉的窗数 == 白名单之外的已登记窗数。
             // 左侧 3 = settings/logs/tasks（见 `commands/logs.rs` 三扇辅助窗）；
-            // 右侧 = WINDOW_LABELS − MAXIMIZABLE_WINDOWS = 4 − 1 = 3。
+            // 右侧 = WINDOW_LABELS − MAXIMIZABLE_WINDOWS = 5 − 2 = 3（预览窗 2026-11-09 起可最大化）。
             let disabled = logs_src.matches(".maximizable(false)").count();
             let allowed = crate::WINDOW_LABELS
                 .iter()
@@ -182,6 +182,62 @@
             assert!(
                 !crate::MAXIMIZABLE_WINDOWS.is_empty(),
                 "白名单为空 ⇒ 没有任何窗口能最大化（用户实测绿灯/双击无反应）"
+            );
+        }
+    }
+
+    /// 标题栏双击：macOS 的「双击标题栏」系统偏好必须被读到并映射成动作，不许硬编码最大化。
+    ///
+    /// ## 为什么这条判据盯着源码
+    ///
+    /// `window_caption_double_click` 需要真 `WebviewWindow`，测试进程里造不出来 ⇒ 行为只能由
+    /// 真机探针（`check-ui-runtime --only=previewwin`）验。这里钉住的是**这条判据不会空转**的
+    /// 两件事：① 映射函数每一格（缺省 / 缩放 / 最小化 / 不做任何事 / 未知值）；② 命令源码里
+    /// 真的读了偏好，而不是退回硬编码 `maximize()`。
+    ///
+    /// 反例自证：把 `parse_double_click_action` 的 `None` 分支改成 `Maximize` ⇒ 第一条红；
+    /// 把命令里读偏好的分支删掉 ⇒ 第二条红。
+    #[test]
+    fn caption_double_click_follows_macos_preference() {
+        #[cfg(desktop)]
+        {
+            // `commands/window.rs` 是 `include!` 进 `commands` 的（不是子模块）。
+            use crate::commands::{parse_double_click_action, CaptionDoubleClick};
+            // 缺省（从未改过设置）、显式「缩放 / 填充」、未知值都按默认缩放走，
+            // 认不出来的值不许让双击变成"没反应"。
+            assert_eq!(parse_double_click_action(None), CaptionDoubleClick::Maximize);
+            assert_eq!(
+                parse_double_click_action(Some("Maximize\n")),
+                CaptionDoubleClick::Maximize
+            );
+            assert_eq!(parse_double_click_action(Some("Fill")), CaptionDoubleClick::Maximize);
+            assert_eq!(parse_double_click_action(Some("Zoom")), CaptionDoubleClick::Maximize);
+            // 系统设置里另外两档。
+            assert_eq!(
+                parse_double_click_action(Some("Minimize")),
+                CaptionDoubleClick::Minimize
+            );
+            assert_eq!(parse_double_click_action(Some("None")), CaptionDoubleClick::None);
+            assert_eq!(
+                parse_double_click_action(Some("DoNothing")),
+                CaptionDoubleClick::None
+            );
+
+            // 命令里必须真的去读系统偏好：删掉这两处就退回硬编码，用户改设置会被无视。
+            let src = include_str!("commands/window.rs");
+            assert!(
+                src.contains("AppleActionOnDoubleClick"),
+                "window_caption_double_click 没读 `AppleActionOnDoubleClick` \
+                 ⇒ 双击被硬编码成最大化，用户把系统设置改成最小化/无操作后不生效"
+            );
+            assert!(
+                src.contains("/usr/bin/defaults"),
+                "读偏好的落点不是系统标准域（`/usr/bin/defaults read -g`）"
+            );
+            // 预览窗必须真的可最大化，否则命令会在白名单处直接返回 none（用户实测「不变大小」）。
+            assert!(
+                crate::MAXIMIZABLE_WINDOWS.contains(&crate::WINDOW_PREVIEW),
+                "MAXIMIZABLE_WINDOWS 不含 WINDOW_PREVIEW ⇒ 预览窗标题栏双击仍被白名单挡掉"
             );
         }
     }

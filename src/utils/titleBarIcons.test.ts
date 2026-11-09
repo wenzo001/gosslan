@@ -98,7 +98,9 @@ test("最大化状态必须订阅窗口尺寸变化（否则图标永远是初�
  * `WM_NCLBUTTONDBLCLK` 处理、本应用所有窗口 `decorations:false`（Windows 上没有系统标题栏可双击）。
  *
  * 判据钉三件事，缺一就红：① 处理器里不许出现任何按桌面平台禁用的分支（`isMac` / `isWindows`）；
- * ② 必须走与绿灯同一个后端出口 `toggleMaximize()`；③ 移动端那条早退要留着（那条 caption 不渲染）。
+ * ② 必须走唯一出口 `captionDoubleClick()`（2026-11-09 起它内部转给后端
+ * `window_caption_double_click`，由后端按 macOS 系统偏好分派缩放/最小化/无操作）；
+ * ③ 移动端那条早退要留着（那条 caption 不渲染）。
  * ⚠️ 按**花括号配对**切函数体，不用定长窗口：窗口跨进邻居函数就会误判（本仓踩过那一族）。
  */
 test("标题栏双击不许按平台早退：Windows 也必须能最大化", () => {
@@ -112,8 +114,8 @@ test("标题栏双击不许按平台早退：Windows 也必须能最大化", () 
     );
   }
   assert.ok(
-    flat.includes("toggleMaximize()"),
-    "双击必须走与绿灯同一个出口 toggleMaximize()（能不能最大化由后端白名单判，不在这里按平台判）",
+    flat.includes("captionDoubleClick()"),
+    "双击必须走唯一出口 captionDoubleClick()（能不能最大化由后端白名单判，按什么动作由系统偏好判，都不在这里判）",
   );
   assert.ok(
     flat.includes("props.isMobile"),
@@ -122,21 +124,20 @@ test("标题栏双击不许按平台早退：Windows 也必须能最大化", () 
 });
 
 /**
- * 双击与绿灯**必须是同一个出口**（一个判据失真会同时打死两个入口，看起来像两个缺陷 ——
- * 上一轮 `is_maximizable()` 那次就是这个形状）。这里钉的是"不许各写一遍"。
+ * 双击与绿灯**不各写一遍**，但也不再是同一个函数（2026-11-09 改口径，不是放宽）：
  *
- * 2026-10-23：macOS 三颗键改回**系统原生**（后端 `macos_window::use_native_titlebar`），
- * 组件里的自绘红绿灯与 `onGreenClick` 一起删掉。判据随之改口径（不是放宽）：
- *   · 仍然钉"自定义缩放出口不许绕过 `toggleMaximize()`"（双击那条）；
- *   · 反向：组件里**不许**再出现自绘红绿灯（否则会和系统按钮叠一层）；
- *   · 正向：必须给系统三颗键让出宽度，否则标题会压在红绿灯下面。
+ * 绿灯是「用户明确点最大化」⇒ 仍然只走 `toggleMaximize()`；
+ * 双击是「标题栏手势」⇒ 必须走 `captionDoubleClick()`，由后端按 macOS 系统偏好决定
+ * 缩放/最小化/无操作。两条都在组件里，各自只有一个出口；
+ * 判据因此钉：双击那条**不许**直接调 `api.windowToggleMaximize`（绕过偏好读取），
+ * 也不许再出现自绘红绿灯（会和系统按钮叠一层）。
  */
-test("macOS 三颗键交给系统：不许自绘红绿灯，自定义缩放仍只走一个包装函数", () => {
+test("macOS 三颗键交给系统：不许自绘红绿灯，双击与绿灯各只有一个出口", () => {
   const dbl = sliceBracedFn(script, "function onTitlebarDblClick()") ?? "";
-  assert.ok(dbl.includes("toggleMaximize"), "双击那条必须调 toggleMaximize");
+  assert.ok(dbl.includes("captionDoubleClick"), "双击那条必须调 captionDoubleClick");
   assert.ok(
     !/api\.windowToggleMaximize/.test(dbl),
-    "双击不许绕过包装函数自己调命令（包装函数负责刷字形与吞错）",
+    "双击不许绕过后端偏好分派自己调 windowToggleMaximize（macOS 把系统设置改成最小化/无操作就不生效了）",
   );
   assert.ok(!/function onGreenClick/.test(script), "绿灯处理器又回来了 —— macOS 应交给系统");
   assert.ok(!/group\/traffic/.test(template), "自绘红绿灯又回来了 —— 会和系统按钮叠一层");
@@ -160,8 +161,9 @@ test("macOS 三颗键交给系统：不许自绘红绿灯，自定义缩放仍�
  *
  * 所以缩放必须有一条**只看 `mousedown` 时刻差**的通路。判据钉四件事，缺一就红：
  * ① 第二下的早退必须排在 `startDragging(` **之前**（顺序错了等于没拦）；
- * ② 早退条件是 `secondPress && props.showMaximize`（不可最大化的窗第二下仍要能拖）；
- * ③ 走与绿灯/双击同一个出口 `toggleMaximize()`；④ 这里也不许出现按桌面平台禁用的分支。
+ * ② 早退条件是 `secondPress && dblclickEnabled.value`（不可最大化的窗第二下仍要能拖；
+ *    预览窗没有最大化按钮但 `dblclick-maximize` 单独打开，见下一条判据）；
+ * ③ 走与 dblclick 同一个出口 `captionDoubleClick()`；④ 这里也不许出现按桌面平台禁用的分支。
  */
 test("标题栏按下：第二下必须翻缩放，不许再进 OS 拖拽循环", () => {
   const body = sliceBracedFn(script, "function onDragStart(");
@@ -170,7 +172,7 @@ test("标题栏按下：第二下必须翻缩放，不许再进 OS 拖拽循环"
     "TitleBar.vue 里找不到 onDragStart ⇒ 这一格搬家，判据要跟着改口",
   );
   const flat = body!.replace(/\s+/g, "");
-  const gateAt = flat.indexOf("if(secondPress&&props.showMaximize)");
+  const gateAt = flat.indexOf("if(secondPress&&dblclickEnabled.value)");
   const dragAt = flat.indexOf("startDragging(");
   assert.ok(dragAt >= 0, "拖拽本体不许删：caption 唯一的拖动通路就是这里");
   assert.ok(
@@ -182,8 +184,8 @@ test("标题栏按下：第二下必须翻缩放，不许再进 OS 拖拽循环"
     "早退必须排在 startDragging 之前 —— 排在后面等于这一按已经进过模态循环了",
   );
   assert.ok(
-    flat.includes("toggleMaximize()"),
-    "第二下必须走与绿灯/双击同一个缩放出口（能力判断仍由后端白名单判）",
+    flat.includes("captionDoubleClick()"),
+    "第二下必须走与 dblclick 同一个出口（能力判断仍由后端白名单判，动作由系统偏好判）",
   );
   for (const banned of ["isMac", "isWindows", "isLinux"]) {
     assert.ok(
@@ -293,6 +295,80 @@ test("macOS 打包声明本地化：系统控件文案跟着 App 语言", () => 
   assert.ok(
     "Resources/en.lproj/InfoPlist.strings" in files,
     "英文 InfoPlist.strings 没有被打包",
+  );
+});
+
+/**
+ * 预览窗标题栏双击必须与主窗口**同一条路**（用户 2026-11-09 实测：「预览窗标题栏双击不变大小」）。
+ *
+ * 修前是两处各挡一半，任一处没改回都是"还是没反应"：
+ * ① 前端：`AuxWindowShell` 只传 `show-maximize=false`，双击处理第一行就被
+ *    `if (!props.showMaximize) return;` 早退 ⇒ 预览窗这一格手势根本没接上；
+ * ② 后端：`MAXIMIZABLE_WINDOWS` 只有主窗口、预览窗 builder 上写着 `.maximizable(false)`
+ *    ⇒ 就算前端调进来也会在白名单处返回 `none`。
+ *
+ * 现在预览窗：不画最大化按钮（`show-maximize=false` 不变），但 `dblclick-maximize` 单独打开；
+ * 后端白名单与 builder 同步放开，动作由 macOS 系统偏好决定（`AppleActionOnDoubleClick`）。
+ *
+ * 反例自证：删掉 PreviewWindow 上的 `dblclick-maximize` ⇒ 第一条红；
+ * 白名单里去掉 `WINDOW_PREVIEW` ⇒ 第二条红；把 builder 改回 `.maximizable(false)` ⇒ 第二条红。
+ */
+test("预览窗标题栏双击：与主窗口同一条路（前端接线 + 后端白名单 + 系统偏好）", () => {
+  const root = join(import.meta.dirname, "..", "..");
+  const preview = readFileSync(join(root, "src", "components", "window", "PreviewWindow.vue"), "utf8");
+  const shell = readFileSync(join(root, "src", "components", "window", "AuxWindowShell.vue"), "utf8");
+  const api = readFileSync(join(root, "src", "api", "index.ts"), "utf8");
+
+  assert.ok(
+    /<AuxWindowShell[^>]*\sdblclick-maximize[\s>]/.test(preview),
+    "预览窗没打开 `dblclick-maximize` ⇒ 标题栏双击仍在 TitleBar 第一行被 show-maximize 挡掉",
+  );
+  assert.ok(
+    shell.includes(':dblclick-maximize="dblclickMaximize"'),
+    "AuxWindowShell 没把 dblclick-maximize 透传给 TitleBar ⇒ 预览窗这一格永远不生效",
+  );
+  // 双击开关默认仍跟随 show-maximize：其它辅助窗（设置/日志/群任务）不该被这条改动带开。
+  //
+  // ⚠️ 必须是 `||` 而不是 `??`（2026-11-09 真机读数：`sp=true en=false dt=183`）：
+  // Vue 会把**未传**的 Boolean prop 补成 `false`，`??` 只会取到那个 false，
+  // 于是主窗口自己的双击被默认值关掉。反例自证：改回 `??` ⇒ 本断言与上一条同时红。
+  assert.ok(
+    script.includes("const dblclickEnabled = computed(() => props.dblclickMaximize || props.showMaximize)"),
+    "双击开关必须默认跟随 show-maximize（否则设置/日志/群任务窗也会去调最大化）；且只能写 `||`",
+  );
+  assert.ok(
+    !script.includes("computed(() => props.dblclickMaximize ??"),
+    "`??` 会被 Vue 的 Boolean prop 默认值（未传 ⇒ false）短路，主窗口双击因此永不生效",
+  );
+  assert.ok(
+    api.includes('invoke<string>("window_caption_double_click")'),
+    "前端没有 windowCaptionDoubleClick 这层包装（或命令名对不上后端）",
+  );
+
+  const lib = readFileSync(join(root, "src-tauri", "src", "lib.rs"), "utf8");
+  assert.ok(
+    /MAXIMIZABLE_WINDOWS: &\[&str\] = &\[WINDOW_MAIN, WINDOW_PREVIEW\]/.test(lib),
+    "MAXIMIZABLE_WINDOWS 不含 WINDOW_PREVIEW ⇒ 后端直接把预览窗的双击挡成 no-op",
+  );
+  assert.ok(
+    lib.includes("commands::window_caption_double_click"),
+    "命令没进 invoke_handler（前端调了会被拒）",
+  );
+
+  const logs = readFileSync(join(root, "src-tauri", "src", "commands", "logs.rs"), "utf8");
+  const previewFn = logs.slice(
+    logs.indexOf("fn ensure_preview_window"),
+    logs.indexOf("fn ensure_log_window"),
+  );
+  assert.ok(
+    previewFn.includes(".maximizable(true)"),
+    "预览窗 builder 仍是 maximizable(false) ⇒ 与白名单不自洽（交叉核对测试也会红）",
+  );
+
+  const cmd = readFileSync(join(root, "src-tauri", "src", "commands", "window.rs"), "utf8");
+  assert.ok(
+    cmd.includes("AppleActionOnDoubleClick"),
+    "后端没读 macOS 的「双击标题栏」系统偏好 ⇒ 等于硬编码最大化（用户要求跟随系统设置）",
   );
 });
 

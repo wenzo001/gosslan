@@ -106,6 +106,106 @@ pub fn window_is_maximized(_app: tauri::AppHandle) -> bool {
     false
 }
 
+/// 标题栏双击要执行的动作。
+///
+/// macOS 的「双击窗口标题栏」是**系统偏好**（系统设置 → 桌面与程序坞 → 双击窗口标题栏：
+/// 缩放 / 最小化 / 不做任何事），原生标题栏由 AppKit 按 `AppleActionOnDoubleClick` 执行。
+/// 我们的窗口是 `decorations:false` + 自绘 caption ⇒ 那一格永远到不了 AppKit，必须自己读偏好
+/// （用户 2026-11-09：「如果系统有偏好就跟随系统设置，别硬编码」）。
+#[cfg(desktop)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptionDoubleClick {
+    /// 缩放 / 填充（系统默认）：切换最大化与还原。
+    Maximize,
+    /// 最小化。
+    Minimize,
+    /// 什么都不做。
+    None,
+}
+
+/// 把 `AppleActionOnDoubleClick` 的原始值映射成动作。
+///
+/// 只认系统明确写出来的 `Minimize` / `None`（含 `DoNothing` 写法），**其余一律按默认的缩放**：
+/// 缺失（从未改过设置）、`Maximize`、以及新版系统可能出现的 `Fill` / `Zoom` 都归到同一格。
+/// 反向兜底的意思很明确 —— 认不出的值不该让双击变成"没反应"。
+#[cfg(desktop)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn parse_double_click_action(raw: Option<&str>) -> CaptionDoubleClick {
+    match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("minimize") => CaptionDoubleClick::Minimize,
+        Some("none") | Some("donothing") | Some("do nothing") => CaptionDoubleClick::None,
+        _ => CaptionDoubleClick::Maximize,
+    }
+}
+
+/// 读 macOS 系统的「双击标题栏」偏好。
+///
+/// 用 `/usr/bin/defaults` 读全局域：这是该偏好的唯一落点（`NSUserDefaults` 的标准域，
+/// 也是系统设置自己写的那一格），比在 Rust 里引 `objc2-foundation` 换一个 feature 便宜。
+/// **每次调用都读**（点击频率极低，一次进程启动 ~10ms），用户改完设置不用重启应用。
+/// 读失败（键不存在 / 命令被拒）返回 `None` ⇒ 按默认缩放走，不会退化成"点了没反应"。
+#[cfg(target_os = "macos")]
+fn macos_double_click_action() -> CaptionDoubleClick {
+    let raw = std::process::Command::new("/usr/bin/defaults")
+        .args(["read", "-g", "AppleActionOnDoubleClick"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    parse_double_click_action(raw.as_deref())
+}
+
+/// 标题栏双击：**按平台/系统偏好执行一次**双击动作，返回执行了哪一种。
+///
+/// ## 为什么和图片区域的全屏分开
+///
+/// 预览窗里有两个"双击"，含义**不许重叠**（用户 2026-11-09 的口径：一个手势只有一个含义）：
+/// - 标题栏双击 → **窗口最大化/还原**（本命令，与主窗口同一条路）；
+/// - 图片区域双击 → **全屏切换**（`window_toggle_fullscreen`）。
+///
+/// ## 为什么不让前端判偏好
+///
+/// 「这扇窗能不能最大化」由后端白名单 [`window_can_maximize`] 判（见
+/// [`window_toggle_maximize`] 的注释）；系统偏好同样是平台事实。前端只负责"哪个区域被双击"，
+/// 分派全在这一处 —— 主窗口与预览窗因此不会各写一份再到不同平台上分叉。
+///
+/// 返回值是动作名（`maximize` / `minimize` / `none`），前端据此刷新最大化字形。
+#[cfg(desktop)]
+#[tauri::command]
+pub fn window_caption_double_click(window: tauri::WebviewWindow) -> String {
+    if !window_can_maximize(&window) {
+        return "none".to_string();
+    }
+    #[cfg(target_os = "macos")]
+    match macos_double_click_action() {
+        CaptionDoubleClick::Minimize => {
+            let _ = window.minimize();
+            return "minimize".to_string();
+        }
+        CaptionDoubleClick::None => return "none".to_string(),
+        CaptionDoubleClick::Maximize => {}
+    }
+    // 还原走 `unmaximize`：tao 的 macOS zoom 分支会记住 zoom 之前的 frame，
+    // 再 zoom 一次回到**双击前那次快照**（不是回到默认尺寸）。
+    match window.is_maximized() {
+        Ok(true) => {
+            let _ = window.unmaximize();
+        }
+        _ => {
+            let _ = window.maximize();
+        }
+    }
+    "maximize".to_string()
+}
+
+/// 移动端没有窗口标题栏：保持命令存在（前端同一份代码不改）。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn window_caption_double_click(_app: tauri::AppHandle) -> String {
+    "none".to_string()
+}
+
 /// 切换**当前窗口**全屏，返回切换后的状态。
 ///
 /// 预览窗的双击手势只做这一件事（用户 2026-11-09：「双击那个查看图片的窗口可以全屏切换」
