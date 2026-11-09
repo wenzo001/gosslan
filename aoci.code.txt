@@ -1010,3 +1010,46 @@ DesktopSettings.dc.html[SU4S]: F:设置窗口画板：780×600 双栏，个人�
 DesktopShare.dc.html[SU4S]: F:桌面共享目录画板：面包屑、文件列表、截断与下载 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
 DesktopStartupError.dc.html[SU4T]: F:启动错误页画板：STORE_LOCKED 场景下的重试/打开数据目录/退出与错误详情 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:560×400 静态画板 | S:-
 DesktopTasks.dc.html[SU4S]: F:任务中心画板：文件传输、内容获取、待发送与群历史同步 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
+Foundations.dc.html[SU4S]: F:设计系统地基画板：三色 accent 分工、字阶、圆角/间距刻度与动效曲线 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1120×1150 长页 静态画板 | S:三色之外不再引入第四种强调色；数值以这里为准，代码侧落 src/style.css 变量。
+IconSet.dc.html[SU4T]: F:图标系统画板：Rounded 2.0 的 24 枚图标与 23/21/20/16 四档尺寸 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1200×900 面板 静态画板 | S:-
+Layout.dc.html[SU4M]: F:布局与响应式画板：桌面 1000 三栏、移动 390 单栏四 tab、断点与 pane 折叠 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1120×1640 长页 静态画板 | S:移动端只有一个 pane，切换靠整页滑动，不做双栏压缩。
+MobileChats.dc.html[SU4S]: F:移动端聊天列表画板（390×844）：搜索、未读、时间与空会话 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileContacts.dc.html[SU4T]: F:移动端通讯录画板：分组索引、在线状态与好友资料入口 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileDark.dc.html[SU4S]: F:移动端深色画板：深色聊天与消息操作菜单 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileDiscover.dc.html[SU4S]: F:移动端「发现附近的人」画板：局域网设备、邀请码与添加好友 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileEdgeCases.dc.html[SU4S]: F:移动端边界画板：长文本、长数字、错误原因与收束规则 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1180×960 长页 静态画板 | S:移动端收束规则与桌面同源（省略号/断词/最多 2 行摘要）。
+MobileEmpty.dc.html[SU4T]: F:移动端首次运行空态画板：无会话时的引导与小院吉祥物 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileFavorites.dc.html[SU4T]: F:移动端收藏画板：类型筛选、列表与空态 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileFriend.dc.html[SU4T]: F:移动端好友资料画板：头像、备注、来源与发起聊天/删除 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileGroupChat.dc.html[SU4S]: F:移动端群聊画板：发送者、@提及、群任务卡与已读 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileMe.dc.html[SU4T]: F:移动端「我的」画板：本人头像、资料入口与设置列表 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileOneToOne.dc.html[SU4S]: F:移动端单聊画板：气泡、回执、引用、图片与未读分隔 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobilePersonalize.dc.html[SU4S]: F:移动端个性化画板：主题色、气泡样式与字号预览 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileRequests.dc.html[SU4T]: F:移动端好友申请画板：收到/发出与通过/拒绝 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileSearch.dc.html[SU4S]: F:移动端搜索画板：输入态、结果分组与会话上下文 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileSettings.dc.html[SU4T]: F:移动端设置画板：分组列表与二级页入口 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileSettingsSection.dc.html[SU4S]: F:移动端聊天样式设置画板：气泡、字号与预览 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+MobileStates.dc.html[SU4S]: F:移动端离线与失败状态画板：断网横幅、发送失败、连接中 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:-
+PrototypeDesktop.dc.html[SU4L]: F:桌面可点原型：聊天/通讯录/收藏/设置四个主界面与添加好友、建群、转发等浮层串联 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:原型只演示流程，状态是本地假数据，不接 store。
+PrototypeMobile.dc.html[SU4L]: F:移动端可点原型：四 tab 主界面与常用浮层串联 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:390×844 静态画板 | S:原型只演示流程，状态是本地假数据，不接 store。
+PulseGapClosures.dc.html[SU4S]: F:流程闭环画板：25+ 条回路的补口，如搜索返回不丢结果、群内返回定位 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1120×940 长页 静态画板 | S:-
+canvas.json[FU5L]: F:设计画布的面板布局台账：每块画板所属 page（brand/desktop/pulse/mobile）、标题与 x/y/w/h 坐标 | R:code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas-pulse/project | A:编辑器按它还原画布排布；新增画板要登记 title 与 page | S:v=3 的 attachments 为空；漏登记的画板在画布上是孤儿，README 与坐标会各说各话。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-canvas/===
+.gitignore[FZ3T]: F:设计画布编辑器（baoyu-design）本机产物的忽略清单（v2.1 画布） | R:code:designs/gosslan-redesign/design-canvas/project | A:.artifact-server.json/.log、.sharing.json、history/、exports/ 与临时文件不入库 | S:只服务本机编辑器，提交会把本地路径与共享状态带进仓库。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-canvas/project/===
+DesktopChats.dc.html[SU4S]: F:v2.1 桌面聊天画板：会话列表与空会话主区 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
+DesktopContacts.dc.html[SU4S]: F:v2.1 桌面通讯录画板：好友列表与好友资料 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
+DesktopDark.dc.html[SU4S]: F:v2.1 桌面深色画板：深色聊天与离线态 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
+DesktopFavorites.dc.html[SU4S]: F:v2.1 桌面收藏画板：列表与详情 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
+DesktopGroupChat.dc.html[SU4M]: F:v2.1 桌面群聊画板：发送者、@提及与已读 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
+DesktopGroupInfo.dc.html[SU4M]: F:v2.1 桌面群资料抽屉画板：成员/群文件/群任务 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1280×800 静态画板 | S:-
+DesktopGroupTasks.dc.html[SU4S]: F:v2.1 群任务窗口画板：看板与任务详情 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:780×620 静态画板 | S:-
+DesktopLinks.dc.html[SU4S]: F:v2.1 桌面链接画板：链接列表与导入导出 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
+DesktopLogs.dc.html[SU4S]: F:v2.1 日志窗口画板：级别、过滤与导出 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:760×560 静态画板 | S:-
+DesktopModals.dc.html[SU4S]: F:v2.1 浮层画板：添加好友/建群/转发/预览/表情 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1120×840 静态画板 | S:-
+DesktopOneToOne.dc.html[SU4M]: F:v2.1 桌面单聊画板：气泡、回执、引用与未读分隔 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
+DesktopRequests.dc.html[SU4M]: F:v2.1 桌面好友申请画板：收到/发出与添加好友 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
+DesktopSearch.dc.html[SU4S]: F:v2.1 桌面搜索画板：结果列与会话上下文 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
+DesktopSettings.dc.html[SU4S]: F:v2.1 设置窗口画板：780×600 双栏 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:780×600 静态画板 | S:-

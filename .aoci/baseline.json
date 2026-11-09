@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-09T08:18:38Z",
+  "updated_at": "2026-11-09T08:20:44Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "97b4bc23c162969e70807723165b34e25a6c2b5271d8a57cad286596469e83a7",
-      "size": 421798,
-      "normalized_sha256": "97b4bc23c162969e70807723165b34e25a6c2b5271d8a57cad286596469e83a7"
+      "sha256": "186bb74d42f6ba23c18f141f5670839a30d3d734fdf813dfdd2f7398c22b2b22",
+      "size": 431174,
+      "normalized_sha256": "186bb74d42f6ba23c18f141f5670839a30d3d734fdf813dfdd2f7398c22b2b22"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -638,6 +638,240 @@
       "sha256": "211c586ccdb7812728c63ae958dc8ad9ae751c69f59b4a3b5247fb476c24b2ab",
       "size": 15081,
       "normalized_sha256": "211c586ccdb7812728c63ae958dc8ad9ae751c69f59b4a3b5247fb476c24b2ab"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/Foundations.dc.html": {
+      "role": "index",
+      "sha256": "25f67961a2a27f54dff54472ae0e4a2ffa1239630d43c47044c3148f212999da",
+      "size": 14530,
+      "normalized_sha256": "25f67961a2a27f54dff54472ae0e4a2ffa1239630d43c47044c3148f212999da"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/IconSet.dc.html": {
+      "role": "index",
+      "sha256": "7486929a8a246501b4354c3e78cd2669006b9fe552f14ccb98b73e8f9c13fbb4",
+      "size": 23414,
+      "normalized_sha256": "7486929a8a246501b4354c3e78cd2669006b9fe552f14ccb98b73e8f9c13fbb4"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/Layout.dc.html": {
+      "role": "index",
+      "sha256": "3748b82d92d9a61341c65807c955303dcf7e3d4efee94bc0ab2454295dca930a",
+      "size": 15908,
+      "normalized_sha256": "3748b82d92d9a61341c65807c955303dcf7e3d4efee94bc0ab2454295dca930a"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileChats.dc.html": {
+      "role": "index",
+      "sha256": "163af02cdfef918254d30a6128c1fd4de2517da0f22713989d864818ce686749",
+      "size": 11032,
+      "normalized_sha256": "163af02cdfef918254d30a6128c1fd4de2517da0f22713989d864818ce686749"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileContacts.dc.html": {
+      "role": "index",
+      "sha256": "df21282f494fdb3bd717581a32e767453fd802cb0bfea4db5e02cd69f9d755ca",
+      "size": 9497,
+      "normalized_sha256": "df21282f494fdb3bd717581a32e767453fd802cb0bfea4db5e02cd69f9d755ca"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileDark.dc.html": {
+      "role": "index",
+      "sha256": "515853ebc745a303bbc5ae427dc421cc0d69ed9fd478bdac1c20966f39158aa4",
+      "size": 11875,
+      "normalized_sha256": "515853ebc745a303bbc5ae427dc421cc0d69ed9fd478bdac1c20966f39158aa4"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileDiscover.dc.html": {
+      "role": "index",
+      "sha256": "d5c8222b012be36ffe06424cc687fdc78fc710c4591c81bc509f5d98937d48b7",
+      "size": 11728,
+      "normalized_sha256": "d5c8222b012be36ffe06424cc687fdc78fc710c4591c81bc509f5d98937d48b7"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileEdgeCases.dc.html": {
+      "role": "index",
+      "sha256": "7802f21811572c364d8b51023ccff705e1447186da537a4d55724f399b6d0b98",
+      "size": 17214,
+      "normalized_sha256": "7802f21811572c364d8b51023ccff705e1447186da537a4d55724f399b6d0b98"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileEmpty.dc.html": {
+      "role": "index",
+      "sha256": "9b3a74c321f5c565ccb3f2195f99556d2dd28e643f34802bd0928d0d47d29200",
+      "size": 8306,
+      "normalized_sha256": "9b3a74c321f5c565ccb3f2195f99556d2dd28e643f34802bd0928d0d47d29200"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileFavorites.dc.html": {
+      "role": "index",
+      "sha256": "e50c60e37fd191e263c87a391ccb3dea1e0c27df5b085a5ff3f3e9f3a561b5d8",
+      "size": 12463,
+      "normalized_sha256": "e50c60e37fd191e263c87a391ccb3dea1e0c27df5b085a5ff3f3e9f3a561b5d8"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileFriend.dc.html": {
+      "role": "index",
+      "sha256": "1fad7f96b04f2e6a43d8acfa27800517e98fcc57c54ba15980d29d06ebb78f9d",
+      "size": 8594,
+      "normalized_sha256": "1fad7f96b04f2e6a43d8acfa27800517e98fcc57c54ba15980d29d06ebb78f9d"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileGroupChat.dc.html": {
+      "role": "index",
+      "sha256": "e42add8b61da3693065c1eb65880a1980388f713d9bf5aa8950187c4465c7a63",
+      "size": 12772,
+      "normalized_sha256": "e42add8b61da3693065c1eb65880a1980388f713d9bf5aa8950187c4465c7a63"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileMe.dc.html": {
+      "role": "index",
+      "sha256": "a5653764baf2fb39d4dfacf2e75bf540b65e46f82fa288aa4428f92eda8c9a11",
+      "size": 11147,
+      "normalized_sha256": "a5653764baf2fb39d4dfacf2e75bf540b65e46f82fa288aa4428f92eda8c9a11"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileOneToOne.dc.html": {
+      "role": "index",
+      "sha256": "907e83b25deaa8b89e9994a76a09357e08fb269e963e863615b915ecd076be22",
+      "size": 11227,
+      "normalized_sha256": "907e83b25deaa8b89e9994a76a09357e08fb269e963e863615b915ecd076be22"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobilePersonalize.dc.html": {
+      "role": "index",
+      "sha256": "30e5ebfaec99057ad5c6d9d88686f98c9732f9946478c718d5c4594520e843ff",
+      "size": 10592,
+      "normalized_sha256": "30e5ebfaec99057ad5c6d9d88686f98c9732f9946478c718d5c4594520e843ff"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileRequests.dc.html": {
+      "role": "index",
+      "sha256": "7aa592725907438d83d327f322e25b87add365ba3e2e58176f3c7b4c5518f210",
+      "size": 6802,
+      "normalized_sha256": "7aa592725907438d83d327f322e25b87add365ba3e2e58176f3c7b4c5518f210"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileSearch.dc.html": {
+      "role": "index",
+      "sha256": "d81b3f10c25aca72aac122647c53450cb700fe6727165f5d72e8fee911409117",
+      "size": 6780,
+      "normalized_sha256": "d81b3f10c25aca72aac122647c53450cb700fe6727165f5d72e8fee911409117"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileSettings.dc.html": {
+      "role": "index",
+      "sha256": "8123d456771da4ec6a20e4f564fec2c069d1f3187cef893718a5604560c2a380",
+      "size": 9365,
+      "normalized_sha256": "8123d456771da4ec6a20e4f564fec2c069d1f3187cef893718a5604560c2a380"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileSettingsSection.dc.html": {
+      "role": "index",
+      "sha256": "f27350777b2d4df430fbd40c6ab8f4c7924baa53ee0565c444ca2202cef837b1",
+      "size": 8771,
+      "normalized_sha256": "f27350777b2d4df430fbd40c6ab8f4c7924baa53ee0565c444ca2202cef837b1"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/MobileStates.dc.html": {
+      "role": "index",
+      "sha256": "51199d7b3a4a83374c04607198bcd379eeee76daa5021b588c8ca4e9b242f32c",
+      "size": 10413,
+      "normalized_sha256": "51199d7b3a4a83374c04607198bcd379eeee76daa5021b588c8ca4e9b242f32c"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/PrototypeDesktop.dc.html": {
+      "role": "index",
+      "sha256": "4680b709d776dacb70840384c5abc3b37cb65d16a3268a4a54d21cf3a1653f3e",
+      "size": 45440,
+      "normalized_sha256": "4680b709d776dacb70840384c5abc3b37cb65d16a3268a4a54d21cf3a1653f3e"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/PrototypeMobile.dc.html": {
+      "role": "index",
+      "sha256": "f7e46a55ab50327907e50b9131b311c431dee74e2cb531f1dcac00b0c09218b2",
+      "size": 45251,
+      "normalized_sha256": "f7e46a55ab50327907e50b9131b311c431dee74e2cb531f1dcac00b0c09218b2"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/PulseGapClosures.dc.html": {
+      "role": "index",
+      "sha256": "5bd6c2f8d69a85708f67661fe3eec667a596f2ba1457c5079f208bd4630d2906",
+      "size": 16808,
+      "normalized_sha256": "5bd6c2f8d69a85708f67661fe3eec667a596f2ba1457c5079f208bd4630d2906"
+    },
+    "designs/gosslan-redesign/design-canvas-pulse/project/canvas.json": {
+      "role": "index",
+      "sha256": "d776d44870d1d75528c268e158f9ff58dda8c639ff232cf383a8404fd8148828",
+      "size": 10770,
+      "normalized_sha256": "d776d44870d1d75528c268e158f9ff58dda8c639ff232cf383a8404fd8148828"
+    },
+    "designs/gosslan-redesign/design-canvas/.gitignore": {
+      "role": "index",
+      "sha256": "0c15049f67e6885752caf1bb79be4fa9005df259c1f5c5d53acd03001dbabd27",
+      "size": 215,
+      "normalized_sha256": "0c15049f67e6885752caf1bb79be4fa9005df259c1f5c5d53acd03001dbabd27"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopChats.dc.html": {
+      "role": "index",
+      "sha256": "1f22b3ec857dd15c73d9781838525aa4c9c4347542cfc02677dcab994e6f8211",
+      "size": 15539,
+      "normalized_sha256": "1f22b3ec857dd15c73d9781838525aa4c9c4347542cfc02677dcab994e6f8211"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopContacts.dc.html": {
+      "role": "index",
+      "sha256": "e96a1c570d13d1f3fbb1a8a773b6ac9b978e3bc66014f1d3a405db3cc35c632a",
+      "size": 18846,
+      "normalized_sha256": "e96a1c570d13d1f3fbb1a8a773b6ac9b978e3bc66014f1d3a405db3cc35c632a"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopDark.dc.html": {
+      "role": "index",
+      "sha256": "ce8b90f4321242d75a48b7ca13d7f548da2e09061b8745c925927712f5e6980c",
+      "size": 22170,
+      "normalized_sha256": "ce8b90f4321242d75a48b7ca13d7f548da2e09061b8745c925927712f5e6980c"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopFavorites.dc.html": {
+      "role": "index",
+      "sha256": "c01293039df801be89119aeac37b67e82e4ad32251ee793e4c43de4eedb34955",
+      "size": 17116,
+      "normalized_sha256": "c01293039df801be89119aeac37b67e82e4ad32251ee793e4c43de4eedb34955"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopGroupChat.dc.html": {
+      "role": "index",
+      "sha256": "93d4eefd09a56671bb3e455c0f1f7b0610f0dd5fa65737940942f63c654ae976",
+      "size": 24444,
+      "normalized_sha256": "93d4eefd09a56671bb3e455c0f1f7b0610f0dd5fa65737940942f63c654ae976"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopGroupInfo.dc.html": {
+      "role": "index",
+      "sha256": "9462da388303ee4a6ae7ad5e390fca4f6588c1fb7188a4e2ce38abe25c0857b5",
+      "size": 26672,
+      "normalized_sha256": "9462da388303ee4a6ae7ad5e390fca4f6588c1fb7188a4e2ce38abe25c0857b5"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopGroupTasks.dc.html": {
+      "role": "index",
+      "sha256": "5a8298a1609829f4485a791360459331fe1750712bc9fa45185aae3ff08d48a7",
+      "size": 17012,
+      "normalized_sha256": "5a8298a1609829f4485a791360459331fe1750712bc9fa45185aae3ff08d48a7"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopLinks.dc.html": {
+      "role": "index",
+      "sha256": "8008ca70010251fd8c8030254c12e29b7d31f4e1debd161ed03914d72c021d17",
+      "size": 20194,
+      "normalized_sha256": "8008ca70010251fd8c8030254c12e29b7d31f4e1debd161ed03914d72c021d17"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopLogs.dc.html": {
+      "role": "index",
+      "sha256": "9adfa1d3d26971a50e4f79c62c6197393ee89a22040d0e1f91edb5cabf83228e",
+      "size": 11592,
+      "normalized_sha256": "9adfa1d3d26971a50e4f79c62c6197393ee89a22040d0e1f91edb5cabf83228e"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopModals.dc.html": {
+      "role": "index",
+      "sha256": "993f9d853dae3303304b96e3a7fe5ce1564b8b31c4705b08a46ca79e1ccb8b79",
+      "size": 19668,
+      "normalized_sha256": "993f9d853dae3303304b96e3a7fe5ce1564b8b31c4705b08a46ca79e1ccb8b79"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopOneToOne.dc.html": {
+      "role": "index",
+      "sha256": "84618b45893379495d83f5dc4dcd50a04d2030f273f85a6f459c695652b97574",
+      "size": 24251,
+      "normalized_sha256": "84618b45893379495d83f5dc4dcd50a04d2030f273f85a6f459c695652b97574"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopRequests.dc.html": {
+      "role": "index",
+      "sha256": "aef02a809719a9c63f4bcd982e25d6af732f65682239078484f8c60bf7ed8c04",
+      "size": 21719,
+      "normalized_sha256": "aef02a809719a9c63f4bcd982e25d6af732f65682239078484f8c60bf7ed8c04"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopSearch.dc.html": {
+      "role": "index",
+      "sha256": "33c3ce6c46711a96c5b4a4f8ee0e20311352abfcc275470ed102336c5b86af93",
+      "size": 14939,
+      "normalized_sha256": "33c3ce6c46711a96c5b4a4f8ee0e20311352abfcc275470ed102336c5b86af93"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopSettings.dc.html": {
+      "role": "index",
+      "sha256": "41e265e051b9b51682a39bc92e139b241d087a5f016efa97c6f59df46cf49975",
+      "size": 12618,
+      "normalized_sha256": "41e265e051b9b51682a39bc92e139b241d087a5f016efa97c6f59df46cf49975"
     },
     "docs/AI_ENGINEERING_INDEX.md": {
       "role": "index",
