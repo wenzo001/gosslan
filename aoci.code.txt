@@ -628,10 +628,21 @@ CrashNotice.vue[EU4S]: F:上一轮崩溃/启动失败的横幅卡片：只收 pr
 HangNotice.vue[EU4T]: F:卡顿提示条：只在某个 IPC 已等待 ≥10 s 时出现，非模态、不抢焦点；只收 props 与 emit 等待/重启 | R:code:src/utils/uiStall.ts,code:src/App.vue | A:escalated 档换文案；轮询在 App.vue | S:10 s 与看门狗的用户可见通知档同口径，改一处必须同步另一处。
 LogDetailPanel.vue[EU4T]: F:日志选中行详情：宽窗贴右、窄窗与移动落底，桌面/移动两套外壳共用这一份内容 | R:code:src/utils/logFilter.ts,code:src/components/LogViewer.vue | A:位置只由 placement 决定；行内高亮纯文本先 stripTags | S:详情必须剥掉高亮标记，直接渲染 v-html 会把日志正文当 HTML 执行。
 LogRows.vue[EU4S]: F:日志虚拟化正文：桌面独立窗与移动整页共用同一份行模板 | R:code:src/utils/logFilter.ts,code:src/components/LogViewer.vue | A:v-memo 依赖集中在 memoDeps；新增渲染字段必须同时加进去 | S:两外壳各抄一份会变成同页不同样/少转义；漏 memoDeps 字段看着不更新。
+RecoveryNotice.vue[EU4S]: F:渲染层自愈的恢复横幅：recovered / suggest_restart 两档，只显示结局，判定与动作在 watchdog | R:code:src-tauri/src/watchdog.rs,code:src/App.vue | A:recovered 明说「界面刚才无响应，已自动恢复」且草稿已保留；suggest_restart 给立即重启；非模态不抢焦点 | S:「草稿已保留」是可恢复承诺的一部分（中英各一份）；只在 recovered 档提草稿。
+TaskCenter.vue[EU6M]: F:任务中心：汇总传输与操作台账，逐行给状态、进度与动作（去会话/重试等） | R:code:src/utils/taskCenter.ts,code:src/api/index.ts | A:状态文案走 operationStatusText、进度 clampProgress、空态用 StateBlock | S:标题与状态映射只有 taskCenter 一份，模板里别再写第二套口径。
+ToastList.vue[EU4T]: F:ToastProvider 的列表渲染子组件：只管外观（图标/配色/限流隐藏），停留、堆叠、滑动与 live region 交给 Reka | R:code:src/components/ToastHud.vue,code:src/utils/toastManager.ts | A:Esc 保持库默认（关闭 toast） | S:不要用 @escape-key-down preventDefault：会污染同一次 Esc，让 Dialog/Menu/Select 都关不掉。
+TodoAttrDateField.vue[EU4S]: F:「关联时间」控件：自绘 7×6 月历面板，值 YYYY-MM-DD、空串=未填 | R:code:src/components/TodoAttrField.vue | A:「清除」发空串，后端按明确清空处理 | S:弃用原生 date：系统拾取器的宽度/圆角/阴影不受控，会与标签面板不同源。
+TodoAttrField.vue[EU4S]: F:任务属性三件套（关联时间/类型/标签）共用的外壳：字段名一行 + 触发器 + 280px .gosslan-menu 面板 | R:code:src/components/TodoAttrDateField.vue,code:src/components/TodoAttrTypeField.vue | A:统一 h-10 与 radius-md，三个子组件只负责显示与交互 | S:三处各写高度与面板正是「日期面板和标签下拉长得不一样」的根因。
+TodoAttrTagsField.vue[EU4S]: F:「任务标签」控件：多选 + 自定义输入 + 历史候选；触发器单行最多 3 枚、余折 +n | R:code:src/components/TodoAttrField.vue,code:src/utils/todos.ts | A:移除只解除与任务的关联、不动候选池；候选排序由后端按使用次数/最近给 | S:单标签 20 字符、单任务最多 10 个，与 Rust 侧常量同一口径。
+TodoAttrTypeField.vue[EU4S]: F:「任务类型」控件：内置档一点即写，「自定义…」确认后才落库 | R:code:src/components/TodoAttrField.vue,code:src/utils/todos.ts | A:与日期/标签同壳同高；自定义名受 TODO_CUSTOM_CATEGORY_MAX_LEN 限制 | S:后端对空名明确拒收；不要在这里提前落库。
+TodoDetailActions.vue[EU4S]: F:任务详情操作条（归档/恢复/编辑/删除）：应用内弹窗与独立窗口右栏共用 | R:code:src/utils/todos.ts | A:权限门控与按钮语义只写一次，宿主把 emit 接回看板动作 | S:归档态=显式归档或完成满 7 天；按钮可见性必须与 canArchive/canRestore 同源。
+TodoDetailFields.vue[EU4M]: F:任务详情字段区（描述/图片/属性/操作记录）：TodoDetailDialog 与 GroupTasksBoard 右栏共用 | R:code:src/components/GroupTasksBoard.vue,code:src/components/TodoDetailDialog.vue | A:纯展示 + 意图上抛，改状态/归档/编辑都在 GroupTasksBoard | S:两个宿主共用一份，否则会出现「窗口里改了、弹窗里没改」。
+VersionMismatchNotice.vue[EU4T]: F:版本错配提示条：前端构建版本与后端 APP_VERSION 不一致时出现，只 emit 重启 | R:code:src/utils/versionGuard.ts,code:src/App.vue | A:任一版本拿不到就不显示 | S:误报判据在 versionGuard；不要在这里自己比较版本字符串。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/chat/===
 ChatHeader.vue[EU7M]: F:聊天头部：会话标题、链路提示与入口 | R:code:src/components/ChatWindow.vue,code:src/utils/peerConnectionInfo.ts | A:头部状态与按钮 | S:最后一枚群按钮是「从群里补齐历史消息」，刻意暗一档（"不要太明显，但要有功能"）；"在搬"的读数取自 store，不在这判第二遍；跑时图标换转圈（18px 调暗几乎看不出）。
 MessageComposer.vue[EU9L]: F:消息输入区：@ 名单、粘贴上限、发送与引用 | R:code:src/components/MessageItem.vue,code:src-tauri/src/protocol.rs | A:发送前的载荷组装与 @ 名单 | S:@ 名单是三态：不能给默认值，空数组是「明确回答谁都没 @」，与「不知道」是两回事。⚠️ 不能只依赖 KeyboardEvent.isComposing——macOS WKWebView 上用 Enter 提交候选时它会假。粘贴限总量而不是单次：按住 Ctrl+V 连发每次都插一份，提示还要节流否则刷屏。
+BackToLatestButton.vue[EU4T]: F:「回到最新」悬浮圆钮：36×36 全部命中区、真离底才可点、出现只播一次 fade | R:code:src/utils/backToLatest.ts,code:src/components/VirtualList.vue | A:visible 由几何间隙驱动；不可点时 pointer-events:none + opacity-0 + aria-hidden + tabindex=-1 | S:不许加 tap-safe/::after 扩热区；按压反馈自带 translate，否则全站 active scale 会顶掉位移。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/conversation/===
 ConversationContextMenu.vue[EU5T]: F:会话行右键菜单 | R:code:src/components/conversation/ConversationListItem.vue,code:src/components/ContextMenu.vue | A:置顶/免打扰/删除等项 | S:删除统一走右键菜单（用户点名的口径），不再在行上放叉叉；置顶是纯本地偏好、不广播。
