@@ -1,4 +1,5 @@
-// 职责边界：`commands/files.rs` 里「打开/删除本地文件」那条目录边界的纯函数用例。
+// 职责边界：`commands/files.rs` 里「打开/删除本地文件」那条目录边界的纯函数用例；
+// 以及群文件面板「本机持有状态」的判定（发送者的 recipient 行本来就不存在）。
 // 由 `files.rs` 末尾 `include!` 拼进 `commands` 模块 ⇒ 本文件的 mod 落在 `commands::files_gate_tests`
 // （与同形的 `commands/helpers.rs` + `helpers_tests.rs` 一致）。
 //
@@ -7,7 +8,10 @@
 // 恶意 path"，所以这条只能靠纯函数判 —— 判的是分量比对，不是字符串前缀。
 #[cfg(test)]
 mod files_gate_tests {
-    use super::{inspect_drop_paths_blocking, ledger_path_owns, path_under_any, transfer_id_of_owner};
+    use super::{
+        group_file_local_state, inspect_drop_paths_blocking, ledger_path_owns, path_under_any,
+        transfer_id_of_owner,
+    };
     use std::path::Path;
 
     /// 自家目录之内必须放行。
@@ -381,5 +385,105 @@ mod files_gate_tests {
     fn inspect_drop_paths_is_capped() {
         let paths: Vec<String> = (0..500).map(|i| format!("/nonexistent/{i}.bin")).collect();
         assert_eq!(inspect_drop_paths_blocking(paths).len(), 200);
+    }
+
+    /* ---------------- 群文件面板：发送者没有 recipient 行是常态，不是读库失败 ---------------- */
+
+    fn memdb_with_group(sender: &str) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO groups(id, name, creator, created_at) VALUES('g1', 'g', ?1, 1)",
+            rusqlite::params![sender],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO group_members(group_id, device_id) VALUES('g1', ?1)",
+            rusqlite::params![sender],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn group_file(transfer_id: &str, sender_id: &str) -> crate::state::GroupFile {
+        crate::state::GroupFile {
+            transfer_id: transfer_id.to_string(),
+            group_id: "g1".to_string(),
+            sender_id: sender_id.to_string(),
+            name: "a.bin".to_string(),
+            size: 1,
+            sha256: String::new(),
+            status: "pending".to_string(),
+            created_at: 1,
+            scope: "chat".to_string(),
+            todo_id: String::new(),
+        }
+    }
+
+    /// 2026-11-09 报障的回归：自己发的群文件**没有 recipient 行**（`send_group_file`
+    /// 的成员过滤不含自己）。旧实现把这一格当成读库失败，于是群里有自己发过的文件时，
+    /// 「群文件」面板每次打开都只显示「群文件读取失败」+ 重试，重试照样失败。
+    #[test]
+    fn own_group_file_without_recipient_row_is_remote_not_an_error() {
+        let conn = memdb_with_group("me");
+        let own = group_file("gf-own", "me");
+        crate::db::insert_group_file(&conn, &own).unwrap();
+        let (state, path) = group_file_local_state(&conn, "me", &own)
+            .expect("自己发的文件没有 recipient 行是常态，不许整面板报错");
+        assert_eq!(state, "remote");
+        assert_eq!(path, None);
+    }
+
+    /// 非发送者缺行同样是合法的（早于本机入群 / 历史同步只同步元数据）⇒ 未取到，可重新获取。
+    #[test]
+    fn missing_recipient_row_for_peer_file_is_remote() {
+        let conn = memdb_with_group("peer");
+        let peer = group_file("gf-peer", "peer");
+        crate::db::insert_group_file(&conn, &peer).unwrap();
+        assert_eq!(
+            group_file_local_state(&conn, "me", &peer).unwrap().0,
+            "remote"
+        );
+    }
+
+    /// 正向对照：我自己的 recipient 行在途 => receiving；`completed` 但磁盘无文件 => remote。
+    #[test]
+    fn my_recipient_row_still_maps_to_receiving_or_remote() {
+        let conn = memdb_with_group("peer");
+        let peer = group_file("gf-peer", "peer");
+        crate::db::insert_group_file(&conn, &peer).unwrap();
+        conn.execute(
+            "INSERT INTO group_file_recipients(transfer_id, recipient_id, status, progress, updated_at)
+             VALUES('gf-peer', 'me', 'pending', 0.0, 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            group_file_local_state(&conn, "me", &peer).unwrap().0,
+            "receiving"
+        );
+        conn.execute(
+            "UPDATE group_file_recipients SET status = 'completed'
+             WHERE transfer_id = 'gf-peer' AND recipient_id = 'me'",
+            [],
+        )
+        .unwrap();
+        // 没有 file_transfers 路径 ⇒ 磁盘上确实没有，只能算「未取到」。
+        assert_eq!(
+            group_file_local_state(&conn, "me", &peer).unwrap().0,
+            "remote"
+        );
+    }
+
+    /// 反例自证：真正读库失败**必须**上抛，不能被"缺行合法"顺手吞成「未取到」。
+    #[test]
+    fn genuine_recipient_read_failure_still_surfaces() {
+        let conn = memdb_with_group("peer");
+        let peer = group_file("gf-peer", "peer");
+        crate::db::insert_group_file(&conn, &peer).unwrap();
+        conn.execute_batch("DROP TABLE group_file_recipients").unwrap();
+        let err = group_file_local_state(&conn, "me", &peer)
+            .expect_err("表读不出来必须上抛，否则面板会把故障编成「未取到」");
+        assert!(err.contains("code=GFILE_MY_STATUS_READ_FAILED"), "{err}");
     }
 }

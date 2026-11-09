@@ -386,14 +386,49 @@ pub struct GroupFileEntry {
     pub total: i64,
 }
 
+/// 群文件面板一次最多取多少条（只增表 + 每行点查/stat ⇒ 必须有界）。
+pub const GROUP_FILES_PANEL_LIMIT: i64 = 500;
+
+/// 单行群文件的「本机持有状态」（`local` / `receiving` / `remote` / `failed` + 可打开路径）。
+///
+/// **发送者不查 `group_file_recipients`**：`send_group_file` 只给其他成员建行，自己那一格
+/// 本来就不存在。旧实现把自己的文件也拿去查，`None` 一律当成"读库失败"抛
+/// `GFILE_MY_STATUS_READ_FAILED` —— 于是只要这个群里有哪怕一条自己发过的文件，
+/// 整个群文件面板每次都恒红（2026-11-09 用户报障的真实成因）。
+///
+/// 非发送者缺行是**合法**的（群文件早于本机入群；历史同步只同步元数据、不建 recipient 行），
+/// 按 `remote`（未取到）呈现，面板仍可用「重新获取」拉回来；只有真正的读库失败才返回 `Err`。
+fn group_file_local_state(
+    conn: &rusqlite::Connection,
+    me: &str,
+    f: &crate::state::GroupFile,
+) -> Result<(String, Option<String>), String> {
+    let path = db::get_transfer_path(conn, &f.transfer_id);
+    if f.sender_id == me {
+        return Ok(local_path_state(path));
+    }
+    // 用能分辨「没有这一行」与「读库失败」的那一条：`get_group_file_recipient_status`
+    // 把两者都压成 `None`，正是旧实现把合法缺行误判成故障的根源。
+    match db::group_file_recipient_status(conn, &f.transfer_id, me) {
+        Ok(Some(status)) => Ok(match status.as_str() {
+            "completed" => local_path_state(path),
+            "sending" | "pending" => ("receiving".to_string(), None),
+            "failed" => ("failed".to_string(), None),
+            _ => ("remote".to_string(), None),
+        }),
+        Ok(None) => Ok(("remote".to_string(), None)),
+        Err(e) => Err(crate::error_codes::coded(
+            crate::error_codes::GFILE_MY_STATUS_READ_FAILED,
+            format!("群文件「我的状态」读不出来（transfer={} err={e}）", f.transfer_id),
+        )),
+    }
+}
+
 /// 列出某群的全部群文件，附带「本机是否持有」与「对全群投递进度」。
 ///
 /// 本机持有状态的判定必须**看磁盘**：路径在 DB 里存在不代表文件还在
 /// （缓存清理会删掉媒体文件，见 `clean_cache_now`）。只信 DB 会让面板列出
 /// 一堆点了打不开的条目。
-/// 群文件面板一次最多取多少条（只增表 + 每行点查/stat ⇒ 必须有界）。
-pub const GROUP_FILES_PANEL_LIMIT: i64 = 500;
-
 #[tauri::command(async)]
 pub async fn list_group_files(
     state: State<'_, Arc<AppState>>,
@@ -420,50 +455,25 @@ pub async fn list_group_files(
                         Some(x) => (x.completed, x.total),
                         None => (0, 0),
                     };
-                    // A 档（INV-P36）：这一格折成空串后走 `_` 臂 ⇒ 显示成「未取到」，
-                    // 而"我没有这一行"与"这次读失败"在面板上同形。2026-11-02 拍板上抛：
-                    // 群文件面板本来就有 loading/error/empty 三档与重试按钮（`GroupFilesPanel.vue`），
-                    // 让它进错误档比把某一行的状态编成「未取到」诚实。
-                    let my_status = match db::get_group_file_recipient_status(&dbc, &f.transfer_id, &me) {
-                        Some(status) => status,
-                        None => {
+                    let (local_state, local_path) = match group_file_local_state(&dbc, &me, &f) {
+                        Ok(v) => v,
+                        Err(e) => {
                             if crate::logging::log_throttled("gfile_my_status_read_failed", 300_000) {
                                 s.logger.warn(
                                     "file",
-                                    format!("code=GFILE_MY_STATUS_READ_FAILED 我的状态读不出来，整面板进错误档 transfer={}", f.transfer_id),
+                                    format!("code=GFILE_MY_STATUS_READ_FAILED 我的状态读不出来，整面板进错误档 transfer={} err={e}", f.transfer_id),
                                 );
                             }
-                            return Err(crate::error_codes::coded(
-                                crate::error_codes::GFILE_MY_STATUS_READ_FAILED,
-                                format!(
-                                    "群文件「我的状态」读不出来（transfer={}）",
-                                    f.transfer_id
-                                ),
-                            ));
+                            return Err(e);
                         }
                     };
-                    let path = db::get_transfer_path(&dbc, &f.transfer_id);
-                    Ok((f, delivered, total, my_status, path))
+                    Ok((f, delivered, total, local_state, local_path))
                 })
                 .collect::<Result<Vec<_>, String>>()?
         };
         Ok(rows
             .into_iter()
-            .map(|(f, delivered, total, my_status, path)| {
-                let (local_state, local_path) = if f.sender_id == me {
-                    // 发送者不参与 recipients（见 send_group_file 的成员过滤），其 recipient 行
-                    // 恒为空 —— 按 my_status 判定会让自己发的文件永远显示"未取到"。
-                    // 本机是否还留着原件，只能看磁盘。
-                    local_path_state(path)
-                } else {
-                    match my_status.as_str() {
-                        "completed" => local_path_state(path),
-                        "sending" | "pending" => ("receiving".to_string(), None),
-                        "failed" => ("failed".to_string(), None),
-                        // 没有 recipient 行：该文件早于本机入群，尚未登记接收
-                        _ => ("remote".to_string(), None),
-                    }
-                };
+            .map(|(f, delivered, total, local_state, local_path)| {
                 GroupFileEntry {
                     transfer_id: f.transfer_id,
                     name: f.name,
