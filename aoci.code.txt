@@ -623,6 +623,11 @@ VirtualList.vue[EP9L]: F:按估算高度的虚拟滚动列表（消息列表用�
 SelfAvatar.vue[EU6T]: F:本人头像唯一渲染处：图片或默认 emoji 脸 | R:code:src/stores/useAppStore.ts,code:src/utils/avatarSeed.ts | A:previewSrc 乐观预览与种子源 | S:种子只取 device_id：用未保存昵称则保存前与导航栏两张脸。不留角标插槽：根 overflow-hidden，角标挂兄弟节点。previewSrc 按是否传入（非空否）判，null 也听。
 RemindAudienceDialog.vue[DU5S]: F:强提醒受众选择弹窗（1:1 默认对方、群聊显式勾选成员，第一版不默认全群） | R:code:src/stores/useChatStore.ts,code:src/utils/reminders.ts,code:src/components/BaseModal.vue | A:受众勾选与确认 emit | S:群聊必须显式选择才能发送，空名单前端拒发；勾选状态随弹窗开关重置；BaseModal 的 Esc/返回键与焦点归还由外壳承担，组件只管名单。
 TodoIconPicker.vue[EU8T]: F:自定义类型的图标选择器（两个编辑器共用的一份按钮组） | R:code:src/utils/todoCustomIcons.ts,code:src/components/TodoDetailDialog.vue | A:modelValue、disabled、ariaLabel 与 update:modelValue | S:看板草稿与详情弹窗两个入口必须用这一份：各写一排按钮就会开始不一致；无权限时只回显当前一枚（给一排点不动的按钮会被读成点坏了）；每枚带 tap-safe 与 aria-pressed
+CodeLangMenu.vue[EU4S]: F:代码语言选择器（发送前与发送后共用）：自动识别 / plaintext / 具体语言三档 | R:code:src/components/CodeBlock.vue,code:src/components/message/MessageCodeBubble.vue | A:自绘下拉吃 .gosslan-menu 主题 token；auto 交给 highlightAuto，识别不确定就落纯文本 | S:必须自绘：原生 select 的弹层在深色下会浅底近白字。
+CrashNotice.vue[EU4S]: F:上一轮崩溃/启动失败的横幅卡片：只收 props、只 emit 动作（复制/开日志/重启/重开蓝牙/修 WebView/忽略） | R:code:src/App.vue,code:src/types.ts | A:环境归因码（ENV_WEBVIEW_CREATE_TIMEOUT）按「环境」口径写标题与正文并给修复入口 | S:保持纯展示（接线在 App.vue），否则探针 H.install 挂不起来、也测不到文案。
+HangNotice.vue[EU4T]: F:卡顿提示条：只在某个 IPC 已等待 ≥10 s 时出现，非模态、不抢焦点；只收 props 与 emit 等待/重启 | R:code:src/utils/uiStall.ts,code:src/App.vue | A:escalated 档换文案；轮询在 App.vue | S:10 s 与看门狗的用户可见通知档同口径，改一处必须同步另一处。
+LogDetailPanel.vue[EU4T]: F:日志选中行详情：宽窗贴右、窄窗与移动落底，桌面/移动两套外壳共用这一份内容 | R:code:src/utils/logFilter.ts,code:src/components/LogViewer.vue | A:位置只由 placement 决定；行内高亮纯文本先 stripTags | S:详情必须剥掉高亮标记，直接渲染 v-html 会把日志正文当 HTML 执行。
+LogRows.vue[EU4S]: F:日志虚拟化正文：桌面独立窗与移动整页共用同一份行模板 | R:code:src/utils/logFilter.ts,code:src/components/LogViewer.vue | A:v-memo 依赖集中在 memoDeps；新增渲染字段必须同时加进去 | S:两外壳各抄一份会变成同页不同样/少转义；漏 memoDeps 字段看着不更新。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/chat/===
 ChatHeader.vue[EU7M]: F:聊天头部：会话标题、链路提示与入口 | R:code:src/components/ChatWindow.vue,code:src/utils/peerConnectionInfo.ts | A:头部状态与按钮 | S:最后一枚群按钮是「从群里补齐历史消息」，刻意暗一档（"不要太明显，但要有功能"）；"在搬"的读数取自 store，不在这判第二遍；跑时图标换转圈（18px 调暗几乎看不出）。
