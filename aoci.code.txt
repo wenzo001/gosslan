@@ -689,6 +689,9 @@ SettingsGroup.vue[EU3T]: F:设置分组容器 | R:- | A:分组标题与容器 | 
 SettingsRow.vue[EU3T]: F:设置行容器 | R:- | A:行布局与最后一行去分隔线 | S:-
 SettingsToggle.vue[EU6T]: F:设置里的开关控件 | R:- | A:两档尺寸与必填可访问名 | S:可访问名做成必填是有意的：开关本体只有滑块、没有任何文字，无名开关在读屏下等于一个读不出来的控件（审计 P0-4）。它不参与开关取值，取值永远是用户意图 modelValue。
 StorageSection.vue[EU8M]: F:存储分区：用量、自动清理与导出入口 | R:code:src-tauri/src/storage/cache_cleaner.rs,code:src-tauri/src/export.rs | A:保留时长、配额与导出 | S:开「自动删除」前必须让用户明确知道代价：被清理掉的图片与文件在历史消息里会打不开。导出是磁盘吃紧或换机前唯一的自救手段——存储清理只删媒体，库本身出问题就得靠它。
+AndroidUpdatePanel.vue[EU5M]: F:安卓应用内升级面板（仅 isAndroid）：点确认后弹窗不关、busy 由 isInstallBusy(state) 决定 | R:code:src/updater/service.ts,code:src/components/settings/UpdatePanel.vue | A:只有 installStep=waiting-user（系统确认框已出现）才关弹窗 | S:不等状态就关弹窗，会变成「弹窗消失→静默 PackageInstaller 写会话→系统界面突现」，用户以为没生效。
+AvatarPresetDialog.vue[EU4S]: F:默认头像选择器：表情 + 背景色（调色板/自定义取色/随机），确认后落库 SVG data URL | R:code:src/utils/avatarSeed.ts | A:网格读 AVATAR_PAIRS，emoji 不允许自由文本 | S:「不要太开放」是用户裁决，自定义色是后追加；底色与脸必须取同一 id 的种子。
+UpdatePanel.vue[EU5S]: F:桌面更新面板：检查/下载/安装三阶段的状态展示与确认 | R:code:src/updater/service.ts,code:src/utils/format.ts | A:字节格式化统一走 formatBytes | S:别再写私有 KB 取整格式化（审计 P2 #35 已收口到 format）。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/ui/===
 BackArrow.vue[EU5T]: F:头部返回箭头，应用内所有返回箭头的唯一实现 | R:- | A:按平台适配的返回键 | S:唯一实现就是它存在的理由：此前设置用自绘 chevron、收藏用 ← 文字、日志用 ArrowLeft 图标，三套并存。
@@ -696,6 +699,16 @@ DangerBtn.vue[EU4T]: F:危险操作按钮 | R:- | A:统一样式的删除/重置
 LinkIcon.vue[EU6T]: F:连接类型图标的唯一渲染处 | R:- | A:四种通道图标 | S:⚠️ 调用方只应在有真实链路时渲染（name 不是 discovered）：发现了但没建链时给出图标就是在撒谎——四种通道的图标各界面全局统一是用户点名的要求。
 PrimaryBtn.vue[EU5T]: F:主按钮 | R:- | A:三档密度与图标按钮的 aria-label | S:默认不要 flex-1：那会让按钮占满容器宽度；图标按钮必须给 aria-label。
 SegmentedControl.vue[EU6T]: F:分段选择控件 | R:- | A:当前档位的呈现 | S:抽出来的理由是此前 AppearanceSection、ChatStyleSection、GroupTasksBoard 的过滤条各画一份。
+AppDateField.vue[EU4T]: F:统一日期字段：原生 input[type=date] 的薄封装 + 输入框内嵌清除 × | R:code:src/components/ui/Icon.vue | A:外观与文本输入同变量；焦点刻意不变色，与全局文本字段口径一致 | S:「没有焦点环」不是漏写；不为此新增组件库日期依赖。
+AvatarBox.vue[EU4S]: F:头像框的唯一渲染处：盒子形状 + 有图显示图/没图默认脸 + 同 id 种子底色 | R:code:src/utils/avatarSeed.ts | A:尺寸由调用点 class 给（h-9 w-9 等） | S:盒形状与种子必须同处，分开写会出现「底色是 A 的脸是 B」。
+CharCounter.vue[EU4T]: F:输入长度读数：maxlength 到顶是静默截断，所以把数说出来 | R:code:src/utils/validation.ts | A:尺子走 charCount（码点）＝ zod ＝ 后端 chars().count() | S:到顶判据要同时看 UTF-16 的 maxlength 与码点两把尺。
+ConfirmDialog.vue[EU4S]: F:统一二次确认框：标题 + 正文/条目 + 取消/确认（危险实底红），busy 时两键都禁用 | R:code:src/components/BaseModal.vue,code:src/components/ui/PrimaryBtn.vue | A:「怎么说」留给调用方（默认插槽可覆盖），「怎么确认」收成一份 | S:busy 必须双键禁用，防重复提交。
+ErrorBoundary.vue[EU4T]: F:局部错误边界：接住高价值子树渲染/生命周期里的同步异常，就地给带「重试」的说明 | R:code:src/boot/boot.ts | A:onErrorCaptured 停掉冒泡，重试即重建子树 | S:只接同步异常；不能因为加了边界就拆掉异步各自的 .catch。
+Icon.vue[FU4T]: F:全应用图标唯一出口：造型来自 lucide + iconRegistry，盒尺寸由消费方 class 决定 | R:code:src/components/ui/iconRegistry.ts | A:描边默认 2px；强调处用 :stroke-width 覆盖（回执 2.5/群任务 2.2/导航 2.35） | S:2026-11-07 已取消 size prop 与 16px 降描边（分支永不执行）；同屏不混线性与填充。
+MarkdownText.vue[EU4S]: F:更新说明 Markdown 的唯一 v-html 落点：先 renderNotesMarkdown 白名单消毒，链接交给系统浏览器 | R:code:src/utils/markdown.ts | A:用原生事件委托拦链接，容器本身不挂 @click | S:容器挂 @click 会被键盘可达判据当成假按钮；v-html 重渲染后必须重绑委托。
+NavIcon.vue[EU4T]: F:一级导航图标唯一出口：PC rail 与移动底栏共用，名字映射在 navIcons.ts | R:code:src/components/ui/navIcons.ts | A:选中态由外层 .nav-glyph-btn（药丸底+主题色）表达，不自绘 path | S:四处名字必须与 NAV_ICONS 对齐；没有额外 fallback 分支。
+SecondaryBtn.vue[EU4S]: F:次要按钮：幽灵底 + 悬停浅填充；variant=outline 是「次要·最弱档」而非第四种语义 | R:code:src/components/ui/PrimaryBtn.vue,code:src/components/ui/DangerBtn.vue | A:语义恒为 primary/secondary/danger 三种 | S:不允许在组件外手写 outline 按钮（designGuards 钉住）；这族曾被报「按钮文字上下没居中」。
+SettingsSelect.vue[EU4T]: F:设置页统一下拉：Reka Select 的薄封装，面板与项吃 .gosslan-menu token | R:code:src/components/ui/Icon.vue | A:触发器/选项/指示器共用一套样式 | S:不要再造第二份下拉外观；菜单面板规格已统一在 .gosslan-menu。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/window/===
 AuxWindowShell.vue[EU6T]: F:辅助窗口的共用外壳 | R:code:src-tauri/src/macos_window.rs | A:窗口 caption 与圆角时机 | S:圆角必须在 onMounted 设：wry 载入后才替换 contentView，setup 阶段设下去会被丢掉。非 macOS 或命令不可用就静默忽略，不影响功能。

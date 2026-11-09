@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-09T12:04:20Z",
+  "updated_at": "2026-11-09T12:05:33Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "0ead0f4a5356f50a7e71139616bc1fbeb2eea5a7cabde9f4fc958242cdc95166",
-      "size": 482043,
-      "normalized_sha256": "0ead0f4a5356f50a7e71139616bc1fbeb2eea5a7cabde9f4fc958242cdc95166"
+      "sha256": "80794deb2d1642cf40a6c5d49bf5f646c4a82faee87ef1f73e4b60750b15bd9f",
+      "size": 486380,
+      "normalized_sha256": "80794deb2d1642cf40a6c5d49bf5f646c4a82faee87ef1f73e4b60750b15bd9f"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -6828,111 +6828,177 @@
     },
     "src/components/search/ChatSearchDialog.vue": {
       "role": "index",
-      "sha256": "582dd38071bd07cbbc052533e94867b5c9d1afcd545eb0ce541a6e18e1ef89e2",
-      "size": 18896,
-      "normalized_sha256": "582dd38071bd07cbbc052533e94867b5c9d1afcd545eb0ce541a6e18e1ef89e2"
+      "sha256": "f6fb54edb82d47fe3d0e4f186186f935b56d11e981bf8aa9b5dc8d8bd406f36d",
+      "size": 26636,
+      "normalized_sha256": "f6fb54edb82d47fe3d0e4f186186f935b56d11e981bf8aa9b5dc8d8bd406f36d"
     },
     "src/components/settings/AboutSection.vue": {
       "role": "index",
-      "sha256": "0336eaa8a94debb6873bb433e2bdaacd463e39b0137ab117a0d85c04aea738e6",
-      "size": 5702,
-      "normalized_sha256": "0336eaa8a94debb6873bb433e2bdaacd463e39b0137ab117a0d85c04aea738e6"
+      "sha256": "47023f08b200978037fa6279d6927fa5843f95fbeb51ac7847754de324e0d73c",
+      "size": 5710,
+      "normalized_sha256": "47023f08b200978037fa6279d6927fa5843f95fbeb51ac7847754de324e0d73c"
+    },
+    "src/components/settings/AndroidUpdatePanel.vue": {
+      "role": "index",
+      "sha256": "a035b03ae013ece64fb120a6e56db824441b41e7a4090df4c7acbddc9d4951da",
+      "size": 13403,
+      "normalized_sha256": "a035b03ae013ece64fb120a6e56db824441b41e7a4090df4c7acbddc9d4951da"
     },
     "src/components/settings/AppearanceSection.vue": {
       "role": "index",
-      "sha256": "bcbea419a17fd354b5ccf3d0a85af166ca03d7c73704e6949ee656e70d9dc0cc",
-      "size": 6467,
-      "normalized_sha256": "bcbea419a17fd354b5ccf3d0a85af166ca03d7c73704e6949ee656e70d9dc0cc"
+      "sha256": "d3eefdbd48104969b6fe56740a3b64ac7dac24941d306b8dfea4d95767415ec1",
+      "size": 11931,
+      "normalized_sha256": "d3eefdbd48104969b6fe56740a3b64ac7dac24941d306b8dfea4d95767415ec1"
+    },
+    "src/components/settings/AvatarPresetDialog.vue": {
+      "role": "index",
+      "sha256": "3c00b58803b4f25286fd4a68135f8ece2c9f73924b7db00adbfa8a94a2a29b5c",
+      "size": 7827,
+      "normalized_sha256": "3c00b58803b4f25286fd4a68135f8ece2c9f73924b7db00adbfa8a94a2a29b5c"
     },
     "src/components/settings/ChatStyleSection.vue": {
       "role": "index",
-      "sha256": "00242e3b33950730675c63112a445a47bd1537a39c0b2d5194d90f51c61d8b20",
-      "size": 12011,
-      "normalized_sha256": "00242e3b33950730675c63112a445a47bd1537a39c0b2d5194d90f51c61d8b20"
+      "sha256": "cb46328e1d51bbc8136a062a60a0bb8c9101a9362e6ea7a9060fc9efe5be0eb4",
+      "size": 9982,
+      "normalized_sha256": "cb46328e1d51bbc8136a062a60a0bb8c9101a9362e6ea7a9060fc9efe5be0eb4"
     },
     "src/components/settings/FilesSection.vue": {
       "role": "index",
-      "sha256": "d3e2a9496b61b1b4895ac14989f67563c5f799cbe4f4f7568f214b7b64b8b57d",
-      "size": 5070,
-      "normalized_sha256": "d3e2a9496b61b1b4895ac14989f67563c5f799cbe4f4f7568f214b7b64b8b57d"
+      "sha256": "1d8eaa13e6d2974a14937e824204488a7d4a8c606c70e0f9923917371ef21e84",
+      "size": 5096,
+      "normalized_sha256": "1d8eaa13e6d2974a14937e824204488a7d4a8c606c70e0f9923917371ef21e84"
     },
     "src/components/settings/GeneralSection.vue": {
       "role": "index",
-      "sha256": "b20a26c6d6387c2f8bbcc1cd0cecdfd90d42a9fbb727678503a43cb4b2c51183",
-      "size": 2809,
-      "normalized_sha256": "b20a26c6d6387c2f8bbcc1cd0cecdfd90d42a9fbb727678503a43cb4b2c51183"
+      "sha256": "586c8e2f9e4856f33dfa45062e989d668bfdd4151bfa527643950499d0ca3771",
+      "size": 2947,
+      "normalized_sha256": "586c8e2f9e4856f33dfa45062e989d668bfdd4151bfa527643950499d0ca3771"
     },
     "src/components/settings/NetworkSection.vue": {
       "role": "index",
-      "sha256": "5d84347739de5858e456ea64d6846fba75f1e2b285b7409fc39e1b1cb30d3b9d",
-      "size": 22560,
-      "normalized_sha256": "5d84347739de5858e456ea64d6846fba75f1e2b285b7409fc39e1b1cb30d3b9d"
+      "sha256": "9dbc7f496b3ce19952bed2611d470b2bc7869959ef49245d9cad36a711cb1457",
+      "size": 33126,
+      "normalized_sha256": "9dbc7f496b3ce19952bed2611d470b2bc7869959ef49245d9cad36a711cb1457"
     },
     "src/components/settings/NotificationSection.vue": {
       "role": "index",
-      "sha256": "ff805404c605e154e127a07a3895ae53a2fc9229451206e8593c3a64927e8542",
-      "size": 3982,
-      "normalized_sha256": "ff805404c605e154e127a07a3895ae53a2fc9229451206e8593c3a64927e8542"
+      "sha256": "30c00a02f6acab88c9e03de798afba77f017a70c4ddb1917c355f61d74a13d1b",
+      "size": 3996,
+      "normalized_sha256": "30c00a02f6acab88c9e03de798afba77f017a70c4ddb1917c355f61d74a13d1b"
     },
     "src/components/settings/ProfileSection.vue": {
       "role": "index",
-      "sha256": "ccfe64952eee18d8dbb225930a05da3443cab710ccd75f344d770b374b8e1f6d",
-      "size": 10173,
-      "normalized_sha256": "ccfe64952eee18d8dbb225930a05da3443cab710ccd75f344d770b374b8e1f6d"
+      "sha256": "e9431a7a99541ff3d2b5bfcb6d00ea145f96d90db74e59ae6db6bef173cd0c8e",
+      "size": 14747,
+      "normalized_sha256": "e9431a7a99541ff3d2b5bfcb6d00ea145f96d90db74e59ae6db6bef173cd0c8e"
     },
     "src/components/settings/ResetSection.vue": {
       "role": "index",
-      "sha256": "8a1fea8b7d8b4346964ecfaca373bde785b3573a1e3df78a308597d89d1ee7b5",
-      "size": 6761,
-      "normalized_sha256": "8a1fea8b7d8b4346964ecfaca373bde785b3573a1e3df78a308597d89d1ee7b5"
+      "sha256": "788c6758ca5f247365fcec9ba263154901456d3df8fefaa374d77f4ea2e12504",
+      "size": 5702,
+      "normalized_sha256": "788c6758ca5f247365fcec9ba263154901456d3df8fefaa374d77f4ea2e12504"
     },
     "src/components/settings/SecuritySection.vue": {
       "role": "index",
-      "sha256": "bceeebf1d27cf00a3c6e186dfc576ac0b6410cd9342766dd7f0d3669b1d9641c",
-      "size": 727,
-      "normalized_sha256": "bceeebf1d27cf00a3c6e186dfc576ac0b6410cd9342766dd7f0d3669b1d9641c"
+      "sha256": "eb3a2d5505877f05e777abff7a2882e587e12001c600aecbd063aefc8f8e3791",
+      "size": 745,
+      "normalized_sha256": "eb3a2d5505877f05e777abff7a2882e587e12001c600aecbd063aefc8f8e3791"
     },
     "src/components/settings/SettingsGroup.vue": {
       "role": "index",
-      "sha256": "a2b7a2c420a7991c48bbf2b75645e8d6cd2f66a2aa12a36a211d18950327891b",
-      "size": 558,
-      "normalized_sha256": "a2b7a2c420a7991c48bbf2b75645e8d6cd2f66a2aa12a36a211d18950327891b"
+      "sha256": "78f10454abb5dddf36fbee7d551abefa242dfa46ae7345cd202322d49db858b3",
+      "size": 620,
+      "normalized_sha256": "78f10454abb5dddf36fbee7d551abefa242dfa46ae7345cd202322d49db858b3"
     },
     "src/components/settings/SettingsRow.vue": {
       "role": "index",
-      "sha256": "fd0b2a48443a8f5d9ddc6a6c0f4d639b9519bd67b7cbc5e1373299965abc873f",
-      "size": 681,
-      "normalized_sha256": "fd0b2a48443a8f5d9ddc6a6c0f4d639b9519bd67b7cbc5e1373299965abc873f"
+      "sha256": "09f9f715483d73f05bc3eb468c164a3222527ff6cdd17c45634768681fe68c2b",
+      "size": 2000,
+      "normalized_sha256": "09f9f715483d73f05bc3eb468c164a3222527ff6cdd17c45634768681fe68c2b"
     },
     "src/components/settings/SettingsToggle.vue": {
       "role": "index",
-      "sha256": "172c9d0b7af5abd86a7db5c1c588c5995cc9167c565ab97136f41659a177cfd9",
-      "size": 2316,
-      "normalized_sha256": "172c9d0b7af5abd86a7db5c1c588c5995cc9167c565ab97136f41659a177cfd9"
+      "sha256": "768b78d3632afdc7eece81a4c4525c65542c0226699614bdac5612c6d47b9f6d",
+      "size": 2604,
+      "normalized_sha256": "768b78d3632afdc7eece81a4c4525c65542c0226699614bdac5612c6d47b9f6d"
     },
     "src/components/settings/StorageSection.vue": {
       "role": "index",
-      "sha256": "146a5f37b4e74b0d3cb032fb07addf51a5e032b431ddb077ebf01231b48153d0",
-      "size": 10923,
-      "normalized_sha256": "146a5f37b4e74b0d3cb032fb07addf51a5e032b431ddb077ebf01231b48153d0"
+      "sha256": "28c52939ebffaac8416fd7ccca1b5c4552f8981dd180008c9ec66ba0088dba35",
+      "size": 10642,
+      "normalized_sha256": "28c52939ebffaac8416fd7ccca1b5c4552f8981dd180008c9ec66ba0088dba35"
+    },
+    "src/components/settings/UpdatePanel.vue": {
+      "role": "index",
+      "sha256": "f792d2c2491dd475a64fc3c87b02b678bf9918391a8c9bcbd59224eed67a5abd",
+      "size": 11576,
+      "normalized_sha256": "f792d2c2491dd475a64fc3c87b02b678bf9918391a8c9bcbd59224eed67a5abd"
+    },
+    "src/components/ui/AppDateField.vue": {
+      "role": "index",
+      "sha256": "9cae265c4495fcbb21ffd7e85c5d31216ed863a31466c2f60e9893502986d739",
+      "size": 4518,
+      "normalized_sha256": "9cae265c4495fcbb21ffd7e85c5d31216ed863a31466c2f60e9893502986d739"
+    },
+    "src/components/ui/AvatarBox.vue": {
+      "role": "index",
+      "sha256": "6beaa6afee91f457285d42ad8eadad92e663f34c7a8a11bd0bb9a22c9e79892d",
+      "size": 3840,
+      "normalized_sha256": "6beaa6afee91f457285d42ad8eadad92e663f34c7a8a11bd0bb9a22c9e79892d"
     },
     "src/components/ui/BackArrow.vue": {
       "role": "index",
-      "sha256": "bfff5943f4bfd0e578cadceeab8a6e622a10f872420a83b9a2dc690c6e015303",
-      "size": 1407,
-      "normalized_sha256": "bfff5943f4bfd0e578cadceeab8a6e622a10f872420a83b9a2dc690c6e015303"
+      "sha256": "5d1fb2b30e069063044d6962f3b66a11439d89a79629178e03260e0bbc5f6d83",
+      "size": 1601,
+      "normalized_sha256": "5d1fb2b30e069063044d6962f3b66a11439d89a79629178e03260e0bbc5f6d83"
+    },
+    "src/components/ui/CharCounter.vue": {
+      "role": "index",
+      "sha256": "644322ea17cdde65fdc47a87777fe4c22094b82865f11426e52f25d26dd59537",
+      "size": 1261,
+      "normalized_sha256": "644322ea17cdde65fdc47a87777fe4c22094b82865f11426e52f25d26dd59537"
+    },
+    "src/components/ui/ConfirmDialog.vue": {
+      "role": "index",
+      "sha256": "bf22686ff8391c889807d073e78e5e41601274dc0528e8481264fb37edc6ecb5",
+      "size": 2682,
+      "normalized_sha256": "bf22686ff8391c889807d073e78e5e41601274dc0528e8481264fb37edc6ecb5"
     },
     "src/components/ui/DangerBtn.vue": {
       "role": "index",
-      "sha256": "9d612fcdd3cc8865d69a44b7d8d147dc51a3da4662194d49b337cfd116afb2e1",
-      "size": 1377,
-      "normalized_sha256": "9d612fcdd3cc8865d69a44b7d8d147dc51a3da4662194d49b337cfd116afb2e1"
+      "sha256": "95f872947a36daec9a40b0bac501393333aa8cc08575ffa8810f6480cbbc6f19",
+      "size": 1865,
+      "normalized_sha256": "95f872947a36daec9a40b0bac501393333aa8cc08575ffa8810f6480cbbc6f19"
+    },
+    "src/components/ui/ErrorBoundary.vue": {
+      "role": "index",
+      "sha256": "c1785b757247d2dc386fa0903f33a47061ba2c1a51f498a885e4a901beabcf9f",
+      "size": 1774,
+      "normalized_sha256": "c1785b757247d2dc386fa0903f33a47061ba2c1a51f498a885e4a901beabcf9f"
+    },
+    "src/components/ui/Icon.vue": {
+      "role": "index",
+      "sha256": "bd81c5622020da7609dabb0ec8c9525c2ab9bf2892b2f93300709a86279d4860",
+      "size": 1933,
+      "normalized_sha256": "bd81c5622020da7609dabb0ec8c9525c2ab9bf2892b2f93300709a86279d4860"
     },
     "src/components/ui/LinkIcon.vue": {
       "role": "index",
-      "sha256": "b9dcc5b297dd11c16380adf2d8037979cfded4facb291653b634010e309056e7",
-      "size": 1339,
-      "normalized_sha256": "b9dcc5b297dd11c16380adf2d8037979cfded4facb291653b634010e309056e7"
+      "sha256": "94fdf30d7b8e6c7e757709b4065f8a7acf06d80ff5b58e386e769ffb99fb9c93",
+      "size": 1367,
+      "normalized_sha256": "94fdf30d7b8e6c7e757709b4065f8a7acf06d80ff5b58e386e769ffb99fb9c93"
+    },
+    "src/components/ui/MarkdownText.vue": {
+      "role": "index",
+      "sha256": "1cd76e29cb11dafacace3ac80e5b2526d5c949a19e83d07343055e4d418077c3",
+      "size": 3126,
+      "normalized_sha256": "1cd76e29cb11dafacace3ac80e5b2526d5c949a19e83d07343055e4d418077c3"
+    },
+    "src/components/ui/NavIcon.vue": {
+      "role": "index",
+      "sha256": "dfaec5884705c5c52b049a4d0003cfca94283fc77af19907e2afee1f0b3552f1",
+      "size": 1133,
+      "normalized_sha256": "dfaec5884705c5c52b049a4d0003cfca94283fc77af19907e2afee1f0b3552f1"
     },
     "src/components/ui/PrimaryBtn.vue": {
       "role": "index",
@@ -6940,11 +7006,23 @@
       "size": 1686,
       "normalized_sha256": "5243496305a4a889ac99fa20b224749954b959433278282f90a3a614e9f7806b"
     },
+    "src/components/ui/SecondaryBtn.vue": {
+      "role": "index",
+      "sha256": "03d32f42f56d22cf7f0a7d2d621a031335a24950ed3dd46397c399c49bd8cba4",
+      "size": 2856,
+      "normalized_sha256": "03d32f42f56d22cf7f0a7d2d621a031335a24950ed3dd46397c399c49bd8cba4"
+    },
     "src/components/ui/SegmentedControl.vue": {
       "role": "index",
       "sha256": "36c5f9694d5636e903f3422e03a0a03cd2fb58c5c9bd7c6ee33816d1d127a291",
       "size": 3312,
       "normalized_sha256": "36c5f9694d5636e903f3422e03a0a03cd2fb58c5c9bd7c6ee33816d1d127a291"
+    },
+    "src/components/ui/SettingsSelect.vue": {
+      "role": "index",
+      "sha256": "7695cc3326b679c1f52ec5fe9350da7a355bae5b8d0acc0284bb7242117405ba",
+      "size": 2492,
+      "normalized_sha256": "7695cc3326b679c1f52ec5fe9350da7a355bae5b8d0acc0284bb7242117405ba"
     },
     "src/components/window/AuxWindowShell.vue": {
       "role": "index",
