@@ -29,7 +29,20 @@ const hasKnownSize = computed(() => !!(props.width && props.height));
 const placeholderHeight = computed(() =>
   state.value === "failed" && !hasKnownSize.value ? IMAGE_PLACEHOLDER_HEIGHT : reservedHeight.value,
 );
-const emit = defineEmits<{ (e: "open", src: string): void; (e: "refetch"): void }>();
+const emit = defineEmits<{
+  (e: "open", src: string): void;
+  (e: "refetch"): void;
+  /**
+   * 图片内容在固定外框里的**上下留白**（px）。
+   *
+   * 外框高度是"不跳"契约（旧消息无尺寸 ⇒ 固定 288，见 `data-img-frame` 注释与
+   * `--only=imgskel` 的两条判据），图片解码后在里面按 contain 居中 ⇒ 内容底比外框底
+   * 高出一个等分值。回执与表情入口锚在外框底，会把「没对齐」画出来
+   * （用户 2026-11-09：「感叹号和表情回复按钮和图片没有对齐，应该视觉上底部对齐」）。
+   * 这里把等分值交给父级，让控件贴**内容底**而不是外框底；外框高度本身不动。
+   */
+  (e: "content-inset", px: number): void;
+}>();
 
 /**
  * 加载失败时点一下。
@@ -77,6 +90,19 @@ const failReasonKey = computed(() => (props.src ? "msg.imageFailDecode" : "msg.i
 
 /** 加载态：先撑出骨架占位，避免大图加载时气泡高度塌陷、列表跳动。 */
 const state = ref<"loading" | "loaded" | "failed">("loading");
+const frameEl = ref<HTMLElement | null>(null);
+const imgEl = ref<HTMLImageElement | null>(null);
+
+/** 已解码后把「内容底相对外框底的留白」报给父级；失败/加载中报 0。 */
+function syncContentInset() {
+  if (state.value !== "loaded") {
+    emit("content-inset", 0);
+    return;
+  }
+  const fh = frameEl.value?.clientHeight ?? 0;
+  const ih = imgEl.value?.clientHeight ?? 0;
+  emit("content-inset", fh > ih ? Math.round((fh - ih) / 2) : 0);
+}
 /**
  * 加载尝试次数与"防缓存"参数。
  *
@@ -144,7 +170,24 @@ watch(
     state.value = "loading";
   },
 );
-onUnmounted(clearTimer);
+let frameRO: ResizeObserver | null = null;
+watch(
+  frameEl,
+  (el) => {
+    frameRO?.disconnect();
+    frameRO = null;
+    if (!el) return;
+    frameRO = new ResizeObserver(() => syncContentInset());
+    frameRO.observe(el);
+    syncContentInset();
+  },
+  { flush: "post" },
+);
+watch(state, () => syncContentInset(), { flush: "post" });
+onUnmounted(() => {
+  clearTimer();
+  frameRO?.disconnect();
+});
 </script>
 
 <template>
@@ -163,6 +206,7 @@ onUnmounted(clearTimer);
        `placeholderHeight`（有尺寸 = 按比例预留；旧消息无尺寸 = 固定 IMAGE_BUBBLE_HEIGHT），
        解码完成只换框里的内容 ⇒ 前后 boundingClientRect 一致（探针 imgskel 现读）。 -->
   <div
+    ref="frameEl"
     data-img-frame
     class="relative flex w-52 max-w-full cursor-pointer touch-manipulation items-center justify-center overflow-hidden rounded-[var(--gosslan-bubble-radius)]"
     :style="{ height: `${placeholderHeight}px` }"
@@ -215,14 +259,14 @@ onUnmounted(clearTimer);
          竖直居中交给外框的 flex（外框高度仍是预留值，加载前后尺寸不变）。
          圆角沿用气泡档（与外框 18px 一致；换成 radius-lg 反而会在框内多一圈小圆角）。
          已知边界见 docs/design-language/README.md 附录 B。 -->
-    <img decoding="async" :alt="t('msg.imageMessage')"
+    <img ref="imgEl" decoding="async" :alt="t('msg.imageMessage')"
       data-img-el
       :key="loadKey"
       :src="props.src"
       class="block max-w-full rounded-[var(--gosslan-bubble-radius)] object-contain"
       :style="{ maxHeight: `${reservedHeight}px`, height: hasKnownSize ? `${reservedHeight}px` : undefined }"
       :class="state === 'loaded' ? '' : 'hidden'"
-      @load="clearTimer(); state = 'loaded'"
+      @load="clearTimer(); state = 'loaded'; syncContentInset()"
       @error="onError()"
     />
   </div>

@@ -27,7 +27,7 @@
  * （给设置开关显示用），两者不能合并成一个 —— 合并就分不清"没设过"与"设成了默认值"。
  */
 import { readAmbientCapability, watchAmbientCapability, type AmbientCapability } from "./ambientCapability.ts";
-import { REDUCED_MOTION_QUERY } from "./platform.ts";
+import { isAndroid, isIOS, REDUCED_MOTION_QUERY } from "./platform.ts";
 import { storageGet, storageSet } from "./safeStorage.ts";
 
 export type AmbientSetting = "off" | "drift";
@@ -202,6 +202,48 @@ export function installAmbient(): void {
   };
   syncHidden();
   document.addEventListener("visibilitychange", syncHidden);
+
+  // AM-05b（2026-11-09）：桌面窗口失焦但页面仍 visible 时也暂停。
+  // 两个窗口并排或被别的应用盖住时，WKWebView 仍会推进 CSS 合成帧；三个大色团
+  // 加上 rail 的 backdrop-filter 会持续占用 WindowServer。移动端不看 blur：
+  // 软键盘/系统弹框都会触发，不能据此判断"用户不看了"。
+  if (!isAndroid && !isIOS) {
+    const syncWindowActive = (active: boolean) => {
+      document.documentElement.dataset.appInactive = String(!active);
+    };
+    window.addEventListener("focus", () => syncWindowActive(true));
+    window.addEventListener("blur", () => syncWindowActive(false));
+    syncWindowActive(true);
+  }
+
+  // AM-05c（2026-11-09）：交互瞬间短暂暂停色团。
+  // 色团本身很慢（72–120s），暂停 500ms 肉眼看不出；但点击/滚动那一瞬正好是
+  // 菜单玻璃 blur 与色团 transform 同时要合成的时候。把这段时间的逐帧合成让开，
+  // 松手 500ms 后自动恢复。只用一条定时器，滚动/按键再触发时只推后截止时间。
+  let interactingUntil = 0;
+  let interactingTimer: ReturnType<typeof setTimeout> | null = null;
+  const markInteracting = () => {
+    interactingUntil = Date.now() + 500;
+    if (document.documentElement.dataset.appInteracting !== "true") {
+      document.documentElement.dataset.appInteracting = "true";
+    }
+    if (interactingTimer) return;
+    const tick = () => {
+      const left = interactingUntil - Date.now();
+      if (left > 0) {
+        interactingTimer = setTimeout(tick, left);
+        return;
+      }
+      interactingTimer = null;
+      document.documentElement.dataset.appInteracting = "false";
+    };
+    interactingTimer = setTimeout(tick, 500);
+  };
+  for (const ev of ["pointerdown", "wheel", "keydown", "touchstart"] as const) {
+    window.addEventListener(ev, markInteracting, { passive: true });
+  }
+  // capture：滚动可能发生在任何容器里，冒泡阶段收不到；passive 不挡滚动。
+  window.addEventListener("scroll", markInteracting, { passive: true, capture: true });
 
   // 只重算档位：用户没设过时，系统"减少动态效果"在会话中途切换也要跟着变。
   const onMotionPref = () => applyAmbientSetting(readStoredAmbientRaw());

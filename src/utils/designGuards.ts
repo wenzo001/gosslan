@@ -3748,8 +3748,10 @@ export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssu
   // 聊天列下面透出来（用户 2026-11-06 524×1024 截图：聊天列左缘与底部持续露出半截旧列表文字）。
   // 语义：**聊天列永远是不透明的内容承载面，只有它自己的画布允许雾穿透**；被它盖住的列表必须
   // 整层退出合成（`visibility: hidden`），不许靠给 `main` 加 opacity / 换实底去"压住"。
-  // 反例自证在 designGuards.test.ts：删 `pane-under-chat` / 把 `visibility: hidden` 改回 visible /
-  // 去掉 240ms 延迟 / 只改一边的镜像条件，都必须红。
+  // 2026-11-09 补第二层：转场**过程中**visibility 还没切，列表按平移进度裁剪（`pane-parallax`
+  // 的 0 端 + `.pane-under-chat` 的 70% 端，与 −30% 平移互补）。两条判据都不许丢。
+  // 反例自证在 designGuards.test.ts：删 `pane-under-chat` / 删 `pane-parallax` / 改回 visible /
+  // 删裁剪 / 改裁剪比例 / 删延迟 / 把两条规则顺序颠倒 / 只改一边的镜像条件，都必须红。
   const listPane = [...src.responsiveLayout.matchAll(/<aside[^>]*>/g)].find((m) =>
     m[0].includes("bg-[var(--gosslan-list)]"),
   );
@@ -3773,6 +3775,22 @@ export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssu
         message:
           "AC-15：移动端的会话列表没有挂 `pane-under-chat` —— 它会被聊天列的 16%/14% 薄纱整片透出来" +
           "（用户 2026-11-06：聊天列左缘/底部露出旧列表残行）。",
+      });
+    }
+    if (!/['"]pane-parallax\s*['"]/.test(tag)) {
+      out.push({
+        line: lineAt(src.responsiveLayout, listPane.index ?? 0),
+        message:
+          "AC-15：移动端的会话列表没有挂 `pane-parallax` —— 转场期间它整屏宽地压在聊天列下面" +
+          "（用户 2026-11-09 安卓端：列表→聊天那 ~280ms 里旧列表从底部残余一下）。",
+      });
+    }
+    if (!/paneAnimate \? 'pane-parallax ' : ''/.test(tag)) {
+      out.push({
+        line: lineAt(src.responsiveLayout, listPane.index ?? 0),
+        message:
+          "AC-15：`pane-parallax` 没有跟随 `paneAnimate` —— 一级 tab 瞬时切换（`paneAnimate === false`）" +
+          "会跟着播一圈裁剪动画，等于给 tab 切换加了一句位移。",
       });
     }
     if (!/mobileView === 'chat' \|\| favoritesOpen/.test(tag)) {
@@ -3808,6 +3826,44 @@ export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssu
       });
     }
   }
+  // `pane-parallax` 是常驻档（只在 `paneAnimate` 时挂）：给出裁剪的 0 端，并让回程也走同一套过渡。
+  const parallaxRule = [...src.styleCss.matchAll(/html\.is-mobile\s*\.pane-parallax\s*\{([\s\S]*?)\}/g)][0];
+  if (!parallaxRule) {
+    out.push({
+      line: 0,
+      message:
+        "AC-15：style.css 里没有 `html.is-mobile .pane-parallax` —— 列表的裁剪没有 0 端，" +
+        "转场一开始就会整片消失（或回列表时瞬间展开，又从薄纱下透出整片旧列表）。",
+    });
+  } else {
+    const pb = parallaxRule[1];
+    if (!/clip-path:\s*inset\(0\s+0\s+0\s+0\)\s*;/.test(pb)) {
+      out.push({
+        line: lineAt(src.styleCss, parallaxRule.index ?? 0),
+        message: "AC-15：`.pane-parallax` 的基准裁剪不是 `inset(0 0 0 0)` —— 列表态必须完整可见。",
+      });
+    }
+    if (!/transition-property:\s*transform,\s*clip-path\s*;/.test(pb)) {
+      out.push({
+        line: lineAt(src.styleCss, parallaxRule.index ?? 0),
+        message:
+          "AC-15：`.pane-parallax` 的过渡不是 `transform, clip-path` —— 裁剪与平移必须同一根时钟，" +
+          "否则裁剪边会在中途与聊天列左缘错开。",
+      });
+    }
+    if (
+      !/transition-duration:\s*var\(--gosslan-duration\),\s*var\(--gosslan-duration\)\s*;/.test(pb) ||
+      !/transition-timing-function:\s*var\(--gosslan-ease\),\s*var\(--gosslan-ease\)\s*;/.test(pb)
+    ) {
+      out.push({
+        line: lineAt(src.styleCss, parallaxRule.index ?? 0),
+        message:
+          "AC-15：`.pane-parallax` 的裁剪没有和平移同长同缓动" +
+          "（`transition-duration/timing-function` 两槽都必须是 `var(--gosslan-duration)` / `var(--gosslan-ease)`）。",
+      });
+    }
+  }
+
   const underRule = [...src.styleCss.matchAll(/html\.is-mobile\s*\.pane-under-chat\s*\{([\s\S]*?)\}/g)][0];
   if (!underRule) {
     out.push({
@@ -3824,20 +3880,48 @@ export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssu
         message: "AC-15：`.pane-under-chat` 没有 `visibility: hidden` —— 列表文字仍会从薄纱下透出来。",
       });
     }
-    if (!/transition-property:\s*transform,\s*visibility\s*;/.test(body)) {
+    // 三槽顺序是语义：平移 → visibility（延迟到平移结束）→ 裁剪（与平移同轨）。
+    if (!/transition-property:\s*transform,\s*visibility,\s*clip-path\s*;/.test(body)) {
       out.push({
         line: lineAt(src.styleCss, underRule.index ?? 0),
         message:
-          "AC-15：`.pane-under-chat` 的 `transition-property` 不是 `transform, visibility` —— " +
-          "visibility 必须和平移一起参与过渡，否则视差（push/pop）会在中途丢一帧。",
+          "AC-15：`.pane-under-chat` 的 `transition-property` 不是 `transform, visibility, clip-path` —— " +
+          "visibility 必须和平移一起参与过渡（否则视差丢帧），clip-path 必须与平移同轨（否则裁剪边错位）。",
       });
     }
-    if (!/transition-delay:\s*0s,\s*var\(--gosslan-duration\)\s*;/.test(body)) {
+    if (!/clip-path:\s*inset\(0\s+70%\s+0\s+0\)\s*;/.test(body)) {
       out.push({
         line: lineAt(src.styleCss, underRule.index ?? 0),
         message:
-          "AC-15：`.pane-under-chat` 的 visibility 没有延迟到平移结束（`0s, var(--gosslan-duration)`）—— " +
+          "AC-15：`.pane-under-chat` 的裁剪不是 `inset(0 70% 0 0)` —— 列表 −30% 平移的互补裁剪，" +
+          "少了它转场期间旧列表就整片压在聊天列下面（用户 2026-11-09 安卓端残余）。",
+      });
+    }
+    if (!/transition-delay:\s*0s,\s*var\(--gosslan-duration\),\s*0s\s*;/.test(body)) {
+      out.push({
+        line: lineAt(src.styleCss, underRule.index ?? 0),
+        message:
+          "AC-15：`.pane-under-chat` 的 visibility 没有延迟到平移结束（`0s, var(--gosslan-duration), 0s`）—— " +
           "列表会在滑出动画一开始就消失，push/pop 的视差被吃掉。",
+      });
+    }
+    if (!/transition-duration:\s*var\(--gosslan-duration\),\s*0s,\s*var\(--gosslan-duration\)\s*;/.test(body)) {
+      out.push({
+        line: lineAt(src.styleCss, underRule.index ?? 0),
+        message:
+          "AC-15：`.pane-under-chat` 的三槽时长不是 `var(--gosslan-duration), 0s, var(--gosslan-duration)` —— " +
+          "裁剪必须和平移同长。",
+      });
+    }
+    if (
+      parallaxRule &&
+      (parallaxRule.index ?? 0) > (underRule.index ?? 0)
+    ) {
+      out.push({
+        line: lineAt(src.styleCss, underRule.index ?? 0),
+        message:
+          "AC-15：`.pane-parallax` 必须排在 `.pane-under-chat` **之前** —— 两者同特异性，" +
+          "顺序反了就是 `.pane-parallax` 的 0 端覆盖掉裁剪档，转场又退回整片透出。",
       });
     }
   }
@@ -3849,11 +3933,19 @@ export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssu
         "AC-15：缺 `html.is-mobile .pane-under-chat--instant` —— 一级 tab 瞬时切换（`paneAnimate === false`）" +
         "会白留 240ms 延迟，期间列表仍在合成。",
     });
-  } else if (!/transition-delay:\s*0s,\s*0s\s*;/.test(instantRule[1])) {
-    out.push({
-      line: lineAt(src.styleCss, instantRule.index ?? 0),
-      message: "AC-15：`--instant` 档没有把 visibility 的延迟清零（`transition-delay: 0s, 0s`）。",
-    });
+  } else {
+    if (!/transition-delay:\s*0s,\s*0s,\s*0s\s*;/.test(instantRule[1])) {
+      out.push({
+        line: lineAt(src.styleCss, instantRule.index ?? 0),
+        message: "AC-15：`--instant` 档没有把三槽延迟清零（`transition-delay: 0s, 0s, 0s`）。",
+      });
+    }
+    if (!/transition-duration:\s*0s,\s*0s,\s*0s\s*;/.test(instantRule[1])) {
+      out.push({
+        line: lineAt(src.styleCss, instantRule.index ?? 0),
+        message: "AC-15：`--instant` 档没有把三槽时长清零（`transition-duration: 0s, 0s, 0s`）。",
+      });
+    }
   }
 
   return out.sort((a, b) => a.line - b.line);

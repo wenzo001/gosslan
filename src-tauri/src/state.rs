@@ -171,6 +171,10 @@ pub const EVENT_RUNTIME_CHANGED: &str = "runtime-changed";
 /// `WindowEvent::Destroyed` 是"窗没了"的**唯一回声**。主窗口与其他挂了
 /// `useImagePreviewStore` 的文档收到后**只清状态**、**不得再关窗** —— 否则
 /// 关窗 → 回声 → 再关窗会形成回环（而且第二次关的是一扇已经没了的窗）。
+///
+/// `cfg(desktop)`：唯一的使用方在 `commands/logs.rs` 的桌面预览窗路径里；移动端没有这扇窗，
+/// 不加这个门会让 Android 目标报 `never used`（移动端编译门禁要求 0 warning）。
+#[cfg(desktop)]
 pub const EVENT_PREVIEW_CLOSED: &str = "preview-closed";
 
 /// 「设置已变更」的载荷：**带补丁、且不回发给发起窗口**。

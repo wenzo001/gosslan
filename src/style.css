@@ -972,6 +972,14 @@ html[data-ambient="static"] .ambient-canvas-child {
 html[data-page-hidden="true"] .ambient-blob {
   animation-play-state: paused;
 }
+/* AM-05b：桌面窗口失焦（页面仍 visible）也暂停；属性由 ambient.ts 的 focus/blur 同步。 */
+html[data-app-inactive="true"] .ambient-blob {
+  animation-play-state: paused;
+}
+/* AM-05c：交互瞬间（点击/滚轮/按键/触摸/滚动）暂停 500ms，避开菜单 blur 与色团同时合成。 */
+html[data-app-interacting="true"] .ambient-blob {
+  animation-play-state: paused;
+}
 /* AM-06：reduce 档是**冻结**，不是减速 —— 四条动画一律 animation:none，getAnimations 归零。
    底色仍留在初始帧，所以不会出现"一片死灰"。
    ⚠️ 2026-11-07 起这一条**让位给软件内的显式选择**：`data-ambient-motion="force"`
@@ -1893,6 +1901,16 @@ progress {
   backdrop-filter: var(--gosslan-glass-1-blur);
   /* 三层合成一档（见 `--gosslan-glass-1-elevation` 注释）：降级档写 `none` 就能证明 0 层。 */
   box-shadow: var(--gosslan-glass-1-elevation);
+}
+
+/* 常驻 chrome（标题栏 / rail）在**动态雾开启**时退回实底：
+   它们始终可见，底下就是正在漂移的 .ambient-blob ⇒ backdrop-filter 会逐帧重算。
+   菜单/弹窗的 .frost/.glass-2/3 是瞬态浮层，保持玻璃。
+   2026-11-09 用户 A/B：动态雾 + 玻璃都关掉明显更跟手，这一条去掉的是常驻的那一半。 */
+html[data-ambient="drift"] .chrome-surface {
+  background: var(--gosslan-glass-1-fallback);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 /* `.frost` = glass-2 的历史别名（12 处菜单/下拉在用）：保留类名，换成 float 档规格 */
@@ -2874,23 +2892,38 @@ html.is-mobile .conv-footer-safe {
    列表的行文字就从纱下面透出来（用户 2026-11-06 524×1024 截图：聊天列左缘与底部持续露出
    半截旧列表文字）。
    语义：**聊天列永远是不透明的内容承载面，只有它自己的画布允许雾穿透**；下层列表不该参与合成。
-   所以列表被盖住时整层 `visibility: hidden` 退出渲染 —— 不给 `main` 加 opacity、不给它换实底
-   （那会把雾一起杀掉，等于推翻 22ee3301 的表面规格）。
-   visibility 的切换延迟到平移结束（`--gosslan-duration` = 240ms）才生效，push/pop 的视差不变；
-   回列表时这个类被摘掉、本规则不再命中，`visibility` 立刻回到可见 —— 右侧滑出时露出的正是列表。
-   一级 tab 瞬时切换（`paneAnimate === false`）走 `--instant`，不留延迟。
+   两件事一起做：
+   ① 被盖住时整层 `visibility: hidden` 退出渲染（不给 `main` 加 opacity、不给它换实底 ——
+      那会把雾一起杀掉，等于推翻 22ee3301 的表面规格）。visibility 延迟到平移结束才切，
+      push/pop 的视差不变；回列表时这个类被摘掉、本规则不再命中，`visibility` 立刻回到可见。
+   ② 转场**过程中**按同一进度裁剪到聊天列左缘之外（用户 2026-11-09 安卓端：列表→聊天那
+      ~280ms 里旧的整屏列表从底部残余一下，像卡住）。列表平移 −30% 与右侧裁剪 70% 在任意
+      进度 e 上落在同一个 x（`W(1−e)` = 聊天列左缘），所以裁剪边始终贴着聊天列，不会切到
+      仍在视差里的那一条列表。
+   `pane-parallax` 是**常驻档**（只有 `paneAnimate` 时挂）：它给出裁剪的 0 端，并让
+   "摘掉 `pane-under-chat`"的回程也走同一套时长/缓动 —— 否则回列表瞬间展开，半透明的
+   聊天列下面又透出整片列表。裁剪与平移必须同长同缓动，进度才锁得住。
    ⚠️ 与 `main` 的平移条件同源（`mobileView === 'chat' || favoritesOpen`），两处必须镜像，
    判据 AC-15 守着。 */
+html.is-mobile .pane-parallax {
+  clip-path: inset(0 0 0 0);
+  transition-property: transform, clip-path;
+  transition-duration: var(--gosslan-duration), var(--gosslan-duration);
+  transition-timing-function: var(--gosslan-ease), var(--gosslan-ease);
+  transition-delay: 0s, 0s;
+}
+/* 必须排在 `.pane-parallax` 之后：两者同特异性，靠顺序让"被盖住"这一档接管整份过渡清单。 */
 html.is-mobile .pane-under-chat {
   visibility: hidden;
-  transition-property: transform, visibility;
-  transition-duration: var(--gosslan-duration), 0s;
-  transition-delay: 0s, var(--gosslan-duration);
-  transition-timing-function: var(--gosslan-ease), linear;
+  clip-path: inset(0 70% 0 0);
+  transition-property: transform, visibility, clip-path;
+  transition-duration: var(--gosslan-duration), 0s, var(--gosslan-duration);
+  transition-delay: 0s, var(--gosslan-duration), 0s;
+  transition-timing-function: var(--gosslan-ease), linear, var(--gosslan-ease);
 }
 html.is-mobile .pane-under-chat--instant {
-  transition-duration: 0s, 0s;
-  transition-delay: 0s, 0s;
+  transition-duration: 0s, 0s, 0s;
+  transition-delay: 0s, 0s, 0s;
 }
 
 /* 虚拟聊天列表关闭**浏览器原生滚动锚定**：高度变化由 `VirtualList` 在同一帧显式补偿。

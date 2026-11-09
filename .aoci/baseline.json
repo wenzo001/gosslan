@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-09T08:20:44Z",
+  "updated_at": "2026-11-09T10:27:09Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -6714,9 +6714,9 @@
     },
     "src/utils/designGuards.test.ts": {
       "role": "observe",
-      "sha256": "3dd704e406f4566a373c44c21185a5c5ac82531241d16de8909e60ab2b9c216f",
-      "size": 547377,
-      "normalized_sha256": "3dd704e406f4566a373c44c21185a5c5ac82531241d16de8909e60ab2b9c216f"
+      "sha256": "90d8dbb4f7e98e02a7c83035f646315cbcb60d9a4b1493967584639336a335e3",
+      "size": 552601,
+      "normalized_sha256": "90d8dbb4f7e98e02a7c83035f646315cbcb60d9a4b1493967584639336a335e3"
     },
     "src/utils/designGuards.ts": {
       "role": "index",

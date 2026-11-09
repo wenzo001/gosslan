@@ -1116,6 +1116,15 @@ const reactionStripStyle = computed<CSSProperties>(() => {
  */
 const stripEl = ref<HTMLElement | null>(null);
 const entryBottom = ref(0);
+/**
+ * 图片内容在固定外框里的上下留白（px，由 `MessageImageBubble` 现量后上报）。
+ *
+ * 旧消息没有像素尺寸 ⇒ 外框固定 288（不跳契约，`--only=imgskel` 盯着），图片按 contain
+ * 在框里居中 ⇒ **内容底比框底高一段**。回执和表情入口锚在框底会把这段留白画出来
+ * （用户 2026-11-09：「感叹号和表情回复按钮和图片没有对齐，应该视觉上底部对齐」）。
+ * 控件按这个偏移上提，贴住图片内容的底边；外框高度与行高都不动。
+ */
+const imageContentInset = ref(0);
 let stripRo: ResizeObserver | null = null;
 watch(stripEl, (el) => {
   stripRo?.disconnect();
@@ -1829,7 +1838,7 @@ async function copyFileToClipboard() {
               data-reaction-entry
               class="tap-safe kb-reveal frost absolute -right-11 bottom-0 z-20 flex h-6 w-6 items-center justify-center rounded-full transition"
               :class="[mine ? '-left-11' : '-right-11', reactionPickerOpen ? 'kb-reveal-on' : '']"
-              :style="{ bottom: `${entryBottom}px` }"
+              :style="{ bottom: `${entryBottom + imageContentInset}px` }"
               :title="t('msg.reactionAddEntry')"
               :aria-label="t('msg.reactionAddEntry')"
             >
@@ -1906,6 +1915,7 @@ async function copyFileToClipboard() {
             :msg-key="message.msg_id ?? message.id"
             :retryable="resendChannel !== null"
             :can-cancel-send="canCancelSend"
+            :style="{ marginBottom: `${imageContentInset}px` }"
             @retry="requestResend"
             @cancel="doCancelSend"
           />
@@ -2002,6 +2012,7 @@ async function copyFileToClipboard() {
             :height="fileMeta?.h"
             @open="openImageLightbox"
             @refetch="refetchContent"
+            @content-inset="imageContentInset = $event"
           />
 
           <!-- 附件图片预览（file + subtype:image，接收完成后显示本地图片） -->
@@ -2020,6 +2031,7 @@ async function copyFileToClipboard() {
             :height="fileMeta?.h"
             @open="openImageLightbox"
             @refetch="refetchContent"
+            @content-inset="imageContentInset = $event"
           />
 
           <!-- 文件 -->
