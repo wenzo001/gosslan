@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-09T14:47:41Z",
+  "updated_at": "2026-11-09T14:50:57Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "2440116ebef5af7b7b0a19cff3ca05e44cc7fea256c7521e2518f989440e2328",
-      "size": 520664,
-      "normalized_sha256": "2440116ebef5af7b7b0a19cff3ca05e44cc7fea256c7521e2518f989440e2328"
+      "sha256": "6e7aaac5828d4087d27ee2456cb4db83953b7dd5873b95cd113e255ca99fc5d0",
+      "size": 520908,
+      "normalized_sha256": "6e7aaac5828d4087d27ee2456cb4db83953b7dd5873b95cd113e255ca99fc5d0"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1451,9 +1451,9 @@
     },
     "docs/acceptance/stability-smoke-matrix.md": {
       "role": "index",
-      "sha256": "81183e5ebaff659823319e07aa708fde2c41b0326736fa873dcf44522a42182b",
-      "size": 100085,
-      "normalized_sha256": "81183e5ebaff659823319e07aa708fde2c41b0326736fa873dcf44522a42182b"
+      "sha256": "770bd4bb3e8f2092d98ea2384178e9ba1c0a016b415263752f0ba5532cda292f",
+      "size": 100265,
+      "normalized_sha256": "770bd4bb3e8f2092d98ea2384178e9ba1c0a016b415263752f0ba5532cda292f"
     },
     "docs/acceptance/strong-reminder-final.md": {
       "role": "index",
@@ -1613,9 +1613,9 @@
     },
     "docs/architecture/refactor-5.0-report.md": {
       "role": "index",
-      "sha256": "5ea8336ca1e88befcdfd0503deb244f75cf097b3142ad818860e72a7dd1c4938",
-      "size": 434969,
-      "normalized_sha256": "5ea8336ca1e88befcdfd0503deb244f75cf097b3142ad818860e72a7dd1c4938"
+      "sha256": "99c72169cfee921c736c58ff9fdf6ca3346803f42c7da874b8dc7a32e383b9d4",
+      "size": 435504,
+      "normalized_sha256": "99c72169cfee921c736c58ff9fdf6ca3346803f42c7da874b8dc7a32e383b9d4"
     },
     "docs/architecture/refactor-roadmap.md": {
       "role": "index",
@@ -1775,9 +1775,9 @@
     },
     "docs/design-language/ambient-motion.md": {
       "role": "index",
-      "sha256": "e8439569462236e109e7d88c432a73cdd47bdcb72b3fd53001e2b92fee9e3e25",
-      "size": 58171,
-      "normalized_sha256": "e8439569462236e109e7d88c432a73cdd47bdcb72b3fd53001e2b92fee9e3e25"
+      "sha256": "d531fed8da7cbe491de4d10d40b444f71bd9065b8872135860108f00af277fbf",
+      "size": 58229,
+      "normalized_sha256": "d531fed8da7cbe491de4d10d40b444f71bd9065b8872135860108f00af277fbf"
     },
     "docs/design-language/controls.md": {
       "role": "index",
@@ -2003,9 +2003,9 @@
     },
     "docs/notes/handover-2026-11-09.md": {
       "role": "index",
-      "sha256": "b67bf1e5b51f6d4d07f2fa49a9cda034cb776743ddae5ca17b575b0b72e6fa95",
-      "size": 57847,
-      "normalized_sha256": "b67bf1e5b51f6d4d07f2fa49a9cda034cb776743ddae5ca17b575b0b72e6fa95"
+      "sha256": "2847050ab587084fa91eae4f210840379f53ce9dfe00a83c0eead617523fcd54",
+      "size": 59039,
+      "normalized_sha256": "2847050ab587084fa91eae4f210840379f53ce9dfe00a83c0eead617523fcd54"
     },
     "docs/notes/harmonyos-feasibility-2026-09-22.md": {
       "role": "index",
@@ -2117,9 +2117,9 @@
     },
     "docs/notes/unslop-review-2026-11-06/light-surface-diagnosis.md": {
       "role": "index",
-      "sha256": "b23ad347b18e99e243044faab99d52c967fe0b6543ba06b5b7a3ead72503c3ba",
-      "size": 16626,
-      "normalized_sha256": "b23ad347b18e99e243044faab99d52c967fe0b6543ba06b5b7a3ead72503c3ba"
+      "sha256": "8b504dd22b63627b436d673163b2abbcba154c9252a0d393cb185816dcf3cd2e",
+      "size": 16904,
+      "normalized_sha256": "8b504dd22b63627b436d673163b2abbcba154c9252a0d393cb185816dcf3cd2e"
     },
     "docs/notes/unslop-review-2026-11-06/plan.md": {
       "role": "index",
