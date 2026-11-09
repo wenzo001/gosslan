@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-09T11:51:48Z",
+  "updated_at": "2026-11-09T11:53:31Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "4f4c76a133b126bf3fca039db30035f09deecd8c0ed93b4a0e819d42dca28439",
-      "size": 444006,
-      "normalized_sha256": "4f4c76a133b126bf3fca039db30035f09deecd8c0ed93b4a0e819d42dca28439"
+      "sha256": "94d016638b315ea85f58cd49c5a7b481b67d5f9d61a1149c78770ca3c740a329",
+      "size": 456728,
+      "normalized_sha256": "94d016638b315ea85f58cd49c5a7b481b67d5f9d61a1149c78770ca3c740a329"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1088,6 +1088,234 @@
       "sha256": "72e7735f98d4ad1c79b552e88ad48385ef98dcbe5c1b4a0e43eb088b04420cd1",
       "size": 951,
       "normalized_sha256": "72e7735f98d4ad1c79b552e88ad48385ef98dcbe5c1b4a0e43eb088b04420cd1"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Navigation/preview.html": {
+      "role": "index",
+      "sha256": "c9dd32b1bbf573529afde7887e15b6bf707177730f9277a39e27cbfe6a43d87e",
+      "size": 8336,
+      "normalized_sha256": "c9dd32b1bbf573529afde7887e15b6bf707177730f9277a39e27cbfe6a43d87e"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Overlay/README.md": {
+      "role": "index",
+      "sha256": "1da3c6e219be8da07f30ec7a8cd55be36030ca507bf17852f9806b2d0f25fc7c",
+      "size": 1046,
+      "normalized_sha256": "1da3c6e219be8da07f30ec7a8cd55be36030ca507bf17852f9806b2d0f25fc7c"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Overlay/preview.html": {
+      "role": "index",
+      "sha256": "e2838572bcd6473b12422749f932deada841b4eb19bc29b6c165c4424461661e",
+      "size": 7915,
+      "normalized_sha256": "e2838572bcd6473b12422749f932deada841b4eb19bc29b6c165c4424461661e"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Row/README.md": {
+      "role": "index",
+      "sha256": "cd604c2cb8d6c6f4ef6d71d9ef6990859afb27ece974eee76d7e950193c156b6",
+      "size": 829,
+      "normalized_sha256": "cd604c2cb8d6c6f4ef6d71d9ef6990859afb27ece974eee76d7e950193c156b6"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Row/preview.html": {
+      "role": "index",
+      "sha256": "4ed0037be0b09d3f155d582961b9140db60af81f6fad7771547df19dcdf3ea4a",
+      "size": 9127,
+      "normalized_sha256": "4ed0037be0b09d3f155d582961b9140db60af81f6fad7771547df19dcdf3ea4a"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Settings/README.md": {
+      "role": "index",
+      "sha256": "08bd5ba6e0aabab1df0cf963ec938819265b028bc6ba3f3a3957d20e1af0a03f",
+      "size": 1065,
+      "normalized_sha256": "08bd5ba6e0aabab1df0cf963ec938819265b028bc6ba3f3a3957d20e1af0a03f"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Settings/preview.html": {
+      "role": "index",
+      "sha256": "3506285fc69bba9a0670ff36ccee693ce13ae3766dc4fe4a23b3fa339e4e4795",
+      "size": 7344,
+      "normalized_sha256": "3506285fc69bba9a0670ff36ccee693ce13ae3766dc4fe4a23b3fa339e4e4795"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/State/README.md": {
+      "role": "index",
+      "sha256": "8a19eb0a35f56975daf3b0c1bbe2e02cf74134698735729f3496518fc97dfc05",
+      "size": 747,
+      "normalized_sha256": "8a19eb0a35f56975daf3b0c1bbe2e02cf74134698735729f3496518fc97dfc05"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/State/preview.html": {
+      "role": "index",
+      "sha256": "923a6583bb0b06a2a369a851d7963421e09363708d1d04701f2a1b2885543a02",
+      "size": 9374,
+      "normalized_sha256": "923a6583bb0b06a2a369a851d7963421e09363708d1d04701f2a1b2885543a02"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/bundle.css": {
+      "role": "index",
+      "sha256": "0dabc4dc21c8dc8d0a4c0ac00b6cb9d03c1b86cb26a30ad451d6c28df780c4db",
+      "size": 360,
+      "normalized_sha256": "0dabc4dc21c8dc8d0a4c0ac00b6cb9d03c1b86cb26a30ad451d6c28df780c4db"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/bundle.js": {
+      "role": "index",
+      "sha256": "123dc7b400d87fd0e651c87b8ad870d0b207a19e4d062063af0de18da652c389",
+      "size": 633,
+      "normalized_sha256": "123dc7b400d87fd0e651c87b8ad870d0b207a19e4d062063af0de18da652c389"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/index.d.ts": {
+      "role": "index",
+      "sha256": "4117d2ad2275070a94dd997843826e26390c2f8334e76af49d82f61bb0f4b248",
+      "size": 346,
+      "normalized_sha256": "4117d2ad2275070a94dd997843826e26390c2f8334e76af49d82f61bb0f4b248"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/design-system.json": {
+      "role": "index",
+      "sha256": "58e288eb82ca9b99ef8f68c325710008bfc03e833d5aae46f5bbfffc211840db",
+      "size": 504,
+      "normalized_sha256": "58e288eb82ca9b99ef8f68c325710008bfc03e833d5aae46f5bbfffc211840db"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/tokens.json": {
+      "role": "index",
+      "sha256": "0f8c9d76e6a921df5819b890b6e1a7d3671a5463fde136bcae0dd083017e1a65",
+      "size": 15032,
+      "normalized_sha256": "0f8c9d76e6a921df5819b890b6e1a7d3671a5463fde136bcae0dd083017e1a65"
+    },
+    "designs/gosslan-redesign/design-system/.gitignore": {
+      "role": "index",
+      "sha256": "0c15049f67e6885752caf1bb79be4fa9005df259c1f5c5d53acd03001dbabd27",
+      "size": 215,
+      "normalized_sha256": "0c15049f67e6885752caf1bb79be4fa9005df259c1f5c5d53acd03001dbabd27"
+    },
+    "designs/gosslan-redesign/design-system/project/README.md": {
+      "role": "index",
+      "sha256": "c0b512ce3b3d9cc3d4e5e9a8da9a08b29990e620ffdf81cc8706294eced62b73",
+      "size": 20186,
+      "normalized_sha256": "c0b512ce3b3d9cc3d4e5e9a8da9a08b29990e620ffdf81cc8706294eced62b73"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Button/README.md": {
+      "role": "index",
+      "sha256": "6bda5092a2f3cf0b071b89dd1edff9be276b2bbc4b2ca4f91f4af8ffea543638",
+      "size": 577,
+      "normalized_sha256": "6bda5092a2f3cf0b071b89dd1edff9be276b2bbc4b2ca4f91f4af8ffea543638"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Button/preview.html": {
+      "role": "index",
+      "sha256": "e839c168021a3baa1136aef132ec9dd3f51e685cdb3844d0ee7e29689c1a816d",
+      "size": 3808,
+      "normalized_sha256": "e839c168021a3baa1136aef132ec9dd3f51e685cdb3844d0ee7e29689c1a816d"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Cover/preview.html": {
+      "role": "index",
+      "sha256": "c32ecbf6b4a6e69e0de5deaaa74bcd864884ae8314280eb3ba06c2afc48d8c71",
+      "size": 3681,
+      "normalized_sha256": "c32ecbf6b4a6e69e0de5deaaa74bcd864884ae8314280eb3ba06c2afc48d8c71"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Input/README.md": {
+      "role": "index",
+      "sha256": "5dfdbadfe2fac0373d57ce87164a3cf6e0dc8892d5f544ac28e76bbce8fe1a30",
+      "size": 638,
+      "normalized_sha256": "5dfdbadfe2fac0373d57ce87164a3cf6e0dc8892d5f544ac28e76bbce8fe1a30"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Input/preview.html": {
+      "role": "index",
+      "sha256": "8028b54cb8a72583bb2d2510ca40b693e89d100f4c39111e671f0a2a0cd8b118",
+      "size": 6162,
+      "normalized_sha256": "8028b54cb8a72583bb2d2510ca40b693e89d100f4c39111e671f0a2a0cd8b118"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Message/README.md": {
+      "role": "index",
+      "sha256": "7272a1ac3ddfec944c9dc2a0fda9d97e78af4a32dc4ed49bd3a8b0dc040cf05f",
+      "size": 1215,
+      "normalized_sha256": "7272a1ac3ddfec944c9dc2a0fda9d97e78af4a32dc4ed49bd3a8b0dc040cf05f"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Message/preview.html": {
+      "role": "index",
+      "sha256": "bcbc2a0700b195fd1b3b02fb01b3847baf820dcd76b25ee5ddd3e0a68fe5714f",
+      "size": 8995,
+      "normalized_sha256": "bcbc2a0700b195fd1b3b02fb01b3847baf820dcd76b25ee5ddd3e0a68fe5714f"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Navigation/README.md": {
+      "role": "index",
+      "sha256": "8d7b6c16c64052cb06c73312c034ea8dccb74262ba7dbf944cf450bae61e9891",
+      "size": 751,
+      "normalized_sha256": "8d7b6c16c64052cb06c73312c034ea8dccb74262ba7dbf944cf450bae61e9891"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Navigation/preview.html": {
+      "role": "index",
+      "sha256": "ced9717c143fd13df3100fca93470bc8c0c6be05a8df00ac871caf2ba3eb366b",
+      "size": 8136,
+      "normalized_sha256": "ced9717c143fd13df3100fca93470bc8c0c6be05a8df00ac871caf2ba3eb366b"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Overlay/README.md": {
+      "role": "index",
+      "sha256": "c5da1aff42a6d0380759fac1fcfe92b4143872f292bddaa6dd42ca7ab86083f9",
+      "size": 845,
+      "normalized_sha256": "c5da1aff42a6d0380759fac1fcfe92b4143872f292bddaa6dd42ca7ab86083f9"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Overlay/preview.html": {
+      "role": "index",
+      "sha256": "326f78528823fb167046567d78152f59da0c50c42b668a44854dab3e36553ce3",
+      "size": 7714,
+      "normalized_sha256": "326f78528823fb167046567d78152f59da0c50c42b668a44854dab3e36553ce3"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Row/README.md": {
+      "role": "index",
+      "sha256": "d9bf0eecd8252dd54d4a38ff52628a69f72c1df16a043f02bc303fd4d33b85e1",
+      "size": 812,
+      "normalized_sha256": "d9bf0eecd8252dd54d4a38ff52628a69f72c1df16a043f02bc303fd4d33b85e1"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Row/preview.html": {
+      "role": "index",
+      "sha256": "e235bbcbe1c39b5aa353c42d8acabafc4e75531f6573c66b9955c236b6fe5f51",
+      "size": 8925,
+      "normalized_sha256": "e235bbcbe1c39b5aa353c42d8acabafc4e75531f6573c66b9955c236b6fe5f51"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Settings/README.md": {
+      "role": "index",
+      "sha256": "5aba6ae4dfcf4c410b230d4fe6e6f37c93de6ffe041057f778f2ed7362e1e325",
+      "size": 684,
+      "normalized_sha256": "5aba6ae4dfcf4c410b230d4fe6e6f37c93de6ffe041057f778f2ed7362e1e325"
+    },
+    "designs/gosslan-redesign/design-system/project/components/Settings/preview.html": {
+      "role": "index",
+      "sha256": "e251337acc70704e0e0748d0696684c452d23dcf9577045ad3806ba8c270e212",
+      "size": 7144,
+      "normalized_sha256": "e251337acc70704e0e0748d0696684c452d23dcf9577045ad3806ba8c270e212"
+    },
+    "designs/gosslan-redesign/design-system/project/components/State/README.md": {
+      "role": "index",
+      "sha256": "87cda5a9c0f4b3ede73b999707ed4c5c12318fb92fa4048eeb38950dfcade9d1",
+      "size": 832,
+      "normalized_sha256": "87cda5a9c0f4b3ede73b999707ed4c5c12318fb92fa4048eeb38950dfcade9d1"
+    },
+    "designs/gosslan-redesign/design-system/project/components/State/preview.html": {
+      "role": "index",
+      "sha256": "50279e757629ad0744c85bc57e9b6da9518844e601f708272d27b9a97f84a18d",
+      "size": 9174,
+      "normalized_sha256": "50279e757629ad0744c85bc57e9b6da9518844e601f708272d27b9a97f84a18d"
+    },
+    "designs/gosslan-redesign/design-system/project/components/bundle.css": {
+      "role": "index",
+      "sha256": "4f049c4966f20f6d8ac91c321e4fdb37c4eba43de9424fb9113f798334557f4c",
+      "size": 360,
+      "normalized_sha256": "4f049c4966f20f6d8ac91c321e4fdb37c4eba43de9424fb9113f798334557f4c"
+    },
+    "designs/gosslan-redesign/design-system/project/components/bundle.js": {
+      "role": "index",
+      "sha256": "c08386ca2772a1b3924e591284d5d4b3cd96b8b7731b7a60b0175b0b97692333",
+      "size": 430,
+      "normalized_sha256": "c08386ca2772a1b3924e591284d5d4b3cd96b8b7731b7a60b0175b0b97692333"
+    },
+    "designs/gosslan-redesign/design-system/project/components/index.d.ts": {
+      "role": "index",
+      "sha256": "76eaae33d847ec9485d24a239d6c5826f7f2562242db574376ea6e79059157be",
+      "size": 296,
+      "normalized_sha256": "76eaae33d847ec9485d24a239d6c5826f7f2562242db574376ea6e79059157be"
+    },
+    "designs/gosslan-redesign/design-system/project/design-system.json": {
+      "role": "index",
+      "sha256": "0ddc149d91c7a8a09a4dbdb62fff232a76d1b6483c559a332a8d9aa6607bba3d",
+      "size": 480,
+      "normalized_sha256": "0ddc149d91c7a8a09a4dbdb62fff232a76d1b6483c559a332a8d9aa6607bba3d"
+    },
+    "designs/gosslan-redesign/design-system/project/tokens.json": {
+      "role": "index",
+      "sha256": "d0b3216f51fbc64cfc3392514e7316f3503a610e94dd426a907fcb5e494aa2a6",
+      "size": 12889,
+      "normalized_sha256": "d0b3216f51fbc64cfc3392514e7316f3503a610e94dd426a907fcb5e494aa2a6"
     },
     "docs/AI_ENGINEERING_INDEX.md": {
       "role": "index",

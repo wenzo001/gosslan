@@ -1081,6 +1081,8 @@ canvas.json[FU5M]: F:v3 画布台账：四页（foundations/desktop/mobile/proto
 
 ===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/===
 README.md[SU7M]: F:Gosslan Pulse v2.2 设计系统正文：方向、色彩（表面/语义/气泡）、字体、形状与层级、图标与品牌、核心组件、动效、可访问性、与 Still 的差异、使用方式 | R:code:designs/gosslan-redesign/design-manifest.json,code:designs/gosslan-redesign/design-system-pulse/project/tokens.json,code:designs/gosslan-redesign/design-system-pulse/project/components/Message/README.md | A:实现按第 6 节组件规格与第 2 节 token 落地；第 9 节列出与 v2.0/Still 的差异 | S:Pulse 是 v2.2 **目标态**，代码现状是 v2.1（Still）——别把画板当现状，也别把本文当已实现。
+design-system.json[FU4T]: F:设计系统文档的编辑器元数据（v3 files 布局）：title=Gosslan Pulse、namespace=GosslanPulse、docs.readme | R:code:designs/gosslan-redesign/design-system-pulse/project/tokens.json | A:baoyu-design 打开目录时读取 | S:只服务编辑器；语义与 token 在 tokens.json 与 README。
+tokens.json[FU7M]: F:Gosslan Pulse 设计 token 的唯一可执行来源：color(themes/tokens)、type、spacing、radius、shadow、size、layout、opacity、duration | R:code:designs/gosslan-redesign/design-manifest.json,code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:实现与 style.css 的变量按这里取值；themes 分亮/暗 | S:画板与 README 只展示取值；改 token 必须先改这里，否则画板与代码会各说各话。
 
 ===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/BrandMascot/===
 README.md[SU4T]: F:品牌标记「小院」：标记（无表情）用于 16–32px，吉祥物（有表情）用于空态/欢迎/成功/离线/出错 72–120px | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md,code:designs/gosslan-redesign/design-manifest.json | A:三色（院墙 accent、门洞 #fff8ea、苗 #07c160）；16px 去表情、苗收成绿点 | S:状态只改身体/表情/小徽标，不改基本轮廓；出错时身体仍蓝，红点只做提示。
@@ -1107,3 +1109,73 @@ preview.html[SU4T]: F:消息预览页（静态）：单聊/群聊、引用、回
 
 ===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/Navigation/===
 README.md[SU4T]: F:导航规格：桌面 64px rail、移动 56px+安全区 TabBar、顶栏 40px | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md,code:designs/gosslan-redesign/design-manifest.json | A:移动列表页右上 44px「+」；详情页隐藏 TabBar、返回在左上 | S:未读数只用一个红色胶囊，不许点+数字并存。
+preview.html[SU4T]: F:导航预览页（静态）：桌面 rail、移动 TabBar 与顶栏三块 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:浏览器直接打开 | S:静态预览，不是运行时资源；实现以 Vue 组件与 token 为准。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/Overlay/===
+README.md[SU4T]: F:浮层规格：菜单/对话框/动作面板/Toast/遮罩；阴影只在这里出现且不带色偏 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:菜单 210–240px·10px 圆角·32px 行；对话框 ≤420px·12px 圆角；遮罩盖工作区不盖可拖标题栏 | S:探索型任务（加好友/建群/转发）用整页 Discover，不用挤在弹窗里。
+preview.html[SU4T]: F:浮层预览页（静态）：菜单、对话框、动作面板与 Toast | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:浏览器直接打开 | S:静态预览，不是运行时资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/Row/===
+README.md[SU4T]: F:列表行规格：68px 行高、16px 内距、44px 头像；未读只用红色胶囊 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:姓名 15/20（未读 600）、预览 13/18 单行、时间 11px 顶对齐 | S:选中行通宽 accent-soft、不加左色条；置顶在顶部带 10px 标签，不分节。
+preview.html[SU4S]: F:列表行预览页（静态）：普通/未读/置顶/静音/选中与联系人行 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:浏览器直接打开 | S:静态预览，不是运行时资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/Settings/===
+README.md[SU4T]: F:设置规格：桌面 200px 侧栏 9 节、移动 4 组 9 行；个性化合并为单页实时预览 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:行高 52–54；2–3 选项用分段、布尔用开关、长列表用下拉、字号用五档滑杆 | S:设置即时保存，页脚写明"已自动保存"，不放保存按钮。
+preview.html[SU4T]: F:设置预览页（静态）：侧栏/分组行/控件样本 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:浏览器直接打开 | S:静态预览，不是运行时资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/State/===
+README.md[SU4T]: F:状态规格：每屏先定义 loading/empty/error/offline/success 五态 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:空态=48px 线性图标+标题+一句说明+一个主操作；加载=3–5 行同几何骨架；离线=标题栏下 32px 常驻条 | S:空态不许光晕/orb/循环背景动画；失败就近重试且不清空已输入内容。
+preview.html[SU4T]: F:状态预览页（静态）：空/加载/错误/离线/传输五态 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:浏览器直接打开 | S:静态预览，不是运行时资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/===
+bundle.css[FZ3T]: F:设计系统预览的页级默认样式（底色、字体栈、基础排版），组件卡片自带局部样式 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:预览页公共引用 | S:只服务预览；应用样式以 src/style.css 与 token 为准。
+bundle.js[FZ3T]: F:设计系统页的全局挂件：暴露 GosslanPulse（version/name/tokens），避免预览页报缺 bundle | R:code:designs/gosslan-redesign/design-system-pulse/project/components/index.d.ts | A:脚本一加载即挂在 window | S:只是预览占位，不参与应用打包。
+index.d.ts[FZ4T]: F:GosslanPulse 全局对象的类型：tokens（accent/spark/mint/lemon/radiusControl/radiusBubble）与接口 | R:code:designs/gosslan-redesign/design-system-pulse/project/components/bundle.js | A:供预览与设计系统页的 TS 引用 | S:类型必须与 bundle.js 的实际字段同步，漂移只会在预览页报错。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system/===
+.gitignore[FZ3T]: F:Still v1 设计系统编辑器（baoyu-design）本机产物的忽略清单 | R:code:designs/gosslan-redesign/design-system/project/README.md | A:编辑器服务文件、history/exports、临时文件不入库 | S:只服务本机编辑器，提交会带进本地路径。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system/project/===
+README.md[SU5M]: F:Gosslan Still（v1）设计系统正文：立场与反面清单、视觉基调、色彩、字体、间距、圆角层级、图标、布局与断点、核心组件、交互状态、动效 | R:code:designs/gosslan-redesign/design-system/project/tokens.json | A:早期实现按第 9 节组件规格落地 | S:这是 v1 历史稿；目标态已转到 design-system-pulse/（Pulse v2.2），别按本文做新页面。
+design-system.json[FU4T]: F:Still v1 设计系统文档的编辑器元数据（v3 files 布局）：title=Gosslan Still、namespace=GosslanStill | R:code:designs/gosslan-redesign/design-system/project/tokens.json | A:baoyu-design 打开目录时读取 | S:历史元数据，语义在 v1 README 与 tokens.json。
+tokens.json[FU5S]: F:Gosslan Still（v1）token 台账：color/type/spacing/radius/shadow/size/layout/opacity | R:code:designs/gosslan-redesign/design-system/project/README.md | A:v1 画板与旧实现按此取值 | S:现行 token 以 design-system-pulse/project/tokens.json 为准，本文件只作历史对照。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system/project/components/Button/===
+README.md[SU4T]: F:Still v1 的 Button 组件规格（与 Pulse 同名组件同源但版本更早） | R:code:designs/gosslan-redesign/design-system/project/README.md | A:旧实现按此落地 | S:现行规格在 design-system-pulse/components/Button/README.md，本文件只作历史对照。
+preview.html[SU4T]: F:Still v1 的 Button 组件预览页（静态） | R:code:designs/gosslan-redesign/design-system/project/components/Button/README.md | A:浏览器直接打开 | S:历史预览，静态资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system/project/components/Cover/===
+preview.html[SU4T]: F:Still v1 封面页（静态） | R:code:designs/gosslan-redesign/design-system/project/README.md | A:静态展示 | S:历史预览，静态资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system/project/components/Input/===
+README.md[SU4T]: F:Still v1 的 Input 组件规格（与 Pulse 同名组件同源但版本更早） | R:code:designs/gosslan-redesign/design-system/project/README.md | A:旧实现按此落地 | S:现行规格在 design-system-pulse/components/Input/README.md，本文件只作历史对照。
+preview.html[SU4T]: F:Still v1 的 Input 组件预览页（静态） | R:code:designs/gosslan-redesign/design-system/project/components/Input/README.md | A:浏览器直接打开 | S:历史预览，静态资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system/project/components/Message/===
+README.md[SU4T]: F:Still v1 的 Message 组件规格（与 Pulse 同名组件同源但版本更早） | R:code:designs/gosslan-redesign/design-system/project/README.md | A:旧实现按此落地 | S:现行规格在 design-system-pulse/components/Message/README.md，本文件只作历史对照。
+preview.html[SU4S]: F:Still v1 的 Message 组件预览页（静态） | R:code:designs/gosslan-redesign/design-system/project/components/Message/README.md | A:浏览器直接打开 | S:历史预览，静态资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system/project/components/Navigation/===
+README.md[SU4T]: F:Still v1 的 Navigation 组件规格（与 Pulse 同名组件同源但版本更早） | R:code:designs/gosslan-redesign/design-system/project/README.md | A:旧实现按此落地 | S:现行规格在 design-system-pulse/components/Navigation/README.md，本文件只作历史对照。
+preview.html[SU4T]: F:Still v1 的 Navigation 组件预览页（静态） | R:code:designs/gosslan-redesign/design-system/project/components/Navigation/README.md | A:浏览器直接打开 | S:历史预览，静态资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system/project/components/Overlay/===
+README.md[SU4T]: F:Still v1 的 Overlay 组件规格（与 Pulse 同名组件同源但版本更早） | R:code:designs/gosslan-redesign/design-system/project/README.md | A:旧实现按此落地 | S:现行规格在 design-system-pulse/components/Overlay/README.md，本文件只作历史对照。
+preview.html[SU4T]: F:Still v1 的 Overlay 组件预览页（静态） | R:code:designs/gosslan-redesign/design-system/project/components/Overlay/README.md | A:浏览器直接打开 | S:历史预览，静态资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system/project/components/Row/===
+README.md[SU4T]: F:Still v1 的 Row 组件规格（与 Pulse 同名组件同源但版本更早） | R:code:designs/gosslan-redesign/design-system/project/README.md | A:旧实现按此落地 | S:现行规格在 design-system-pulse/components/Row/README.md，本文件只作历史对照。
+preview.html[SU4S]: F:Still v1 的 Row 组件预览页（静态） | R:code:designs/gosslan-redesign/design-system/project/components/Row/README.md | A:浏览器直接打开 | S:历史预览，静态资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system/project/components/Settings/===
+README.md[SU4T]: F:Still v1 的 Settings 组件规格（与 Pulse 同名组件同源但版本更早） | R:code:designs/gosslan-redesign/design-system/project/README.md | A:旧实现按此落地 | S:现行规格在 design-system-pulse/components/Settings/README.md，本文件只作历史对照。
+preview.html[SU4T]: F:Still v1 的 Settings 组件预览页（静态） | R:code:designs/gosslan-redesign/design-system/project/components/Settings/README.md | A:浏览器直接打开 | S:历史预览，静态资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system/project/components/State/===
+README.md[SU4T]: F:Still v1 的 State 组件规格（与 Pulse 同名组件同源但版本更早） | R:code:designs/gosslan-redesign/design-system/project/README.md | A:旧实现按此落地 | S:现行规格在 design-system-pulse/components/State/README.md，本文件只作历史对照。
+preview.html[SU4T]: F:Still v1 的 State 组件预览页（静态） | R:code:designs/gosslan-redesign/design-system/project/components/State/README.md | A:浏览器直接打开 | S:历史预览，静态资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system/project/components/===
+bundle.css[FZ3T]: F:Still v1 预览页的页级默认样式 | R:code:designs/gosslan-redesign/design-system/project/README.md | A:旧预览页公共引用 | S:历史资源；现行预览样式在 design-system-pulse/。
+bundle.js[FZ3T]: F:Still v1 预览全局挂件（GosslanStill），避免旧设计系统页报缺 bundle | R:code:designs/gosslan-redesign/design-system/project/components/index.d.ts | A:脚本加载即挂在 window | S:历史占位，不参与应用打包。
+index.d.ts[FZ4T]: F:GosslanStill 全局对象的类型（token 字段与接口） | R:code:designs/gosslan-redesign/design-system/project/components/bundle.js | A:供 v1 预览页 TS 引用 | S:必须与 bundle.js 同步，历史文件。
