@@ -1,0 +1,128 @@
+# 全量 UI 探针 47 条既有红的归因分诊（2026-11-09）
+
+> 方法：读 2026-11-09 18:30 那次全量探针的日志（`/tmp/gosslan-ui-runtime-full.log`，
+> 跑到第 25 分钟主动中止，47 条 FAIL），把每条 FAIL 的**判据名 + 期望 + 实际读数**抽出来，
+> 再按检查名映射回 `scripts/check-ui-runtime.mjs` 的段函数；结合现读源码/设计文档做初判。
+> **本轮只分诊，不改任何代码、不改判据**。读数来自一次运行，标「待实跑」的组需要在
+> 单项段里复跑确认。
+>
+> 背景：这 47 条在本次改动之前就红（`--only=panefade` / `imgswipe` / `rowalign` /
+> `composermobile` 四段在整轮里全绿）。这一层不在 CI、也不在 `npm run verify`；
+> 只有 `verify:e2e`（local 组）会跑全量。
+
+## 一、总数与归类
+
+| 初判 | 条数 | 说明 |
+|---|---:|---|
+| **判据过期**（实现已换机制/决策已被覆盖，检查还在验旧形状） | **34** | 代码折叠 20（5 档宽度 × 亮/暗 × 2 条）+ 主色/对比度 6 + 导航图标 4 + 左右净留白 2 + fieldcontrast 反例 1 + 页脚版本号 1 |
+| **量具/反例失效**（判据本身不再能咬） | **1** | taskpane「选中行底色」反例 |
+| **真实缺陷（几何/感知）** | **4** | 分割行估高差 3.5px、ambient AM-13 差 0.07、收藏小缩略图骨架右下角（亮 10 / 暗 36 色阶）×2 |
+| **待实跑核实（高优先）** | **3** | 任务中心「去会话」A/B/C：点击后 `active=null` |
+| **待实跑核实** | **5** | 移动端搜索整页 1 + 移动端群任务整页 1 + caption/遮罩顶边 3 |
+| 合计 | **47** | |
+
+## 二、逐组证据与下一步
+
+### A. 代码折叠截断：20 条（5 档宽度 × 亮/暗 × 2 条）— **判据过期**
+
+- 段：`--only=codefold`（`runCodeFold`）。
+- 读数：`preH=172, preScrollH=172`；hint「还有 91 行」**在**，`fade=false`。
+- 现读实现：`src/utils/previewTruncate.ts` 已改成**进 DOM 前按字符预算截断**（用户 2026-11-08
+  明确否掉「把整段塞进 DOM 再让 CSS 裁」）。因此 `scrollHeight > clientHeight` 永不成立、
+  渐变遮罩也不再是信号 —— 两条判据都在验旧机制。
+- 下一步：把判据改成验「DOM 里行数 == 预算行数 + 结尾是真实省略号 + hint 数字正确」；
+  保一条反例（去掉截断后 `preH` 撑满整段）。
+
+### B. 主色派生 / 两档外观 / 12% 透明：6 条 — **判据过期**
+
+- 读数组：`runAccent`（`--gosslan-primary-active` 实际 `rgb(221,232,255)`，而 inline 主色是
+  `#d43d43`；探针按旧的 `color-mix` 公式反推，取不到 `lightFill/lightHover` ⇒ null）。
+- 现读实现：`src/utils/themePalette.ts` 已改为 **OKLCH 求解器**，`docs/design-language/theme-contrast.md`
+  写明「填充沿 L 轴取档、hover/active 各走一档」。探针仍在解析 `color-mix` 文本。
+- 下一步：判据改为从 `themePalette.ts` 的 `APCA_LIMITS` 与求解结果对账（或直接读
+  `dump-theme-tokens` 输出），删掉对 `color-mix` 的文本匹配。
+
+### C. 导航图标造型：4 条 — **判据过期**
+
+- 段：`runNavIcon`。
+- 读数：链接图标实际 `lucide-link2-icon`（探针期望 compass）；描边实际 2（探针期望选中 2.35 /
+  未选中 1.9）；`NAV_ICONS` 的值是字符串（探针期望组件）。
+- 现读实现：`src/components/ui/navIcons.ts` 注释写明「链接 = 链环（link2）」、
+  2026-11-07 已统一描边 2（选中态由外层药丸底色表达）；`Icon.vue` 也取消了 `size` prop 与
+  16px 降描边。
+- 下一步：按现行口径重写这 4 条（链环 / 2.0 / 字符串名 → `Icon` 出口），
+  并保留「同语义 PC 与移动同一只 icon」这条真契约。
+
+### D. 左右净留白对称：2 条 — **判据/口径过期**
+
+- 段：`runWindowSafe`。
+- 读数：`left=15.4, right=15.4, sbW=16, netRight=-0.6`（探针把 `right − 16` 当净右留白）。
+- 判断：两侧**实际相等**（15.4 / 15.4），差在探针「右侧扣滚动条占宽」的算法 —— 滚动条是
+  overlay/或不占内容宽时多扣了一次 16。反例①同样读 -0.6，说明量具已不随 DOM 改动变化。
+- 下一步：先复跑 `--only=windowSafe` 并用 `getComputedStyle` 现读 `scrollbar-gutter/width`，
+  再决定是改量法还是真加了 padding。
+
+### E. fieldcontrast 反例：1 条 — **判据过期**
+
+- 段：`--only=fieldcontrast`。反例（边框透明 + 占位符注回 UA 灰）没有翻红，说明主判据已经不
+  再看这两个信号（或反例注入点变了）。下一步：按现行字段 token 重写反例，保住「判据不空转」。
+
+### F. taskpane「选中行底色」反例：1 条 — **量具失效**
+
+- 段：`--only=taskpane`。反例把选中行底色清成透明后判据仍绿（`current:true` 保留）。
+- 下一步：反例改成直接删 `data-current` 或写 `background: transparent` 到行根上，确认能红。
+
+### G. 任务中心「去会话」形状 A/B/C：3 条 — **待复跑确认（高优先）**
+
+- 段：`--only=taskpane`。
+- 读数：`seeded.convId=group:g-probe-open`、`actions` 含 `open_conversation`，但点击后
+  `after.active=null` —— 没有到达群会话，也没有可见失败提示。
+- ⚠️ 这一段自己的注释写明「三格只判 **store 那一半**，路由那半边由
+  `utils/taskCenterJump.test.ts` 钉」⇒ `active=null` 也可能是探针的点击坐标/路由夹具问题。
+- 下一步：先单跑 `--only=taskpane` 并打印 `loc.waitedMs` 与该按钮的 `elementFromPoint`，
+  确认点到了再查 `open_conversation` 的接线。
+
+### H. 分割行估高配对：1 条 — **真实缺陷（低危）**
+
+- 段：`--only=rowpair`。`dEst=32`（估高多算 32px）vs `dRow=28.5`（实际多出 28.5px），
+  差 3.5px；分割行盒高 38.5。虚拟列表按估高排布，差 3.5px 会在滚动时轻微跳动。
+- 下一步：对账 `messageHeight.TIME_DIVIDER` 与 `.time-divider` 的实际盒高/外边距。
+
+### I. ambient AM-13①：1 条 — **真实但低危（阈值边缘）**
+
+- 段：`--only=ambient`。T3↔T4 动团带 ΔE00 均值 1.43，判据 ≥1.5（差 0.07）。
+- 可能与 2026-11-09 新增的「交互/失焦暂停 500ms」或 static 冻结有关，也可能只是采样相位。
+- 下一步：同一段复跑 3 次看是否稳定；稳定则要么调参、要么按"动感已降级"重新裁决阈值
+  （改阈值需按仓库规则写清"不是放宽"的理由 + 反例）。
+
+### J. 收藏小缩略图骨架四角：2 条 — **真实视觉小缺陷**
+
+- 段：`--only=favthumb`。亮色右下角色差 10、暗色 36（阈值 ≤4），其它三角 1。
+- 判断：骨架/容器的**右下角**圆角未与内容框对齐（类似此前「元素框 vs 内容框」那一族）。
+- 下一步：查 `MessageImageBubble`/收藏缩略图的 `overflow-hidden` + 圆角变量，按"元素框贴住内容框"修。
+
+### K. 页脚版本号：1 条 — **判据过期**
+
+- 段：`--only=opscenter`。页面上的版本号实际是 `v5.20.7`，与 `package.json` 同步。
+- 但**产品侧是明确要显示的**：`src/components/ConversationList.vue:74` 现算 `v${version}`、
+  第 872 行渲染，并由 `src/utils/appVersion.test.ts` 钉住「值只能来自 package.json」。
+- 所以设计决策 3（「版本号离开列表底」）已被后续改动覆盖；探针那条「页脚不再显示版本号」过期。
+  下一步：删掉或改写成「版本号必须等于 package.json 且只有一处」——不是放宽，是换参照物。
+
+### L. 待实跑核实：7 条
+
+| 组 | 条数 | 读数 | 可疑点 |
+|---|---:|---|---|
+| 移动端搜索整页 | 1 | `dlgW=390, dlgH=820`, `vh=844`, 页面不滚、outside=0 | 差 24px：判据要求 `height>=vh`，实现按 `--gosslan-safe-top` 让位 |
+| 移动端群任务整页 | 1 | `h=820`, `vh=844`, `overflowY=hidden`, rows=2 | 同上 |
+| caption / 遮罩顶边 | 3 | `hasCaption=false`、`ovTop=24` | 夹具已无 caption，判据仍按 caption 存在分支；24px 可能是安全区 |
+
+**建议执行顺序**：G（真实功能）→ J/H（真实几何/视觉）→ A/B/C/E/F（判据搬迁，一次改一组并带反例）
+→ K（等裁决）→ L（单项复跑再定性）。
+
+## 三、明确未做
+
+- 本轮**没有修改任何判据、没有修改任何产品代码**；47 条仍按现状红。
+- 定级依据是**一次**全量运行的读数；除 A/B/C 三组有源码级证据外，其余组的「真实/过期」结论
+  都需要单项段复跑确认。
+- 真机（Android WebView / WKWebView）不在本清单覆盖范围内。
