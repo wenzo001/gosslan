@@ -13,6 +13,9 @@ import {
   disabledRuleHasSolidColor,
   findTokenContrastFailures,
   findTokenContrastUnresolved,
+  findSurfaceSeparationFailures,
+  findSurfaceSeparationUnresolved,
+  SURFACE_SEPARATION_CONTRACT,
   lightCanvasHex,
   parseTokenScopes,
   resolveToken,
@@ -662,5 +665,41 @@ test("占位符 token：亮暗成对定义，亮色在画布/列表/字段底都
   for (const [name, bg] of surfaces) {
     const ratio = contrastRatio(light.get("--gosslan-placeholder")!, bg);
     assert.ok(ratio >= 4.65, `占位符在 ${name} 上只有 ${ratio.toFixed(2)}，低于 4.65`);
+  }
+});
+
+// ---------------- 方案 A「明度阶梯」：实底档的面必须分得开 ----------------
+//
+// 用户 2026-11-09 实测：减少透明档里 chrome 面回退直接借用列表色 ⇒ 三处交界 1.00:1，
+// 等于没有分界，"分层"只剩投影灰带。这条契约专门盯"两块实底面的明度差"。
+test("真实 style.css：chrome 实底 vs 列表 / 聊天画布都分得开（亮暗各两行）", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.deepEqual(findSurfaceSeparationUnresolved(css), [], "有组合算不出颜色（token 缺失）");
+  const fails = findSurfaceSeparationFailures(css);
+  assert.deepEqual(
+    fails,
+    [],
+    fails.map((f) => `${f.theme} ${f.fg} vs ${f.bg} = ${f.ratio.toFixed(2)} < ${f.min}`).join("\n"),
+  );
+});
+
+test("反例自证：chrome 回退指回列表色 ⇒ 1.00 ⇒ 两套外观都红", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8").replace(
+    /--gosslan-chrome-solid:\s*#[0-9a-fA-F]+;/g,
+    "--gosslan-chrome-solid: var(--gosslan-list);",
+  );
+  const fails = findSurfaceSeparationFailures(css);
+  assert.ok(
+    fails.some((f) => f.bg === "--gosslan-list") && fails.some((f) => f.theme === "light") &&
+      fails.some((f) => f.theme === "dark"),
+    `只报红 ${fails.length} 条：${fails.map((f) => `${f.theme}:${f.bg}`).join(",")}`,
+  );
+});
+
+test("差分阈值不许被随手抬到文字/控件档（1.05~1.15 才是「面分得开」）", () => {
+  for (const theme of ["light", "dark"] as const) {
+    for (const pair of SURFACE_SEPARATION_CONTRACT[theme]) {
+      assert.ok(pair.min > 1 && pair.min < 1.3, `${theme} ${pair.fg} min=${pair.min} 越界`);
+    }
   }
 });

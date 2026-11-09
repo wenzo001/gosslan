@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readStoredAmbient, resolveAmbient } from "./ambient.ts";
+import { readStoredAmbient, resolveAmbient, ambientDisplaySetting } from "./ambient.ts";
+import type { AmbientEnv } from "./ambient.ts";
 import type { AmbientCapability } from "./ambientCapability.ts";
 
 /**
@@ -55,6 +56,38 @@ test("能力不可用：设置页显示值恒为「关闭」；backdrop-filter �
   assert.equal(readStoredAmbient({ available: false, reason: "no-backdrop-filter" }), "off");
   // 能力可用 + 从未设过 ⇒ 回到正常默认（这里只钉"不是恒 off"）
   assert.equal(readStoredAmbient({ available: true, reason: null }), "drift");
+});
+
+/**
+ * 显示值与落档必须同源（2026-11-09 实测缺陷）：系统 reduce / 低端机把档位落成 static 时，
+ * 设置页曾经显示「关闭」—— 用户看到开关关了、背景雾还在，以为关不掉。
+ * 这里的判据：显示「关闭」⇒ `<html data-ambient="off">`。反例 = 让 static 投影成 off。
+ */
+test("显示「关闭」⇔ 落档 off（static 一律显示流动）", () => {
+  const cap: AmbientCapability = { available: true, reason: null };
+  const cases: Array<[Parameters<typeof resolveAmbient>[0], AmbientEnv, boolean]> = [
+    ["off", {}, false],
+    ["off", {}, true],
+    ["drift", {}, false],
+    ["drift", { coarse: true }, false],
+    [null, {}, false],
+    [null, {}, true],
+    [null, { coarse: true }, false],
+    [null, { narrow: true }, false],
+  ];
+  for (const [setting, env, reduce] of cases) {
+    const res = resolveAmbient(setting, env, reduce, cap);
+    const shown = setting ?? ambientDisplaySetting(res);
+    assert.equal(
+      shown === "off",
+      res.mode === "off",
+      `显示=${shown} 落档=${res.mode}（setting=${String(setting)} env=${JSON.stringify(env)} reduce=${reduce}）`,
+    );
+  }
+  // 设置页读的就是这一个函数：系统 reduce 时必须显示「关闭」以外的档（否则开关说关了、雾还在）。
+  assert.equal(readStoredAmbient(cap, true), "drift");
+  assert.equal(readStoredAmbient(cap, false), "drift");
+  assert.equal(readStoredAmbient({ available: false, reason: "no-backdrop-filter" }, true), "off");
 });
 
 test("结构自证：能力只经 ambientCapability 进入，force 按实际模式写", () => {

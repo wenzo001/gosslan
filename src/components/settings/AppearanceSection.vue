@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { useAppStore, type AppearanceMode } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
@@ -27,8 +27,39 @@ const fonts = [
   { value: "'JetBrains Mono', Consolas, monospace", label: "settings.appearance.font.mono" },
 ];
 const fontModel = computed(() => (app.fontFamily === "" ? SYSTEM_FONT : app.fontFamily));
-/** 当前色不在 6 个预设里 ⇒ 自定义色入口要自己带上选中环（B3：同尺寸同形状，选中态也一样）。 */
+/** 当前色不在 6 个预设里 ⇒ 自定义入口是**唯二**的选中项之一（与预置色互斥）。 */
 const isCustomThemeColor = computed(() => !presets.includes(app.themeColor));
+/**
+ * 自定义入口那次取色器的初值（用户 2026-11-09 报的 bug：自定义块跟着当前生效色变）。
+ *
+ * ⚠️ 绝不能绑 `app.themeColor`：点任一预置色时它会被一起改，看起来像"自定义也被选中"。
+ * 这里只在**自定义色生效时**跟着当前色同步；选中预置色时停在最近一次自定义色上，
+ * 只作为下次打开取色器的起点，界面上的填充色退回色轮图标（不显示当前生效色）。
+ */
+const customColorSeed = ref<string>(isCustomThemeColor.value ? app.themeColor : presets[0]);
+watch(
+  () => app.themeColor,
+  (c) => {
+    if (isCustomThemeColor.value) customColorSeed.value = c;
+  },
+);
+const customPickerValue = computed(() =>
+  isCustomThemeColor.value ? app.themeColor : customColorSeed.value,
+);
+const customColorPicker = ref<HTMLInputElement | null>(null);
+/**
+ * 独立入口的激活：键盘 Enter/Space 与指针点击都落到同一个原生取色器上。
+ * 先 focus 再 click —— 即使某个内核拒绝由脚本 click 打开取色器，焦点也已经落在取色器上，
+ * 再按一次 Enter/Space 仍能打开（Esc 关闭是原生取色器的行为）。
+ */
+function openCustomColorPicker() {
+  customColorPicker.value?.focus({ preventScroll: true });
+  customColorPicker.value?.click();
+}
+/** 连续拖色走 store 的按帧合并（同一入口，不另造状态）。 */
+function onCustomColorInput(e: Event) {
+  app.setThemeColor((e.target as HTMLInputElement).value, true);
+}
 function onFont(value: string) {
   app.setFontFamily(value === SYSTEM_FONT ? "" : value);
 }
@@ -121,7 +152,7 @@ const transparencyOptions = computed(() => [
       :label="t('settings.appearance.themeColor')"
       :description="t('settings.appearance.themeColor.desc')"
     >
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2" data-theme-color-picker>
         <!-- aria-label：色板格子只有颜色没有文字，读屏下必须靠 label 才知道它是什么 -->
         <button
           v-for="c in presets"
@@ -130,17 +161,44 @@ const transparencyOptions = computed(() => [
           :style="{ background: c, outline: app.themeColor === c ? '2px solid var(--gosslan-text)' : 'none', outlineOffset: '1px' }"
           :aria-label="t('settings.appearance.themeColor.aria', { color: c })"
           :aria-pressed="app.themeColor === c"
+          :data-preset-color="c"
           @click="app.setThemeColor(c)"
         ></button>
-        <input
-          type="color"
-          :value="app.themeColor"
-          class="color-swatch tap-safe h-6 w-6 shrink-0 cursor-pointer appearance-none rounded-full border-0 bg-transparent p-0"
-          :style="{ outline: isCustomThemeColor ? '2px solid var(--gosslan-text)' : 'none', outlineOffset: '1px' }"
-          :title="t('settings.appearance.customColor')"
-          :aria-label="t('settings.appearance.customColor.aria')"
-          @input="(e) => app.setThemeColor((e.target as HTMLInputElement).value, true)"
-        />
+        <!-- 分隔线：自定义是**另一类操作**，不是第 7 个色点（用户 2026-11-09 的原话）。 -->
+        <span aria-hidden="true" class="mx-0.5 h-4 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
+        <!-- 自定义入口：色轮图标 + 文字 + 胶囊边框。选中时才显示当前自定义色；
+             选预置色时退回色轮（不跟随当前生效色），两者互斥。 -->
+        <div
+          class="custom-color-entry relative inline-flex h-6 shrink-0 items-center"
+          data-custom-color-entry
+          :data-selected="isCustomThemeColor ? 'true' : 'false'"
+        >
+          <button
+            type="button"
+            class="custom-color-surface tap-safe inline-flex h-6 items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-bg)] pl-1.5 pr-2.5 text-caption text-[var(--gosslan-text-2)] transition-colors motion-reduce:transition-none"
+            :aria-label="t('settings.appearance.customColor.aria')"
+            :aria-pressed="isCustomThemeColor"
+            @keydown.enter.prevent="openCustomColorPicker"
+            @keydown.space.prevent="openCustomColorPicker"
+            @click="openCustomColorPicker"
+          >
+            <span
+              class="custom-color-wheel"
+              :style="isCustomThemeColor ? { background: app.themeColor } : undefined"
+              aria-hidden="true"
+            ></span>
+            <span class="custom-color-label">{{ t("settings.appearance.customColor") }}</span>
+          </button>
+          <input
+            ref="customColorPicker"
+            type="color"
+            class="custom-color-input"
+            :value="customPickerValue"
+            tabindex="-1"
+            aria-hidden="true"
+            @input="onCustomColorInput"
+          />
+        </div>
       </div>
     </SettingsRow>
 
@@ -157,19 +215,52 @@ const transparencyOptions = computed(() => [
 </template>
 
 <style scoped>
-/* B3：原生 `<input type="color">` 剥成与 6 个 preset **同尺寸同形状**的圆点。
-   只写 `rounded-full` 不够 —— 各内核对内层 swatch 的默认圆角/内距不同（Windows 上会画成
-   圆角方块、四周还留白），所以把 wrapper 的 padding 和内层圆角一起归零。Chromium 与
-   WebKit 都吃 `::-webkit-color-swatch*`，Firefox 走 `::-moz-color-swatch`。 */
-.color-swatch::-webkit-color-swatch-wrapper {
+/* 自定义入口的色轮图标：未选中时是"取色器"，选中后由内联 style 换成当前自定义色。 */
+.custom-color-wheel {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: conic-gradient(
+    from 90deg,
+    #e53e3e,
+    #ff6b35,
+    #eab308,
+    #00b578,
+    #0ea5e9,
+    #2f6bff,
+    #8b5cf6,
+    #e53e3e
+  );
+  /* 内圈压暗 + 外圈提亮：自定义色恰好很暗（如 #123456）时，暗色底上仍能看到这个点的边界。 */
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12), 0 0 0 1px rgb(255 255 255 / 0.22);
+}
+/* 选中态与盒模型都靠属性/伪类，不用内联 outline —— 内联样式会压过 :focus-visible，
+   键盘用户就再也看不到焦点了。只画一道 2px 环，和 6 个预置点的选中态同一形状。 */
+.custom-color-surface[aria-pressed="true"] {
+  outline: 2px solid var(--gosslan-text);
+  outline-offset: 1px;
+  color: var(--gosslan-text);
+}
+.custom-color-surface:focus-visible {
+  outline: 2px solid var(--gosslan-text);
+  outline-offset: 1px;
+}
+.custom-color-entry:hover .custom-color-surface {
+  background: var(--gosslan-hover);
+}
+/* 原生取色器铺满整个入口但完全透明：真实点击落在 input 上由内核直接打开系统取色器，
+   Tab 只停在可见的 button（保持 aria-pressed 语义），Enter/Space 由 button 触发同一个 input。 */
+.custom-color-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   padding: 0;
-}
-.color-swatch::-webkit-color-swatch {
   border: 0;
-  border-radius: 9999px;
-}
-.color-swatch::-moz-color-swatch {
-  border: 0;
-  border-radius: 9999px;
+  opacity: 0;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
 }
 </style>

@@ -52,12 +52,30 @@ export function readStoredAmbientRaw(): AmbientSetting | null {
 }
 
 /**
- * 视图用的显示值：能力不可用 ⇒ 恒显示「关闭」（但不改写存储与显式选择）；
- * 能力可用 ⇒ 没设过时把系统 `prefers-reduced-motion` 折算成默认，设过就按用户的值。
+ * 解析结果 → 设置开关的显示档位：**只有真的会漂**才显示「关闭」以外的选项。
+ *
+ * 为什么必须从解析结果投影，而不是从"用户没设过"直接猜：
+ * 2026-11-09 实测发现 `data-ambient="static"`（系统 reduce / 低端机冻结雾）时，
+ * 开关仍按 `prefersReducedMotion()` 显示「关闭」—— 用户看到"开关关了、背景雾还在"，
+ * 以为关不掉。这条投影把两边钉在一起：显示「关闭」⇔ `<html data-ambient="off">`。
+ * 反例（ambient.test.ts 有断言）：任何让 static 显示成 off 的写法都会红。
  */
-export function readStoredAmbient(capability: AmbientCapability = readAmbientCapability()): AmbientSetting {
+export function ambientDisplaySetting(res: AmbientResolution): AmbientSetting {
+  return res.mode === "off" ? "off" : "drift";
+}
+
+/**
+ * 视图用的显示值：能力不可用 ⇒ 恒显示「关闭」（但不改写存储与显式选择）；
+ * 能力可用 ⇒ 设过就按用户的值，没设过就按三层优先级解析后的样子显示。
+ */
+export function readStoredAmbient(
+  capability: AmbientCapability = readAmbientCapability(),
+  systemReducedMotion = prefersReducedMotion(),
+): AmbientSetting {
   if (!capability.available) return "off";
-  return readStoredAmbientRaw() ?? (prefersReducedMotion() ? "off" : "drift");
+  const explicit = readStoredAmbientRaw();
+  if (explicit) return explicit;
+  return ambientDisplaySetting(resolveAmbient(null, {}, systemReducedMotion, capability));
 }
 
 export function saveStoredAmbient(v: AmbientSetting): void {

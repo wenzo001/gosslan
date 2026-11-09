@@ -286,7 +286,8 @@ test("style.css 的静态数值必须等于求解器对出厂种子的输出（�
   const ALIASES: Record<string, string> = {
     "--gosslan-rail-text-active": "--gosslan-primary",
     "--gosslan-list-active-text": "--gosslan-text",
-    "--gosslan-field-border": "--gosslan-divider-strong",
+    // ⚠️ 2026-11-09 移除 `--gosslan-field-border → divider-strong`：两者已解耦（控件边框守 3.0，
+    // 结构缝只到 ≈1.4:1）。留在这里会让字段边框重新被结构缝的亮度拖走。
   };
   let compared = 0;
   for (const mode of ["light", "dark"] as const) {

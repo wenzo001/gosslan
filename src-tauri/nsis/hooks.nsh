@@ -115,6 +115,70 @@
   ClearErrors
 !macroend
 
+; ── 安装器接管证据（2026-11-09）─────────────────────────────────────────────
+;
+; 覆盖安装 / 手动跑安装器 / 卸载时，官方模板的 `CheckIfAppIsRunning` 会 `FindProcess*` +
+; `KillProcess*`（按 exe 名强杀，见 tauri 2.11.4 的 `utils.nsh`）。被杀的那一轮
+; **在进程内留不下任何东西** —— 这就是 2026-11-09 用户报的
+; 「应用内升级后首次启动弹『上次运行被系统或外部结束』」的形状。
+;
+; 所以由安装器替它留证：杀进程**之前**（本钩子插在 `CheckIfAppIsRunning` 之前）先往
+; 崩溃现场文件追加一行 `>>> code=INSTALLER_TAKEOVER mode=install|uninstall`。
+; 应用下次启动按这条判成「安装器接管」（正常流程，不弹）。写进 crash 文件而不是另开一份：
+; 判定读的就是该文件按启动路标切出的「上一轮」，写在同一处才落在同一段里。
+;
+; 两个边界，都要守住：
+;  · **只在应用确实在跑时才写**。应用内更新里 updater 插件先 `exit(0)`、安装器随后才启动
+;    （见 `commands/updater.rs` 的复核），安装器找不到进程 ⇒ 这里一行都不写；那条路径由
+;    应用自己写的 `UPDATER_INSTALL_BEGIN` 负责。若在这里无条件写，"应用早已退出"的安装
+;    会把上一轮真正的静默死亡盖成「安装器结束」⇒ 真崩溃漏报。
+;  · 非静默安装随后会弹「应用正在运行，是否结束」确认框；用户点**取消**时安装 Abort、
+;    应用继续活着，这一行会成为空证据。它只可能影响**同一轮后来的一次静默死亡**
+;    （panic / abort / SIGTERM / BOOT_FAILED 优先级都更高，不受影响）；安装 Abort 后
+;    文件与注册表都没动，下一次安装会正常再写。
+;
+; 返回值语义按官方模板核对过：`$R0 = 0` 表示**找到了进程**（模板紧接着就 Kill）。
+; 若哪天上游换了检查原语，这里必须一起核对，不能静默沿用。
+
+; 应用是否在跑 → $R0（0 = 找到了）。安装与卸载两个调用点共用这一个原语。
+;
+; 参数必须与模板 `CheckIfAppIsRunning` 传给 `FindProcess*` 的**完全一致**
+; （`"$INSTDIR\${MAINBINARYNAME}.exe"`，tauri 2.11.4 `utils.nsh`）—— 我们这一行要表达的
+; 就是"模板接下来会不会杀掉一个进程"，参数换了就等于换了一把尺子。
+; `${INSTALLMODE}` 分支也必须跟模板同步（`currentUser` 用 `FindProcessCurrentUser`）。
+!macro Gosslan_FindApp
+  !if "${INSTALLMODE}" == "currentUser"
+    nsis_tauri_utils::FindProcessCurrentUser "$INSTDIR\${MAINBINARYNAME}.exe"
+  !else
+    nsis_tauri_utils::FindProcess "$INSTDIR\${MAINBINARYNAME}.exe"
+  !endif
+  Pop $R0
+!macroend
+
+; 应用在跑 ⇒ 模板接下来会结束它 ⇒ 先留一行接管证据（安装/卸载两种 mode）。
+; 写不进去一律忽略：证据是诊断用的锦上添花，绝不能把安装/卸载变成失败。
+;
+; 路径必须与 Rust 侧 `logging::crash_file_in` 一致：`<app_data>/logs/<stem>-crash.log`。
+; 生产里 `stem` 恒为 `${MAINBINARYNAME}`（只有 E2E 多开会带 `GOSSLAN_INSTANCE=n` 变成
+; `gosslan-1`，那条路线不走安装器）。app_data 目录用 `${BUNDLEID}`，与官方模板卸载段
+; 的 `RmDir /r "$APPDATA\${BUNDLEID}"` 同一个来源 —— 不要在这里写死包名，改名就两端一起断。
+!macro Gosslan_NoteInstallerTakeover MODE
+  ClearErrors
+  !insertmacro Gosslan_FindApp
+  ${If} $R0 = 0
+    CreateDirectory "$APPDATA\${BUNDLEID}\logs"
+    ClearErrors
+    FileOpen $R6 "$APPDATA\${BUNDLEID}\logs\${MAINBINARYNAME}-crash.log" a
+    ${If} ${Errors}
+      ClearErrors
+    ${Else}
+      FileWrite $R6 ">>> code=INSTALLER_TAKEOVER mode=${MODE} version=${VERSION}$\r$\n"
+      FileClose $R6
+    ${EndIf}
+  ${EndIf}
+  ClearErrors
+!macroend
+
 ; 安装器路标（覆盖安装/升级时写一行「目标版本 + 安装目录」）。
 ;
 ; 为什么要它：`CheckIfAppIsRunning` 是**强制终止**旧进程（`FindProcess` + `KillProcess`，
@@ -127,9 +191,9 @@
 ; 写失败**一律忽略**：路标是诊断用的锦上添花，绝不能让它把安装变成失败。
 !macro NSIS_HOOK_PREINSTALL
   ClearErrors
-  CreateDirectory "$APPDATA\com.gosslan.app\logs"
+  CreateDirectory "$APPDATA\${BUNDLEID}\logs"
   ClearErrors
-  FileOpen $R6 "$APPDATA\com.gosslan.app\logs\installer-marker.txt" w
+  FileOpen $R6 "$APPDATA\${BUNDLEID}\logs\installer-marker.txt" w
   ${If} ${Errors}
     ClearErrors
   ${Else}
@@ -137,6 +201,8 @@
     FileWrite $R6 "installdir=$INSTDIR$\r$\n"
     FileClose $R6
   ${EndIf}
+  ; 在模板强杀旧进程之前留一行「安装器接管」证据（只在应用确实在跑时）。
+  !insertmacro Gosslan_NoteInstallerTakeover "install"
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
@@ -147,4 +213,7 @@
     !insertmacro Gosslan_DeleteOwnedShortcut "$DESKTOP" "${PRODUCTNAME}"
     !insertmacro Gosslan_DeleteOwnedShortcut "$DESKTOP" "小院儿"
   ${EndIf}
+  ; 卸载同样会在 `CheckIfAppIsRunning` 里强杀正在运行的实例 —— 同样先留证据。
+  ; 卸载没有 POST 钩子，只能当场判定（边界见上面「安装器接管证据」的说明）。
+  !insertmacro Gosslan_NoteInstallerTakeover "uninstall"
 !macroend

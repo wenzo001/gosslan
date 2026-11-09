@@ -210,36 +210,50 @@ export function useMessageFile(
       attachmentMissing.value = r.missing === true;
       return;
     }
-    attachmentUrl.value = null;
-    previewNote.value = null;
-    attachmentMissing.value = false;
-    if (!needsPresenceProbe.value) return;
+    if (!needsPresenceProbe.value) {
+      attachmentUrl.value = null;
+      previewNote.value = null;
+      attachmentMissing.value = false;
+      return;
+    }
 
     const msgId = msg.value.msg_id;
     const present = await api.mediaPresent(msgId);
     // 同上：期间消息可能已被替换（乐观 → 真实），只在仍指向同一条时落地。
     if (!needsPresenceProbe.value || msg.value.msg_id !== msgId) return;
+    // 先算完再一次性落地：**不要**在 await 前清空 `previewNote` —— 那会让「已被清理」
+    // 先消失、等 IPC 回来再出现（一帧的空白也算一次闪）。只有真的换了状态才改。
+    attachmentUrl.value = null;
     attachmentMissing.value = !present;
-    if (!present) previewNote.value = $t("msg.cleaned");
+    previewNote.value = present ? null : $t("msg.cleaned");
   }
 
-  // 显式读 path/name/subtype：Vue 对 watcher 返回的数组做浅比对，若源里不包含这些字段的读取，
-  // optimistic({path:""})→real({path:"/…",name:"x"}) 替换时 msg_id+subtype 不变 → 不触发。
-  watch(
-    () =>
-      [
-        previewSubtype.value,
-        needsPresenceProbe.value,
-        msg.value.msg_id,
-        fileMeta.value?.path,
-        fileMeta.value?.name,
-        // 传输状态：收到 Done 时（字节刚落盘）必须重读预览，否则在途时读到的
-        // "仍在接收"会把图片钉死在"加载失败/被清理"（真机 2026-09-14）。
-        transfer.value?.status,
-      ] as const,
-    () => void ensureAttachmentPreview(),
-    { immediate: true },
+  /**
+   * 重算键：只有**真正影响结果**的原始值参与，且必须是**基本类型**（拼成一串）。
+   *
+   * ⚠️ 不要退回 `watch(() => [ ... ])`：getter 每次返回**新数组**，而 Vue 的变更判定
+   * （`hasChanged`）对数组永远为真 —— 只要源里的某个 computed 失效，回调就会跑，
+   * 哪怕它读出来的字段值一个都没变。`fileMeta`/`transfer` 正是这种 computed：
+   * `chat.transfers` 换一次数组、`app.device` 换一次对象，它们就重算出**新对象**
+   * （path/name/status 完全一致）。于是每轮无关刷新都会重跑一次探测，把文件上方的
+   * 「已被清理」清空再补回 ⇒ 用户看到那行字一隐一现地闪（2026-11-09 实测）。
+   *
+   * 拼成字符串后 Vue 走 `Object.is`，值不变就**不会**触发。
+   */
+  const previewProbeKey = computed(() =>
+    [
+      previewSubtype.value ?? "",
+      needsPresenceProbe.value ? "1" : "0",
+      msg.value.msg_id,
+      fileMeta.value?.path ?? "",
+      fileMeta.value?.name ?? "",
+      // 传输状态：收到 Done 时（字节刚落盘）必须重读预览，否则在途时读到的
+      // "仍在接收"会把图片钉死在"加载失败/被清理"（真机 2026-09-14）。
+      transfer.value?.status ?? "",
+    ].join("\u0000"),
   );
+
+  watch(previewProbeKey, () => void ensureAttachmentPreview(), { immediate: true });
 
   /** 消息流里的代码：只来自 inline code 消息（kind=code，输入框粘贴/发送的文本）。
    *  文件消息不再渲染成代码块——发送的文件就按文件卡片显示。 */

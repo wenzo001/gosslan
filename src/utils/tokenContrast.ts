@@ -622,6 +622,29 @@ export function auditDisabledContrast(css: string, sources: Record<string, strin
 }
 
 /**
+ * 面与面之间的**明度差分**契约（方案 A「明度阶梯」，2026-11-09）。
+ *
+ * 与上面那张表是两件事：那张表管"文字读得清（4.5）/ 控件看得见（3.0）"，
+ * 这张表管"两块**实底**面必须分得开"——减少透明档里标题栏 / 左栏不再画线、
+ * 不再留阴影，唯一的分层手段就是明度差。1.00:1 就是同一块面（旧实现让 chrome 回退
+ * 直接借用列表色，读数 1.00，三处交界全糊在一起）。
+ *
+ * 所以这里的下限不能套用 4.5/3.0 两档（那是文字与控件），只钉"明显分得开"：
+ * 亮/暗两套目标都是 1.09（chrome vs 列表）/ 1.16~1.17（chrome vs 聊天画布）。
+ * 反例自证：把 `--gosslan-chrome-solid` 改回 `--gosslan-list` ⇒ 1.00 ⇒ 报红。
+ */
+export const SURFACE_SEPARATION_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
+  light: [
+    { fg: "--gosslan-chrome-solid", bg: "--gosslan-list", min: 1.06, why: "实底档 chrome vs 会话列表（目标 1.09）" },
+    { fg: "--gosslan-chrome-solid", bg: "--gosslan-chat", min: 1.1, why: "实底档 chrome vs 聊天画布（目标 1.16）" },
+  ],
+  dark: [
+    { fg: "--gosslan-chrome-solid", bg: "--gosslan-list", min: 1.06, why: "暗色实底档 chrome vs 会话列表（目标 1.09）" },
+    { fg: "--gosslan-chrome-solid", bg: "--gosslan-chat", min: 1.1, why: "暗色实底档 chrome vs 聊天画布（目标 1.17）" },
+  ],
+};
+
+/**
  * 逐对核算；返回所有不达标的组合。
  *
  * ★ 暗色作用域必须**叠在 :root 之上**解析，不能只读 `.dark{}` 那一块。
@@ -638,6 +661,16 @@ export function findTokenContrastFailures(css: string): ContrastFailure[] {
   return evaluateContract(css).fails;
 }
 
+/** 明度差分契约同样逐对核算（不达标 ⇒ 面糊成一块）。 */
+export function findSurfaceSeparationFailures(css: string): ContrastFailure[] {
+  return evaluateContract(css, SURFACE_SEPARATION_CONTRACT).fails;
+}
+
+/** 明度差分契约里算不出颜色的组合（token 缺失即报红，不许静默跳过）。 */
+export function findSurfaceSeparationUnresolved(css: string): UnresolvedPair[] {
+  return evaluateContract(css, SURFACE_SEPARATION_CONTRACT).unresolved;
+}
+
 /**
  * 认不出的组合（token 缺失 / 值语法解析不了）。
  *
@@ -649,7 +682,10 @@ export function findTokenContrastUnresolved(css: string): UnresolvedPair[] {
   return evaluateContract(css).unresolved;
 }
 
-function evaluateContract(css: string): {
+function evaluateContract(
+  css: string,
+  contract: Record<"light" | "dark", TokenPair[]> = TOKEN_CONTRAST_CONTRACT,
+): {
   fails: ContrastFailure[];
   unresolved: UnresolvedPair[];
 } {
@@ -661,7 +697,7 @@ function evaluateContract(css: string): {
       theme === "light"
         ? scopes.light
         : new Map([...scopes.light, ...[...scopes.dark]]);
-    for (const pair of TOKEN_CONTRAST_CONTRACT[theme]) {
+    for (const pair of contract[theme]) {
       const bgOver = pair.bgOver ? resolveToken(pair.bgOver, scope) : null;
       const fg = resolveToken(pair.fg, scope);
       const bg = resolveToken(pair.bg, scope, bgOver ?? undefined);
