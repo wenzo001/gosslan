@@ -1478,7 +1478,10 @@ fn ensure_preview_window(
             .visible(false)
             .decorations(false)
             .resizable(true)
-            .maximizable(false)
+            // 预览窗 2026-11-09 起允许最大化：标题栏双击与主窗口同一条路
+            // （`window_caption_double_click` 白名单里加了 WINDOW_PREVIEW）。
+            // 这条与 `lib.rs` 的 `MAXIMIZABLE_WINDOWS` 由 `window_maximizable_matches_builder` 交叉核对。
+            .maximizable(true)
             .minimizable(true)
             .closable(true)
             // 同 open_log_window：非活动窗口第一击也要落到 webview。
