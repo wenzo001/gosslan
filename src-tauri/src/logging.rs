@@ -1177,14 +1177,16 @@ pub fn effective_previous_exit(
     kind
 }
 
-/// 上一轮切片的**最后一条带时刻的原生行**是否早于安装路标？
+/// 上一轮切片的**最后一条带时刻的原生行**是否紧贴在安装路标之前？
 ///
 /// `EarlyExit` 的现场常常**没有 `----- 启动` 行**（日志轮转把启动行切掉了，只剩
 /// `>>> 启动尝试` 与 `>>> code=BOOT_WINDOW_BUILD_START`）⇒ `run_started_before_install`
 /// 永远判否，安装器接管的那一形状就免不了税（2026-11-09 Windows 报告）。
-/// 这里用同一条时间关系、换一个可用锚点：切片里**任何**带时刻的行都不晚于安装时刻
-/// ⇒ 整段现场在安装之前就结束了，结束它的不可能是安装之后才发生的事。
-/// 反例：切片里出现安装之后的时刻（例如装完自动拉起的那一轮又死掉）⇒ 判否，照旧如实提示。
+/// 这里用同一条时间关系、换一个可用锚点：切片最后一刻**不晚于安装时刻**，且两者相距
+/// 不超过 [`INSTALLER_FRESH_MS`]（安装器结束进程时它一定还在跑，现场尾巴与路标相邻）。
+/// 只判「早于安装」而不限距离会把「几小时前真的早期退出、之后才装东西」也洗成安装器接管
+/// ⇒ 真失败漏报；这一条是审查（2026-11-09）点出来的失败开放面。
+/// 反例：切片末尾离安装超过新鲜窗口，或出现安装之后的时刻 ⇒ 判否，照旧如实提示。
 fn slice_ended_before_install(native_lines: &[String], ev: &InstallerEvidence) -> bool {
     let mut latest: Option<i64> = None;
     for l in native_lines {
@@ -1199,7 +1201,8 @@ fn slice_ended_before_install(native_lines: &[String], ev: &InstallerEvidence) -
             latest = Some(latest.map_or(ms, |x| x.max(ms)));
         }
     }
-    latest.is_some_and(|ms| ms <= ev.mtime_ms)
+    latest
+        .is_some_and(|ms| ms <= ev.mtime_ms && ev.mtime_ms.saturating_sub(ms) <= INSTALLER_FRESH_MS)
 }
 
 /// 上一轮是不是在**这次安装之前**就已经在跑？
@@ -2961,6 +2964,30 @@ mod tests {
             (r.kind.as_str(), r.code.as_str()),
             ("early_exit", "BOOT_PREV_EARLY_EXIT"),
             "现场有安装之后的时刻 ⇒ 安装器不可能是原因，必须照旧提示"
+        );
+    }
+
+    /// 反例自证（审查 2026-11-09）：切片末尾离安装超过新鲜窗口，即使「早于安装」也不许免税。
+    /// 否则几小时前真的早期退出、之后才装东西，会被洗成安装器接管 ⇒ 真失败漏报。
+    #[test]
+    fn installer_marker_does_not_mask_early_exit_long_before_install() {
+        let raw = vec![
+            ">>> 启动尝试：进程已起，logger 尚未建立 pid=32536  @2026-11-09 09:33:03 版本 5.20.4 · windows-x86_64 · release".to_string(),
+            ">>> >>> code=BOOT_WINDOW_BUILD_START 事件循环启动（WebView2 创建在此步）  @2026-11-09 09:33:03 版本 5.20.4 · windows-x86_64 · release".to_string(),
+        ];
+        let crash = std::path::Path::new("/tmp/gosslan-crash.log");
+        let log_dir = std::path::Path::new("/tmp");
+        let ev = InstallerEvidence {
+            version: "5.20.4".to_string(),
+            // 1.5 小时之后才安装：路标仍然新鲜（相对本轮），但现场尾巴离它太远。
+            mtime_ms: parse_utc_to_ms("2026-11-09 11:00:00").unwrap(),
+        };
+        let boot_now = parse_utc_to_ms("2026-11-09 11:05:00").unwrap();
+        let r = build_previous_run_report_with(&raw, crash, log_dir, Some(&ev), boot_now);
+        assert_eq!(
+            (r.kind.as_str(), r.code.as_str()),
+            ("early_exit", "BOOT_PREV_EARLY_EXIT"),
+            "现场尾巴离安装超过新鲜窗口 ⇒ 不能当安装器接管，必须照旧提示"
         );
     }
 

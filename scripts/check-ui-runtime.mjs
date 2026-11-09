@@ -12151,6 +12151,16 @@ async function runRowPair(cdp, url) {
     // `text-long` / `quote` / `link` 只是夹具的种类名，真正喂给组件的 kind 仍是 text
     // （长文本由内容长度触发截断；引用与链接是正文内部的排版，不是另一种消息类型）。
     const kindArg = kind === "text-long" || kind === "quote" || kind === "link" ? "text" : kind;
+    // `groupSide` 必须按**估高端的同一判定**算好传进来（2026-11-09 修）：
+    // 不传就走 prop 默认值 "single" ⇒ 这一行白拿 `pt-2.5`(10px)，而 est() 对同一个夹具
+    // 算出来的是 "last"/"single"（见下）—— 配对判据比的就不是"有没有分割行"，而是"两种组位置"，
+    // 读数差 3.5px 却掩盖了分割行估高真短 6.5px。现在两行都用同一个 `groupSide` 输入。
+    const side = await cdp.eval("(async () => {"
+      + " const K = await import('/src/utils/messageKinds.ts');"
+      + " const B = " + BASE + ";"
+      + " const s = " + JSON.stringify(senderId) + ";"
+      + " return K.groupSide({ kind: 'text', senderId: s, ts: B,"
+      + "   prev: { kind: 'text', senderId: s, ts: B - " + gapMs + " }, next: null }); })()");
     const props = {
       message: {
         msg_id: "m-rowpair", sender_id: senderId, kind: kindArg,
@@ -12161,7 +12171,9 @@ async function runRowPair(cdp, url) {
         msg_id: "m-rowpair-prev", sender_id: senderId, kind: "text",
         content: "上一条。", ts: BASE - gapMs, conv_id: "c-rowpair", seq: 1,
       },
-      canReact: false, isGroup: !!isGroup, senderName: "对方",
+      // 估高端 `groupSide` 的 breakAbove 等价于"间隔 ≥ 5 分钟"，同一个模块已经按同组窗口
+      // 判过一次 ⇒ 直接复用返回值，不在探针里抄第二份阈值。
+      canReact: false, isGroup: !!isGroup, senderName: "对方", groupSide: side,
     };
     const r = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
       + JSON.stringify(JSON.stringify(props)) + ")");
@@ -15504,7 +15516,7 @@ async function runAmbient(cdp, url) {
     { id: "t1", alpha: 0.20, alphaDark: 0.16 },
     { id: "t2", alpha: 0.30, alphaDark: 0.26 },
     { id: "t3", alpha: 0.40, alphaDark: 0.36 },
-    { id: "t4", alpha: 0.48, alphaDark: 0.44 },
+    { id: "t4", alpha: 0.50, alphaDark: 0.46 },
   ];
   const contrastFor = async (dark) => {
     await setAppearance(cdp, dark);
@@ -15953,7 +15965,7 @@ async function runAmbient(cdp, url) {
     document.body.style.padding = '';
   })()`);
   console.log("  ℹ ambient 截图 → " + JSON.stringify({ main: mainShots, dark: darkShots, settings: settingsShots }));
-  check("ambient：四档对比图落盘（关闭 / T1 20% / T2 30% / T3 40% / T4 48%，亮色）",
+  check("ambient：四档对比图落盘（关闭 / T1 20% / T2 30% / T3 40% / T4 50%，亮色）",
     mainShots.length === 5 && mainShots.every((p) => fs.existsSync(p)), "5 张", JSON.stringify(mainShots));
   check("ambient：暗色 T2 / T3 两张落盘",
     darkShots.length === 2 && darkShots.every((p) => fs.existsSync(p)), "2 张", JSON.stringify(darkShots));
@@ -20670,9 +20682,9 @@ async function runComposerMobile(cdp, url) {
       m.ok === true && Math.abs(m.rowPadTop - m.rowPadBottom) <= 1,
       "|上留白 − 下留白| ≤1", `上=${m.rowPadTop} 下=${m.rowPadBottom}`);
     const offRings = (m.buttonRings || []).filter(
-      (b) => b.r <= 0 || Math.abs(b.r - (m.cardRadius - b.inset)) > 1,
+      (b) => b.r <= 0 || Math.abs(b.r - (m.cardRadius - b.inset)) > 0.5,
     );
-    check("移动端输入框：工具条按钮圆角都跟外框同心（外圆角 − 各自到底边内距，±1px）",
+    check("移动端输入框：工具条按钮圆角都跟外框同心（外圆角 − 各自到底边内距，±0.5px）",
       m.ok === true && (m.buttonRings || []).length >= 4 && offRings.length === 0,
       "每个按钮 r ≈ cardRadius − inset",
       `card=${m.cardRadius} 不符=${JSON.stringify(offRings)} 全部=${JSON.stringify(m.buttonRings)}`);
@@ -24974,27 +24986,35 @@ async function runFavThumb(cdp, url) {
       const r = d.getBoundingClientRect();
       const st = getComputedStyle(d);
       const rgb = (v) => (String(v).match(/[0-9.]+/g) || []).slice(0, 3).map(Number);
-      return { x: r.left, y: r.top, w: r.width, h: r.height, bg: rgb(st.backgroundColor), border: rgb(st.borderTopColor) };
+      return { x: r.left, y: r.top, w: r.width, h: r.height,
+        bg: rgb(st.backgroundColor), border: rgb(st.borderTopColor),
+        radius: parseFloat(st.borderTopLeftRadius) || 0 };
     })()`);
     if (!box) return { mounted2, box, skel: null };
-    // from=4：80px 容器有 1px 描边 + 8px 圆角抗锯齿，1..3px 那圈是"宿主白底↔描边"的混合，
-    // 用容器底色当参照会假红（实测 13）。往里退到 4..6px 才是容器真正画出来的底色。
-    const skel = await sample(box, 4);
-    return { mounted2, box, skel, ref: worst(skel, [box.bg, box.bg]) };
+    /**
+     * 采样起点必须**避开圆角描边弧**，而且必须按当前半径现算（2026-11-09 实测）：
+     * 45° 上描边内沿 = `r − (r−1)/√2`；`--gosslan-radius-md` 实际是 10px ⇒ 3.64px。
+     * 旧注释按 8px 半径写了固定 `from=4`，在这枚 10px 圆角上只比内沿多约 0.5px，
+     * 截图取整偏半像素就踩到描边上 —— 读数正好等于 `borderTopColor`（亮 [232,232,237] /
+     * 暗 [55,56,59]），四个角只有右下角翻红。这里按半径算，再留 2px 余量（现为 6）。
+     */
+    const from = Math.max(4, Math.ceil(box.radius - (box.radius - 1) / Math.SQRT2) + 2);
+    const skel = await sample(box, from);
+    return { mounted2, box, from, skel, ref: worst(skel, [box.bg, box.bg]) };
   };
   await setTheme(false);
   const skelLight = await thumbCorner();
   check("小缩略图·亮色·加载中占位：四角落在「容器底色↔描边色」线段上（通道差 ≤ " + THRESH + "，占位不写死深色垫底）",
     !!skelLight.mounted2 && skelLight.mounted2.ok === true && !!skelLight.ref && skelLight.ref.m <= THRESH,
     "占位四角差 ≤" + THRESH,
-    JSON.stringify({ ref: skelLight.ref, box: skelLight.box && { bg: skelLight.box.bg, border: skelLight.box.border } }));
+    JSON.stringify({ ref: skelLight.ref, from: skelLight.from, box: skelLight.box && { bg: skelLight.box.bg, border: skelLight.box.border, radius: skelLight.box.radius } }));
 
   await setTheme(true);
   const skelDark = await thumbCorner();
   check("小缩略图·暗色·加载中占位：四角落在「容器底色↔描边色」线段上（通道差 ≤ " + THRESH + "）",
     !!skelDark.mounted2 && skelDark.mounted2.ok === true && !!skelDark.ref && skelDark.ref.m <= THRESH,
     "占位四角差 ≤" + THRESH,
-    JSON.stringify({ ref: skelDark.ref, box: skelDark.box && { bg: skelDark.box.bg, border: skelDark.box.border } }));
+    JSON.stringify({ ref: skelDark.ref, from: skelDark.from, box: skelDark.box && { bg: skelDark.box.bg, border: skelDark.box.border, radius: skelDark.box.radius } }));
 
   // ── 同形缺陷的两处（用户 2026-11-05 裁决「同形缺陷一起修」）────────────────
   // 合并记录弹窗的图片项 / 消息流图片气泡，走的是同一条判据：

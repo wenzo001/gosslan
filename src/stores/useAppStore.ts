@@ -8,6 +8,7 @@ import { toastErrorText } from "@/composables/useErrorText";
 import { useDebounceFn } from "@vueuse/core";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 import { NARROW_LAYOUT_QUERY, isAndroid, isIOS, resolveMobileLayout } from "@/utils/platform";
+import { resolveKeyboardState, type KeyboardBaseline } from "@/utils/keyboardInsets";
 import {
   APPEARANCE_STORAGE_KEY,
   LEGACY_DARK_STORAGE_KEY,
@@ -389,22 +390,35 @@ export const useAppStore = defineStore("app", () => {
    * 被软键盘盖住的高度（px）。**这是"键盘遮挡输入框"的真正补量**：
    *
    * - Android（WebView 走 adjustResize）：`window.innerHeight` 会随键盘一起缩，
-   *   两者相减≈0 ⇒ 这里得到 0，布局不需要额外补偿（避免补偿两次把界面顶飞）；
+   *   所以补量必须是 **0** —— 再补一次就是把输入框往键盘上方顶、中间多出一段空隙
+   *   （用户 2026-11-09 安卓截图：输入卡和键盘之间空一大截）。这里仍需要把
+   *   `keyboardOpen` 置真（收起底栏、去掉安全区留白），判据是布局高度比基线矮了 >120px。
    * - iOS（键盘只缩视觉视口，布局视口不变）：差值≈键盘高度 ⇒ 用它给聊天区加底部
    *   内边距，输入框才会浮在键盘之上，而不是被压在键盘下面。
    *
-   * 之前只有 `keyboardOpen` 布尔量、从不做高度补偿 ⇒ iOS 上输入框被键盘盖住。
+   * 之前的实现两种平台共用「差值≥80 就补」，Android 在 resize 之后又被补了一次，
+   * 于是输入卡与键盘之间多出安全区那一段。平台拆分逻辑在 `utils/keyboardInsets.ts`（有单测）。
    */
   const keyboardInset = ref(0);
 
   function watchKeyboard(): () => void {
     const vv = window.visualViewport;
     if (!vv) return () => {};
+    let baseline: KeyboardBaseline = { base: 0, baseWidth: 0 };
     const onChange = () => {
-      // 视觉视口底部（offsetTop + height）以上的部分才是可见区，其余被键盘/工具栏盖住
-      const covered = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
-      keyboardInset.value = covered < 80 ? 0 : covered; // 阈值滤掉地址栏收缩这类小抖动
-      keyboardOpen.value = keyboardInset.value > 0;
+      const next = resolveKeyboardState(
+        {
+          innerHeight: window.innerHeight,
+          innerWidth: window.innerWidth,
+          vvHeight: vv.height,
+          vvOffsetTop: vv.offsetTop,
+        },
+        baseline,
+        isAndroid,
+      );
+      baseline = { base: next.base, baseWidth: next.baseWidth };
+      keyboardInset.value = next.inset;
+      keyboardOpen.value = next.open;
     };
     vv.addEventListener("resize", onChange);
     vv.addEventListener("scroll", onChange);
