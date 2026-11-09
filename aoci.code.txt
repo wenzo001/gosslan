@@ -26,6 +26,7 @@ LICENSE[SG5T]: F:MIT 许可证全文：授权免费使用、修改、分发并�
 README.zh-CN.md[SG8S]: F:中文门面，与英文 README 同构的卖点/安装/隐私边界/FAQ 对照页 | R:code:README.md,code:LICENSE | A:中文用户的安装与设计边界说明 | S:与 README.md 同构两册，改一边必须同批改另一边；同样不抄版本号。
 ruff.toml[FQ7T]: F:Python lint 配置（ruff）：py311、行宽 100，规则集刻意从最小可守开始 | R:code:scripts/verify.mjs,code:docs/architecture/backend-modernization.md | A:select/ignore 的规则集按批次加严 | S:只开会让脚本直接坏掉或名字写错的规则（E9/F63 等）；全仓默认规则有 106 条历史债（67 ISC004、12 EXE001、11 F401），一次性扫全会红，按批次清。
 preview.html[EU4T]: F:独立图片预览窗口的文档入口（label=preview，全局唯一）：只加载看图那一份组件，不牵入聊天组件树；相册靠一次 IPC 取 | R:code:src/entries/preview.ts | A:窗口由 Rust 侧创建并加载本文；主题首帧与骨架与主窗口共用同一份 | S:跨文档不能共享主窗口数组，必须走 IPC；把它当主窗口复用会把聊天树整棵拉起来。
+startup-error.html[EB4T]: F:启动失败独立窗口文档（label=startup-error）：静态文档 + 只调四个命令的入口脚本 | R:code:src/entries/startup-error.ts | A:不加载主界面 store/事件监听 | S:这扇窗出现时数据库没开，依赖 state 的代码只会再失败一次。
 
 ===/Users/wendongfu/Documents/code/gosslan/.github/===
 PULL_REQUEST_TEMPLATE.md[SQ4T]: F:PR 正文骨架：改动摘要、plan 与 impact 两段、门禁自检表、按 domains.data.mjs 勾选涉及领域 | R:code:scripts/check-change-budget.mjs,code:docs/VERSIONING.md | A:人工填写的 PR 描述结构；L1 三段全 N/A，L2 必填 [plan]，L3 或碰 crypto.rs / protocol.rs 必填 [impact] | S:真正拦人的是 commit 标题上的 [plan]/[impact] 标记（commit-msg hook 判），缺了照样 exit 1。
@@ -892,6 +893,25 @@ resendChannel.ts[EU4T]: F:「这条没发出去的消息重发走哪条通道」
 safeStorage.ts[EU4S]: F:localStorage 唯一安全出口：try/catch 与配额/隐私模式降级 | R:code:src/i18n/index.ts | A:读写都走这里 | S:Safari 隐私模式/配额写满会让直连抛错；曾 25 处直连、17 处无 try。
 saveImageAs.ts[EU4T]: F:另存图片的生产装配：把系统对话框、i18n、Tauri 接到纯核心 | R:code:src/utils/saveImageCore.ts | A:组件只调这一处 | S:取消不是错误、不抛；核心必须保持可测。
 saveImageCore.ts[EU4S]: F:另存图片纯核心：来源（msgId/cid）、体积上限与落盘结果 | R:code:src/utils/imageBytes.ts | A:取消返回 cancelled，不抛 | S:体积上限与粘贴图共用 MAX_PASTED_IMAGE_BYTES；核心不引 i18n。
+scrollIntent.ts[EU4T]: F:items 变化类型的唯一判定：追加/前插/整会话替换/仅内容更新 | R:code:src/components/VirtualList.vue | A:首尾 key 不够，配合数量与连续性 | S:把追误判成切换会话会一帧拽出 7 万像素（2026-10-25 P0）。
+scrollRestore.ts[EU4S]: F:离开再回来落回上次那屏：保存视口上沿消息 key + 行内偏移，top 只兜底 | R:code:src/components/ChatWindow.vue | A:按消息身份落位，再由 VirtualList 校正 | S:动态高度列表按像素恢复会落到另一条消息上。
+sendWaiting.ts[EU4T]: F:「sending 是在发还是在等对端上线」的判据（纯函数） | R:code:src/api/index.ts | A:只决定可见文案，数据层状态不动 | S:离线队列可挂 7 天，只转圈用户会以为卡死（真机实测 27 小时）。
+settingsManifest.ts[EU5S]: F:设置分区纯数据清单：key/文案键/分组/别名/容器映射，不含 Vue 组件 | R:code:src/components/SettingsPanel.vue,code:src/components/SettingsWindow.vue | A:两个外壳各自保留渲染映射，消费本文件数据 | S:三份键集本来就不等价，不能合并成一份。
+shareTreeQuery.ts[EU4T]: F:好友共享目录树的查询策略：缓存里带 friendId，下载按它而不是当场读 activeConv | R:code:src/utils/panelQuery.ts | A:与群文件面板同形状 | S:切会话那一拍旧行还在一帧里，按 activeConv 会向错误的人要文件。
+singleFlight.ts[EU4T]: F:同键异步任务只跑一次、其余共用同一 Promise、settles 后自动摘除 | R:code:src/utils/filePreview.ts | A:消息原图/待办图/收藏图预览共用 | S:漏抄 finally 会把第一次结果永久钉住（「图片时好时坏」的真因）。
+stallWatch.ts[EU4S]: F:卡顿计时器：只决定何时计时，阈值判定仍在 decideStall；页面隐藏时暂停 | R:code:src/utils/uiStall.ts | A:回前台重新起算 | S:隐藏 10 分钟回来会把前台发起的 IPC 瞬间判成「卡了 10 分钟」。
+taskCenter.ts[EU6M]: F:任务中心读模型（纯函数）：有进度/目标/完成态的任务统一归为排队/发送中/完成/已取消 | R:code:src/stores/chat/taskCenter.ts | A:只读拼装，不改时间线 | S:历史完成默认不显示；failed 永远来自后端。
+textSelection.ts[EU4T]: F:消息文字选区的读取与判定：桌面复制选中内容、移动让位系统选字 | R:code:src/App.vue | A:全局 contextmenu、右键与长按第二道闸门共用 | S:同一判定两个家已经翻过车，别在组件里另写。
+themePalette.ts[EO7M]: F:全局配色运行时求解器：主色种子在 OKLCH 派生填充/hover/active/前景/主色文字 | R:code:src/style.css,code:docs/design-language/theme-contrast.md | A:12 项写入 html；首帧静态值由 dump-theme-tokens 生成 | S:sRGB 等比例混色同时掉亮度与彩度，可读性随色相变；两边必须逐 token 相同。
+toastManager.ts[EU4T]: F:Toast 管理器：success/info 3s、error 6s（读屏播报更慢） | R:code:src/components/ToastHud.vue | A:由 Reka createToastManager 承载 | S:错误别用 3s，读屏来不及播完。
+todoFilter.ts[EU4T]: F:群任务面板打开时选哪个标签：全部→我的→我创建→已归档，默认「我的」，空则「全部」 | R:code:src/components/GroupTasksBoard.vue | A:只在打开时判一次 | S:用户手动切过之后不许再拉回默认。
+transferProgressWatch.ts[EU4T]: F:「这行传输多久没动过」的唯一判定：补后端说不了的情况（worker 静默死亡） | R:code:src/utils/transferState.ts | A:只判停滞，不改状态权威 | S:状态权威在 Rust 的 file_transfers.status，前端别改它。
+transferState.ts[EU4T]: F:文件传输行的界面口径类型（none/active/queued/done/failed 等） | R:code:src-tauri/src/commands/files.rs | A:只做展示映射 | S:状态权威在 Rust；别在这里定义新状态。
+transferSummary.ts[EU4T]: F:进度取值的纯计算：把越界进度归一 | R:code:src/components/TaskCenter.vue | A:组件测试不跑 DOM，靠它钉住 | S:不归一会出现 140% 的进度条，且只在真机可见。
+tsSource.ts[EU4T]: F:测试专用：从源码文本取函数本体（按花括号配对切） | R:code:src/utils/designGuards.ts | A:供三个守卫读「函数里写了什么」 | S:不要用固定长度窗口：加注释就把调用点挤出窗口（曾假红一次）。
+uiStall.ts[EU4T]: F:卡顿判定纯逻辑：10s 提示、30s 升级、snoozeUntil 静默窗口 | R:code:src/utils/stallWatch.ts | A:不碰 DOM、不读时钟 | S:时刻由调用方给，才能在 node:test 里覆盖。
+validation.ts[EU5S]: F:表单与 IPC 边界的 Zod 运行时校验；长度口径与后端 chars() 同一套 | R:code:src/types.ts | A:表单侧复用同一 schema | S:TS 类型是手写的，Rust 改字段不会编译失败；invoke<T> 断言等于把跨进程数据当可信。
+versionGuard.ts[EU4T]: F:前端构建版本 vs 后端 APP_VERSION 的启动对账（只做不误报的兜底） | R:code:src/api/index.ts | A:两版一致什么都不做 | S:任一版本拿不到就不显示；别在这里自己比版本字符串。
 
 ===/Users/wendongfu/Documents/code/gosslan/tools/===
 gen_icon.py[XV4T]: F:手写 PNG 编码器生成占位应用图标 | R:code:src-tauri/icons/icon.png | A:inside_rrect、inside_circle、chunk | S:不依赖 Pillow，手工拼 IHDR/IDAT/IEND；固定覆盖 src-tauri/icons/icon.png。
@@ -1375,3 +1395,6 @@ tauriAdapter.ts[EU4T]: F:Rust 命令适配层：所有 IPC 仍走 src/api 门面
 
 ===/Users/wendongfu/Documents/code/gosslan/src/utils/motion/===
 index.ts[FU4T]: F:motion-v 的唯一入口：业务组件不得直接 import motion-v | R:code:src/utils/motionTokens.ts | A:统一补 reduced-motion 分支与测试替身 | S:护栏扫 from "motion-v" 的直接引用，只允许本文件。
+
+===/Users/wendongfu/Documents/code/gosslan/src/workers/===
+highlight.worker.ts[EU4T]: F:代码高亮 Worker：收 {id,code,language}，调 codeHighlightCore 后回包 | R:code:src/utils/codeHighlight.ts | A:与主线程降级路径共用同一份纯计算 | S:语言不确定落纯文本；不要在这里注册主题。
