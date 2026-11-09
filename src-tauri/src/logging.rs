@@ -235,6 +235,53 @@ pub struct InstallerMarker {
     pub install_dir: String,
 }
 
+/// 安装器**刚刚**装完的判定窗口：以**本轮启动时刻**为锚，而不是以上一轮结束时刻为锚。
+///
+/// 为什么不用"上一轮结束时刻"：那个锚靠 `last_seen` 近似，而进程空闲时可能几小时都不往
+/// 现场文件写一行 ⇒ 窗口会宽到把"先被外部杀掉、隔一阵再装"也吞进来（那就是漏报真崩溃）。
+/// 安装器装完会**立刻拉起应用**，所以"路标 mtime 距本轮启动 ≤ 窗口"才是「这一次启动
+/// 紧跟在一次安装之后」的直接证据；隔天再启动时同一个路标已经过期 ⇒ 判定原样保留。
+///
+/// 10 分钟是给非静默安装留的余量（完成页要等用户点，杀软也可能拖慢），但远小于
+/// "崩溃之后隔几小时再重装"的量级 —— 两端都有真实场景撑着，不是随手取的数。
+const INSTALLER_FRESH_MS: i64 = 10 * 60 * 1000;
+
+/// 安装器路标 + 它的 mtime（Unix 毫秒）。
+///
+/// mtime 是判定里**唯一**能表达时间顺序的信号：NSIS 没有取时间的原语，文件写入时刻
+/// 就是安装时刻（见 `src-tauri/nsis/hooks.nsh` 的说明）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallerEvidence {
+    pub version: String,
+    pub mtime_ms: i64,
+}
+
+/// 读安装器路标；不存在 / 读不了 / 内容坏 ⇒ `None`（不猜）。
+/// 与 [`report_installer_marker`] 读同一路径，但这条只负责给判定提供证据、不写日志
+/// （日志那一份由 `report_installer_marker` 补，避免同一次启动写两遍）。
+pub fn installer_evidence_in(dir: &std::path::Path) -> Option<InstallerEvidence> {
+    let path = dir.join(INSTALLER_MARKER_FILE);
+    let marker = parse_installer_marker(&std::fs::read_to_string(&path).ok()?)?;
+    let mtime_ms = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    Some(InstallerEvidence {
+        version: marker.version,
+        mtime_ms,
+    })
+}
+
+/// 路标是不是"这一次启动之前刚刚落下"的（见 [`INSTALLER_FRESH_MS`]）。
+///
+/// 失败关闭：mtime 在未来（时钟回拨/跨机拷贝）同样判否 —— 宁可多弹一次提示，
+/// 也不把一次真正的静默死亡说成"安装器结束"。
+fn installer_is_fresh(ev: &InstallerEvidence, now_ms: i64) -> bool {
+    (0..=INSTALLER_FRESH_MS).contains(&now_ms.saturating_sub(ev.mtime_ms))
+}
+
 /// 解析路标文本。缺任一行、或值为空 ⇒ `None`（不猜）。
 pub fn parse_installer_marker(text: &str) -> Option<InstallerMarker> {
     let mut version = None;
@@ -332,6 +379,44 @@ mod installer_marker_tests {
         assert_eq!(parse_installer_marker("installdir=C:\\x\n"), None);
         assert_eq!(parse_installer_marker("version=\ninstalldir=\n"), None);
         assert_eq!(parse_installer_marker("hello\n"), None);
+    }
+
+    /// 路标 mtime 是判定里**唯一**的时间信号：必须真的从文件读出来，并随启动时刻过期。
+    /// 用真实文件（不 mock），因为"mtime 到底是不是安装时刻"只能靠文件系统证明。
+    #[test]
+    fn evidence_reads_file_mtime_and_expires() {
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-marker-evidence-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(INSTALLER_MARKER_FILE);
+        std::fs::write(
+            &path,
+            "version=5.20.7\r\ninstalldir=C:\\Users\\x\\Gosslan\r\n",
+        )
+        .unwrap();
+
+        let ev = installer_evidence_in(&dir).expect("两行齐备的路标应当读成证据");
+        assert_eq!(ev.version, "5.20.7");
+        let now = now_ms();
+        assert!(
+            installer_is_fresh(&ev, now),
+            "刚写下的路标必须是新鲜的（安装器装完会立刻拉起应用）"
+        );
+        // 反例（用户要求"外部 kill 仍要提示"）：隔一阵再启动，同一个路标必须已经过期。
+        assert!(!installer_is_fresh(&ev, now + INSTALLER_FRESH_MS + 60_000));
+        // 反例：mtime 在未来（时钟回拨 / 跨机拷贝）不许当成新鲜 —— 失败关闭。
+        assert!(!installer_is_fresh(&ev, ev.mtime_ms - 1_000));
+
+        // 内容坏 / 文件不存在 ⇒ 没有证据（不猜）。
+        std::fs::write(&path, "version=\r\n").unwrap();
+        assert_eq!(installer_evidence_in(&dir), None);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(installer_evidence_in(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -964,10 +1049,29 @@ fn last_run_slice(lines: &[String]) -> &[String] {
 }
 
 /// 把上一轮现场算成结构化报告。纯函数（路径只拼字符串），可单测。
+///
+/// 只有单测在用（上层一律走带安装器证据的 [`build_previous_run_report_with`]）⇒ 非测试构建里
+/// 它是死代码，`-D warnings` 会红。用 `cfg(test)` 而不是 `allow(dead_code)`：这条函数本来
+/// 就只服务测试，不该被当成生产 API 留着。
+#[cfg(test)]
 pub fn build_previous_run_report(
     raw: &[String],
     crash_log: &std::path::Path,
     log_dir: &std::path::Path,
+) -> PreviousRunReport {
+    build_previous_run_report_with(raw, crash_log, log_dir, None, 0)
+}
+
+/// 带安装器证据的版本（[`Logger::seed_previous_run`] 用它；仍是纯函数，可单测）。
+///
+/// `installer`：安装器在**本轮启动之前**留下的路标（时间由文件 mtime 表达）；
+/// `now_ms`：**本轮启动时刻**（判断路标是否"刚刚落下"，见 [`INSTALLER_FRESH_MS`]）。
+pub fn build_previous_run_report_with(
+    raw: &[String],
+    crash_log: &std::path::Path,
+    log_dir: &std::path::Path,
+    installer: Option<&InstallerEvidence>,
+    now_ms: i64,
 ) -> PreviousRunReport {
     let run = last_run_slice(raw);
     let run_native: Vec<String> = run
@@ -975,7 +1079,7 @@ pub fn build_previous_run_report(
         .filter(|l| is_crash_native_line(l))
         .cloned()
         .collect();
-    let kind = classify_previous_exit(&run_native);
+    let kind = effective_previous_exit(&run_native, installer, now_ms);
     let (kind_s, code) = match kind {
         PreviousExit::Panic => ("panic", "BOOT_PREV_PANIC"),
         PreviousExit::StartupFailed => ("startup_failed", "BOOT_PREV_STARTUP_FAILED"),
@@ -1035,6 +1139,56 @@ pub fn build_previous_run_report(
         .count()
         .min(u32::MAX as usize) as u32;
     report
+}
+
+/// 在分类器之上叠一层**安装器证据**，得到最终判定的"上一轮结束方式"。
+///
+/// 只允许把 `SilentKill` 改判成 `Updater`，且必须**同时**满足两条：
+///  ① 路标是"这一次启动之前刚落下"的（[`installer_is_fresh`]，锚点是**本轮**启动时刻）；
+///  ② 上一轮的启动时刻**早于**路标 mtime —— 装的时候它已经在跑
+///     （[`run_started_before_install`]；没有这条，"装完自动拉起的那一轮又静默死掉"
+///     会在 10 分钟窗口内被当成"安装器结束"，真崩溃漏报）。
+///
+/// 其余形态（panic / abort / SIGTERM / 启动失败 / clean / 单实例）都有比"某个时间点
+/// 有人装过东西"更硬的现场证据，**一律不许被盖掉**。`EarlyExit` 同样不在改判范围内：
+/// 它意味着上一轮连 `----- 启动` 都没写出来，条件 ② 永远无法成立；而"进了事件循环却在
+/// logger 之前消失"本身就是要提示的异常。这一条是"真正的崩溃一条都不能漏报"的落点
+/// （2026-11-09 用户口径）。
+pub fn effective_previous_exit(
+    native_lines: &[String],
+    installer: Option<&InstallerEvidence>,
+    now_ms: i64,
+) -> PreviousExit {
+    let kind = classify_previous_exit(native_lines);
+    if kind == PreviousExit::SilentKill
+        && installer.is_some_and(|ev| {
+            installer_is_fresh(ev, now_ms) && run_started_before_install(native_lines, ev)
+        })
+    {
+        return PreviousExit::Updater;
+    }
+    kind
+}
+
+/// 上一轮是不是在**这次安装之前**就已经在跑？
+///
+/// 路标（`installer-marker.txt` 的 mtime）只证明「某个时刻有人装过东西」，不证明
+/// 「被结束的就是这一轮」。反例（不判就是真崩溃漏报）：装完 → 安装器自动拉起 →
+/// 那一轮又静默死掉 → 10 分钟内再启动 —— 路标仍然"新鲜"，只看新鲜度就会把那次真崩溃
+/// 说成"安装器结束"。所以还要求上一轮的 `----- 启动` 时刻早于路标 mtime。
+///
+/// 缺启动行 / 时刻解析不出来 ⇒ 判否（失败关闭：宁可多弹一次提示，也不漏报一次真死）。
+fn run_started_before_install(native_lines: &[String], ev: &InstallerEvidence) -> bool {
+    let started = native_lines
+        .iter()
+        .rev()
+        .find(|l| l.starts_with("----- 启动 "))
+        .map(|l| l.trim_start_matches("----- 启动 "))
+        .and_then(|rest| {
+            let at = rest.split_once(" 版本 ").map_or(rest, |(at, _)| at);
+            parse_utc_to_ms(at.trim())
+        });
+    started.is_some_and(|ms| ms < ev.mtime_ms)
 }
 
 /// 按现场文件的原生路标序列判定上一轮的结束方式。输入应是**已剔掉本轮"启动"行**
@@ -1101,22 +1255,39 @@ pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
     {
         return PreviousExit::Sigterm;
     }
-    // 更新安装器接管：`UPDATER_INSTALL_BEGIN` / `UPDATER_RESTART` 写在安装器结束本进程**之前**
-    // （`commands/updater.rs`）。这是我们自己走的更新流程，不是崩溃、也不是"被杀"。
+    // 启动失败（`code=BOOT_FAILED`）比"某个时间点有人装过东西"更硬：那一轮是**自己起不来**，
+    // 不是被安装器结束的。旧判据只看最后一条（更早的 BOOT_FAILED 之后若有正常退出路标，
+    // 说明后来恢复过了 ⇒ Clean）。
+    // 2026-11-09 追加反例：安装器补写的 `INSTALLER_TAKEOVER` 会落在 BOOT_FAILED **之后**，
+    // 若仍只看"最后一条"，启动失败就会被后面的安装器路标盖成 update（真故障漏报）。
+    // 所以改成「出现过 BOOT_FAILED 且没有正常退出路标收尾」—— 既有 Clean 语义不受影响。
+    let after_last_start = || {
+        native_lines
+            .iter()
+            .rev()
+            .take_while(|l| !l.starts_with("----- 启动 "))
+    };
+    if after_last_start().any(|l| l.contains("code=BOOT_FAILED"))
+        && !after_last_start().any(|l| l.starts_with("----- 正常退出 "))
+    {
+        return PreviousExit::StartupFailed;
+    }
+    // 更新/安装/卸载接管进程。三类证据都写在进程被结束**之前**：
+    //  · `UPDATER_INSTALL_BEGIN` / `UPDATER_RESTART` —— 应用自己写的（`commands/updater.rs`）；
+    //  · `INSTALLER_TAKEOVER` —— **安装器自己写的**（`src-tauri/nsis/hooks.nsh`），
+    //    覆盖"用户手动跑安装器 / 卸载器把正在跑的旧进程强杀"这条应用没机会写字的路径。
+    // 它们都是正常流程的一步，不是崩溃、也不是"被外部杀"。
     if native_lines
         .iter()
         .rev()
         .take_while(|l| !l.starts_with("----- 启动 "))
-        .any(|l| l.contains("code=UPDATER_INSTALL_BEGIN") || l.contains("code=UPDATER_RESTART"))
+        .any(|l| {
+            l.contains("code=UPDATER_INSTALL_BEGIN")
+                || l.contains("code=UPDATER_RESTART")
+                || l.contains("code=INSTALLER_TAKEOVER")
+        })
     {
         return PreviousExit::Updater;
-    }
-    // 只看**最后一条**：更早的 BOOT_FAILED 后面若已经有正常退出路标，那是后来恢复过了。
-    if native_lines
-        .last()
-        .is_some_and(|l| l.contains("code=BOOT_FAILED"))
-    {
-        return PreviousExit::StartupFailed;
     }
     match native_lines.last() {
         Some(l) if l.starts_with("----- 正常退出 ") => PreviousExit::Clean,
@@ -1805,11 +1976,18 @@ impl Logger {
         }
         // 最后一条启动路标是本轮 `Logger::new` 刚写的，剔掉才算上一轮。
         let raw = read_tail_lines(&self.crash_path(), PREV_CRASH_TAIL_BYTES);
+        // 安装器路标（装完就落在 `logs/installer-marker.txt`，**在**强杀旧进程之前写）。
+        // 它给"应用自己没机会留字"的结束路径提供独立证据；是否够新由 `INSTALLER_FRESH_MS`
+        // 以**本轮启动时刻**为锚判断（见该常量的说明）。
+        let installer = installer_evidence_in(&self.dir);
+        let boot_now = now_ms();
         // 结构化报告要在剔掉本轮启动行**之前**算：`last_run_slice` 自己按启动行切段。
-        let _ = self.previous_report.set(build_previous_run_report(
+        let _ = self.previous_report.set(build_previous_run_report_with(
             &raw,
             &self.crash_path(),
             &self.dir,
+            installer.as_ref(),
+            boot_now,
         ));
         let mut native: Vec<String> = raw
             .iter()
@@ -1851,7 +2029,9 @@ impl Logger {
             let has_block = native.iter().any(|l| l.starts_with("===== 崩溃现场"));
             // 上次收尾判定：把"在场/缺席"两个信号合成一句结论写进同一块文本里。
             // 级别沿用旧规则（有崩溃块 ⇒ error），新信息只加文本，不动既有判据的形状。
-            let verdict_kind = classify_previous_exit(&native);
+            // 这里必须用同一个 `effective_previous_exit`：报告与日志两处若各判一遍，
+            // 安装器证据只会影响其中一处 ⇒ 同一轮出现两种相反结论（比不说话更难查）。
+            let verdict_kind = effective_previous_exit(&native, installer.as_ref(), boot_now);
             let prev_last_seen = self
                 .previous_report
                 .get()
@@ -1878,8 +2058,10 @@ impl Logger {
                 )
                 .to_string(),
                 PreviousExit::Updater => concat!(
-                    "上次收尾判定：由更新安装器结束（UPDATER_INSTALL_BEGIN 写在接管之前）——",
-                    "这是更新流程的正常一步，不是崩溃"
+                    "上次收尾判定：由安装/升级/卸载接管结束 —— 证据是进程被结束之前写的路标",
+                    "（应用内更新：UPDATER_INSTALL_BEGIN / UPDATER_RESTART；",
+                    "手动覆盖安装或卸载：安装器写的 INSTALLER_TAKEOVER）。",
+                    "这是安装流程的正常一步，不是崩溃"
                 )
                 .to_string(),
                 PreviousExit::SingleInstance => concat!(
@@ -2549,6 +2731,259 @@ mod tests {
                 "----- 启动 b",
             ])),
             PreviousExit::SilentKill
+        );
+    }
+
+    /// 2026-11-09 用户报「应用内升级装完之后，首次启动弹『上次运行被系统或外部结束』」：
+    /// 覆盖安装 / 卸载时模板会直接 `KillProcess` 旧进程，那一轮**在进程内写不出任何字**。
+    /// 证据必须由**安装器**在结束进程之后补写（`src-tauri/nsis/hooks.nsh` 的
+    /// `INSTALLER_TAKEOVER`）——这条判据就是它的落点。
+    #[test]
+    fn installer_takeover_line_is_updater_not_silent_kill() {
+        let mk = |s: &[&str]| -> Vec<String> { s.iter().map(|x| x.to_string()).collect() };
+        for mode in ["install", "uninstall"] {
+            let line = format!(">>> code=INSTALLER_TAKEOVER mode={mode} version=5.20.7");
+            assert_eq!(
+                classify_previous_exit(&mk(&["----- 启动 a", &line])),
+                PreviousExit::Updater,
+                "安装器接管（{mode}）必须归 updater（不弹横幅）"
+            );
+        }
+        // 反向：路标之后又出现了下一轮的启动行 ⇒ 上一轮已经翻篇，不许把旧路标套到它头上。
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> code=INSTALLER_TAKEOVER mode=install version=5.20.7",
+                "----- 启动 b",
+            ])),
+            PreviousExit::SilentKill
+        );
+    }
+
+    /// 反例自证（用户要求"真正的崩溃一条都不能漏报"）：安装器路标只是"有人结束过进程"，
+    /// **不能**盖掉比它更硬的现场证据 —— panic / abort / SIGTERM 一律按原判。
+    #[test]
+    fn installer_takeover_cannot_mask_a_real_crash() {
+        let mk = |s: &[&str]| -> Vec<String> { s.iter().map(|x| x.to_string()).collect() };
+        let takeover = ">>> code=INSTALLER_TAKEOVER mode=install version=5.20.7";
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                "===== 崩溃现场：panic at src/x.rs:12:3",
+                takeover,
+            ])),
+            PreviousExit::Panic,
+            "真 panic 在先 ⇒ 仍按 panic；安装器路标只表示『有人结束过进程』，不许盖掉崩溃现场"
+        );
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> 重分配失败：请求 33554432 字节 ⇒ 分配器即将 abort（不是 panic，钩子不会跑）",
+                takeover,
+            ])),
+            PreviousExit::Abort
+        );
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> code=SIGTERM_RECEIVED 收到 SIGTERM ⇒ 走正常退出流程（外部终止，不是崩溃）",
+                takeover,
+            ])),
+            PreviousExit::Sigterm
+        );
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> code=BOOT_FAILED 启动失败：IDENTITY_CORRUPT",
+                takeover,
+            ])),
+            PreviousExit::StartupFailed
+        );
+    }
+
+    /// 安装器路标（`logs/installer-marker.txt`，mtime = 安装时刻）是**第二条**独立证据：
+    /// 应用内更新里 updater 插件先 `exit(0)`、安装器随后才启动，安装器找不到进程 ⇒
+    /// `INSTALLER_TAKEOVER` 那一行写不出来；这时只能靠"装完立刻启动"这个时间关系。
+    ///
+    /// 锚点是**本轮启动时刻**：只有"这一次启动紧跟在一次安装之后"才改判，
+    /// 隔几小时再启动时同一个路标已经过期 ⇒ 外部强杀照旧要提示（反例见下）。
+    #[test]
+    fn fresh_installer_marker_turns_silent_kill_into_updater() {
+        let raw = vec![
+            "----- 启动 2026-11-09 12:40:00 版本 5.20.2 · windows-x86_64".to_string(),
+            "----- 启动 2026-11-09 12:52:30 版本 5.20.7 · windows-x86_64".to_string(),
+        ];
+        let crash = std::path::Path::new("/tmp/gosslan-crash.log");
+        let log_dir = std::path::Path::new("/tmp");
+        // 时间全部用真实 UTC 时刻换算：路标 mtime 是**安装时刻**，必须能与上一轮的启动
+        // 时刻比较先后（见 `run_started_before_install`），随便挑个小数字会让这条判据空转。
+        let prev_start = parse_utc_to_ms("2026-11-09 12:40:00").unwrap();
+        let installed_at = prev_start + 10 * 60 * 1000; // 旧版跑 10 分钟后安装
+        let ev = InstallerEvidence {
+            version: "5.20.7".to_string(),
+            mtime_ms: installed_at,
+        };
+        let boot_now = installed_at + 30_000; // 装完 30 秒后就拉起新版
+
+        // 正控：路标在这次启动之前 30 秒落下，且上一轮在安装时已经在跑 ⇒ 安装器接管（不弹）。
+        let fresh = build_previous_run_report_with(&raw, crash, log_dir, Some(&ev), boot_now);
+        assert_eq!(
+            (fresh.kind.as_str(), fresh.code.as_str()),
+            ("updater", "BOOT_PREV_UPDATER")
+        );
+
+        // 反例一：同一条现场，路标已经是 3 小时前 ⇒ 与这次启动无关，静默死亡照旧提示。
+        let stale = build_previous_run_report_with(
+            &raw,
+            crash,
+            log_dir,
+            Some(&ev),
+            installed_at + 3 * 3_600_000,
+        );
+        assert_eq!(
+            (stale.kind.as_str(), stale.code.as_str()),
+            ("silent_kill", "BOOT_PREV_SILENT_KILL")
+        );
+
+        // 反例二：压根没有安装器路标 ⇒ 外部强杀必须提示。
+        let none = build_previous_run_report_with(&raw, crash, log_dir, None, boot_now);
+        assert_eq!(
+            (none.kind.as_str(), none.code.as_str()),
+            ("silent_kill", "BOOT_PREV_SILENT_KILL")
+        );
+    }
+
+    /// 反例自证：路标再新鲜，也不许覆盖**在它之后才启动**的那一轮。
+    ///
+    /// 形状（2026-11-09 复核时补的真漏报口子）：装完 → 安装器自动拉起 → 新版静默死掉 →
+    /// 10 分钟内再启动。路标 mtime 早于上一轮启动 ⇒ 结束那一轮的不是安装器。
+    #[test]
+    fn installer_marker_cannot_mask_a_run_that_started_after_it() {
+        let raw = vec![
+            "----- 启动 2026-11-09 12:46:00 版本 5.20.7 · windows-x86_64".to_string(),
+            "----- 启动 2026-11-09 12:47:00 版本 5.20.7 · windows-x86_64".to_string(),
+        ];
+        let crash = std::path::Path::new("/tmp/gosslan-crash.log");
+        let log_dir = std::path::Path::new("/tmp");
+        let ev = InstallerEvidence {
+            version: "5.20.7".to_string(),
+            // 安装发生在 12:45，被怀疑的那一轮 12:46 才启动 ⇒ 安装时它还不存在。
+            mtime_ms: parse_utc_to_ms("2026-11-09 12:45:00").unwrap(),
+        };
+        // 启动时刻 12:47:10：距安装只有 130 秒（新鲜度条件成立）。
+        let boot_now = parse_utc_to_ms("2026-11-09 12:47:10").unwrap();
+        let r = build_previous_run_report_with(&raw, crash, log_dir, Some(&ev), boot_now);
+        assert_eq!(
+            (r.kind.as_str(), r.code.as_str()),
+            ("silent_kill", "BOOT_PREV_SILENT_KILL"),
+            "上一轮在安装之后才启动 ⇒ 安装器不可能是结束它的原因，必须照旧提示"
+        );
+    }
+
+    /// 端到端（真实文件）自证：安装器写进现场文件的那一行，下一次启动确实被读成 `updater`。
+    ///
+    /// 上面几条是纯函数用例；这条走 `Logger::new` → `seed_previous_run` → 报告，
+    /// 证明"安装器的字"真的落在判定读的那一段里（含启动路标切段与报告字段两条链）。
+    #[test]
+    fn installer_takeover_on_disk_is_read_as_updater_at_boot() {
+        let dir =
+            std::env::temp_dir().join(format!("gosslan-takeover-boot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            crash_file_for(&dir, "t"),
+            concat!(
+                "----- 启动 2026-11-09 12:40:00 版本 5.20.3 · windows-x86_64\r\n",
+                ">>> code=INSTALLER_TAKEOVER mode=install version=5.20.7\r\n",
+            ),
+        )
+        .unwrap();
+        let lg = Logger::new(dir.clone(), "t", "[dev:t]".to_string());
+        lg.seed_previous_run();
+        let report = lg.previous_report.get().expect("seed 必须写下报告");
+        assert_eq!(
+            (report.kind.as_str(), report.code.as_str()),
+            ("updater", "BOOT_PREV_UPDATER"),
+            "盘上的安装器接管证据必须在启动时被读成 updater"
+        );
+        let disk = std::fs::read_to_string(lg.current_path()).unwrap_or_default();
+        assert!(
+            !disk.contains("BOOT_PREV_SILENT_KILL"),
+            "日志文件也不许落『被外部结束』判据：{disk}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 端到端（真实文件 + 真实 mtime）：应用内更新里 ② 写不出来时，路标兜底要能接住。
+    #[test]
+    fn installer_marker_on_disk_is_read_as_updater_at_boot() {
+        let dir = std::env::temp_dir().join(format!("gosslan-marker-boot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 上一轮是很久以前启动的（安装时它已经在跑）；路标 mtime 由这次 `write` 给出 = 现在。
+        std::fs::write(
+            crash_file_for(&dir, "t"),
+            "----- 启动 2020-01-01 00:00:00 版本 5.20.2 · windows-x86_64\r\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(INSTALLER_MARKER_FILE),
+            "version=5.20.7\r\ninstalldir=C:\\Gosslan\r\n",
+        )
+        .unwrap();
+        let lg = Logger::new(dir.clone(), "t", "[dev:t]".to_string());
+        lg.seed_previous_run();
+        let report = lg.previous_report.get().expect("seed 必须写下报告");
+        assert_eq!(
+            (report.kind.as_str(), report.code.as_str()),
+            ("updater", "BOOT_PREV_UPDATER")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 反例自证：再新鲜的安装器路标也不许把**有现场证据的**死亡改判。
+    #[test]
+    fn fresh_installer_marker_never_masks_a_real_crash() {
+        let ev = InstallerEvidence {
+            version: "5.20.7".to_string(),
+            mtime_ms: 1_000_000,
+        };
+        let now = 1_030_000;
+        let crash = std::path::Path::new("/tmp/gosslan-crash.log");
+        let log_dir = std::path::Path::new("/tmp");
+        let boot = "----- 启动 2026-11-09 12:40:00 版本 5.20.2 · windows-x86_64";
+        let next = "----- 启动 2026-11-09 12:52:30 版本 5.20.7 · windows-x86_64";
+
+        let panic_raw = vec![
+            boot.to_string(),
+            "===== 崩溃现场：panic at src/x.rs:12:3".to_string(),
+            next.to_string(),
+        ];
+        assert_eq!(
+            build_previous_run_report_with(&panic_raw, crash, log_dir, Some(&ev), now).kind,
+            "panic"
+        );
+
+        let abort_raw = vec![
+            boot.to_string(),
+            ">>> 重分配失败：请求 33554432 字节 ⇒ 分配器即将 abort（不是 panic，钩子不会跑）"
+                .to_string(),
+            next.to_string(),
+        ];
+        assert_eq!(
+            build_previous_run_report_with(&abort_raw, crash, log_dir, Some(&ev), now).kind,
+            "abort"
+        );
+
+        let sigterm_raw = vec![
+            boot.to_string(),
+            ">>> code=SIGTERM_RECEIVED 收到 SIGTERM ⇒ 走正常退出流程（外部终止，不是崩溃）"
+                .to_string(),
+            next.to_string(),
+        ];
+        assert_eq!(
+            build_previous_run_report_with(&sigterm_raw, crash, log_dir, Some(&ev), now).kind,
+            "sigterm"
         );
     }
 

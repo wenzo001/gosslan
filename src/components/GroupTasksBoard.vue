@@ -1154,6 +1154,20 @@ function unsubscribeImageDrop() {
   imageDragOver.value = false;
 }
 
+/**
+ * 描述框按内容长高（用户 2026-11-09）：
+ * 旧形状是 `rows=3` + 内部滚动，长文编辑时只剩一条上下滚动的小格子。现在给足最小高度，
+ * 输入时把 height 直接量成 scrollHeight ⇒ 框随正文变高，滚动只留给弹窗内容区这一层。
+ * 补回上下边框（scrollHeight 不含边框）：不补的话长文末尾会被 2px 边框挤出一条内层滚动条。
+ */
+const draftDescEl = ref<HTMLTextAreaElement | null>(null);
+function fitDraftDesc() {
+  const el = draftDescEl.value;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight + (el.offsetHeight - el.clientHeight)}px`;
+}
+
 // 草稿弹窗开/关：接上 / 退订粘贴与拖入（**Android 两者都不订阅**；按平台判，不按视口宽度）。
 watch(
   () => !!draft.value,
@@ -1161,6 +1175,12 @@ watch(
     // 每次开关表单都回到"没点亮"的那一句提示（上一次草稿的状态不该留下）
     pasteArmed.value = false;
     imageDragOver.value = false;
+    if (open) {
+      window.addEventListener("resize", fitDraftDesc);
+      void nextTick(fitDraftDesc);
+    } else {
+      window.removeEventListener("resize", fitDraftDesc);
+    }
     if (isAndroid) return;
     if (open) {
       document.addEventListener("paste", onDocPaste);
@@ -1173,6 +1193,7 @@ watch(
 );
 onBeforeUnmount(() => {
   document.removeEventListener("paste", onDocPaste);
+  window.removeEventListener("resize", fitDraftDesc);
   unsubscribeImageDrop();
 });
 function removeImage(idx: number) {
@@ -1918,7 +1939,7 @@ watch(
   <BaseModal
     :open="!!draft"
     :title="draft?.todoId ? t('todo.edit') : t('todo.create')"
-    width="max-w-lg"
+    width="max-w-2xl"
     @close="closeDraft()"
   >
     <div v-if="draft" class="space-y-4">
@@ -2015,11 +2036,13 @@ watch(
           <CharCounter :text="draft.description" :max="MAX_TODO_DESC_CHARS" />
         </div>
         <textarea
+          ref="draftDescEl"
           v-model="draft.description"
           :maxlength="MAX_TODO_DESC_CHARS"
-          rows="3"
-          class="w-full resize-y rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-3 py-2 text-sm outline-none transition focus:border-[var(--gosslan-primary)]"
+          rows="6"
+          class="min-h-[8.5rem] w-full resize-none overflow-y-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-3 py-2 text-sm outline-none transition focus:border-[var(--gosslan-primary)]"
           :placeholder="t('todo.descriptionPlaceholder')"
+          @input="fitDraftDesc"
           @keydown.meta.enter.prevent="ime.enter(saveDraft, $event)"
           @keydown.ctrl.enter.prevent="ime.enter(saveDraft, $event)"
           @compositionstart="ime.onStart"

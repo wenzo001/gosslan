@@ -125,7 +125,7 @@ watch(
     v-if="open"
     ref="panelRef"
     data-emoji-panel
-    class="gosslan-pop-clamp frost w-[min(360px,calc(100vw-2rem))] select-none rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] shadow-[var(--gosslan-glass-2-shadow)]"
+    class="gosslan-pop-clamp gosslan-emoji-panel frost w-[min(360px,calc(100vw-2rem))] select-none rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] shadow-[var(--gosslan-glass-2-shadow)]"
     role="dialog"
     :aria-label="t('chat.composer.emoji')"
     tabindex="-1"
@@ -133,8 +133,8 @@ watch(
     @keydown="onKey"
   >
     <div
-      class="grid grid-cols-8 content-start gap-3 overflow-y-auto p-2"
-      style="height: 300px"
+      class="my-2 grid grid-cols-8 content-start gap-2.5 overflow-y-auto p-2"
+      :style="{ height: 'min(300px, calc(100dvh - var(--gosslan-pop-edge) * 2 - 18px))' }"
     >
       <!-- 两段各自的小标题（用户 2026-10-09 拿参照图定的样式：「最常使用 / 全部表情」那种分块）。
            ⚠️ 两个标题都是网格里 `col-span-8` 的子元素且**都不是 button** ⇒ 它们各占一整行，

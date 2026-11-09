@@ -14,6 +14,98 @@
 
 ## [Unreleased]
 
+## [5.20.4] - 2026-11-09
+
+### 修复
+- **升级安装后不再误报上次异常退出**：升级 / 覆盖安装 / 卸载之后首次启动不再误弹「上次运行被系统或外部结束」（2026-11-09 用户报
+  `BOOT_PREV_SILENT_KILL`，弹窗里的现场最后记录 04:52:21）。先按插件源码把"到底是谁结束旧进程"
+  钉死：Windows 的应用内更新是 `tauri-plugin-updater` 在 `Update::install` 里
+  `ShellExecuteW` 拉起 NSIS 之后**自己** `std::process::exit(0)`（2.14.0 外部 crate
+  `tauri-plugin-updater-2.14.0/src/updater.rs:1049-1050`），
+  安装器随后启动时进程早已消失 ⇒ 应用内更新里模板的 `CheckIfAppIsRunning` 强杀是空操作；
+  覆盖安装 / 卸载才是模板 `FindProcess`+`KillProcess` 按 exe 名强杀。判定改成三条独立证据：
+  ① 应用自己写的 `UPDATER_INSTALL_BEGIN` / `UPDATER_RESTART`（原有）；
+  ② **安装器**在强杀旧进程**之前**补写的 `>>> code=INSTALLER_TAKEOVER mode=install|uninstall`
+     （`src-tauri/nsis/hooks.nsh` 的 `NSIS_HOOK_PREINSTALL` / `NSIS_HOOK_PREUNINSTALL`，
+     插在模板 `CheckIfAppIsRunning` 之前）：**只在应用确实在跑时**写（`FindProcess*` 命中），
+     应用内更新里安装器找不到进程 ⇒ 一行都不写，那条路径由 ① 负责；写失败一律忽略，
+     绝不让诊断痕迹把安装变成失败；
+  ③ `logs/installer-marker.txt` 的 mtime 兜底（应用内更新里 ② 写不出来）：
+     只在本轮启动距安装 ≤10 分钟、原判是 `silent_kill`、**且上一轮的启动时刻早于路标 mtime**
+     （即"装的时候它已经在跑"）时改判 `updater`。后一条时间顺序是必须的：不加它，
+     "装完自动拉起的那一轮又静默死掉、10 分钟内再启动"会被当成安装器结束 ⇒ 真崩溃漏报。
+     `early_exit` 不在兜底范围内 —— 它连 `----- 启动` 都没写出来，无法证明装的时候它在跑，
+     而"进了事件循环却在 logger 之前消失"本身就是要提示的异常。
+  `panic` / `abort` / `Sigterm` / `BOOT_FAILED` / `clean` 优先级一律高于以上证据 —— 真崩溃一条不漏。
+  反例自证：`installer_takeover_line_is_updater_not_silent_kill`、
+  `installer_takeover_cannot_mask_a_real_crash`、
+  `fresh_installer_marker_turns_silent_kill_into_updater`、
+  `installer_marker_cannot_mask_a_run_that_started_after_it`、
+  `fresh_installer_marker_never_masks_a_real_crash`、`evidence_reads_file_mtime_and_expires`；
+  另有两条端到端（真实文件走 `Logger::new` → `seed_previous_run` → 报告）：
+  `installer_takeover_on_disk_is_read_as_updater_at_boot`、
+  `installer_marker_on_disk_is_read_as_updater_at_boot`
+  （`cargo test --lib -- logging::` → 61 passed）；前端 `updater` 仍不提示
+  （`node --test src/utils/crashReport.test.ts` → 5 pass）。顺带把 `BOOT_FAILED` 从"只看最后一条"
+  改成"出现过且没有正常退出路标收尾"：安装器补写的路标会落在它之后，旧写法会把启动失败读成 update。
+- **群任务新建 / 编辑弹窗按内容放宽**：`max-w-lg` 512px → `max-w-2xl` 672px，描述框从
+  `rows=3` 的 78px 内部滚动小格子改成最小 136px、随正文长高；新增与编辑共用同一个
+  BaseModal，窄窗由 `w-full` 回退，不另写一套尺寸。运行时读数（`--only=tododraft`，
+  `test-results/todo-draft-2026-11-09/`）：宽窗 1200 下卡片 512→672、描述框 480×78→640×138，
+  24 行长文高度 138→978 且 `textarea.scrollHeight == clientHeight`（修前 1456/78，内部滚动条）；
+  窄窗 420 下卡片 388、描述框 356×138→长文 1458，仍在视口内且只有弹窗内容区滚动。
+  判据 `checkTodoDraftForm` + 反例自证在 `designGuards.test.ts`（宽度改回 `max-w-lg`、
+  给描述框加 `h-24`、改回 `resize-y`/`overflow-y-auto` 三条变异各自报红）。
+- **表情面板只保留一层滚动条**：面板自己不再用 `.gosslan-pop-clamp` 的 overflow +
+  stable gutter 预留第二条 8px 轨道，内层网格上下各留 8px 避开 14px 圆角。读数
+  （`--only=emojiscroll`）：面板自身条带 8→0、最右一列到轨道 6.25→9px、轨道上下距圆角
+  1→9px；滚动后 `clientWidth` / `trackLeft` 不变，无横向溢出。
+- **主题色自定义入口独立**：设置页「主题色」的自定义颜色入口**看不出来是个入口**，而且点任一预置色时它也**跟着变色**
+  （用户实测：截图里最后一颗圆点就是取色器，看起来像第 7 个色板）：现在 6 个预置色仍是
+  一排互斥的选中环，自定义改成独立胶囊入口（色轮图标 + 「自定义颜色」文字 + 分隔线），
+  只有自定义色生效时才显示当前自定义色并带 2px 选中环。取色器的值改走独立种子
+  `customPickerValue`，选中预置色时停在最近一次自定义色、界面退回色轮，不再跟随当前生效色。
+  运行时探针读数（`--only=settingsmobile`，390 宽，`test-results/theme-color/`）：修前自定义
+  入口 24×24 / 与预置同形 / 无文字 / 无 `aria-pressed`，点橙色预置后取色器值
+  `#2f6bff → #ff6b35`；修后入口宽 ≥64、有文字与色轮、`aria-pressed=false`，点预置色后
+  色轮与取色器值**完全不变**，选自定义色后 6 个预置色全部取消、入口显示 `#123456`。
+  判据与反例自证在 `designGuards.test.ts`（把入口做成第 7 个圆点 / 让取色器绑回
+  `app.themeColor`，三条变异各自报红）；用新探针跑旧组件得到 4 条红，正是上述修前读数。
+- **文件消息「已被清理」不再闪**：文件消息上方「已被清理」那行字会**一隐一现地闪**（用户实测，周期很短）：预览探测用的
+  `watch(() => [ ... ])` 每次返回新数组，Vue 的变更判定对数组恒为真 ⇒ `chat.transfers`
+  换一次数组、`app.device` 换一次对象，探测就重跑一次，而旧实现先在 `await` **之前**清空
+  `previewNote`、等 IPC 回来再补回，于是每轮无关刷新都让这行字闪一下。改为基本类型重算键
+  （值不变不触发）+ 先算完再一次性落地。读数（运行时探针 `--only=flicker`，同一段 DOM
+  上 10 轮"无关刷新"的 MutationObserver 记录）：修前 100 次文本/节点变更，修后 **0** 次。
+- **单聊气泡尾巴同色、与气泡底边对齐**：对方气泡的小尾巴颜色与气泡底色对不上（长文本卡片最明显，用户截图）：正文超过 5 行时
+  `MessageTextBubble` 换成卡片配色（`--gosslan-card` + `--gosslan-card-line`），而气泡外壳
+  的尾巴/底栏仍按正文气泡配色取色 ⇒ 浅色卡底上挂一片主题色的叶子。现在长文本也归入
+  「卡片面」，尾巴填充、描边、底栏圆角与卡片同令牌。逐类读数（对方侧，运行时探针
+  `--only=rowpair`）：正文 / 长文本 / 引用 / 链接 / 文件 / 合并转发 / 群任务七类的尾巴填充
+  计算值均与气泡 `backgroundColor` **完全相等**，描边与边框线同值，尾巴下沿与气泡下沿
+  像素差 **0**，尾巴侧下圆角 **0px**；修前只有长文本一类不等（卡片 `rgb(226,227,231)` vs
+  尾巴 `rgb(170,181,194)`）。
+- **自己的卡片气泡补上 0.5px 底边缝**：自己的卡片气泡（文件 / 合并转发 / 群任务）尾巴根部与气泡底边之间还有一条 0.5px 的
+  背景色缝：叶形填充路径按设计停在 13.5/14，差的半像素原本由 1px 描边补，而自己的卡片
+  边框是透明的 ⇒ 没人补。现在描边不可见时（`BubbleTail` 的 `flush`）把填充直接画到 14。
+  读数（运行时探针 `--only=rowpair`）：这三类的可见墨迹下沿由 **-0.5px** 变为 **0px**；
+  对齐判据同时收成"所有种类 ±0.25px"一个口径，不再有按设计放宽的特例。
+- **实底档主界面改「明度阶梯」分层（方案 A）**：勾选"减少透明"后，主界面过去靠**描边**
+  分层，而 `divider-strong` 净色对列表/聊天的对比只有 3.33:1，切到实底档后描边仍在、
+  阴影归零，整屏看起来"糊成一片"。方案 A 改成"实底档用明度差分层、控件边框改独立字面量"：
+  亮色实底 `chrome-solid` `#eceef2` 对列表 `#f4f5f7` 1.09:1、对聊天画布 `#dde1e6` 1.16:1；
+  暗色 `#17181b` 对 1.09 / 1.17；三层阴影合成一档并在两条降级路径里清零；
+  `divider-strong` 在实底档降到 ≈1.4:1（只当底纹），控件边框改用字面量 `#87888b` /
+  `#a1a2a5` 守住 3.0:1。判据 `checkSolidChromeSeparation` + `SURFACE_SEPARATION_CONTRACT`
+  钉住"每条相邻面比 ≥1.06"；反例自证：把 `chrome-solid` 改回列表色 ⇒ 比值 1.00 ⇒ 红。
+- **ambient 显示与实际落档一致**：系统开启"减少动态效果"或低端机上特效被冻结时，
+  `data-ambient` 落成 `static`（实际效果=关闭），而设置页开关按**用户偏好**投影、仍显示
+  "开启"，两处对不上。改为显式在 `body['data-ambient']` 写上 `drift` 标记，设置页只从
+  `resolveAmbient` 的结果投影：显示"开启" ⇔ 实际就是 `drift`，显示"关闭" ⇔ `data-ambient`
+  为 `off`；`readStoredAmbient` 也改成用 `resolveAmbient(..., systemReducedMotion)`，不再
+  直接读存储值。反例自证在 `ambient.test.ts`（把投影改回读存储值 / 让 static 仍显示开启，
+  两条变异各自报红）。
+
 ## [5.20.3] - 2026-11-09
 
 ### 修复
@@ -225,71 +317,17 @@
 - 探针 `--only=logs` 新增 5 条判据（行号 = 虚拟索引 + 1、WARN chip 过滤生效、宽窗右侧详情、
   720 宽回退底部、再点收起），夹具补入 error 级别；日志段 16/16 绿。
 
-## [5.19.16] - 2026-11-08
 
-### 界面
-- 预览灯箱按画板补齐 chrome：**深色顶栏**（文件名 / 原图尺寸 / 张数计数）、**底部缩略图条**
-  （当前张前后各 6 张按需取字节、`object-contain`）与**缩放 + 元数据**（− / 100% / + / 适应；
-  原图 W×H 取自解码后的 `naturalWidth/Height`，不额外请求）。顶栏 56px 与底栏 86px 计入安全区
-  （`maxHeight` 扣掉两者与 `--gosslan-safe-top`），TH-01「图片绝不裁切」口径不变。
-- 消息、收藏、群任务三处入口共用同一个 `ImageLightbox`（独立预览窗口也是同一份组件，`hide-close`），
-  没有第二份灯箱实现；三处入口的判据在同一个运行时探针段里跑。
-- 探针 `--only=previewwin` 新增 4 条判据（顶栏文件名 + 计数、缩略图两张且当前张唯一高亮、
-  图片落在顶栏与底栏之间、缩放 100% 且元数据 640×400）；灯箱「点遮罩关闭」的落点改到顶栏下方
-  —— 顶栏占住了原来的 (30,30)，判据本身没放宽。
-
-## [5.19.15] - 2026-11-08
-
-### 界面
-- 群任务窗口按画板改成**左列表 410px + 右详情常驻**的两栏：筛选收成顶部的
-  「我的 / 全部 / 我创建 / 已归档」页签（带计数），优先级/类型图标与「新建任务」入口照旧。
-  详情字段与操作条拆成 `TodoDetailFields` / `TodoDetailActions`，应用内弹窗与独立窗口右栏
-  共用同一份内容与权限门控，不复制第二套详情状态。窗口被拖窄到 700px 以下自动回退单栏，
-  详情仍走原弹窗，右栏不会被挤到不可用（运行时探针 `taskpane` 同时验 780 两栏与 680 回退）。
-
-## [5.19.14] - 2026-11-08
-
-### 工程
-- `Version-Bump` 的硬闸收成**一份谓词**：commit-msg 钩子与 CI 判据 4 现在都调
-  `scripts/semver.mjs` 的 `bumpConsistencyProblems`，不再各抄一遍三支判定（"提交时放过、
-  推上去判红"的分叉形状）。边界就此定死为**双向一致**：写了 `patch|minor|major` 就必须同提交
-  动满四个版本清单文件，四个都动了也必须写；只动 1–3 个（例如只改 `package.json` 里的脚本）
-  或一个都不动，**不要求声明、钩子也不拦**。规则一句话已写进 `AGENTS.md`「提交前量具」与
-  `docs/VERSIONING.md` 开头。
-- 量具模式那句误导性提示一并改掉：以前写"动了应用码 ⇒ 要写 `Version-Bump:` 并真改四个清单"，
-  但本闸实际只拦"声明没落地"；现在提示如实说明硬闸范围。
-- 回归：`node --test scripts/` 70/70（新增钩子路径 3 例：只改脚本放行 / 声明了只带 1 条必红 /
-  3 条清单放行；CI 侧 fixture 3 例；外加一条"必须仍调共用谓词"的反空转锚点）。
-
-## [5.19.13] - 2026-11-08
-
-### 更新
-- 更新弹窗点「确认安装」后**不再立刻消失**：切 loading（标题栏两键禁用、主键转圈显示「正在安装，应用即将重启…」），
-  一直留到真正进入安装（桌面 `installing` 相位、安卓系统安装器接管）—— 也就是重启前一刻才关。
-- 安装失败不再"弹窗消失、让人去别处找原因"：失败原因留在弹窗正文（`role="alert"`），
-  确认键切成「关闭」；桌面与安卓同一套语义。安卓失败重试仍在卡片上按失败位置给（下载失败重下 / 安装失败重装）。
-- 读数：运行时探针 `--only=updater` 11/11（新增「确认后弹窗仍在 + 两键禁用 + 主键显示安装中」一条；
-  取消关闭的等待从 200ms 提到 500ms，只是等完关闭过渡，判据本身没变）。
-
-## [5.19.12] - 2026-11-08
-
-### 背景动效
-- 系统层放不出效果时，设置里的「背景动效」**默认关闭、两档都不可选，并写明原因**：
-  Windows 关掉系统「透明效果」（`prefers-reduced-transparency: reduce`）或内核不支持
-  `backdrop-filter` / `-webkit-backdrop-filter` 时，档位落 `off`、来源记「能力」（诊断面板可见），
-  设置行说明文字换成原因句。
-- 能力判定与用户选择**分开存**：不可用时只改显示值与 DOM 档位，存储里的显式值一个字不动；
-  能力恢复（系统重新打开透明效果）后原样回到用户原来那一档。系统偏好在会话中途切换会即时重算。
-- 能力判定只有一处出口 `src/utils/ambientCapability.ts`（判据 **AM-17**：`ambient.ts` 不得自己拼透明查询、
-  两个 `backdrop-filter` 属性都要问；运行时探针 `--only=ambientcap` 读设置页两态）。
-  `data-ambient-motion="force"` 改为按**实际模式**写：能力把档位落成关时不再谎报「软件压过系统」。
-
-
-## 历史版本摘要（5.19.8 及更早，全文见 [归档](docs/archive/notes/changelog-archive.md)）
+## 历史版本摘要（5.19.12 及更早，全文见 [归档](docs/archive/notes/changelog-archive.md)）
 
 > 由 `scripts/compress-changelog.mjs` 生成（`--keep 12`）：这里只留「版本 + 一句话主旨」，
 > 全文逐字在归档；带 〔破坏性〕〔协议〕〔安全〕的版本，压缩前正文命中了对应关键字。
 
+- **5.19.16**（2026-11-08）— 界面
+- **5.19.15**（2026-11-08）— 界面
+- **5.19.14**（2026-11-08）— 工程
+- **5.19.13**（2026-11-08）— 更新
+- **5.19.12**（2026-11-08）— 背景动效
 - **5.19.11**（2026-11-08）— 修复
 - **5.19.10**（2026-11-08）— 发布说明
 - **5.19.9**（2026-11-08）— 性能与可读性
