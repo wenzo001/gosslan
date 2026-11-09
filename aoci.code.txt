@@ -848,6 +848,28 @@ bubbleSkinPath.ts[EU4S]: F:气泡「单填充皮肤」外轮廓路径：气泡�
 cancelFeedback.ts[EU4T]: F:「取消文件传输」后该说哪句话的四个分支判据 | R:code:src/api/index.ts | A:后端返回 notifiedPeer 决定措辞 | S:本机停手≠对面停手；老端不支持取消时一条通知都不发，界面别只说「已取消」。
 cancelSend.ts[EU4T]: F:「这条消息能不能取消、走哪条通道」的唯一判据：transfer（停字节）vs message（停 outbox 行） | R:code:src/types.ts | A:按 msg id 前缀 file-/gfile- 判 transfer | S:两条通道是两件事，合并会让文本消息去调文件取消。
 chatSearchQuery.ts[EU4T]: F:「搜索聊天记录」的 TanStack Query 策略：关键词/发送人/日期都是 query key | R:code:src/components/search/ChatSearchDialog.vue | A:组件只留交互（进入即搜、回车重搜、打开高亮项） | S:响应只写回发起它的键；别退回手写 seq 竞态那一版。
+codeDetect.ts[EU4T]: F:发送前的代码识别（保守）：只有围栏或「多行 + ≥2 结构信号」才判代码 | R:code:src/utils/codeHighlightCore.ts | A:不再猜语言，交给 highlightAuto；不确定落纯文本 | S:单行/URL/中文段落不判；手写 guessLanguage 已删，别加回来。
+codeHighlight.ts[EU4S]: F:代码高亮调度层：懒创建 Worker + 有界结果缓存 + 同键去重；首帧先渲染纯文本 | R:code:src/utils/codeHighlightCore.ts | A:Worker 不可用时动态 import 降主线程 | S:滚回同一段走缓存；别在渲染里同步跑 highlightAuto（首帧 longtask 来源）。
+codeHighlightCore.ts[EU4S]: F:代码高亮纯计算：语言注册与 highlightAuto，Worker 与主线程降级共用同一份 | R:code:src/utils/codeLanguages.ts | A:只产出 HTML 字符串，不碰 DOM | S:主题全局一份；每张卡各挂 <style> 已被实测否掉。
+codeLanguages.ts[EU4S]: F:代码语言目录（唯一真源）：别名归一化、纯文本档位与高亮分发 | R:code:src/utils/codeHighlightCore.ts | A:只列 core 已注册语言，没注册的落 plaintext | S:别名与纯文本档必须同源，否则会出现「输入框 typescript、气泡头 ts」。
+composerAttachments.ts[EU4T]: F:粘贴图片「先入框」的纯判定：这张图能不能收、为什么不能收 | R:code:src/components/chat/MessageComposer.vue | A:DOM 与状态在组件，这里只判 | S:图片上限与去重口径只在这里，组件别另写一份。
+composerDrafts.ts[EU4S]: F:每会话输入草稿：内存镜像 + localStorage 落盘，reload 后填回 | R:code:src/components/chat/MessageComposer.vue | A:按输入事件同步写，不用定时器 | S:渲染层冻住时定时器正好不跑；只存内存会在自愈 reload 后丢草稿。
+composerLayout.ts[EU4T]: F:输入框垂直尺寸口径（纯函数）：最多几行、一行多高、上下内边距 | R:code:src/components/chat/MessageComposer.vue | A:按字号 13/14/16 现算封顶高度 | S:魔法数字 128 不随字号变，别写回字面量。
+concurrencyGate.ts[EU4T]: F:极小并发闸：最多 N 个任务在飞，其余排队 | R:code:src/utils/filePreview.ts | A:聊天附件预览与收藏页共用同一口径 | S:首屏 30 条 read_file_preview 同时进来会打爆 IPC（单条最多 15MiB）。
+contextMenu.ts[EU4T]: F:消息行右键/长按默认行为闸门（纯函数）：四个信号决定是否放行系统菜单 | R:code:src/App.vue | A:组件与测试共用同一份判断 | S:组件级 @contextmenu.prevent 先于全局 handler，会吃掉选字工具条。
+crashLoop.ts[EU4T]: F:蓝牙自动开启的熔断：手动入口永远放行；崩在蓝牙或报告读不到都不自动拉起 | R:code:src/types.ts | A:报告读不到按 fail-closed 处理 | S:熔断失效的代价是继续崩溃循环，宁可蓝牙不自动开。
+crashReport.ts[EU4T]: F:把上一轮崩溃报告拼成可复制的纯文本（不依赖 i18n/DOM，可单测） | R:code:src/types.ts | A:位置/版本/现场路径一眼可读 | S:这份文本发给开发者，不能带消息正文或密钥。
+dropPoint.ts[EU4T]: F:Tauri 拖拽 position 换算成 CSS 像素：macOS 已是点、Windows 是物理像素需除 DPR | R:code:src/api/index.ts | A:按平台分支换算 | S:Retina 上多除一次 DPR 会整体 2× 偏移（要拖到偏左上才命中）。
+escapeRe.ts[EU4T]: F:正则字面量转义：把用户提供的字符串安全嵌进 RegExp | R:code:src/utils/linkify.ts,code:src/utils/emoji.ts | A:全仓唯一一份 | S:正则写错不报错、只会静默匹配不到；此前 emoji/linkify 各有一份逐字副本。
+fileFailReason.ts[EU4S]: F:文件失败码→可行动文案映射（后端稳定失败码） | R:code:src/api/index.ts | A:盘满/无权限等分别给下一步 | S:后端 reason 曾是自由英文文本，别把裸串透传给用户。
+graphemes.ts[EU4T]: F:扩展字素簇边界（用户眼里的「一个字」）：emoji 退格整簇删 | R:code:src/components/chat/MessageComposer.vue | A:按字素簇切分，回退实现兜底 | S:按 code unit 删会切掉半个表情，ZWJ 家庭会两个一起没。
+groupFileCancel.ts[EU4T]: F:群文件行「能不能取消、按哪一侧取消」的唯一判据 | R:code:src-tauri/src/commands/files.rs | A:发送方整单 / 接收方本机停手 | S:后端两侧都接，缺的只是面板入口与判据。
+groupFilesQuery.ts[EU4T]: F:群文件清单的 TanStack Query 策略：按群分键，响应只写回发起键 | R:code:src/utils/panelQuery.ts | A:重拉/重试/失效半径走通用策略 | S:别再靠 gid !== props.groupId 手工挡慢响应。
+groupSummaryCache.ts[EU4T]: F:群文件投递摘要缓存的生产装配（核心逻辑在 *Core） | R:code:src/utils/groupSummaryCacheCore.ts | A:接 api 与类型 | S:核心要能 Node 单测，生产装配别把逻辑写回来。
+groupSummaryCacheCore.ts[EU4S]: F:群文件投递摘要缓存核心（零 @/ 依赖）：键=msgId+status、10s 复用、同键单飞、失败不缓存 | R:code:src/api/index.ts | A:同一条消息状态一变必须重取 | S:失败若缓存，下次挂载不会重试；10s 窗口会掩盖刚变的投递状态。
+imageZoom.ts[EU4S]: F:图片灯箱 FLIP 缩放：首帧矩形精确等于被点的缩略图，再收回恒等 | R:code:src/components/message/ImageLightbox.vue | A:只做纯 transform | S:布局位移会重排，并带回「一路向右滑」的观感。
+ipcTracker.ts[EU4T]: F:在途 IPC 追踪：给「界面卡在哪」提供唯一一份事实 | R:code:src/api/index.ts | A:只记账，不改变调用语义 | S:tracker 自身异常必须吞掉，绝不能成为新的失败源。
+listBuffer.ts[EU4S]: F:可视区外预渲染行数：由像素位移 + 视口 + 平均行高决定，并设硬上限 | R:code:src/components/VirtualList.vue | A:缓冲方向优先给前进侧 | S:固定 overscan=6 高速滚动有空白带；overscan=36 反而更差（单帧 700ms）。
 
 ===/Users/wendongfu/Documents/code/gosslan/tools/===
 gen_icon.py[XV4T]: F:手写 PNG 编码器生成占位应用图标 | R:code:src-tauri/icons/icon.png | A:inside_rrect、inside_circle、chunk | S:不依赖 Pillow，手工拼 IHDR/IDAT/IEND；固定覆盖 src-tauri/icons/icon.png。
