@@ -870,6 +870,28 @@ groupSummaryCacheCore.ts[EU4S]: F:群文件投递摘要缓存核心（零 @/ 依
 imageZoom.ts[EU4S]: F:图片灯箱 FLIP 缩放：首帧矩形精确等于被点的缩略图，再收回恒等 | R:code:src/components/message/ImageLightbox.vue | A:只做纯 transform | S:布局位移会重排，并带回「一路向右滑」的观感。
 ipcTracker.ts[EU4T]: F:在途 IPC 追踪：给「界面卡在哪」提供唯一一份事实 | R:code:src/api/index.ts | A:只记账，不改变调用语义 | S:tracker 自身异常必须吞掉，绝不能成为新的失败源。
 listBuffer.ts[EU4S]: F:可视区外预渲染行数：由像素位移 + 视口 + 平均行高决定，并设硬上限 | R:code:src/components/VirtualList.vue | A:缓冲方向优先给前进侧 | S:固定 overscan=6 高速滚动有空白带；overscan=36 反而更差（单帧 700ms）。
+markdown.ts[EU4T]: F:更新说明 Markdown 渲染：marked 解析 + DOMPurify 白名单（标题/段落/列表/粗体/行内代码/链接） | R:code:src/components/ui/MarkdownText.vue | A:来自网络的内容按不可信处理 | S:白名单必须窄；放开标签等于给远端说明开注入面。
+messageEnter.ts[EU4T]: F:「新消息进入」动效资格：只有尾部追加一条才播 | R:code:src/components/message/MessageItem.vue | A:由数组变化判定，不看挂载时机 | S:按挂载播会让翻旧消息/切会话每一行都重放淡入。
+motionTokens.ts[FU4T]: F:动效令牌的 JS 读取口：把 --gosslan-duration-*/ease 转成 motion-v 要的秒数与贝塞尔数组 | R:code:src/style.css | A:现读 computedStyle | S:组件里写 0.24 等于开第二份口径，改令牌时它不会跟着变。
+msgConvIndex.ts[EU4T]: F:msg_id→conv_id 反查表的纯核心（容量上界与淘汰） | R:code:src/stores/chat/messaging.ts | A:零 @/ 依赖，Node 单测可直接加载 | S:与 messaging 的别名运行时分开，否则单测解析不了。
+newlines.ts[EU4T]: F:换行计数：三份逐字副本收成一份，供护栏把字符下标换回源码行号 | R:code:src/utils/designGuards.ts | A:零依赖，Node 可直跑 | S:行号算错会报到隔壁行；三份副本没有理由。
+notifyTitle.ts[EU4T]: F:消息通知标题唯一口径：群=「群名 · 发送者昵称」、单聊=发送者昵称 | R:code:src/stores/chat/notifications.ts | A:群名拿不到回落发送者昵称 | S:不许出现空群名或 group: 机器串。
+nowTick.ts[EU4T]: F:共享「现在」：30s 一跳、按引用计数启停的定时器 | R:code:src/utils/sendWaiting.ts | A:没有订阅者就停 | S:每行自己 setInterval 会在长列表起几百个定时器。
+nudge.ts[EU4T]: F:抖动迟到帧的年龄判定：超过 60s 的抖动直接丢 | R:code:src/stores/chat/notifications.ts | A:非有限值或非正也丢 | S:迟到抖动已无意义，放行只会平白抢焦点。
+optimistic.ts[EU4S]: F:乐观更新纯判据：何时可回滚、回滚会不会盖掉已先到的真实结果 | R:code:src/stores/chat/messaging.ts | A:不碰 pinia/IPC/词典，node --test 可直跑 | S:store 只按结论动投影，别把判断写回 store。
+panelQuery.ts[EU4T]: F:按主体 id 分键的只读面板查询策略：切主体重拉、失败保留旧数据、事件只失效当前主体 | R:code:src/utils/groupFilesQuery.ts | A:纯逻辑，无 Tauri/Vue 运行时依赖 | S:按 id 分键就是过期守卫，别再每个面板手写 StaleGuard。
+payloadParseCache.ts[EU4T]: F:消息载荷解析结果缓存：按 msg_id 缓存（协议上 content 不变） | R:code:src/stores/chat/messaging.ts | A:reaction/pin/remind/todo 四个折叠函数共用 | S:缓存前提是 msg_id 绑定 payload；绑定方式变了必须重估。
+popoverBounds.ts[EU4T]: F:浮层贴边边界唯一来源：最大高度=触发器到视口边缘的可用空间，放不下内部滚 | R:code:src/style.css | A:全站弹层读同一个 POPOVER_EDGE | S:不许裁切或外溢；标签一多顶出窗口是用户实报。
+pressGesture.ts[EU4T]: F:长按纯判据：500ms 阈值、10px 位移容差与 click 抑制 | R:code:src/composables/usePressMenu.ts | A:零 @/ 依赖，Node 可测 | S:两处各抄一份会漂成「某边长按要按久一点」。
+previewGalleryState.ts[EU4T]: F:预览窗口相册加载状态 reducer：失败/空相册/超时都有明确状态 | R:code:src/components/window/PreviewWindow.vue | A:纯 reducer，node --test 可钉 | S:静默留一个空白窗正是 2026-10-18 盘点的缺陷形状。
+previewTruncate.ts[EU4S]: F:消息流进 DOM 前的字符预算截断：结尾用真实省略号，不靠 CSS 半截字或渐变 | R:code:src/utils/previewMetrics.ts | A:按预算切，原文保留给展开 | S:为显示两行把整段塞进 DOM 再让 CSS 裁，是用户明确否掉的做法。
+queueCount.ts[EU4T]: F:传输队列数字展示：999 照常、1000 起一律 999+ | R:code:src/components/ChatWindow.vue | A:aria-label 仍读真实值 | S:截断只作用于可见数字，别把真实计数也截了。
+recall.ts[EU4T]: F:撤回窗口的前端口径（5 分钟），Rust 的 RECALL_WINDOW_MS 是权威 | R:code:src-tauri/src/protocol.rs | A:测试直接读 Rust 源码对账 | S:两边各写一个 5 分钟会慢慢漂。
+reducedTransparency.ts[EU4T]: F:应用内「减少透明效果」开关：html[data-reduced-transparency] 是唯一开关 | R:code:src/style.css | A:只复用既有 glass-*-fallback token，不另造配色 | S:WKWebView 不实现 prefers-reduced-transparency，系统查询在苹果端恒为 false。
+resendChannel.ts[EU4T]: F:「这条没发出去的消息重发走哪条通道」唯一判据 | R:code:src/api/index.ts | A:按 kind × 是否群 × 附件在不在决定 | S:曾按 kind!==file 判断，图片被当文本通道重发（真缺陷）。
+safeStorage.ts[EU4S]: F:localStorage 唯一安全出口：try/catch 与配额/隐私模式降级 | R:code:src/i18n/index.ts | A:读写都走这里 | S:Safari 隐私模式/配额写满会让直连抛错；曾 25 处直连、17 处无 try。
+saveImageAs.ts[EU4T]: F:另存图片的生产装配：把系统对话框、i18n、Tauri 接到纯核心 | R:code:src/utils/saveImageCore.ts | A:组件只调这一处 | S:取消不是错误、不抛；核心必须保持可测。
+saveImageCore.ts[EU4S]: F:另存图片纯核心：来源（msgId/cid）、体积上限与落盘结果 | R:code:src/utils/imageBytes.ts | A:取消返回 cancelled，不抛 | S:体积上限与粘贴图共用 MAX_PASTED_IMAGE_BYTES；核心不引 i18n。
 
 ===/Users/wendongfu/Documents/code/gosslan/tools/===
 gen_icon.py[XV4T]: F:手写 PNG 编码器生成占位应用图标 | R:code:src-tauri/icons/icon.png | A:inside_rrect、inside_circle、chunk | S:不依赖 Pillow，手工拼 IHDR/IDAT/IEND；固定覆盖 src-tauri/icons/icon.png。
@@ -1350,3 +1372,6 @@ instance.ts[EU4T]: F:桌面更新服务单例（每个窗口一份 UI 状态） 
 schedule.ts[EU4T]: F:启动后一次低优先级更新检查：不阻塞挂载、不轮询、失败静默、不重试 | R:code:src/updater/service.ts,code:src/utils/platform.ts | A:只在主窗口入口调用 | S:设置/日志窗口不自动检查；移动端不进入应用内更新，直接不调度。
 service.ts[EU6M]: F:桌面更新状态机（纯逻辑，不 import Tauri）：单飞、超时、取消、错误分类、稍后处理 | R:code:src/updater/tauriAdapter.ts | A:真实网络与安装由 adapter 提供，node --test 用假适配器 | S:别把 IPC/平台判断塞进状态机，否则离线/超时/取消无法单测。
 tauriAdapter.ts[EU4T]: F:Rust 命令适配层：所有 IPC 仍走 src/api 门面 | R:code:src/updater/service.ts,code:src/api/index.ts | A:check/download/cancel/recheckReady/install/close 六个动作 | S:组件与工具层不许直接 invoke。
+
+===/Users/wendongfu/Documents/code/gosslan/src/utils/motion/===
+index.ts[FU4T]: F:motion-v 的唯一入口：业务组件不得直接 import motion-v | R:code:src/utils/motionTokens.ts | A:统一补 reduced-motion 分支与测试替身 | S:护栏扫 from "motion-v" 的直接引用，只允许本文件。
