@@ -575,6 +575,17 @@ function onPointerMove(e: PointerEvent) {
 }
 
 function onPointerUp(e: PointerEvent) {
+  // 系统取消（滚动接管 / 边缘返回 / 来电）不是「用户抬指」：绝不能拿半程位移去切图。
+  // 只清手势状态并退出；`dragging` 也要复位，否则下一次原始尺寸滑动会被当平移吃掉。
+  if (e.type === "pointercancel") {
+    pointers.delete(e.pointerId);
+    if (pointers.size === 0) {
+      pinchStart = null;
+      swipeStart = null;
+    }
+    dragging = false;
+    return;
+  }
   // 起点用 `swipeStart`：`pointers` 里的坐标已在 move 时被改成当前位置（见上）。
   const start = swipeStart;
   pointers.delete(e.pointerId);

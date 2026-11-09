@@ -1498,8 +1498,13 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     state.logger.info(
                         "group",
                         format!(
-                            "群消息@输入 msg={} mentions={} targets={}",
+                            // 记 kind 不记正文：2026-11-09 Windows renderer 卡死的冻结起点
+                            // 只能落到「09:19:38 收到一条群消息」这一行，却看不出它是
+                            // text 还是 file/image（只有后者会触发 refreshTransfers）——
+                            // 与单聊那条 `单聊消息已收 msg=… kind=…` 同口径补上。
+                            "群消息@输入 msg={} kind={} mentions={} targets={}",
                             env.message_id,
+                            kind,
                             mentions.as_ref().map_or("none".to_string(), |v| v.len().to_string()),
                             // 只记条数：落点里带昵称，昵称不进日志（日志会进报告产物）
                             mention_targets.as_ref().map_or("none".to_string(), |v| v.len().to_string())

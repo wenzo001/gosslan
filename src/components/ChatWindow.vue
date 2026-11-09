@@ -546,10 +546,10 @@ watch(
     announceViewOpen.value = false;
   },
 );
-// 移动端「返回会话列表」是**布局层**改 `app.mobileView` 的导航动作：它既不卸载 ChatWindow
-// （挂载条件只看 `navState === 'chats' && activeConv`），也不会触发上面那个 activeConv
-// watcher —— 于是多选态一直挂着。而 `app.multiSelectActive` 同时是底部 TabBar 的显示条件
-// 之一，用户看到的就是"返回之后 TabBar 永久消失，而它正是唯一的导航出口"（审计阶段 4 · 4.1-4）。
+// 移动端「返回会话列表」是**布局层**改 `app.mobileView` 的导航动作：移动端不卸载 ChatWindow
+// （那一支的挂载条件只看 `navState === 'chats' && activeConv`；桌面 keep-alive 是另一支），
+// 也不会触发上面那个 activeConv watcher —— 于是多选态一直挂着。而 `app.multiSelectActive`
+// 同时是底部 TabBar 的显示条件之一，用户看到的就是"返回之后 TabBar 永久消失，而它正是唯一的导航出口"（审计阶段 4 · 4.1-4）。
 // 在这里收尾 = 离开聊天视图即放弃选择，与"切会话退出多选"同一口径；不改 TabBar 的判据
 // （它为什么把 multiSelectActive 算进去没有取证，动等于改别处的既有意图）。
 watch(
@@ -2170,7 +2170,11 @@ function retryHistory() {
       ref="composerShell"
       data-composer-shell
       class="ambient-canvas-child absolute inset-x-0 bottom-0 z-20 bg-transparent px-4 pt-2"
-      :style="{ paddingBottom: 'calc(var(--gosslan-inset-bottom) + 8px)' }"
+      :style="{
+        // 键盘弹起时底部安全区已经被 IME 占用：再留 `--gosslan-inset-bottom` 就是那段
+        // 「输入卡和键盘之间空一大截」（用户 2026-11-09 安卓截图）。只留 8px 呼吸位。
+        paddingBottom: app.keyboardOpen ? '8px' : 'calc(var(--gosslan-inset-bottom) + 8px)',
+      }"
     >
       <!-- 多选态：输入区被操作条**替换**（微信同款）。
            高度固定 4rem，与 Composer 的最小高度一致 —— 否则进出多选时消息区高度跳变，

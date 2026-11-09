@@ -48,8 +48,13 @@ const GAP_BASE = 2;
  *  字号/行高改动必须同步这里与 MessageItem 的昵称行（两者是同一份高度的两处表达）。
  *  行高取 leading-none 是为了让墨迹贴住行盒顶、与头像顶边齐平（行高 1.5 会往下推 ~3.7px，看着"名字偏低"）。 */
 const NICKNAME_ROW = 18;
-/** 时间分割线（含 py-2） */
-const TIME_DIVIDER = 32;
+/**
+ * 时间分割线**整行**占的高度：`pt-3.5`(14) + caption 行盒(11×1.5=16.5) + `pb-2`(8) = 38.5。
+ * 旧值 32 只算了 `py-2 + 行盒`，漏掉 2026-11-07 画板把它从"列表项 pt-1.5 + 本行 py-2"折进
+ * 分割行自己的那 6px（`MessageItem` 模板那条注释），估高比真实矮 6.5px ⇒ 虚拟列表排下一行时
+ * 少留一格，`--only=rowpair` 的「估高差 == 画出差」就这么红的（2026-11-09 实测）。
+ */
+const TIME_DIVIDER = 38.5;
 /** 普通文件卡片 */
 const FILE_CARD = 92;
 /** 提示行（系统消息 / 已撤回）：text-xs 行盒 16 + ROW_PADDING 12。 */
@@ -242,7 +247,7 @@ export function estimateMessageHeight(
   const bubble = bubbleHeightCached(m, ctx.fontSize, liveTodoMetrics(m, ctx));
 
   // 分割行的**判定**与渲染端共用 `shouldShowTimeDivider`（阈值也在那里）：分割行自己占
-  // TIME_DIVIDER 那 32px，两边判得不一致就是"相邻消息互相遮挡"本文件顶部那条契约。
+  // TIME_DIVIDER 那 38.5px，两边判得不一致就是"相邻消息互相遮挡"本文件顶部那条契约。
   const showDivider = shouldShowTimeDivider(m.ts, prev?.ts);
   const next = index != null ? (ctx.messages[index + 1] ?? null) : null;
   // 分割行会把「上一条 / 下一条」自然推开：组必须在这里断开，否则跨过一条通栏分割线还压平圆角。

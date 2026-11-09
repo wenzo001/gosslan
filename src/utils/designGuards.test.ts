@@ -9090,7 +9090,17 @@ test("SA-03 证据链与同类：viewport-fit=cover / enableEdgeToEdge / 四枚�
     assert.match(code, /bottom:\s*calc\(var\(--gosslan-inset-bottom\)/, rel + " 的移动端底边没读统一出口");
   }
   const composer = code691(readFileSync(join(srcDir691, "components/ChatWindow.vue"), "utf8"));
-  assert.match(composer, /paddingBottom:\s*'calc\(var\(--gosslan-inset-bottom\) \+ 8px\)'/, "输入区没跟手势条安全区");
+  // 2026-11-09：键盘弹起时底部安全区已被 IME 占用，不能再叠一次（用户安卓截图：输入卡与键盘间空一大截）。
+  // 两个分支都要在：关键盘跟手势条安全区、开键盘只留 8px。键盘状态必须走 utils/keyboardInsets（有单测）。
+  assert.match(
+    composer,
+    /paddingBottom:\s*app\.keyboardOpen\s*\?\s*'8px'\s*:\s*'calc\(var\(--gosslan-inset-bottom\) \+ 8px\)'/,
+    "输入区没跟手势条安全区（关闭时）/ 没在键盘弹起时去掉重复的安全区",
+  );
+  const appStore = code691(readFileSync(join(srcDir691, "stores/useAppStore.ts"), "utf8"));
+  assert.match(appStore, /resolveKeyboardState\(/, "键盘判定没走 utils/keyboardInsets（Android resize 会被补两次）");
+  // 基线必须回写：不回写时 shrink 永远拿第一次的 base 比，Android 双补偿/漏判会回来。
+  assert.match(appStore, /baseline = \{ base: next\.base, baseWidth: next\.baseWidth \}/, "键盘基线没有回写");
 });
 
 // ── TB. 标题栏镜像：平台 → 头像簇所在侧（2026-11-07）────────────────────
