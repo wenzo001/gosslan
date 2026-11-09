@@ -4698,6 +4698,7 @@ async function main() {
     const i18nshots = want("i18nshots");
     const startuperror = want("startuperror");
     const rowpair = want("rowpair");
+    const flicker = want("flicker");
     const msgovf = want("msgovf");
     const ctxguard = want("ctxguard");
     const pasteframe = want("pasteframe");
@@ -4958,6 +4959,7 @@ async function main() {
     await runSegment("i18nshots", i18nshots, () => runI18nShots(cdp, url));
     await runSegment("startuperror", startuperror, () => runStartupError(cdp, url));
     await runSegment("rowpair", rowpair, () => runRowPair(cdp, url));
+    await runSegment("flicker", flicker, () => runFlicker(cdp, url));
     await runSegment("msgovf", msgovf, () => runMsgOverflow(cdp, url));
     await runSegment("ctxguard", ctxguard, () => runContextGuard(cdp, url));
     await runSegment("pasteframe", pasteframe, () => runPasteFrame(cdp, url));
@@ -11717,10 +11719,27 @@ async function runRowPair(cdp, url) {
         creator: "peer-a", assignees: ["peer-a"], priority: "normal",
         category: "normal", number: 1,
       }),
+      // 长文本（clamped）：正文超过 5 行 ⇒ `MessageTextBubble` 换成**卡片配色**（cardStyle）。
+      // 这是尾巴取色最容易漏的一格：组件里 `reactionSurface` 若仍按 `bubbleStyle` 取，
+      // 对方长文本气泡就是「中性卡底 + 主题色尾巴」两块颜色（用户 2026-11-09 截图）。
+      "text-long": Array.from({ length: 9 }, (_, i) => `第 ${i + 1} 行：这一条用来把正文顶到五行以上。`).join("\n"),
+      // 引用回复与带链接的正文：kind 仍是 text（尾巴取色走 bubbleStyle 那一支），
+      // 但正文内部多了引用块 / 链接元素 ⇒ 用户 2026-11-09 要求"链接/引用也逐类核对"。
+      quote: "「引用 上一条消息」\n这是对那句「上一条」的回复，只用来量尾巴。",
+      link: "看这个链接 https://example.com/a/b?x=1 能不能对上尾巴颜色。",
+      // 图片气泡：没有文字说明（说明文字只在加载失败时出现），但它同样挂尾巴，
+      // 且取色走 cardLikeBubble（卡片底 + 卡片线）⇒ 与文件/合并是一族，必须一起量。
+      image: JSON.stringify({
+        name: "photo.png", path: "/tmp/photo.png", size: 40213,
+        subtype: "image", w: 200, h: 150,
+      }),
     };
+    // `text-long` / `quote` / `link` 只是夹具的种类名，真正喂给组件的 kind 仍是 text
+    // （长文本由内容长度触发截断；引用与链接是正文内部的排版，不是另一种消息类型）。
+    const kindArg = kind === "text-long" || kind === "quote" || kind === "link" ? "text" : kind;
     const props = {
       message: {
-        msg_id: "m-rowpair", sender_id: senderId, kind,
+        msg_id: "m-rowpair", sender_id: senderId, kind: kindArg,
         content: content ?? bodyByKind[kind] ?? bodyByKind.text,
         ts: BASE, conv_id: "c-rowpair", seq: 2,
       },
@@ -11807,6 +11826,57 @@ async function runRowPair(cdp, url) {
     const cardLineColor = getComputedStyle(probeEl).color;
     probeEl.remove();
     const tailBelowBubble = tr && br ? +(tr.bottom - br.bottom).toFixed(2) : null;
+    // ★ 2026-11-09：**画出来的墨迹**下沿。旧读数量的是尾巴 span 的盒底（bottom:0 ⇒ 恒为 0），
+    // 但对方走的是旧叶形：填充只画到 y=13.5，靠 1px 描边补到 14；一旦描边是透明（自己的消息）
+    // 或叶形没有描边，盒底对齐 ≠ 看上去对齐。这一格直接拿 SVG 几何算：
+    // fill 的 bbox 下沿（不含描边）+ line 的 bbox 下沿（含 stroke-width/2，透明描边不计）。
+    // ⚠️ 透明判定不能用正则：这段是**模板字符串里的源码**，反斜杠转义会被吃掉一层，
+    //   正则里的括号会退化成分组 ⇒ 永远匹配不上，透明描边被当成实色、
+    //   把自己的文本气泡算成差 0.5px（2026-11-09 实测踩到）。
+    //   改成解析 alpha：rgba(...) 看第 4 个分量，rgb(a b c / x) 看斜杠后面，缺省 alpha=1。
+    const strokeAlpha = (s) => {
+      if (!s || s === "none" || s === "transparent") return 0;
+      const open = s.indexOf("(");
+      const close = s.lastIndexOf(")");
+      if (open < 0 || close < open) return 1;
+      const body = s.slice(open + 1, close);
+      const parts = body.split(",");
+      if (parts.length === 4) return parseFloat(parts[3]) || 0;
+      const slash = body.split("/");
+      if (slash.length === 2) return parseFloat(slash[1]) || 0;
+      return 1;
+    };
+    const paintBottom = (el, withStroke) => {
+      if (!el) return null;
+      const bb = el.getBBox();
+      const m = el.getScreenCTM();
+      if (!m) return null;
+      const ys = [0, bb.height].map((dy) => (bb.y + dy) * m.d + m.f);
+      let bottom = Math.max(...ys);
+      if (withStroke) {
+        const cs = getComputedStyle(el);
+        const sw = parseFloat(cs.strokeWidth) || 0;
+        const strokeOn = strokeAlpha(cs.stroke) > 0 && (parseFloat(cs.strokeOpacity) || 1) > 0;
+        if (strokeOn) bottom += sw / 2;
+      }
+      return bottom;
+    };
+    const fillInkBottom = paintBottom(fillEl, false);
+    const lineInkBottom = paintBottom(lineEl, true);
+    const inkCandidates = [fillInkBottom, lineInkBottom].filter((v) => v != null);
+    const tailFillGap = fillInkBottom != null && br ? +(fillInkBottom - br.bottom).toFixed(2) : null;
+    const tailInkGap = inkCandidates.length && br
+      ? +(Math.max(...inkCandidates) - br.bottom).toFixed(2)
+      : null;
+    // 局部诊断：两个下沿的**原始**屏幕坐标（排查"0.5px 从哪来"时不能只靠差值猜）。
+    // 只读、不进判据；红的时候能把 fill / line / 气泡底边三行绝对值并排看。
+    const inkRaw = {
+      bubbleBottom: br ? +br.bottom.toFixed(2) : null,
+      fillBottom: fillInkBottom != null ? +fillInkBottom.toFixed(2) : null,
+      lineBottom: lineInkBottom != null ? +lineInkBottom.toFixed(2) : null,
+      lineStroke: lineEl ? getComputedStyle(lineEl).stroke : null,
+      lineStrokeWidth: lineEl ? getComputedStyle(lineEl).strokeWidth : null,
+    };
     const tailInsideBubble = tr && br ? +(br.bottom - tr.top).toFixed(2) : null;
     // 侧向伸出：对方（tail-other）在左，自己（tail-mine）在右 —— 尖端应落在气泡外侧。
     const tailSideReach = tr && br
@@ -11832,6 +11902,9 @@ async function runRowPair(cdp, url) {
       tailTop: tr ? +tr.top.toFixed(2) : null,
       tailBottom: tr ? +tr.bottom.toFixed(2) : null,
       tailBelowBubble,
+      tailFillGap,
+      tailInkGap,
+      inkRaw,
       tailInsideBubble,
       tailSideReach,
       tailCount,
@@ -11992,9 +12065,24 @@ async function runRowPair(cdp, url) {
   // 2026-10-24 口径：单聊保留尾巴（左下/右下角贴底边、尖朝外），群聊整条不渲染。
   // 每一格单聊/群聊各一遍：单聊量「下沿齐平 / 压进气泡 / 侧向伸出」三个数，群聊量"根本没有尾巴"。
   const TAIL_KINDS = [
-    ["代码气泡", "code"], ["文件气泡", "file"], ["合并转发卡片", "merge"],
-    ["群任务卡片", "todo"],
+    // 长文本（clamped）：正文换成 cardStyle ⇒ 尾巴取色必须跟着卡片走（用户 2026-11-09 截图）。
+    ["长文本气泡", "text-long"],
+    // 引用回复 / 带链接的正文：正文内部换了排版，但气泡面与尾巴仍走 bubbleStyle 那一支。
+    ["引用回复", "quote"], ["链接正文", "link"],
+    ["代码气泡", "code"], ["文件气泡", "file"],
+    ["合并转发卡片", "merge"], ["群任务卡片", "todo"],
   ];
+  /**
+   * 尾巴墨迹下沿的合格区间（2026-11-09 定，两个方向都要管，**所有气泡一个口径**）：
+   * - 上界 +0.25px：**不许露头**。「尾巴比气泡底边低一截」是用户截图里最刺眼的一种。
+   * - 下界 -0.25px：**不许留缝**。叶形填充按设计只画到 13.5/14，原本靠 1px 描边补到边；
+   *   描边透明（自己的卡片那一族）时没人补 ⇒ 那 0.5px 就是背景色缝。
+   *   现在 `BubbleTail` 的 `flush` 在描边不可见时把填充直接画到 14（见组件注释），
+   *   于是这一格对所有种类都收成 ±0.25 —— 不再有"按设计放宽"的特例。
+   * 反例自证：把尾巴下移 3px 时这条判据必红（见下面的「反向对照·尾巴下移 3px」）。
+   */
+  const tailInkOk = (g) =>
+    !!g && typeof g.tailInkGap === "number" && Math.abs(g.tailInkGap) <= 0.25;
   for (const [kindLabel, kind] of TAIL_KINDS) {
     // 单聊：尾巴必须在，且几何与文本气泡一致（同一个 CSS 家 ⇒ 不同组件不该有不同读数）
     check("行配对：挂一条" + kindLabel + "（单聊）", await mount(FAR, false, kind), "install 成功");
@@ -12003,6 +12091,10 @@ async function runRowPair(cdp, url) {
       + JSON.stringify(gDm && {
         count: gDm.tailCount, below: gDm.tailBelowBubble,
         inside: gDm.tailInsideBubble, side: gDm.tailSideReach,
+        // 取色三件套一起打：判据红的时候要能直接看出是"填充≠底色"还是"描边≠线色"。
+        inkGap: gDm.tailInkGap, fillGap: gDm.tailFillGap,
+        tailFill: gDm.tailFill, bubbleBg: gDm.bubbleBg,
+        tailStroke: gDm.tailStroke, bubbleLine: gDm.bubbleLine, corner: gDm.tailCorner,
       }));
     check("非空转·" + kindLabel + "（单聊）：读到尾巴矩形与气泡矩形",
       !!gDm && typeof gDm.tailBelowBubble === "number" && typeof gDm.tailInsideBubble === "number"
@@ -12017,6 +12109,15 @@ async function runRowPair(cdp, url) {
         kindLabel, below: gDm && gDm.tailBelowBubble,
         side: gDm && gDm.tailSideReach, inside: gDm && gDm.tailInsideBubble,
       }));
+    // ★ 用户 2026-11-09「尾巴和气泡下面没对齐」：盒底对齐不算数，量**画出来的墨迹**。
+    //   对方叶形填充只到 13.5、靠 1px 描边补到 14 ⇒ fill 单独看差 0.5px，
+    //   可见墨迹（fill ∪ 不透明描边）必须正好落在气泡下沿。
+    check("单聊·" + kindLabel + "尾巴的可见墨迹下沿贴住气泡下沿（不露头 ≤0.25px；透明描边叶形按设计内缩 ≤0.75px）",
+      tailInkOk(gDm),
+      "inkGap ∈ 合格区间", JSON.stringify({
+        kindLabel, inkGap: gDm && gDm.tailInkGap, fillGap: gDm && gDm.tailFillGap,
+        lineStroke: gDm && gDm.inkRaw && gDm.inkRaw.lineStroke,
+      }));
     // 文本/文件/合并/待办有 1px 描边 ⇒ 比 border 色；代码卡片**无描边** ⇒ 比卡片线 token（它唯一的线）。
     const wantLine = kind === "code" ? (gDm && gDm.cardLineColor) : (gDm && gDm.bubbleLine);
     check("单聊·" + kindLabel + "尾巴描边与它那条边线同色（有描边比 border，无描边的代码卡片比卡片线 token）",
@@ -12025,6 +12126,12 @@ async function runRowPair(cdp, url) {
     check("单聊·" + kindLabel + "尾巴填充 == 卡片底色（不混色，颜色不许对不上）",
       !!gDm && typeof gDm.tailFill === "string" && gDm.tailFill === gDm.bubbleBg,
       "fill == backgroundColor", JSON.stringify({ kindLabel, tailFill: gDm && gDm.tailFill, bubbleBg: gDm && gDm.bubbleBg }));
+    // 尾巴那一侧的下圆角必须被 `[data-tail-side]` 拉平：圆角会把底色切掉一块，
+    // 尾巴根部露出背景色 ⇒ 视觉上就是"尾巴和气泡没连上"（与"没对齐"是同一类观感问题）。
+    check("单聊·" + kindLabel + "尾巴那一侧的下圆角已拉平（0px，圆角会切掉底色露白缝）",
+      !!gDm && typeof gDm.tailCorner === "number" && Math.abs(gDm.tailCorner) < 0.01,
+      "borderBottomLeftRadius == 0",
+      JSON.stringify({ kindLabel, tailCorner: gDm && gDm.tailCorner }));
 
     // 群聊：这一种也不许有尾巴（自己的那条另有一条，见上面）
     check("行配对：挂一条" + kindLabel + "（群聊）", await mount(FAR, true, kind), "install 成功");
@@ -12032,6 +12139,20 @@ async function runRowPair(cdp, url) {
     check("群聊·" + kindLabel + "整条不渲染尾巴",
       !!gGroupKind && gGroupKind.tailCount === 0, "tailCount == 0",
       JSON.stringify({ kindLabel, tailCount: gGroupKind && gGroupKind.tailCount }));
+  }
+  // 图片气泡：用户 2026-11-09 让"图片说明也逐类核对"，这里给出它的读数 ——
+  // 它**根本不挂尾巴**（`tailSide` 只覆盖 text/code/merge/todo/无预览的 file），
+  // 所以"尾巴颜色对不对"这一格对它不成立；把读数固定下来，免得以后有人以为漏查了。
+  for (const [sideLabel, mineSide] of [["对方", false], ["自己", true]]) {
+    check("行配对：挂一条图片气泡（单聊·" + sideLabel + "）",
+      await mount(FAR, false, "image", null, mineSide ? "dev-me" : "peer-a"), "install 成功");
+    const gImg = await geom();
+    console.log("  · 图片气泡尾巴实测（单聊·" + sideLabel + "）：" + JSON.stringify({
+      tailCount: gImg && gImg.tailCount, skin: gImg && gImg.skin,
+    }));
+    check("单聊·图片气泡不挂尾巴（图片不是文本气泡：尾部规则不适用，读数 tailCount == 0）",
+      !!gImg && gImg.tailCount === 0, "tailCount == 0",
+      JSON.stringify({ sideLabel, tailCount: gImg && gImg.tailCount }));
   }
   // ---- 自己这一侧（用户 2026-10-28 截图：右侧气泡右下角出现"空心方块"）----
   //
@@ -12050,12 +12171,19 @@ async function runRowPair(cdp, url) {
       "tailStroke 读得到", JSON.stringify(g && { isMine: g.isMine, tailStroke: g.tailStroke }));
     console.log("  · " + kindLabel + "尾巴实测（自己）：" + JSON.stringify(g && {
       isMine: g.isMine, below: g.tailBelowBubble, inside: g.tailInsideBubble, side: g.tailSideReach,
+      inkGap: g.tailInkGap, fillGap: g.tailFillGap, inkRaw: g.inkRaw,
       tailStroke: g.tailStroke, bubbleLine: g.bubbleLine, tailFill: g.tailFill, bubbleBg: g.bubbleBg,
     }));
     check("自己·" + kindLabel + "尾巴几何与对方同读数（同一个 CSS 家）",
       !!g && Math.abs(g.tailBelowBubble) <= 1 && g.tailSideReach >= 8 && g.tailSideReach <= 12
         && g.tailInsideBubble >= 12 && g.tailInsideBubble <= 16,
       "|below|<=1 / 8~12 / 12~16", JSON.stringify({ kindLabel, g }));
+    check("自己·" + kindLabel + "尾巴的可见墨迹下沿贴住气泡下沿（不露头 ≤0.25px；透明描边叶形按设计内缩 ≤0.75px）",
+      tailInkOk(g),
+      "inkGap ∈ 合格区间", JSON.stringify({
+        kindLabel, inkGap: g && g.tailInkGap, fillGap: g && g.tailFillGap,
+        lineStroke: g && g.inkRaw && g.inkRaw.lineStroke,
+      }));
     // ★ 描边必须与**这条气泡自己那一线**同色（与对方那一圈同一条口径）：
     //   文本/文件/合并/待办的自己的边框透明 ⇒ 尾巴描边也必须透明，读到实色就是
     //   "气泡角上凭空一圈线"；代码卡片没有四边描边，它唯一的线是卡片线 token ⇒ 比那个。
@@ -12080,7 +12208,9 @@ async function runRowPair(cdp, url) {
     // 2026-11-05（第三次同一处接缝）：自己的**文本**气泡必须走单填充皮肤 ——
     // 一条闭合路径同时画气泡四角与叶形，尾巴子树里只有**一个** svg（旧 14×14 叶形不再出现）。
     // 其它气泡种类仍走旧叶形（皮肤只开给文本；卡片/代码的可见面不在 bubble 首子层）。
-    if (kind === "text") {
+    // ⚠️ 皮肤开关在组件里判的是 `message.kind === 'text'` ⇒ 引用/链接（夹具名不同、kind 仍是
+    //   text）同样走皮肤，必须并进这一支，否则会被下一支当成"该不套皮肤"而假红。
+    if (kind === "text" || kind === "text-long" || kind === "quote" || kind === "link") {
       check("自己·文本气泡走单填充皮肤（data-bubble-skin + 尾巴子树恰好一个 svg，无第二块形状）",
         !!g && g.skin === true && g.skinSvgCount === 1 && g.tailSvgCount === 1,
         "skin && 1 svg",
@@ -12221,6 +12351,71 @@ async function runRowPair(cdp, url) {
   check("反向对照·尾巴露头量具：把尾巴下推 20px 时同一把尺子读到 > 12px（判据不是恒绿）",
     typeof reverseBelow === "number" && reverseBelow > 12,
     "读到 > 12px", JSON.stringify({ reverseBelow }));
+
+  // 反向对照②：尾巴**下移 3px**（用户原话「把尾巴下移几像素，必须能红」）——
+  // 用同一把"可见墨迹"尺子读，应该读到 ≈3px 的缺口，而不是仍然贴着 0。
+  const shift3 = await cdp.eval(`(() => {
+    const t = document.querySelector('.bubble-tail');
+    if (!t) return null;
+    t.style.bottom = '-3px';
+    return 'ok';
+  })()`);
+  const gShift3 = shift3 === "ok" ? await geom() : null;
+  await cdp.eval(`(() => { const t = document.querySelector('.bubble-tail'); if (t) t.style.bottom = ''; })()`);
+  console.log("  · 反向对照·尾巴下移 3px：" + JSON.stringify({
+    inkGap: gShift3 && gShift3.tailInkGap, fillGap: gShift3 && gShift3.tailFillGap }));
+  check("反向对照·尾巴下移 3px 时墨迹尺子读到 ≈3px（下移几个像素必红）",
+    !!gShift3 && typeof gShift3.tailInkGap === "number" && Math.abs(gShift3.tailInkGap - 3) <= 0.3,
+    "|inkGap - 3| <= 0.3", JSON.stringify({ inkGap: gShift3 && gShift3.tailInkGap }));
+
+  // 反向对照③：把尾巴填充**写死成另一个值**（用户原话「把颜色写死成另一个值，必须能红」）——
+  // 取色判据读的是计算值，写死后必须立刻跟着变、且与气泡底色不等。
+  const colorChurn = await cdp.eval(`(() => {
+    const tail = document.querySelector('.bubble-tail');
+    const fill = tail && tail.querySelector('.tail-fill');
+    const bubble = tail ? tail.parentElement.querySelector('[data-msg-bubble] > :first-child') : null;
+    if (!fill || !bubble) return null;
+    const before = getComputedStyle(fill).fill;
+    const bg = getComputedStyle(bubble).backgroundColor;
+    fill.style.fill = 'rgb(1, 2, 3)';
+    const after = getComputedStyle(fill).fill;
+    fill.style.fill = '';
+    return { before, after, bg, sameBefore: before === bg, sameAfter: after === bg };
+  })()`);
+  console.log("  · 反向对照·尾巴取色写死：" + JSON.stringify(colorChurn));
+  check("反向对照·尾巴取色量具：写死成 rgb(1,2,3) 后读数跟着变、且 != 气泡底色（判据不是恒绿）",
+    !!colorChurn && colorChurn.after === "rgb(1, 2, 3)" && colorChurn.sameAfter === false,
+    "after == rgb(1, 2, 3) 且 after != bg", JSON.stringify(colorChurn));
+
+  // 取证帧·亮暗各一组（用户 2026-11-09 要求"修前修后截图，亮暗各一组"）。
+  // 拍的是**对方**那一侧的两个最容易出错的格子：短正文（bubbleStyle）与长文本卡片（cardStyle）。
+  // `PROBE_SHOT_TAG` 只在文件命名上用（before / after），不影响任何判据。
+  if (SHOT_PATH) {
+    const tag = process.env.PROBE_SHOT_TAG || "after";
+    // ⚠️ `mount()` 自己会 `Page.navigate` ⇒ 必须在挂载**之后**再切外观，否则切完被刷新覆盖。
+    const setDark = (dark) => cdp.eval(`(async () => {
+      const piniaUrl = performance.getEntriesByType('resource')
+        .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/pinia.js?v='));
+      if (!piniaUrl || !window.__pinia) return 'no-pinia';
+      const P = await import(piniaUrl);
+      const A = await import('/src/stores/useAppStore.ts');
+      P.setActivePinia(window.__pinia);
+      A.useAppStore().appearance = ${dark ? "'dark'" : "'light'"};
+      document.documentElement.classList.toggle('dark', ${dark ? "true" : "false"});
+      return 'ok';
+    })()`);
+    for (const dark of [false, true]) {
+      for (const [label, kind] of [["text", "text"], ["long", "text-long"]]) {
+        await mount(FAR, false, kind);
+        await setDark(dark);
+        await sleep(400);
+        const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+        const out = SHOT_PATH.replace(/\.png$/, `-${tag}-${dark ? "dark" : "light"}-${label}.png`);
+        fs.writeFileSync(out, Buffer.from(shot.data, "base64"));
+        console.log("  📷 尾巴取证帧（" + (dark ? "暗" : "亮") + "·" + label + "）→ " + out);
+      }
+    }
+  }
 
   // ============ 主题矩阵：7 套气泡配色 × 明暗（渲染端真取色） ============
   // 需求：「至少验证现有浅色、深色，以及蓝/绿/紫/粉/灰…」—— 这里不看源码常量，
@@ -12684,6 +12879,108 @@ const setAppearance = (cdp, dark) => cdp.eval(`(async () => {
   document.documentElement.classList.toggle('dark', ${dark ? "true" : "false"});
   return { ok: 'ok', dark: s.dark === true, appearance: s.appearance };
 })()`);
+
+/**
+ * 「已被清理」闪烁（2026-11-09 用户实证：文件消息上方那行字一隐一现、周期很短）。
+ *
+ * 真因不是动画，是**文本节点被删了又加回来**：`useMessageFile` 的探测 watcher 写成
+ * `watch(() => [ ... ])` —— getter 每次返回**新数组**，Vue 的 `hasChanged` 对数组永远为真；
+ * 而源里的 `fileMeta` / `transfer` 是 computed，`chat.transfers` 换一次数组、
+ * `app.device` 换一次对象，它们就重算出**新对象**（path/name/status 一模一样）。
+ * ⇒ 每一轮无关刷新都重跑一次探测；旧实现又在 `await` 之前就把 `previewNote` 清空，
+ * 等 IPC 回来再补 ⇒ 那行字闪一次。
+ *
+ * 判据只认**DOM 变更次数**：对同一条「已清理」的文件消息做 10 轮无关刷新，
+ * 标签所在那行的 childList/characterData 变更必须是 0（修前每轮至少 2 次：删一次、加一次）。
+ * 同时断言 churn 真的换掉了引用（changed > 0），否则就是空转绿。
+ */
+async function runFlicker(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  // 探针页面里没有真 Tauri：media_present 必须能回话（false = 本机副本已被清理）。
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (cmd) => (cmd === 'media_present' ? false : null),
+      transformCallback: (cb) => { const id = '__cb' + Math.random().toString(36).slice(2); window[id] = cb; return id; },
+      metadata: { currentWindow: { label: 'main' }, currentWebview: { windowLabel: 'main', label: 'main' } },
+      convertFileSrc: (p) => p,
+    };
+    return 'ok';
+  })()`);
+  await cdp.eval(PAGE_FIXTURE);
+  const list = [{
+    message: {
+      msg_id: "file-flicker", sender_id: "dev-me", kind: "file",
+      content: JSON.stringify({ name: "季度报告.pdf", path: "/tmp/report.pdf", size: 123456 }),
+      ts: 1_700_000_000_000, conv_id: "c-flicker", seq: 1,
+    },
+    prev: null, canReact: false, isGroup: false, senderName: "对方",
+  }];
+  const installed = await cdp.eval(
+    "window.__probe.installMessages(" + JSON.stringify(JSON.stringify(list)) + ")",
+  );
+  check("闪烁探针：文件消息挂上了", !!installed && installed.ok === true, "ok", JSON.stringify(installed));
+  // 这条必须判成「我发的」：`displayPathFor` 只让本机发出的消息用载荷里的 path，
+  // 对端消息的路径一律等传输台账 ⇒ 不种身份的话 path 是 null、根本不会去探测，
+  // 「已被清理」永远不会出现，后面那条"提示确实出现过"的判据就会假红。
+  const seeded = await cdp.eval("window.__probe.seedDevice('dev-me')");
+  check("闪烁探针：设备身份种好了（mine 成立 ⇒ 载荷 path 可用）",
+    !!seeded && seeded.ok === true && seeded.at === "dev-me", "device=dev-me", JSON.stringify(seeded));
+  await sleep(1_500); // 等首次探测落地（那行字出现）
+  const found = await cdp.eval(`(async () => {
+    const T = await import('/src/i18n/index.ts');
+    const want = T.t('msg.cleaned');
+    const host = document.getElementById('probe-host');
+    const leaves = [...host.querySelectorAll('*')].filter((el) => el.children.length === 0 && el.textContent.trim() === want);
+    return { want, found: leaves.length };
+  })()`);
+  check("闪烁探针：「已被清理」已经出现在文件卡片里（说明探测确实跑过）",
+    !!found && found.found >= 1, ">=1", JSON.stringify(found));
+  const run = await cdp.eval(`(async () => {
+    const T = await import('/src/i18n/index.ts');
+    const want = T.t('msg.cleaned');
+    const host = document.getElementById('probe-host');
+    const find = () => [...host.querySelectorAll('*')].find((el) => el.children.length === 0 && el.textContent.trim() === want);
+    const leaf = find();
+    if (!leaf) return { ok: false, why: 'note-not-found' };
+    // 只观测**元信息那一行**（扩展名 · 体积 · 已被清理）：无关刷新不该动它一个字。
+    const line = leaf.parentElement;
+    const recs = [];
+    const mo = new MutationObserver((ms) => { for (const m of ms) recs.push(m.type); });
+    mo.observe(line, { childList: true, characterData: true, subtree: true });
+    const piniaUrl = performance.getEntriesByType('resource')
+      .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/pinia.js?v='));
+    const P = await import(piniaUrl);
+    const C = await import('/src/stores/useChatStore.ts');
+    const A = await import('/src/stores/useAppStore.ts');
+    P.setActivePinia(window.__pinia);
+    const chat = C.useChatStore();
+    const app = A.useAppStore();
+    const Vue = window.__probe.vue;
+    let changed = 0;
+    for (let i = 0; i < 10; i += 1) {
+      const beforeTransfers = chat.transfers;
+      const beforeDevice = app.device;
+      // 两类真实发生过的"无关刷新"：transfer 台账整体换数组（refreshTransfers 的形状）、
+      // device 对象整体换（启动/设备信息刷新）。字段值一个都没变。
+      chat.transfers = chat.transfers.slice();
+      app.device = app.device ? { ...app.device } : { device_id: 'peer-a' };
+      if (chat.transfers !== beforeTransfers || app.device !== beforeDevice) changed += 1;
+      await Vue.nextTick();
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    await new Promise((r) => setTimeout(r, 400));
+    mo.disconnect();
+    return { ok: true, rounds: 10, changed, mutations: recs.length };
+  })()`);
+  check("闪烁探针非空转：10 轮 churn 真的换掉了 store 引用（changed == 10）",
+    !!run && run.changed === 10, "changed == 10", JSON.stringify(run));
+  check("闪烁探针：10 轮无关刷新后，那行字的 DOM 变更次数为 0",
+    !!run && run.mutations === 0, "mutations == 0", JSON.stringify(run));
+  console.log("  · 「已被清理」闪烁实测：" + JSON.stringify(run));
+  return true;
+}
 
 async function runMsgOverflow(cdp, url) {
   await cdp.send("Page.navigate", { url });
