@@ -105,6 +105,8 @@ windows-freeze-observability-2026-11-02.md[SG7T]: F:Windows 假死取证：HANG 
 windows-minimal-permission-2026-10-15.md[SG7S]: F:Windows/精简系统局域网连通性：五种「连不上」分型与不关防火墙的最小权限放行 | R:code:src-tauri/src/logging.rs,code:docs/notes/three-machine-test-2026-11-04.md,code:docs/protocol-invariants.md | A:每型的系统检测命令与日志检索键；检测是「能力在不在」不是结论 | S:禁 ping ≠ 断网，可达性用 TCP 判；放行不得关防火墙/卸安全软件/改系统安全策略。
 zero-regression-execution-2026-11-02.md[SG6T]: F:零回归执行基线（只读）：HEAD/分支/远端 tip/领先提交/工作树与架构面、门禁读数 | R:code:package.json,code:scripts/verify.mjs,code:docs/domains.data.mjs | A:改动前的现状读数与复跑命令（每条都挂命令） | S:只记录现状，不代表任何改动已完成；读数是 2026-11-02 当天，引用前用格内命令现算。
 aoci-deviation-2026-11-05.md[SG7S]: F:既有偏差账本：2026-11-05 拍板口径、当次分类读数、missing 按目录聚合、orphan 与 E 档位处理、恢复全量对齐的条件 | R:code:docs/aoci-usage.md | A:判 AOCI 脏程度的唯一口径：比分类计数，不比退出码 | S:读数只代表 2026-11-05 当天，引用前用文档 §5 的命令现算。missing/stale 存量不补是 2026-11-05 的拍板，不是漏写；判回归看分类计数有没有变坏，不看 `aoci check` 的退出码。
+handover-2026-11-09.md[SU7L]: F:2026-11-09 交接：5.20.4 发布与历史改写、5.20.5 合并批（转场裁剪/预览滑动/输入卡弧度/图片控件对齐）、AOCI 状态与 authoring 批次、Windows renderer 报告取证 | R:code:docs/VERSIONING.md | A:接手先读「一句话现状」与 §2 未完成段，再按 §4 的坑避雷 | S:分层标了「未复验/未知」；合并批之后旧版本号与旧 SHA 只作历史，别再按 5.20.6–5.20.9 对账。
+narrow-glass-strips-5.18.34.md[SV4T]: F:5.18.34 窄窗流动背景「白条」缺陷复盘：症状、根因（文件:行）、两条独立证据、守卫与复现命令 | R:code:src/style.css,code:src/components/MessageItem.vue | A:回归时按文中命令复现与验证 | S:自证靠摘掉时间分割线的 ambient-canvas-child 让 AC-08 变红；锚点被删则空转。
 
 ===/Users/wendongfu/Documents/code/gosslan/docs/templates/===
 ADR.md[SQ4S]: F:ADR 模板：11 节固定骨架（含 Invariants、Compatibility、Revisit） | R:code:docs/adr/0007-protocol-versioning.md | A:新增 ADR 的格式契约 | S:Status 默认 Proposed，Accepted 要用户审核才写；Revisit Conditions 那节是防 legacy 变永久技术债。
@@ -941,6 +943,10 @@ ambient-motion.md[SG7L]: F:背景动态（Ambient Motion）目标态规格 v0.5�
 controls.md[SG7M]: F:按钮与输入控件规格：语义 token/Tailwind 映射、尺寸梯度、按钮变体与输入态 | R:code:src/style.css,code:docs/design-language/sources.md,code:docs/design-guidelines.md | A:目标态数值与 needs-user-signoff 条目 | S:所有数值是目标态；明显改变观感的条目必须标 needs-user-signoff，不能当已实现。token 定义在 src/style.css。
 liquid-glass.md[SG7M]: F:玻璃层实现规格：该不该用玻璃、三档数值、四层光学做法与禁止清单 | R:code:docs/design-guidelines.md,code:docs/design-language/ambient-motion.md | A:亮/暗两态数值区间与验收清单 | S:是 Gosslan 目标规格，不是 Apple 参数复刻；[官方]与[推断]必须分清。禁止 SVG 折射与彩色发光阴影；滚动容器内不放玻璃列表项；三种回退都要可用。
 sources.md[SG6T]: F:设计语言来源与置信度：五档分级（A 官方…E 个人推断）与复现读数命令 | R:code:docs/design-language/README.md,code:docs/design-guidelines.md | A:每条结论的来源档位 | S:E 档数字是本仓设计决策，不是平台原始参数；计数随代码变化，引用具体数字以当次运行结果为准。
+density-and-scroll.md[SV6S]: F:密度与滚动条标准：card-pad 12 / inset 8 / section-gap 16 / row-min-h 40 / gutter 8 / scroll-track 8 / scroll-inset 16 / thumb 72% 等 token 刻度与验收表 | R:code:src/style.css,code:docs/design-guidelines.md | A:面板密度与滚动条按本文取值，刻度表是全站唯一来源 | S:thumb 72% 是 WCAG 1.4.11 的最小达标值；50% 旧值只有 2.18:1，判红。
+motion-system.md[SV6S]: F:全站交互动效规范：三条原则、时长阶梯（instant 100 / fast 150 / fade 200 / duration 240→移动 280 / exit 180→200 / slow 320→360）、曲线、reduce 与组件接入 | R:code:src/style.css,code:docs/design-guidelines.md | A:新增动效按阶梯选 token，入场出场分档 | S:组件里禁止 isMobile?280:240 分叉；ripple/flash/shake/spin/ambient 是物理节奏，不许挪用到通用场景。
+theme-contrast.md[SV7T]: F:全局配色与对比度契约：以主色为种子在 OKLCH 求解、12 项运行时 token、APCA+WCAG 双阈值表与表情胶囊重做 | R:code:src/utils/themePalette.ts,code:src/style.css | A:改色唯一合法流程＝改求解器→dump-theme-tokens 生成 CSS→npm test | S:style.css 静态值与运行时求解必须逐 token 相同；手改一边 themePalette.test 的防漂移一条会红。
+ux-criteria.md[SV7S]: F:G-1～G-16 体验约束层：不动业务代码/复用组件/不引 antd/不加依赖/不以动画当升级/三档一致/可访问性/四态/不改交互习惯/对比度/4px 网格/单 accent/空态/动效/文案/失败分层 | R:code:docs/design-guidelines.md,code:src/utils/designGuards.ts | A:改版与评审的裁决顺序，每条给判绿/判红锚点与门禁 | S:冲突时按文首优先级裁决；G-13 的 68px 品牌底盘例外是用户 #22 裁决，不是通用插画。
 
 ===/Users/wendongfu/Documents/code/gosslan/scripts/archive/===
 README.md[SQ5T]: F:scripts/archive 的归档说明：只放不再被门禁/CI/package.json 引用的一次性脚本，逐条列用途与「何时还会用到」 | R:code:scripts/archive/build-android.ps1,code:scripts/archive/flatten-ios-icons.mjs,code:scripts/archive/rename.mjs,code:scripts/archive/scrape-douyin-emoji.py,code:scripts/build-android-releases.sh | A:归档判据：不再被门禁/CI/package.json 引用；归档不等于删除，但不再维护 | S:不要再往这里放仍在使用的工具；flatten-ios-icons 是例外——每次重生成 iOS 图标后仍必须跑一次。
@@ -1179,3 +1185,20 @@ preview.html[SU4T]: F:Still v1 的 State 组件预览页（静态） | R:code:de
 bundle.css[FZ3T]: F:Still v1 预览页的页级默认样式 | R:code:designs/gosslan-redesign/design-system/project/README.md | A:旧预览页公共引用 | S:历史资源；现行预览样式在 design-system-pulse/。
 bundle.js[FZ3T]: F:Still v1 预览全局挂件（GosslanStill），避免旧设计系统页报缺 bundle | R:code:designs/gosslan-redesign/design-system/project/components/index.d.ts | A:脚本加载即挂在 window | S:历史占位，不参与应用打包。
 index.d.ts[FZ4T]: F:GosslanStill 全局对象的类型（token 字段与接口） | R:code:designs/gosslan-redesign/design-system/project/components/bundle.js | A:供 v1 预览页 TS 引用 | S:必须与 bundle.js 同步，历史文件。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/docs/===
+ai-prompts.md[SU4S]: F:可直接复制的 AI 实现提示词：总入口 + 六批（基础层/桌面主聊天/移动端/独立窗口/状态与边界/图标与应用图标） | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:按批次顺序投喂；先发总入口再发分批 | S:提示词假定已读 HANDOFF；跳过总入口直接喂分批会漏全局约束。
+audit.md[SU4S]: F:改版前的现有 UI 审计：P0 四条（亮色表面层级坍塌、焦点环不达 3:1、排版双标尺、单聊缺发送者锚点）与 P1 一致性问题 | R:code:designs/gosslan-redesign/README.md | A:结论先行，逐条给现象与改法 | S:审计对象是 v1 现状；改版后只作历史对照，别当现行缺陷清单。
+decisions.md[SU4M]: F:新旧差异与设计决策台账：方向、IA、桌面列表宽 250→320、版本号移出列表底、单聊去头像列、群聊不换第二套气泡色、设置双栏 9 分区等 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:实现遇到「为什么这样」先查本文 | S:决策带日期与用户裁决来源；改结论要追加，不要覆盖旧决策。
+edge-cases.md[SU4S]: F:边界情况规范：长文本/溢出/密集信息四条总规则、各表面处理、CSS 契约、极端内容验收与检查清单 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:实现长内容与窄窗时逐条对照 | S:「一个状态只出现一次」是用户裁决（§2.1），同屏重复出现状态即缺陷。
+feature-coverage.md[SU4M]: F:功能覆盖矩阵：主界面导航窗口、消息类型、操作与状态、通讯录/好友/发现、群组、收藏/链接/共享/任务、搜索逐项映射画板 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:核对「每个现有功能都有画板」 | S:矩阵不等于实现状态；缺项要回到 product-gaps 裁决，不能自行补画板当已实现。
+product-gaps.md[SU4S]: F:功能闭环与缺口审计：路由、浮层、聊天、关系链、设置五域的缺口与「明显不直观」清单 | R:code:designs/gosslan-redesign/README.md | A:改版前先读，避免把缺口当现状照抄 | S:第七节「需要产品确认」是未决问题，不能由实现方自拍。
+redesign-v2-brief.md[SU4S]: F:v2 方向 Pulse 的立项说明：为什么是 Pulse、视觉系统（色彩/字体/形状层级/动效）与关键交互改动 | R:code:designs/gosslan-redesign/HANDOFF.md | A:HANDOFF 的上游依据 | S:v2 是历史方向；现行口径在 design-system-pulse/README（v2.2）。
+redesign-v2.1-note.md[SU4T]: F:v2.1 收束说明（参考微信/QQ/飞书）：反馈、决策、保留与不保留清单 | R:code:designs/gosslan-redesign/docs/redesign-v2-brief.md | A:解释 v2.1 为何回退某些 v2 做法 | S:只在追溯 v2.1 取舍时读；现行是 v2.2。
+redesign-v2.2-note.md[SU4T]: F:v2.2 说明：为什么是苹果式而非苹果外观、具体数字、复杂页清晰度、边界、品牌（小院 + Rounded 2.0）与待确认项 | R:code:designs/gosslan-redesign/docs/redesign-v2.1-note.md,code:designs/gosslan-redesign/README.md | A:实现 v2.2 前读具体数字 | S:第 6 节「需要你确认」是未决项，不许当已裁决。
+review-checklist.md[SU4S]: F:评审清单：按 v2.2+品牌、v2.2、v2.1、方向、Foundations/Layout/Desktop… 分层的勾选表 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:评审画板前逐项勾 | S:清单按版本分层；别拿旧版条目评新版画板。
+verification-v2.md[SU4S]: F:v2.2 Pulse 验证记录：结构校验、浏览器目视、长内容注入测量、品牌与图标、状态去重、Play 模式交互、未验证清单 | R:code:designs/gosslan-redesign/docs/verification.md | A:复现设计验证的步骤与读数 | S:第 5 节列出未验证/限制，不能当已通过。
+verification.md[SU4T]: F:v1 验证记录：结构校验、浏览器渲染、交互点击、未验证清单与业务代码边界 | R:code:designs/gosslan-redesign/README.md | A:历史验证步骤 | S:v1 记录；现行验证见 verification-v2。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/screenshots/===
+README.md[SU4T]: F:参考截图索引：画布总览、边界、移动列表/联系人/头部、地基与布局、设计系统封面、应用图标、吉祥物与界面图标 | R:code:designs/gosslan-redesign/HANDOFF.md | A:快速建立视觉印象 | S:截图不是实现规格；实现以 HANDOFF/tokens/画板/代码为准。
