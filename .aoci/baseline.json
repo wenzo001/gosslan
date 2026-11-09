@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-09T12:03:18Z",
+  "updated_at": "2026-11-09T12:04:20Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "59faa8b2f3a86a2b06be3ae47890183314b0c2af2082e1dbbea167391c5655d4",
-      "size": 481226,
-      "normalized_sha256": "59faa8b2f3a86a2b06be3ae47890183314b0c2af2082e1dbbea167391c5655d4"
+      "sha256": "0ead0f4a5356f50a7e71139616bc1fbeb2eea5a7cabde9f4fc958242cdc95166",
+      "size": 482043,
+      "normalized_sha256": "0ead0f4a5356f50a7e71139616bc1fbeb2eea5a7cabde9f4fc958242cdc95166"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -6678,57 +6678,69 @@
     },
     "src/components/chat/ChatHeader.vue": {
       "role": "index",
-      "sha256": "c10b606b01522d76534d8b70c029a392cb213defbace80d36637a9212a3cfb38",
-      "size": 12837,
-      "normalized_sha256": "c10b606b01522d76534d8b70c029a392cb213defbace80d36637a9212a3cfb38"
+      "sha256": "b3e6d224e61f8fa1c65cba819602af85d4890c8c42989298eb04c4b4c32f66cd",
+      "size": 12889,
+      "normalized_sha256": "b3e6d224e61f8fa1c65cba819602af85d4890c8c42989298eb04c4b4c32f66cd"
+    },
+    "src/components/chat/DropSendConfirm.vue": {
+      "role": "index",
+      "sha256": "94dcf83d9d85adefb535669ecc8c9b44f6aaf7d9f28c3f9aa124020b6191c623",
+      "size": 798,
+      "normalized_sha256": "94dcf83d9d85adefb535669ecc8c9b44f6aaf7d9f28c3f9aa124020b6191c623"
     },
     "src/components/chat/MessageComposer.vue": {
       "role": "index",
-      "sha256": "0ae9aeded3e061c535c91499ab4c0e09b0700d55526d69087c6ea3b179e4fc15",
-      "size": 38089,
-      "normalized_sha256": "0ae9aeded3e061c535c91499ab4c0e09b0700d55526d69087c6ea3b179e4fc15"
+      "sha256": "59cddd7107f3c50ac57504261a00cef02aaa5010b95b671c3e703b5f6e80b099",
+      "size": 74715,
+      "normalized_sha256": "59cddd7107f3c50ac57504261a00cef02aaa5010b95b671c3e703b5f6e80b099"
     },
     "src/components/conversation/ConversationContextMenu.vue": {
       "role": "index",
-      "sha256": "da42e7d3f5d0970ecf2b921706d413ac5965aed43fd91507234be555243050a7",
-      "size": 1675,
-      "normalized_sha256": "da42e7d3f5d0970ecf2b921706d413ac5965aed43fd91507234be555243050a7"
+      "sha256": "b6eb080422d2a90094c10895ccae46c8874a03363723e687d0f933df0c28ef1e",
+      "size": 1855,
+      "normalized_sha256": "b6eb080422d2a90094c10895ccae46c8874a03363723e687d0f933df0c28ef1e"
     },
     "src/components/conversation/ConversationListItem.vue": {
       "role": "index",
-      "sha256": "2e8662262f0b7d6d67e718cb4d38b80f44537d54f48c9e8a24a690743bfcc17e",
-      "size": 15451,
-      "normalized_sha256": "2e8662262f0b7d6d67e718cb4d38b80f44537d54f48c9e8a24a690743bfcc17e"
+      "sha256": "af46fc4cda486f30b3efbd6a44d7f9754a3c31115b322708670a98cb4d5c8993",
+      "size": 14722,
+      "normalized_sha256": "af46fc4cda486f30b3efbd6a44d7f9754a3c31115b322708670a98cb4d5c8993"
     },
     "src/components/conversation/FriendContextMenu.vue": {
       "role": "index",
-      "sha256": "378fe1d0ad1a426fc97c594d5e3fcef2d4ec3a228f078e619f1143bf8ef30f5e",
-      "size": 1634,
-      "normalized_sha256": "378fe1d0ad1a426fc97c594d5e3fcef2d4ec3a228f078e619f1143bf8ef30f5e"
+      "sha256": "4e4d859f65f588840791e15f749c9a5412a087e05f675fe240ee22fcbd82ee25",
+      "size": 1736,
+      "normalized_sha256": "4e4d859f65f588840791e15f749c9a5412a087e05f675fe240ee22fcbd82ee25"
     },
     "src/components/conversation/FriendListItem.vue": {
       "role": "index",
-      "sha256": "0600759c3e8ecaebb243db12e1fa8b7f97b26b1afd63624f93e3eb5818514b09",
-      "size": 8330,
-      "normalized_sha256": "0600759c3e8ecaebb243db12e1fa8b7f97b26b1afd63624f93e3eb5818514b09"
+      "sha256": "31e86834299be82da017090f20c958115644dc6de5a4221c2c76de46c79c7a67",
+      "size": 6498,
+      "normalized_sha256": "31e86834299be82da017090f20c958115644dc6de5a4221c2c76de46c79c7a67"
     },
     "src/components/conversation/FriendRequestList.vue": {
       "role": "index",
-      "sha256": "e587b60d946175995c6115d8d15652ebc8dece0a1f248926c7ccd0b81c52c780",
-      "size": 4716,
-      "normalized_sha256": "e587b60d946175995c6115d8d15652ebc8dece0a1f248926c7ccd0b81c52c780"
+      "sha256": "a72172d55d995093112e8ce340260b5ff2f41de0a5d60762dee14b5fc4d484f8",
+      "size": 4699,
+      "normalized_sha256": "a72172d55d995093112e8ce340260b5ff2f41de0a5d60762dee14b5fc4d484f8"
+    },
+    "src/components/message/BubbleTail.vue": {
+      "role": "index",
+      "sha256": "6069f7bc3794f34b8b989fd0b729b48e11605df861da38ed6f9ba09936a4f9b6",
+      "size": 6923,
+      "normalized_sha256": "6069f7bc3794f34b8b989fd0b729b48e11605df861da38ed6f9ba09936a4f9b6"
     },
     "src/components/message/ForwardModal.vue": {
       "role": "index",
-      "sha256": "af494cb20f482f81500ee26eaa894c94bf69a51f84c4bfdd03ae1a412a4230e2",
-      "size": 8361,
-      "normalized_sha256": "af494cb20f482f81500ee26eaa894c94bf69a51f84c4bfdd03ae1a412a4230e2"
+      "sha256": "d6bde4cdc9aee85561011e057e20442f5c71cdf7573a8c2ad332d748897238af",
+      "size": 7925,
+      "normalized_sha256": "d6bde4cdc9aee85561011e057e20442f5c71cdf7573a8c2ad332d748897238af"
     },
     "src/components/message/ImageLightbox.vue": {
       "role": "index",
-      "sha256": "685b53f4ffb3a1b140b651adf9edfb2cd78e48dedc1aa8cfc9e8b9c2a7f73b13",
-      "size": 18352,
-      "normalized_sha256": "685b53f4ffb3a1b140b651adf9edfb2cd78e48dedc1aa8cfc9e8b9c2a7f73b13"
+      "sha256": "2244c67592b9b69ffdae9649a7611275c5332033f27e11050767241f4d67dd51",
+      "size": 45599,
+      "normalized_sha256": "2244c67592b9b69ffdae9649a7611275c5332033f27e11050767241f4d67dd51"
     },
     "src/components/message/MentionText.vue": {
       "role": "index",
@@ -6738,51 +6750,51 @@
     },
     "src/components/message/MergeCard.vue": {
       "role": "index",
-      "sha256": "b423ac0f7cc456f8fbc34d95f5d739122365d0fb512463be561a94f372ddfacf",
-      "size": 3164,
-      "normalized_sha256": "b423ac0f7cc456f8fbc34d95f5d739122365d0fb512463be561a94f372ddfacf"
+      "sha256": "b70cf6c0400bce96f87c5e51c18c6bdd852195cb8c83a974cbd449714ec5b8c9",
+      "size": 3291,
+      "normalized_sha256": "b70cf6c0400bce96f87c5e51c18c6bdd852195cb8c83a974cbd449714ec5b8c9"
     },
     "src/components/message/MergeCardModal.vue": {
       "role": "index",
-      "sha256": "6f667be5502c222064a1200b9e3b6d752dace28e7fc648666702095e5500760d",
-      "size": 10746,
-      "normalized_sha256": "6f667be5502c222064a1200b9e3b6d752dace28e7fc648666702095e5500760d"
+      "sha256": "80d70c9aabd307cd6902359a538036571610a94f8440848f6174ee695d9dedf1",
+      "size": 12444,
+      "normalized_sha256": "80d70c9aabd307cd6902359a538036571610a94f8440848f6174ee695d9dedf1"
     },
     "src/components/message/MessageAvatar.vue": {
       "role": "index",
-      "sha256": "594b74ac5bc1461097bcfaa6e8745d045bdf002c5b9291c8f7f360004d609d8b",
-      "size": 1160,
-      "normalized_sha256": "594b74ac5bc1461097bcfaa6e8745d045bdf002c5b9291c8f7f360004d609d8b"
+      "sha256": "db58f6c3d318af3337eddc7afb8df95da2d265cf9e2e176719391c51d48f91f8",
+      "size": 1469,
+      "normalized_sha256": "db58f6c3d318af3337eddc7afb8df95da2d265cf9e2e176719391c51d48f91f8"
     },
     "src/components/message/MessageCodeBubble.vue": {
       "role": "index",
-      "sha256": "095533203a0088a3582ebe2e9c045133e2b8d0020b06444a630288732ad4818f",
-      "size": 4441,
-      "normalized_sha256": "095533203a0088a3582ebe2e9c045133e2b8d0020b06444a630288732ad4818f"
+      "sha256": "f133df7ad7b9a9d44ee336d36f2f4ffaa7ade2c7f1e55341b10ad91970766739",
+      "size": 9688,
+      "normalized_sha256": "f133df7ad7b9a9d44ee336d36f2f4ffaa7ade2c7f1e55341b10ad91970766739"
     },
     "src/components/message/MessageContentModal.vue": {
       "role": "index",
-      "sha256": "de5db52a5033b1ac359f34c2f4c893391883d507241cb3cf377174d79a7878d8",
-      "size": 4810,
-      "normalized_sha256": "de5db52a5033b1ac359f34c2f4c893391883d507241cb3cf377174d79a7878d8"
+      "sha256": "f4ecc6d062bd4d851887db720031718f2929ff033ba548e6844875d0aa520222",
+      "size": 5005,
+      "normalized_sha256": "f4ecc6d062bd4d851887db720031718f2929ff033ba548e6844875d0aa520222"
     },
     "src/components/message/MessageContextMenu.vue": {
       "role": "index",
-      "sha256": "41847e14db21b5b7a238885238012d51ad950ab370e48d529b300b23e2be6d8d",
-      "size": 9132,
-      "normalized_sha256": "41847e14db21b5b7a238885238012d51ad950ab370e48d529b300b23e2be6d8d"
+      "sha256": "073cff1e31447b3f9afd993fd6e5cee698093969f0630d615028b33ca09a3e2e",
+      "size": 9178,
+      "normalized_sha256": "073cff1e31447b3f9afd993fd6e5cee698093969f0630d615028b33ca09a3e2e"
     },
     "src/components/message/MessageFileBubble.vue": {
       "role": "index",
-      "sha256": "441d97d34cc40ba16d8b32f7f5a42f493e56f1a2a113c907e911dddf0aa35a1a",
-      "size": 11820,
-      "normalized_sha256": "441d97d34cc40ba16d8b32f7f5a42f493e56f1a2a113c907e911dddf0aa35a1a"
+      "sha256": "819597f5da37f30c823a9cff38da2c575be8084b1f98e20798e9240f7f6bee2b",
+      "size": 11859,
+      "normalized_sha256": "819597f5da37f30c823a9cff38da2c575be8084b1f98e20798e9240f7f6bee2b"
     },
     "src/components/message/MessageImageBubble.vue": {
       "role": "index",
-      "sha256": "ea136ee8cd551cff30ed22d3a33f8303bead0ca0c2b5418162434cabeeff5168",
-      "size": 11540,
-      "normalized_sha256": "ea136ee8cd551cff30ed22d3a33f8303bead0ca0c2b5418162434cabeeff5168"
+      "sha256": "33a4ef6f52e280aecd33d5af0f670dd345575f1fafdde05ef320deb5305ecf34",
+      "size": 13808,
+      "normalized_sha256": "33a4ef6f52e280aecd33d5af0f670dd345575f1fafdde05ef320deb5305ecf34"
     },
     "src/components/message/MessageLinkText.vue": {
       "role": "index",
@@ -6792,27 +6804,27 @@
     },
     "src/components/message/MessageReactionBar.vue": {
       "role": "index",
-      "sha256": "4e98a6e26cc4348cb6044a5aec6cdc7dff5b2b6739329955b04e0c9348f81419",
-      "size": 13259,
-      "normalized_sha256": "4e98a6e26cc4348cb6044a5aec6cdc7dff5b2b6739329955b04e0c9348f81419"
+      "sha256": "7056a31d48f950234e36b4fed988827384c7eb98e547b365614fdda4c66b5238",
+      "size": 14061,
+      "normalized_sha256": "7056a31d48f950234e36b4fed988827384c7eb98e547b365614fdda4c66b5238"
     },
     "src/components/message/MessageReceipt.vue": {
       "role": "index",
-      "sha256": "f0306033c7ef0df6f5f1c7a3f31e21fbf5d553db4fd5094cd2b19da0db14462d",
-      "size": 20975,
-      "normalized_sha256": "f0306033c7ef0df6f5f1c7a3f31e21fbf5d553db4fd5094cd2b19da0db14462d"
+      "sha256": "1e496a40458d94e19d854603b80dd1327c5e724b941d246d1fa49f9d17e6f01d",
+      "size": 21167,
+      "normalized_sha256": "1e496a40458d94e19d854603b80dd1327c5e724b941d246d1fa49f9d17e6f01d"
     },
     "src/components/message/MessageTextBubble.vue": {
       "role": "index",
-      "sha256": "0df77da4c97214a46a9b446ec2157f3bed1ac72a08b6e6391112c91de872a2e3",
-      "size": 11398,
-      "normalized_sha256": "0df77da4c97214a46a9b446ec2157f3bed1ac72a08b6e6391112c91de872a2e3"
+      "sha256": "caad40898a7a528375dcf0c87059a8f572803285234892999c015c057194d5dd",
+      "size": 13000,
+      "normalized_sha256": "caad40898a7a528375dcf0c87059a8f572803285234892999c015c057194d5dd"
     },
     "src/components/message/UnsupportedKindBubble.vue": {
       "role": "index",
-      "sha256": "2a55f3da0ae99627f1d318e8ecd69ac5662c826c80a8bd9fbdc04205415478b0",
-      "size": 2179,
-      "normalized_sha256": "2a55f3da0ae99627f1d318e8ecd69ac5662c826c80a8bd9fbdc04205415478b0"
+      "sha256": "03930816e7375961dded01e7231650f063d0c27bea3d39de1da50d4eb89bbc36",
+      "size": 2200,
+      "normalized_sha256": "03930816e7375961dded01e7231650f063d0c27bea3d39de1da50d4eb89bbc36"
     },
     "src/components/search/ChatSearchDialog.vue": {
       "role": "index",

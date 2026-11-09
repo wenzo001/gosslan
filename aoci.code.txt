@@ -643,6 +643,7 @@ VersionMismatchNotice.vue[EU4T]: F:版本错配提示条：前端构建版本与
 ChatHeader.vue[EU7M]: F:聊天头部：会话标题、链路提示与入口 | R:code:src/components/ChatWindow.vue,code:src/utils/peerConnectionInfo.ts | A:头部状态与按钮 | S:最后一枚群按钮是「从群里补齐历史消息」，刻意暗一档（"不要太明显，但要有功能"）；"在搬"的读数取自 store，不在这判第二遍；跑时图标换转圈（18px 调暗几乎看不出）。
 MessageComposer.vue[EU9L]: F:消息输入区：@ 名单、粘贴上限、发送与引用 | R:code:src/components/MessageItem.vue,code:src-tauri/src/protocol.rs | A:发送前的载荷组装与 @ 名单 | S:@ 名单是三态：不能给默认值，空数组是「明确回答谁都没 @」，与「不知道」是两回事。⚠️ 不能只依赖 KeyboardEvent.isComposing——macOS WKWebView 上用 Enter 提交候选时它会假。粘贴限总量而不是单次：按住 Ctrl+V 连发每次都插一份，提示还要节流否则刷屏。
 BackToLatestButton.vue[EU4T]: F:「回到最新」悬浮圆钮：36×36 全部命中区、真离底才可点、出现只播一次 fade | R:code:src/utils/backToLatest.ts,code:src/components/VirtualList.vue | A:visible 由几何间隙驱动；不可点时 pointer-events:none + opacity-0 + aria-hidden + tabindex=-1 | S:不许加 tap-safe/::after 扩热区；按压反馈自带 translate，否则全站 active scale 会顶掉位移。
+DropSendConfirm.vue[EU4T]: F:拖拽发送确认框（聊天面板与左侧会话列表两个落点共用），只做呈现 | R:code:src/components/ui/ConfirmDialog.vue,code:src/composables/useDropSend.ts | A:要不要弹由 pending 决定，正文与条目来自拖入那一刻冻住的快照 | S:快照必须在拖入时冻结；实时读当前草稿会让确认框内容在拖后变化。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/conversation/===
 ConversationContextMenu.vue[EU5T]: F:会话行右键菜单 | R:code:src/components/conversation/ConversationListItem.vue,code:src/components/ContextMenu.vue | A:置顶/免打扰/删除等项 | S:删除统一走右键菜单（用户点名的口径），不再在行上放叉叉；置顶是纯本地偏好、不广播。
@@ -668,6 +669,7 @@ MessageReactionBar.vue[EU8M]: F:气泡下方的表情回应条 | R:- | A:折叠�
 MessageReceipt.vue[EU7L]: F:已读回执：单聊图标与群成员头像弹层 | R:code:src/components/MessageItem.vue | A:已读成员弹层与四向摆位 | S:摆位走 useHoverCard.placeCard：不再写死右对齐，入口在左半往右长。pos 与展开权双向 watch（滚动只清坐标、回收/抢权只清 isActive，缺一向则两浮层并存或占权不可见）。
 MessageTextBubble.vue[EU8M]: F:文本气泡（含引用与 @ 展示） | R:code:src/components/message/MentionText.vue | A:气泡样式与选字模式 | S:展示层的修补绝不能在发送或落库侧改文案——那会污染对端视图与历史。触屏下气泡默认不可选（长按归消息菜单），只有进选字模式才开原生选字。算对比度前必须把 var(--bubble-bg) resolve 成真实 hex：contrastRatio 不认变量字符串（text-primary 在浅蓝气泡上只有 2.94 就是历史坑）。
 UnsupportedKindBubble.vue[EU7T]: F:认不出的消息类型怎么显示（INV-P24 第 2 条） | R:- | A:未知 kind 的降级展示 | S:触发条件只有一个：kind 不在 protocol.rs 的 WIRE_KINDS 表里。不能直接隐藏（等于静默丢消息）；原文要主动展开才给——载荷是 JSON，默认铺在时间线上正是用户不要的。
+BubbleTail.vue[EU4S]: F:气泡尾巴（叶形 SVG）的唯一实现：五个气泡组件共用，形状只在这一处 | R:code:src/utils/bubbleSkinPath.ts,code:src/style.css | A:盒子 14×14；朝左外框在 x=10、朝右在 x=4（对应 .tail-other/.tail-mine 的 -10px）；填充盖掉边缘 y=4..14 并到底 | S:切线端点必须顺边框（(10,6)/(7,14)），否则接缝鼓包；改几何同改 style.css 定位。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/search/===
 ChatSearchDialog.vue[EU9L]: F:搜索聊天记录的结果页（逐条命中） | R:code:src-tauri/src/db/messages.rs,code:src/components/ConversationList.vue | A:搜索与筛选契约 | S:命中总数必须按当前筛选走后端算，不能只筛已加载的那几条。选人后候选里就只剩他自己——这是设计不是漏考虑。与列表搜索框的分工：那里是即时过滤，回车才进这个逐条结果页。这里只缺方向键，Esc 与点遮罩由 BaseModal 兜住。重置筛选不该多发请求，否则每次打开都白跑一次全表扫描。cellText 只走 previewBody(kind,content,0)：SQL 命中原文，图片/文件/合并/任务/投票/公告六种载荷也是 JSON；0＝不截断，截了关键词无位定位。
