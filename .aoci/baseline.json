@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-09T11:53:31Z",
+  "updated_at": "2026-11-09T11:56:11Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "94d016638b315ea85f58cd49c5a7b481b67d5f9d61a1149c78770ca3c740a329",
-      "size": 456728,
-      "normalized_sha256": "94d016638b315ea85f58cd49c5a7b481b67d5f9d61a1149c78770ca3c740a329"
+      "sha256": "a63a97e146bf9015c9ec2fc65526f9503d0087bb61f62f79294fb6cb94c721b4",
+      "size": 464094,
+      "normalized_sha256": "a63a97e146bf9015c9ec2fc65526f9503d0087bb61f62f79294fb6cb94c721b4"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1317,6 +1317,84 @@
       "size": 12889,
       "normalized_sha256": "d0b3216f51fbc64cfc3392514e7316f3503a610e94dd426a907fcb5e494aa2a6"
     },
+    "designs/gosslan-redesign/docs/ai-prompts.md": {
+      "role": "index",
+      "sha256": "7f368c675c1c88446ff45bbf80bc3b87df04550a091d2fc9baf97041151d2ac5",
+      "size": 6524,
+      "normalized_sha256": "7f368c675c1c88446ff45bbf80bc3b87df04550a091d2fc9baf97041151d2ac5"
+    },
+    "designs/gosslan-redesign/docs/audit.md": {
+      "role": "index",
+      "sha256": "8b76d8acc25553098b1d39bebb6d00464fba66568e0eeccae4e4a17007d3c0f2",
+      "size": 12574,
+      "normalized_sha256": "8b76d8acc25553098b1d39bebb6d00464fba66568e0eeccae4e4a17007d3c0f2"
+    },
+    "designs/gosslan-redesign/docs/decisions.md": {
+      "role": "index",
+      "sha256": "771769272fed66b795c30ffd353c737120fa0d37a8b431694cfe6acaa1c5d051",
+      "size": 15669,
+      "normalized_sha256": "771769272fed66b795c30ffd353c737120fa0d37a8b431694cfe6acaa1c5d051"
+    },
+    "designs/gosslan-redesign/docs/edge-cases.md": {
+      "role": "index",
+      "sha256": "a507d1f80f00a4ce1f210393a7784b96040f4c565191fbc8317d9578712af389",
+      "size": 6586,
+      "normalized_sha256": "a507d1f80f00a4ce1f210393a7784b96040f4c565191fbc8317d9578712af389"
+    },
+    "designs/gosslan-redesign/docs/feature-coverage.md": {
+      "role": "index",
+      "sha256": "53eb0c3d5c8bff45b7d793ddd9f8f043b6982bf329184de440d97aa294868a5a",
+      "size": 16609,
+      "normalized_sha256": "53eb0c3d5c8bff45b7d793ddd9f8f043b6982bf329184de440d97aa294868a5a"
+    },
+    "designs/gosslan-redesign/docs/product-gaps.md": {
+      "role": "index",
+      "sha256": "5eeb7363b1f7837e6d2d8bbc72904d37061256bd7d9852c116893add4622e330",
+      "size": 11015,
+      "normalized_sha256": "5eeb7363b1f7837e6d2d8bbc72904d37061256bd7d9852c116893add4622e330"
+    },
+    "designs/gosslan-redesign/docs/redesign-v2-brief.md": {
+      "role": "index",
+      "sha256": "fd349dbbd153d4370fd5ae905d05c02476fedf5a1edeb27e281cd5dfbc5612b4",
+      "size": 7146,
+      "normalized_sha256": "fd349dbbd153d4370fd5ae905d05c02476fedf5a1edeb27e281cd5dfbc5612b4"
+    },
+    "designs/gosslan-redesign/docs/redesign-v2.1-note.md": {
+      "role": "index",
+      "sha256": "20391c64fd1c0062ebe55acd3f9d0e7d305684b6bb539f02080dbc7f1593fc0d",
+      "size": 2057,
+      "normalized_sha256": "20391c64fd1c0062ebe55acd3f9d0e7d305684b6bb539f02080dbc7f1593fc0d"
+    },
+    "designs/gosslan-redesign/docs/redesign-v2.2-note.md": {
+      "role": "index",
+      "sha256": "a3630515fdfc4bad2e37e8654613f25d9dd914373b5f5cd48165735b9620b2eb",
+      "size": 4189,
+      "normalized_sha256": "a3630515fdfc4bad2e37e8654613f25d9dd914373b5f5cd48165735b9620b2eb"
+    },
+    "designs/gosslan-redesign/docs/review-checklist.md": {
+      "role": "index",
+      "sha256": "3276751255b89856a97d8d56218a8d4cbc1d8d442f1ad7899d77dbbb1b98bc62",
+      "size": 8510,
+      "normalized_sha256": "3276751255b89856a97d8d56218a8d4cbc1d8d442f1ad7899d77dbbb1b98bc62"
+    },
+    "designs/gosslan-redesign/docs/verification-v2.md": {
+      "role": "index",
+      "sha256": "7d369a5cb3a755b6f91c8dbab1b980f5fdcc3b9c281f0ad6a394ab3bd95db45c",
+      "size": 9365,
+      "normalized_sha256": "7d369a5cb3a755b6f91c8dbab1b980f5fdcc3b9c281f0ad6a394ab3bd95db45c"
+    },
+    "designs/gosslan-redesign/docs/verification.md": {
+      "role": "index",
+      "sha256": "241ed5d598a354cb4c358e53bbb0d6d5a3be880ecf7184a2594c0ce99ca490b9",
+      "size": 4048,
+      "normalized_sha256": "241ed5d598a354cb4c358e53bbb0d6d5a3be880ecf7184a2594c0ce99ca490b9"
+    },
+    "designs/gosslan-redesign/screenshots/README.md": {
+      "role": "index",
+      "sha256": "9ffcf2356bb4960ce29c79118e7b1968053d533a237669508cf12278b55409e2",
+      "size": 849,
+      "normalized_sha256": "9ffcf2356bb4960ce29c79118e7b1968053d533a237669508cf12278b55409e2"
+    },
     "docs/AI_ENGINEERING_INDEX.md": {
       "role": "index",
       "sha256": "0cdd9b05de4ae50ae64a8737bb523ea85c36539c77740e83840d8a3b318b63d8",
@@ -1331,9 +1409,9 @@
     },
     "docs/ARCHITECTURE-MAP.html": {
       "role": "index",
-      "sha256": "29d6f9d67a24bb9bd7b2536a8cb824c9ee305fd08032f9bd4d07619fcab6152b",
-      "size": 214410,
-      "normalized_sha256": "29d6f9d67a24bb9bd7b2536a8cb824c9ee305fd08032f9bd4d07619fcab6152b"
+      "sha256": "9dedc602bd4c32ea8dab0a5a95b44d8366b60424a62fd0282a46f789bdb5e9a6",
+      "size": 214191,
+      "normalized_sha256": "9dedc602bd4c32ea8dab0a5a95b44d8366b60424a62fd0282a46f789bdb5e9a6"
     },
     "docs/ARCHITECTURE-REVIEW-2026-09-24.md": {
       "role": "index",
@@ -1349,9 +1427,9 @@
     },
     "docs/VERSIONING.md": {
       "role": "index",
-      "sha256": "181c0b944bfb839f8964f87f0b6f4b25f0cdac04fcc1082da38178b3dbaae981",
-      "size": 11751,
-      "normalized_sha256": "181c0b944bfb839f8964f87f0b6f4b25f0cdac04fcc1082da38178b3dbaae981"
+      "sha256": "53459730e5eef23d77488a0c70b4060998cf7d60044ad944c03394c6c0bb66a6",
+      "size": 12956,
+      "normalized_sha256": "53459730e5eef23d77488a0c70b4060998cf7d60044ad944c03394c6c0bb66a6"
     },
     "docs/acceptance/1.0-release.md": {
       "role": "index",
@@ -1505,15 +1583,15 @@
     },
     "docs/architecture/frontend-experience-roadmap.md": {
       "role": "index",
-      "sha256": "e0f74ee4066a110df6dff48fa874d3d1323a563176162c976a7421aa829b0f42",
-      "size": 11190,
-      "normalized_sha256": "e0f74ee4066a110df6dff48fa874d3d1323a563176162c976a7421aa829b0f42"
+      "sha256": "a75a86c68764f5d20c2eb4cb4c521085ad959d1db082282983376d07acd6c3e7",
+      "size": 11485,
+      "normalized_sha256": "a75a86c68764f5d20c2eb4cb4c521085ad959d1db082282983376d07acd6c3e7"
     },
     "docs/architecture/frontend-inventory.md": {
       "role": "index",
-      "sha256": "58e397518f5e31180e1caec1b7632942bd5f675250bf46a2dab3c90f3771337f",
-      "size": 173964,
-      "normalized_sha256": "58e397518f5e31180e1caec1b7632942bd5f675250bf46a2dab3c90f3771337f"
+      "sha256": "f151b693d6cf3a197f6b0175269e89d8c69999df17b327fa3ac41d4d24260deb",
+      "size": 176049,
+      "normalized_sha256": "f151b693d6cf3a197f6b0175269e89d8c69999df17b327fa3ac41d4d24260deb"
     },
     "docs/architecture/frontend-performance-antipatterns.md": {
       "role": "index",
@@ -1523,9 +1601,9 @@
     },
     "docs/architecture/open-source-replacement-matrix.md": {
       "role": "index",
-      "sha256": "b39977f6e7f97d18b67ba7d8fec71f8add18443d1db5aad1f01ca0fb6a330a68",
-      "size": 44408,
-      "normalized_sha256": "b39977f6e7f97d18b67ba7d8fec71f8add18443d1db5aad1f01ca0fb6a330a68"
+      "sha256": "7561b0891caf07ab475d0ebd2a228bd4a08c29eb2787ea3db478a33d64cbc6bf",
+      "size": 44601,
+      "normalized_sha256": "7561b0891caf07ab475d0ebd2a228bd4a08c29eb2787ea3db478a33d64cbc6bf"
     },
     "docs/architecture/rc-5.0-report.md": {
       "role": "index",
@@ -1547,9 +1625,9 @@
     },
     "docs/architecture/routing-and-navigation.md": {
       "role": "index",
-      "sha256": "1c8eec1bfdecbd3708e35a15dd4bc55eb7004c9c0a79ea953b3317b47e698050",
-      "size": 18105,
-      "normalized_sha256": "1c8eec1bfdecbd3708e35a15dd4bc55eb7004c9c0a79ea953b3317b47e698050"
+      "sha256": "649da4fc6b46016c811083335a4afef71139ac5f33aad00ca06449771766485d",
+      "size": 18238,
+      "normalized_sha256": "649da4fc6b46016c811083335a4afef71139ac5f33aad00ca06449771766485d"
     },
     "docs/archive/ARCHITECTURE-REVIEW-2026-09-24.md": {
       "role": "index",
@@ -1685,39 +1763,63 @@
     },
     "docs/design-guidelines.md": {
       "role": "index",
-      "sha256": "883888f37cda9a39ef2096e28ce0f1259149d7f5da7691f7af6c29c0d6df5c20",
-      "size": 109190,
-      "normalized_sha256": "883888f37cda9a39ef2096e28ce0f1259149d7f5da7691f7af6c29c0d6df5c20"
+      "sha256": "548cd50d70802ff9c184c385a80d5b41742375daec75d4a8f6e76a343f8138b4",
+      "size": 115059,
+      "normalized_sha256": "548cd50d70802ff9c184c385a80d5b41742375daec75d4a8f6e76a343f8138b4"
     },
     "docs/design-language/README.md": {
       "role": "index",
-      "sha256": "2f546b9f093bd387b437e7c69d7b67f848db44357fc78cfee52298b5f562d981",
-      "size": 9684,
-      "normalized_sha256": "2f546b9f093bd387b437e7c69d7b67f848db44357fc78cfee52298b5f562d981"
+      "sha256": "d67fb96f2a0868c43983e0837d3c07fd21124f5de6ebcdd1e106d48fb67daf97",
+      "size": 12249,
+      "normalized_sha256": "d67fb96f2a0868c43983e0837d3c07fd21124f5de6ebcdd1e106d48fb67daf97"
     },
     "docs/design-language/ambient-motion.md": {
       "role": "index",
-      "sha256": "17b670475ff31a73fc6382990013060ca17b1efe8b2ae243918c38154a5a74c7",
-      "size": 50557,
-      "normalized_sha256": "17b670475ff31a73fc6382990013060ca17b1efe8b2ae243918c38154a5a74c7"
+      "sha256": "3b8e2ccc4a8eb80b93a38dd37e6e4ecd4f813bca6ee29650c2af5bb8ce47b9b2",
+      "size": 57451,
+      "normalized_sha256": "3b8e2ccc4a8eb80b93a38dd37e6e4ecd4f813bca6ee29650c2af5bb8ce47b9b2"
     },
     "docs/design-language/controls.md": {
       "role": "index",
-      "sha256": "23f2c3d8fff57ad043a9a3c0e89a4e74844ee6e779a5e6a3bf897978d5a55f31",
-      "size": 10540,
-      "normalized_sha256": "23f2c3d8fff57ad043a9a3c0e89a4e74844ee6e779a5e6a3bf897978d5a55f31"
+      "sha256": "3183f9d88d396a79d05c41ecb012cddffb18ed95af63ccf6938153d37d6e3070",
+      "size": 10581,
+      "normalized_sha256": "3183f9d88d396a79d05c41ecb012cddffb18ed95af63ccf6938153d37d6e3070"
+    },
+    "docs/design-language/density-and-scroll.md": {
+      "role": "index",
+      "sha256": "696b29f8c2789a1cfba5368420a5f357412ba824647c97005520419c2e872d14",
+      "size": 16588,
+      "normalized_sha256": "696b29f8c2789a1cfba5368420a5f357412ba824647c97005520419c2e872d14"
     },
     "docs/design-language/liquid-glass.md": {
       "role": "index",
-      "sha256": "3aea6b461ba2f502922279a598f2e3e1bc3b4fcee599bf465e95ff4ee78a5836",
-      "size": 15577,
-      "normalized_sha256": "3aea6b461ba2f502922279a598f2e3e1bc3b4fcee599bf465e95ff4ee78a5836"
+      "sha256": "8869cb1f77e2ba59ca09d49a10fa9386d48de408a44b915fd0ffbaf02b9b4dd6",
+      "size": 16840,
+      "normalized_sha256": "8869cb1f77e2ba59ca09d49a10fa9386d48de408a44b915fd0ffbaf02b9b4dd6"
+    },
+    "docs/design-language/motion-system.md": {
+      "role": "index",
+      "sha256": "b91fc1310f05c2c9127ce8bdae7fda7d45c451981e8bee648051ce7402b409e6",
+      "size": 6469,
+      "normalized_sha256": "b91fc1310f05c2c9127ce8bdae7fda7d45c451981e8bee648051ce7402b409e6"
     },
     "docs/design-language/sources.md": {
       "role": "index",
-      "sha256": "4ac21499b83eafc3a119868d0d8fbabcaeac03214ca4cce2e1a4264fae8991b1",
-      "size": 10068,
-      "normalized_sha256": "4ac21499b83eafc3a119868d0d8fbabcaeac03214ca4cce2e1a4264fae8991b1"
+      "sha256": "abf8386248decf28e5cdd5d9e264780685433739fd5e6eb54af6da17e8a17b0f",
+      "size": 13713,
+      "normalized_sha256": "abf8386248decf28e5cdd5d9e264780685433739fd5e6eb54af6da17e8a17b0f"
+    },
+    "docs/design-language/theme-contrast.md": {
+      "role": "index",
+      "sha256": "e25cb546d524e97b3b70b328493f97fd6f0deef6c57f43604332c5e2ab05f619",
+      "size": 6527,
+      "normalized_sha256": "e25cb546d524e97b3b70b328493f97fd6f0deef6c57f43604332c5e2ab05f619"
+    },
+    "docs/design-language/ux-criteria.md": {
+      "role": "index",
+      "sha256": "9147dcbf4f896bbb10f7189a41cea005a28ce78af2aed86b7f3333f8cf0bdb67",
+      "size": 10739,
+      "normalized_sha256": "9147dcbf4f896bbb10f7189a41cea005a28ce78af2aed86b7f3333f8cf0bdb67"
     },
     "docs/domains.data.mjs": {
       "role": "index",
@@ -1899,6 +2001,12 @@
       "size": 24797,
       "normalized_sha256": "517aae091f59da3c0cc50b3163263cb1e74bf1624c9d32b309d04afa0151a1c5"
     },
+    "docs/notes/handover-2026-11-09.md": {
+      "role": "index",
+      "sha256": "73052d948a9d8f5ed9b43ec58658609808836eb8f3369dac322547f5d8aa9adb",
+      "size": 42941,
+      "normalized_sha256": "73052d948a9d8f5ed9b43ec58658609808836eb8f3369dac322547f5d8aa9adb"
+    },
     "docs/notes/harmonyos-feasibility-2026-09-22.md": {
       "role": "index",
       "sha256": "e4e59c8e4ba70c78dad2546124daf011d31a8959a069a16d9be67680b805f2b0",
@@ -1922,6 +2030,12 @@
       "sha256": "7065b455731f5029675b98762aa54cf2c98460ce8134d0f41e33aa7afd0901ea",
       "size": 182792,
       "normalized_sha256": "7065b455731f5029675b98762aa54cf2c98460ce8134d0f41e33aa7afd0901ea"
+    },
+    "docs/notes/narrow-glass-strips-5.18.34.md": {
+      "role": "index",
+      "sha256": "2fdf0a6a8ba163c53d43ad70c10b818e897896b6537e2d8260034b198e47e581",
+      "size": 3419,
+      "normalized_sha256": "2fdf0a6a8ba163c53d43ad70c10b818e897896b6537e2d8260034b198e47e581"
     },
     "docs/notes/scroll-restore-anchor-2026-10-26.md": {
       "role": "index",
