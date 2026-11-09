@@ -1160,14 +1160,46 @@ pub fn effective_previous_exit(
     now_ms: i64,
 ) -> PreviousExit {
     let kind = classify_previous_exit(native_lines);
-    if kind == PreviousExit::SilentKill
+    // 2026-11-09（Windows 真机报告）：`EarlyExit` 同样可能是「安装器接管」——旧进程在
+    // 「已进事件循环、主窗口/WebView2 还没就绪」的窗口里被安装器结束，日志里既没有退出路标、
+    // 也没有崩溃块。只给 `SilentKill` 做免税会让这一形状继续弹「上次运行早期结束」。
+    // 仍然要求同一条证明：**上一轮有启动时刻、且早于安装路标**（`run_started_before_install`）。
+    // 缺启动行 ⇒ 判否 ⇒ 保持 EarlyExit（失败关闭：宁可多弹一次，也不把真失败说成安装）。
+    if matches!(kind, PreviousExit::SilentKill | PreviousExit::EarlyExit)
         && installer.is_some_and(|ev| {
-            installer_is_fresh(ev, now_ms) && run_started_before_install(native_lines, ev)
+            installer_is_fresh(ev, now_ms)
+                && (run_started_before_install(native_lines, ev)
+                    || slice_ended_before_install(native_lines, ev))
         })
     {
         return PreviousExit::Updater;
     }
     kind
+}
+
+/// 上一轮切片的**最后一条带时刻的原生行**是否早于安装路标？
+///
+/// `EarlyExit` 的现场常常**没有 `----- 启动` 行**（日志轮转把启动行切掉了，只剩
+/// `>>> 启动尝试` 与 `>>> code=BOOT_WINDOW_BUILD_START`）⇒ `run_started_before_install`
+/// 永远判否，安装器接管的那一形状就免不了税（2026-11-09 Windows 报告）。
+/// 这里用同一条时间关系、换一个可用锚点：切片里**任何**带时刻的行都不晚于安装时刻
+/// ⇒ 整段现场在安装之前就结束了，结束它的不可能是安装之后才发生的事。
+/// 反例：切片里出现安装之后的时刻（例如装完自动拉起的那一轮又死掉）⇒ 判否，照旧如实提示。
+fn slice_ended_before_install(native_lines: &[String], ev: &InstallerEvidence) -> bool {
+    let mut latest: Option<i64> = None;
+    for l in native_lines {
+        let ms = if let Some(rest) = l.strip_prefix("----- 启动 ") {
+            rest.split_once(" 版本 ").map_or(rest, |(at, _)| at).trim()
+        } else if let Some((_, tail)) = l.rsplit_once('@') {
+            tail.split_once(" 版本 ").map_or(tail, |(at, _)| at).trim()
+        } else {
+            continue;
+        };
+        if let Some(ms) = parse_utc_to_ms(ms) {
+            latest = Some(latest.map_or(ms, |x| x.max(ms)));
+        }
+    }
+    latest.is_some_and(|ms| ms <= ev.mtime_ms)
 }
 
 /// 上一轮是不是在**这次安装之前**就已经在跑？
@@ -2877,6 +2909,58 @@ mod tests {
             (r.kind.as_str(), r.code.as_str()),
             ("silent_kill", "BOOT_PREV_SILENT_KILL"),
             "上一轮在安装之后才启动 ⇒ 安装器不可能是结束它的原因，必须照旧提示"
+        );
+    }
+
+    /// 2026-11-09 Windows 报告：`EarlyExit` 的现场没有 `----- 启动` 行（被日志轮转切掉），
+    /// 只剩 bootstrap 的 `>>> 启动尝试` 与 `BOOT_WINDOW_BUILD_START`。安装器路标比这些行更晚
+    /// ⇒ 整段现场在安装之前就结束了 ⇒ 按「安装器接管」免税，不再弹「上次运行早期结束」。
+    #[test]
+    fn installer_marker_exempts_early_exit_without_start_line() {
+        let raw = vec![
+            ">>> 启动尝试：进程已起，logger 尚未建立（bootstrap 已绑定现场路径） pid=32536  @2026-11-09 09:33:03 版本 5.20.4 · windows-x86_64 · release".to_string(),
+            ">>> >>> code=BOOT_WINDOW_BUILD_START 事件循环启动（WebView2 创建在此步）  @2026-11-09 09:33:03 版本 5.20.4 · windows-x86_64 · release".to_string(),
+        ];
+        let crash = std::path::Path::new("/tmp/gosslan-crash.log");
+        let log_dir = std::path::Path::new("/tmp");
+        assert_eq!(
+            classify_previous_exit(&raw),
+            PreviousExit::EarlyExit,
+            "前提：这形状本来就是 EarlyExit"
+        );
+        let ev = InstallerEvidence {
+            version: "5.20.4".to_string(),
+            mtime_ms: parse_utc_to_ms("2026-11-09 09:38:31").unwrap(),
+        };
+        let boot_now = parse_utc_to_ms("2026-11-09 09:39:00").unwrap();
+        let r = build_previous_run_report_with(&raw, crash, log_dir, Some(&ev), boot_now);
+        assert_eq!(
+            (r.kind.as_str(), r.code.as_str()),
+            ("updater", "BOOT_PREV_UPDATER"),
+            "现场整段早于安装时刻 ⇒ 这是安装器接管，不是早期失败"
+        );
+    }
+
+    /// 反例自证：装完之后才出现的那一轮（切片里有安装之后的时刻）不许被免税 ——
+    /// 否则「装完自动拉起又死掉」会被说成安装，真故障漏报。
+    #[test]
+    fn installer_marker_does_not_mask_early_exit_after_install() {
+        let raw = vec![
+            ">>> 启动尝试：进程已起，logger 尚未建立 pid=9988  @2026-11-09 12:47:00 版本 5.20.7 · windows-x86_64".to_string(),
+            ">>> >>> code=BOOT_WINDOW_BUILD_START 事件循环启动（WebView2 创建在此步）  @2026-11-09 12:47:00 版本 5.20.7 · windows-x86_64".to_string(),
+        ];
+        let crash = std::path::Path::new("/tmp/gosslan-crash.log");
+        let log_dir = std::path::Path::new("/tmp");
+        let ev = InstallerEvidence {
+            version: "5.20.7".to_string(),
+            mtime_ms: parse_utc_to_ms("2026-11-09 12:45:00").unwrap(),
+        };
+        let boot_now = parse_utc_to_ms("2026-11-09 12:47:10").unwrap();
+        let r = build_previous_run_report_with(&raw, crash, log_dir, Some(&ev), boot_now);
+        assert_eq!(
+            (r.kind.as_str(), r.code.as_str()),
+            ("early_exit", "BOOT_PREV_EARLY_EXIT"),
+            "现场有安装之后的时刻 ⇒ 安装器不可能是原因，必须照旧提示"
         );
     }
 

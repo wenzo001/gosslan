@@ -246,12 +246,11 @@ const messageLoadError = computed(() =>
 );
 
 /**
- * 会话切换时的整列淡入。
+ * 会话切换时的整列遮罩。
  *
- * 虚拟列表要等 DOM 落定后才把 scrollTop 贴到底。这段时间里用户会看到
- * 「消息从顶部往下铺」——那是布局在追赶，不是动画。参考 iOS 消息：切会话时
- * 先让列表在正确位置落定，再用一次很短的整列淡入遮住这一帧；
- * 图片自身不再做 layout 补间（见 MessageImageBubble），只瞬时落定。
+ * 2026-11-09 用户 A/B：已缓存会话也要先透明两帧再淡入，手感会被读成“点了顿一下”。
+ * 现在**只给冷会话**用：已缓存直接换行；冷会话没有内容可换，才先用 opacity 压住
+ * 骨架/旧列表，等 loadMessages 落地后揭示。整列淡入不再是“切会话”的固定动作。
  */
 const listSwitching = ref(false);
 let listRevealRaf = 0;
@@ -267,9 +266,14 @@ function revealListAfterLayout() {
 watch(
   () => chat.activeConv,
   () => {
+    // 已缓存：不遮罩，直接换。冷会话才压住，等下面那条 messagesLoading watcher 揭示。
+    if (!messagesLoading.value) {
+      if (listRevealRaf) cancelAnimationFrame(listRevealRaf);
+      listRevealRaf = 0;
+      listSwitching.value = false;
+      return;
+    }
     listSwitching.value = true;
-    // 命中缓存时 messagesLoading 不会翻面，这里自己排一次揭示
-    if (!messagesLoading.value) revealListAfterLayout();
   },
 );
 watch([messagesLoading, messageLoadError, () => messages.value.length], ([loading, error, count]) => {

@@ -1485,27 +1485,32 @@ async function onPaste(e: ClipboardEvent) {
           {{ t("chat.composer.codeCancel") }}
         </button>
       </div>
-      <div
-        ref="editorRef"
-        contenteditable="true"
-        role="textbox"
-        aria-multiline="true"
-        :aria-label="t('chat.composer.inputAria')"
-        enterkeyhint="send"
-        :spellcheck="!codeMode"
-        :autocorrect="codeMode ? 'off' : 'on'"
-        :autocapitalize="codeMode ? 'off' : 'sentences'"
-        data-focus-ring-ok
-        class="gosslan-composer-editor min-h-11 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal whitespace-pre-wrap break-words outline-none"
-        :class="codeMode ? 'font-mono text-body' : ''"
-        :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
-        @keydown="onKeydown"
-        @compositionstart="onCompositionStart"
-        @compositionend="onCompositionEnd"
-        @input="onInput"
-        @click="updateMentionState"
-        @paste="onPaste"
-      ></div>
+      <!-- 行容器承担 44px 触控档（lg 档）与**单行垂直居中**（2026-11-09 用户：输入框上下边距要匀、
+           与边框同心）。编辑区自己不再写 min-h-11：它按内容高走，单行 21px 在 44px 行里居中；
+           多行时编辑区成为行内最高元素，居中自然退化成"顶到顶"，多行排版不受影响。 -->
+      <div class="flex min-h-11 items-center">
+        <div
+          ref="editorRef"
+          contenteditable="true"
+          role="textbox"
+          aria-multiline="true"
+          :aria-label="t('chat.composer.inputAria')"
+          enterkeyhint="send"
+          :spellcheck="!codeMode"
+          :autocorrect="codeMode ? 'off' : 'on'"
+          :autocapitalize="codeMode ? 'off' : 'sentences'"
+          data-focus-ring-ok
+          class="gosslan-composer-editor tap-safe min-h-7 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal whitespace-pre-wrap break-words outline-none"
+          :class="codeMode ? 'font-mono text-body' : ''"
+          :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
+          @keydown="onKeydown"
+          @compositionstart="onCompositionStart"
+          @compositionend="onCompositionEnd"
+          @input="onInput"
+          @click="updateMentionState"
+          @paste="onPaste"
+        ></div>
+      </div>
       <!-- 工具栏行（2026-09-12 按用户反馈重做：对齐 + 统一规格 + 去掉"网页感"）。
            三条硬性约定，改这一行时必须同时满足：
            ① **对齐**：行用 `items-center`，左右两组**同高（h-7 = 28px）**。原先右侧发送键
@@ -1517,16 +1522,17 @@ async function onPaste(e: ClipboardEvent) {
               的边距对称；`-mx-1` 同时让 28px 按钮的点击热区不越出卡片。
            ③ **统一规格**（2026-09-12 晚按微信参考图二次校准）：
               图标按钮 **32×32**（`h-8 w-8`）/ 图标 **20px**（`h-5 w-5`）/ 线宽 1.75 /
-              圆角 **radius-md(8px)** —— 圆角要与圆形字形"同心"，hover 底色块才像微信那样
-              是一个包住图标的圆角方块（用户原话：「它的 hover 和周围的圆角感觉也是同心圆」）；
-              按钮间距 8px、与文本间距 4px、卡片底距 10px。
+              圆角 **radius-lg(14px)**（2026-11-09 用户第二次强调"同心弧度"后从 10 调来）——
+              口径是"内圆角 = 外框 22 − 到底边 8"：工具条按钮与发送键、输入卡、焦点外框
+              落在同一族弧度里，hover 底色块也包在同一个圆角家族内；
+              按钮间距 8px、与文本间距 4px、卡片底距 8px。
            发送键改为**实心主按钮**（有草稿才点亮）：微信 4.0 的观感，
            无草稿时是低对比的占位态，不抢视觉。 -->
       <div class="-mx-1 mt-1 flex h-8 items-center gap-2">
         <PopoverRoot :open="emojiOpen" @update:open="onEmojiOpenChange">
           <PopoverTrigger as-child>
             <button
-              class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
+              class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
               :class="emojiOpen ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
               :title="t('chat.composer.emoji')" :aria-label="t('chat.composer.emoji')"
             >
@@ -1552,7 +1558,7 @@ async function onPaste(e: ClipboardEvent) {
              对方窗口随即抖动。冷却期置灰防连抖；@mousedown.prevent 保持编辑器焦点。 -->
         <button
           v-if="shakeEnabled"
-          class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
+          class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
           :class="shakeCooling
             ? 'cursor-default text-[var(--gosslan-text-2)] opacity-40'
             : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
@@ -1566,7 +1572,7 @@ async function onPaste(e: ClipboardEvent) {
         <!-- @mousedown.prevent 保持编辑器焦点：否则点击按钮后焦点落到按钮上，
              紧接着按 Enter 会激活按钮（把 codeMode 再切回去）而非走编辑器 keydown 发送。 -->
         <button
-          class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
+          class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
           :class="codeMode ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           :title="t('chat.composer.code')" :aria-label="t('chat.composer.code')"
           @mousedown.prevent
@@ -1583,7 +1589,7 @@ async function onPaste(e: ClipboardEvent) {
         <!-- 自聊只支持文本：不给附件入口（用户 2026-09-16）。粘贴/拖入文件时另给提示。 -->
         <button
           v-if="!isSelfChat"
-          class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('chat.composer.sendFile')" :aria-label="t('chat.composer.sendFile')"
           @click="emit('attach')"
         >
@@ -1591,7 +1597,7 @@ async function onPaste(e: ClipboardEvent) {
         </button>
         <button
           v-press-ripple
-          class="tap-safe ml-auto flex h-8 shrink-0 items-center rounded-[var(--gosslan-radius-sm)] px-3.5 text-body font-medium transition"
+          class="tap-safe ml-auto flex h-8 shrink-0 items-center rounded-[var(--gosslan-radius-lg)] px-3.5 text-body font-medium transition"
           :class="canSend
             ? 'bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] hover:bg-[var(--gosslan-primary-hover)]'
             : 'cursor-default bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"

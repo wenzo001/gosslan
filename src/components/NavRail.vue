@@ -86,7 +86,7 @@ function onMoreOpen(open: boolean) {
        同一份身份状态只出现一次，rail 不再重复渲染。
        选中项仅图标变色（主题色），不改底色，与微信一致 -->
   <aside
-    class="glass-1 hidden shrink-0 select-none flex-col items-center py-3 desktop:md:flex"
+    class="glass-1 chrome-surface hidden shrink-0 select-none flex-col items-center py-3 desktop:md:flex"
     :style="{ width: 'var(--gosslan-rail-w)' }"
   >
     <!-- 一级入口：聊天 / 通讯录 / 收藏 / 链接（用户 2026-10-22 裁决统一图标库）：

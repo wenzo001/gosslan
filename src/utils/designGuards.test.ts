@@ -7546,8 +7546,8 @@ test("AC-15 反例自证：摘掉 pane-under-chat / 改回 visible / 删延迟 /
   );
   const toVisible = src.styleCss.replace("visibility: hidden;", "visibility: visible;");
   const noDelay = src.styleCss.replace(
-    "transition-delay: 0s, var(--gosslan-duration);",
-    "transition-delay: 0s, 0s;",
+    "transition-delay: 0s, var(--gosslan-duration), 0s;",
+    "transition-delay: 0s, 0s, 0s;",
   );
   assert.notEqual(noClass, src.responsiveLayout, "锚点没命中：`pane-under-chat` 的类名绑定变了");
   assert.notEqual(halfMirror, src.responsiveLayout, "锚点没命中：列表的镜像条件变了");
@@ -7569,8 +7569,43 @@ test("AC-15 反例自证：摘掉 pane-under-chat / 改回 visible / 删延迟 /
   );
   assert.ok(
     checkAmbientChromeSurfaces({ ...src, styleCss: noDelay }).some((i) => i.message.includes("AC-15")),
-    "删掉 240ms 延迟（吃掉 push/pop 视差）必须报 AC-15",
+    "删掉 visibility 的延迟（吃掉 push/pop 视差）必须报 AC-15",
   );
+});
+
+test("AC-15 反例自证②：转场裁剪是第二层判据，删/改/颠倒顺序都必须红", () => {
+  const src = ambientChromeSources();
+  const noParallaxClass = src.responsiveLayout.replace("paneAnimate ? 'pane-parallax ' : ''", "''");
+  const instantParallax = src.responsiveLayout.replace(
+    "paneAnimate ? 'pane-parallax ' : ''",
+    "'pane-parallax '",
+  );
+  const noClip = src.styleCss.replace(
+    "  clip-path: inset(0 70% 0 0);\n",
+    "",
+  );
+  const wrongRatio = src.styleCss.replace("clip-path: inset(0 70% 0 0);", "clip-path: inset(0 30% 0 0);");
+  const noParallaxRule = src.styleCss.replace("html.is-mobile .pane-parallax {", "html.is-mobile .pane-parallax-off {");
+  const reordered = (() => {
+    const under = src.styleCss.match(/html\.is-mobile\s*\.pane-under-chat\s*\{[\s\S]*?\}/)?.[0] || "";
+    const parallax = src.styleCss.match(/html\.is-mobile\s*\.pane-parallax\s*\{[\s\S]*?\}/)?.[0] || "";
+    if (!under || !parallax) return src.styleCss;
+    return src.styleCss.replace(parallax, "__PARALLAX__").replace(under, `${under}\n${parallax}`).replace("__PARALLAX__\n", "");
+  })();
+  assert.notEqual(noParallaxClass, src.responsiveLayout, "锚点没命中：`pane-parallax` 的类名绑定变了");
+  assert.notEqual(instantParallax, src.responsiveLayout, "锚点没命中：`pane-parallax` 的 paneAnimate 门控变了");
+  assert.notEqual(noClip, src.styleCss, "锚点没命中：`.pane-under-chat` 的 clip-path 那行变了");
+  assert.notEqual(wrongRatio, src.styleCss, "锚点没命中：裁剪比例不是 70%");
+  assert.notEqual(noParallaxRule, src.styleCss, "锚点没命中：`.pane-parallax` 规则名变了");
+  assert.notEqual(reordered, src.styleCss, "锚点没命中：两条规则顺序没被换动（构造失败）");
+  const ac15 = (s: { responsiveLayout?: string; styleCss?: string }) =>
+    checkAmbientChromeSurfaces({ ...src, ...s }).some((i) => i.message.includes("AC-15"));
+  assert.ok(ac15({ responsiveLayout: noParallaxClass }), "摘掉 `pane-parallax`（=转场期间整片透出）必须报 AC-15");
+  assert.ok(ac15({ responsiveLayout: instantParallax }), "`pane-parallax` 不跟 `paneAnimate` 必须报 AC-15");
+  assert.ok(ac15({ styleCss: noClip }), "删掉 `.pane-under-chat` 的裁剪必须报 AC-15");
+  assert.ok(ac15({ styleCss: wrongRatio }), "裁剪比例不是 70%（与 −30% 平移不互补）必须报 AC-15");
+  assert.ok(ac15({ styleCss: noParallaxRule }), "删掉 `.pane-parallax` 规则（裁剪没有 0 端）必须报 AC-15");
+  assert.ok(ac15({ styleCss: reordered }), "把 `.pane-parallax` 排到 `.pane-under-chat` 之后（0 端覆盖裁剪档）必须报 AC-15");
 });
 
 test("AC-01 反例自证：把顶部栏的 ambient-canvas-child 摘掉必须红", () => {
@@ -9410,4 +9445,44 @@ test("TD-01 反例自证：描述框去掉 overflow-y-hidden / 改回 resize-y �
   assert.notEqual(broken, src, "fixture 没替换成功 ⇒ 这条在测空气");
   const issues = checkTodoDraftForm(broken);
   assert.ok(issues.some((i) => /TD-02/.test(i.message) && /框里再滚一层/.test(i.message)), "内层滚动没被抓到 ⇒ 判据空转");
+});
+
+test("预览手势接线：起点与当前位置分家、手势挂在图片区域容器上（2026-11-09 用户报滑动不翻页）", () => {
+  const file = join(import.meta.dirname, "..", "components", "message", "ImageLightbox.vue");
+  const src = readFileSync(file, "utf8");
+  const upOf = (s: string) => {
+    const a = s.indexOf("function onPointerUp(");
+    const b = s.indexOf("function onShadePointerDown(");
+    return a >= 0 && b > a ? s.slice(a, b) : "";
+  };
+  // ① 起点必须取 `swipeStart`；`pointers` 是 move 时的当前位置（拿它算 dx 会恒为 0）。
+  const startIsStable = (s: string) => {
+    const up = upOf(s);
+    return /const start = swipeStart;/.test(up) && !/pointers\.get\(/.test(up);
+  };
+  // ② pointerdown 必须挂在 `setDialogRef` 那一层（整块图片区域，含黑边/上下留白），
+  //    img 上不再单独接管 —— 只挂 img 时手指落在黑边就没有手势链。
+  const handlersOnStage = (s: string) => {
+    const imgTag = s.match(/<motion\.img[\s\S]*?\/>/)?.[0] ?? "";
+    return /:ref="setDialogRef"[\s\S]{0,1200}?@pointerdown="onPointerDown"/.test(s)
+      && !/@pointerdown=/.test(imgTag);
+  };
+  assert.ok(upOf(src).length > 0, "锚点没命中：`onPointerUp` / `onShadePointerDown` 的形状变了");
+  assert.ok(startIsStable(src), "`onPointerUp` 必须用 `swipeStart` 当起点（pointers 已被 move 改写成当前位置）");
+  assert.ok(handlersOnStage(src), "pointer 手势必须挂在图片区域容器上（img 单独接管 ⇒ 黑边滑不动）");
+
+  const revertStart = src.replace("const start = swipeStart;", "const start = pointers.get(e.pointerId);");
+  assert.notEqual(revertStart, src, "锚点没命中：起点的赋值语句变了");
+  assert.ok(!startIsStable(revertStart), "把起点改回 pointers.get 必须判红（dx 恒 0 ⇒ 永远不切图）");
+
+  const noStageDown = src.replace('          @pointerdown="onPointerDown"\n', "");
+  assert.notEqual(noStageDown, src, "锚点没命中：容器上的 pointerdown 绑定变了");
+  assert.ok(!handlersOnStage(noStageDown), "把容器上的 pointerdown 摘掉必须判红（黑边不再起手势）");
+
+  const backOnImg = src.replace(
+    '              @dblclick="toggleFullscreen"',
+    '              @dblclick="toggleFullscreen"\n              @pointerdown="onPointerDown"',
+  );
+  assert.notEqual(backOnImg, src, "锚点没命中：img 上的 dblclick 绑定变了");
+  assert.ok(!handlersOnStage(backOnImg), "把 pointerdown 加回 img 必须判红（黑边又滑不动）");
 });

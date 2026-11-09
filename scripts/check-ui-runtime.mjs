@@ -435,6 +435,8 @@ class Cdp {
      * 而"是谁把页面 reload 掉的"只能靠这个 URL 判断（本轮为了定位一次 ~1.2 s 后的 reload 加的）。
      */
     this.navTail = [];
+    /** 按方法名订阅 CDP 事件（目前只有 `Animation.animationStarted` 用）。 */
+    this.handlers = new Map();
     ws.addEventListener("message", (ev) => {
       const msg = JSON.parse(typeof ev.data === "string" ? ev.data : ev.data.toString());
       if (msg.method && msg.id === undefined) {
@@ -444,6 +446,8 @@ class Cdp {
           this.navTail.push(String(msg.params?.frame?.url ?? "?"));
           if (this.navTail.length > 8) this.navTail.shift();
         }
+        const hs = this.handlers.get(msg.method);
+        if (hs) for (const fn of hs) { try { fn(msg.params ?? {}); } catch { /* 订阅方自己兜 */ } }
       }
       const w = this.waiters.get(msg.id);
       if (!w) return;
@@ -451,6 +455,16 @@ class Cdp {
       if (msg.error) w.reject(new Error(`${msg.error.message} (${JSON.stringify(msg.error.data ?? "")})`));
       else w.resolve(msg.result);
     });
+  }
+  /** 订阅 CDP 事件；返回取消订阅。 */
+  on(method, fn) {
+    if (!this.handlers.has(method)) this.handlers.set(method, []);
+    this.handlers.get(method).push(fn);
+    return () => {
+      const arr = this.handlers.get(method) ?? [];
+      const i = arr.indexOf(fn);
+      if (i >= 0) arr.splice(i, 1);
+    };
   }
   static async connect(url) {
     const ws = new WebSocket(url);
@@ -1693,7 +1707,7 @@ window.__probe = (() => {
     }));
     return { ok: true };
   };
-  /** 双击图片（桌面复位手势）：在图片中心发一次真实 dblclick。 */
+  /** 双击图片（2026-11-09 起唯一含义 = 全屏切换；原"缩放复位"语义已废除）：发一次真实 dblclick。 */
   H.zoomDblclick = () => {
     const img = document.querySelector('[data-lightbox-img]');
     if (!img) return { ok: false };
@@ -4640,6 +4654,8 @@ async function main() {
     const railsync = want("railsync");
     const imgload = want("imgload");
     const imgzoom = want("imgzoom");
+    const imgswipe = want("imgswipe");
+    const rowalign = want("rowalign");
     const backjump = want("backjump");
     const previewwin = want("previewwin");
     const mobileoverlay = want("mobileoverlay");
@@ -4674,6 +4690,7 @@ async function main() {
     const ambientcap = want("ambientcap");
     const surfaces = want("surfaces");
     const bleed = want("bleed");
+    const panefade = want("panefade");
     const listmetrics = want("listmetrics");
     const favorites = want("favorites");
     const favthumb = want("favthumb");
@@ -4893,6 +4910,8 @@ async function main() {
     await runSegment("railsync", railsync, () => runRailSync(cdp, url));
     await runSegment("imgload", imgload, () => runImageLoad(cdp, url));
     await runSegment("imgzoom", imgzoom, () => runImageZoom(cdp, url));
+    await runSegment("imgswipe", imgswipe, () => runImgSwipe(cdp, url));
+    await runSegment("rowalign", rowalign, () => runRowAlign(cdp, url));
     await runSegment("backjump", backjump, () => runBackJump(cdp, url));
     await runSegment("previewwin", previewwin, () => runPreviewWindow(cdp, url));
     await runSegment("mobileoverlay", mobileoverlay, () => runMobileOverlay(cdp, url));
@@ -4928,6 +4947,7 @@ async function main() {
     await runSegment("ambient", ambient, () => runAmbient(cdp, url));
     await runSegment("surfaces", surfaces, () => runSurfaces(cdp, url));
     await runSegment("bleed", bleed, () => runBleed(cdp, url));
+    await runSegment("panefade", panefade, () => runPaneFade(cdp, url));
     await runSegment("listmetrics", listmetrics, () => runListMetrics(cdp, url));
     await runSegment("favorites", favorites, () => runFavorites(cdp, url));
     await runSegment("favthumb", favthumb, () => runFavThumb(cdp, url));
@@ -18760,6 +18780,528 @@ async function runBleed(cdp, url) {
 }
 
 /**
+ * 移动端图片预览的左右滑动切图（`--only=imgswipe`，用户 2026-11-09：
+ * 「多图片预览模式，左右滑动图片没法上一张下一张」）。
+ *
+ * 这一段先把"完全不响应"与"偶尔不响应"分开：同一张相册（3 张真尺寸 SVG）、同一组阈值，
+ * 只用 CDP `Input.dispatchTouchEvent` 改变**手指落点**——
+ *   ① 图片上；② 图片左侧黑边；③ 图片上/下方的留白。
+ * 判据是 `update:index` 真的变了（不是"事件到了"）。反例自证：短滑（<60px）与竖滑
+ * 必须**不**切图 —— 否则上面几条只是"任何手势都切图"的空转。
+ */
+async function runImgSwipe(cdp, url) {
+  const W = 390;
+  const H = 844;
+  const UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36";
+  const outFile = path.join(ROOT, "test-results", "imgswipe-readings.json");
+
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: W, height: H, deviceScaleFactor: 2, mobile: true,
+  }).catch(() => {});
+  await cdp.send("Emulation.setUserAgentOverride", { userAgent: UA }).catch(() => {});
+  // 触摸模拟必须显式开：`Input.dispatchTouchEvent` 在没开时不会产生 pointer 事件
+  // （上一版就是这样：8 条判据里 4 条"手势没到"伪红，改的是量具不是产品）。
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(2_200);
+  await cdp.eval(PAGE_FIXTURE);
+  const mounted = await cdp.eval(`window.__probe.zoomMount()`);
+  check("预览手势：灯箱挂载成功（3 张真尺寸图）", !!mounted && mounted.ok === true,
+    "ok:true", JSON.stringify(mounted));
+  if (!mounted || mounted.ok !== true) {
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+    return;
+  }
+  await sleep(1_000);
+
+  const geo = await cdp.eval(`(() => {
+    const rect = (el) => {
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return { l: +b.left.toFixed(1), t: +b.top.toFixed(1), r: +b.right.toFixed(1), b: +b.bottom.toFixed(1), w: +b.width.toFixed(1), h: +b.height.toFixed(1) };
+    };
+    return {
+      img: rect(document.querySelector('[data-lightbox-img]')),
+      stage: rect(document.querySelector('[data-lightbox-stage]')),
+      shade: rect(document.querySelector('[role="dialog"]')),
+      vw: innerWidth, vh: innerHeight,
+    };
+  })()`);
+  console.log(`  · 几何：图 ${JSON.stringify(geo.img)} 舞台 ${JSON.stringify(geo.stage)} 视口 ${geo.vw}×${geo.vh}`);
+  if (!geo.img || geo.img.w <= 0) {
+    check("预览手势：图片已落定（量得到真矩形）", false, "img.w > 0", JSON.stringify(geo.img));
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+    return;
+  }
+
+  const setIndex = (i) => cdp.eval(`(async () => {
+    window.__lbState.index = ${i};
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return window.__lbState.index;
+  })()`);
+  const getIndex = () => cdp.eval(`window.__lbState.index`);
+  const getPropIndex = () => cdp.eval(`(() => {
+    const el = document.querySelector('[data-lightbox-img]');
+    let inst = el && el.__vueParentComponent;
+    let hops = 0;
+    while (inst && !(inst.props && Array.isArray(inst.props.images)) && hops < 8) { inst = inst.parent; hops += 1; }
+    return inst ? inst.props.index : null;
+  })()`);
+
+  const swipe = async (from, dx, dy = 0) => {
+    const steps = 6;
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart", touchPoints: [{ x: Math.round(from.x), y: Math.round(from.y) }],
+    });
+    for (let i = 1; i <= steps; i++) {
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchMove",
+        touchPoints: [{ x: Math.round(from.x + (dx * i) / steps), y: Math.round(from.y + (dy * i) / steps) }],
+      });
+      await sleep(16);
+    }
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await sleep(260);
+  };
+
+  const imgMid = { x: geo.img.l + geo.img.w / 2, y: geo.img.t + geo.img.h / 2 };
+  const leftBar = { x: Math.max(6, geo.img.l - 18), y: imgMid.y };
+  const topGap = { x: imgMid.x, y: Math.max(geo.shade.t + 72, geo.img.t - 30) };
+  const rows = [];
+
+  const caseSwipe = async (tag, from, dx, dy, expectFrom, expectTo) => {
+    await setIndex(expectFrom);
+    const before = await getPropIndex();
+    await swipe(from, dx, dy);
+    const to = await getIndex();
+    const after = await getPropIndex();
+    rows.push({ tag, from, dx, dy, expectFrom, expectTo, to, propBefore: before, propAfter: after });
+    console.log(`  · ${tag}：起点 (${Math.round(from.x)},${Math.round(from.y)}) d=(${dx},${dy}) ⇒ state ${expectFrom} → ${to}｜prop ${before} → ${after}`);
+    return to;
+  };
+
+  // ① 图片上左滑 = 下一张；② 图片上右滑 = 上一张（方向不能反）
+  const imgNext = await caseSwipe("图片上左滑", imgMid, -120, 0, 1, 2);
+  check("预览手势：图片上左滑 = 下一张", imgNext === 2, "index 1 → 2", String(imgNext));
+  const imgPrev = await caseSwipe("图片上右滑", imgMid, 120, 0, 1, 0);
+  check("预览手势：图片上右滑 = 上一张", imgPrev === 0, "index 1 → 0", String(imgPrev));
+
+  // ③ 黑边（图片左侧留白）右滑 = 上一张 —— 用户报的正是这一档
+  const barPrev = await caseSwipe("左侧黑边右滑", leftBar, 120, 0, 1, 0);
+  check("预览手势：图片左侧黑边上横滑也能切图", barPrev === 0, "index 1 → 0", String(barPrev));
+  const barOpen = await cdp.eval(`window.__lbState.open`);
+  check("预览手势：黑边上横滑不会顺手关窗", barOpen === true, "open 仍为 true", String(barOpen));
+
+  // ④ 图片上下留白横滑 = 切图
+  const gapNext = await caseSwipe("上方留白左滑", topGap, -120, 0, 1, 2);
+  check("预览手势：图片上/下留白横滑也能切图", gapNext === 2, "index 1 → 2", String(gapNext));
+
+  // 反例自证：短滑与竖滑都不许切图（阈值那三条判据还活着）
+  const short = await caseSwipe("短滑 30px", imgMid, 30, 0, 1, 1);
+  check("预览手势反例：短滑（<60px）不切图", short === 1, "index 保持 1", String(short));
+  const vertical = await caseSwipe("竖滑 120px", imgMid, 20, 120, 1, 1);
+  check("预览手势反例：竖滑（|dy|>|dx|）不切图", vertical === 1, "index 保持 1", String(vertical));
+  // 到头不回绕：第一张继续右滑
+  const edge = await caseSwipe("第一张继续右滑", imgMid, 120, 0, 0, 0);
+  check("预览手势：第一张继续右滑不回绕", edge === 0, "index 保持 0", String(edge));
+
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+  fs.writeFileSync(outFile, JSON.stringify({ viewport: { w: W, h: H }, geo, rows }, null, 2));
+}
+
+/**
+ * 一行里「控件底边」与「气泡底边」的对齐（`--only=rowalign`，用户 2026-11-09：
+ * 「感叹号和表情回复按钮和图片没有对齐，应该是视觉上底部对齐，和其他消息一样」）。
+ *
+ * 逐种消息类型量四个底边：气泡本体 / 气泡外壳 / 表情回应入口 / 回执。
+ * 判据：无回应时入口与回执的**底边**都必须≈气泡底边（±1px）；有回应时入口≈外壳底边（减去回应条）。
+ * 原因：入口是 absolute 锚在本列、回执在 `items-end` 的行里 —— 两者锚的不是同一个盒时，
+ * 图片（高度由内容撑）就先露出来。
+ */
+async function runRowAlign(cdp, url) {
+  const BASE = 1_700_000_000_000;
+  const KINDS = ["text", "code", "file", "merge", "todo", "image"];
+  const bodyByKind = {
+    text: "这一条只用来量底边对齐：一行短文本。",
+    code: "SELECT id FROM messages WHERE conv_id = 'c' ORDER BY seq;",
+    file: JSON.stringify({ name: "季度报告.pdf", path: "/tmp/report.pdf", size: 123456 }),
+    merge: JSON.stringify({ title: "群聊的聊天记录", items: [{ sender: "甲", text: "第一条" }] }),
+    todo: JSON.stringify({
+      todo_id: "t-align", title: "季度报告复核", status: "pending", creator: "peer-a",
+      assignees: ["peer-a"], priority: "normal", category: "normal", number: 1,
+    }),
+    // 图片必须真能解码：旧格式兼容分支认 `content` 直接是 data URL（见 imageDataUrl）；
+    // 写 JSON 元数据要走 IPC 取字节，夹具里拿不到 ⇒ 量到的永远是骨架。
+    image: "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='200' height='150'><rect width='200' height='150' fill='#3b82f6'/></svg>"),
+  };
+
+  const mount = async (kind, { mine = false, status = "sent", isGroup = true, reactions = null } = {}) => {
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(2_500);
+    await cdp.eval(PAGE_FIXTURE);
+    const props = {
+      message: {
+        msg_id: "m-align", sender_id: mine ? "self-align" : "peer-a", kind,
+        content: bodyByKind[kind], ts: BASE, conv_id: "c-align", seq: 2, status,
+      },
+      reactions,
+      canReact: true, isGroup, senderName: "对方", readerIds: isGroup ? ["peer-b"] : undefined,
+    };
+    const r = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
+      + JSON.stringify(JSON.stringify(props)) + ")");
+    if (mine) {
+      await cdp.eval("window.__probe.seedDevice('self-align')");
+      await sleep(250);
+    }
+    await sleep(450);
+    return !!r && r.ok === true;
+  };
+
+  const measure = () => cdp.eval(`(() => {
+    const host = document.getElementById('probe-host');
+    const rect = (el) => {
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return { t: +b.top.toFixed(1), b: +b.bottom.toFixed(1), h: +b.height.toFixed(1) };
+    };
+    const shell = host.querySelector('[data-msg-bubble-shell]');
+    const bubble = shell ? (shell.querySelector('[data-msg-bubble] > :first-child') || shell.firstElementChild) : null;
+    const entry = host.querySelector('[data-reaction-entry]');
+    const strip = host.querySelector('[data-reaction-strip]');
+    // 回执没有 data 锚点：它在消息行里、与外壳同级（外壳前的那个兄弟）。
+    const row = shell ? shell.parentElement : null;
+    const receipt = row ? [...row.children].find((el) => el !== shell) : null;
+    const failIcon = receipt ? receipt.querySelector('[role="img"], button') : null;
+    const img = host.querySelector('[data-msg-bubble] img');
+    const kids = bubble
+      ? [...bubble.querySelectorAll('*')].filter((el) => el.getClientRects().length).slice(0, 6)
+        .map((el) => ({ tag: el.tagName, cls: String(el.className).slice(0, 48), ...rect(el) }))
+      : [];
+    return {
+      bubble: rect(bubble), shell: rect(shell), entry: rect(entry), strip: rect(strip),
+      receipt: rect(receipt), fail: rect(failIcon), img: rect(img), kids,
+      entryBottomStyle: entry ? entry.style.bottom : null,
+    };
+  })()`);
+
+  // 回执根节点没有 data-receipt？用组件 class 兜底（见 MessageReceipt 的根元素）。
+  await cdp.send("Page.enable").catch(() => {});
+  const rows = [];
+  const cases = [
+    ...KINDS.map((k) => ({ kind: k, mine: false, tag: k + "·对方" })),
+    ...KINDS.map((k) => ({ kind: k, mine: true, tag: k + "·自己·已发" })),
+    { kind: "image", mine: true, status: "failed", tag: "image·自己·失败" },
+    { kind: "text", mine: true, status: "failed", tag: "text·自己·失败" },
+  ];
+  for (const c of cases) {
+    const ok = await mount(c.kind, { mine: c.mine, status: c.status ?? "sent" });
+    const g = ok ? await measure() : null;
+    rows.push({ tag: c.tag, ok, ...(g ?? {}) });
+    console.log("  · " + c.tag + "：" + JSON.stringify(g));
+  }
+  fs.writeFileSync(path.join(ROOT, "test-results", "rowalign-readings.json"), JSON.stringify(rows, null, 2));
+
+  // ── 判据 ──────────────────────────────────────────────────────────────
+  // ① 非空转：图片这条必须真的"图比外框矮"（旧消息无尺寸 ⇒ 外框 288、图 150），
+  //    否则"入口贴图底"在已知尺寸的图上恒等于"贴框底"，判不出任何东西。
+  const imgRow = rows.find((r) => r.tag === "image·对方");
+  const letterboxed = !!imgRow && !!imgRow.img && !!imgRow.bubble && imgRow.img.h > 0
+    && imgRow.bubble.b - imgRow.img.b > 4;
+  check("行对齐：图片夹具真的出现了「图比外框矮」（否则这一组是空转）", letterboxed,
+    "bubble.bottom − img.bottom > 4", JSON.stringify(imgRow && { bubble: imgRow.bubble, img: imgRow.img }));
+
+  // ② 每种消息：表情入口底边贴**内容**底边（无回应条时 = 气泡底边；图片 = 图底）。
+  for (const r of rows.filter((x) => x.ok && !r2strip(x))) {
+    const ref = r.img && r.img.h > 0 ? r.img.b : r.bubble && r.bubble.b;
+    if (ref == null || !r.entry) continue;
+    check(`行对齐 ${r.tag}：表情入口底边贴内容底边（≤1px）`, Math.abs(r.entry.b - ref) <= 1,
+      "|entry.bottom − ref.bottom| ≤ 1", `entry=${r.entry.b} ref=${ref}`);
+  }
+
+  // ③ 自己的消息：回执容器底边也贴内容底边（图片按图底，其它按气泡底）。
+  for (const r of rows.filter((x) => x.ok && x.receipt && !r2strip(x))) {
+    const ref = r.img && r.img.h > 0 ? r.img.b : r.bubble && r.bubble.b;
+    if (ref == null) continue;
+    check(`行对齐 ${r.tag}：回执底边贴内容底边（≤1px）`, Math.abs(r.receipt.b - ref) <= 1,
+      "|receipt.bottom − ref.bottom| ≤ 1", `receipt=${r.receipt.b} ref=${ref}`);
+  }
+}
+
+/** 有回应条时入口锚的是回应条底边，另一条判据管，不在这组里重复判。 */
+function r2strip(row) {
+  return !!row.strip;
+}
+
+/**
+ * 列表→聊天**转场中**的穿透（`--only=panefade`，2026-11-09 安卓端「列表在底部残余一下」）。
+ *
+ * 与 `--only=bleed` 的分工：bleed 量的是**静止终态**（列表已 `visibility: hidden`），
+ * 这一段量的是 0–280ms 的**过程**：列表整屏宽、只平移 −30%，右侧 70% 一直压在聊天列
+ * （薄纱 α 0.16/0.14）下面 ⇒ 旧列表整段透出。修法是随进度把列表裁到聊天列左缘之外
+ * （`pane-parallax` 的 `inset(0 0 0 0)` + `.pane-under-chat` 的 `inset(0 70% 0 0)`，
+ * 与 −30% 平移互补）。
+ *
+ * 取证方法（确定性，不靠抓帧时机）：
+ *   1) 把文档时间轴放慢（`Animation.setPlaybackRate` 0.05×）再触发真实路由 push；
+ *   2) 用 `Animation.animationStarted` 收 CSSTransition 的 id，`setPaused` + `seekAnimations`；
+ *   3) 缓动曲线前段很快 ⇒ 按 aside 的**实际位移**二分到目标进度 e（0.4/0.7/0.95）；
+ *   4) 截图 A（列表可见）→ 隐藏列表 → 截图 B，只在「被聊天列盖住」的区域逐点比色。
+ *
+ * 闸：每个姿态盖住区最大色差 ≤2。反例自证：同一姿态把裁剪内联改回 `inset(0 0 0 0)`
+ * 必须重新出现可辨穿透（实测 e=0.95 处 171 色阶 / 30+ 点，不是空转）。
+ * 另外核一条结构判据：裁剪比例 / 70% 必须等于平移进度 / 30% 的进度（两根时钟锁死）。
+ */
+async function runPaneFade(cdp, url) {
+  const W = 390;
+  const H = 844;
+  const DUR = 280;
+  const POSES = [0.4, 0.7, 0.95];
+  const UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36";
+  const outFile = path.join(ROOT, "test-results", "panefade-readings.json");
+  const shotDir = path.join(ROOT, "test-results", "panefade-shots");
+  fs.mkdirSync(shotDir, { recursive: true });
+
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+  // 视口必须在**挂载前**设好：`isMobile` 的初值在 store 创建时算一次（同 runBleed）。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: W, height: H, deviceScaleFactor: 2, mobile: true,
+  }).catch(() => {});
+  await cdp.send("Emulation.setUserAgentOverride", { userAgent: UA }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(2_200);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(async () => {
+    window.__TAURI_INTERNALS__ = window.__TAURI_INTERNALS__ || {
+      metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+      invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+    };
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = window.__TAURI_EVENT_PLUGIN_INTERNALS__ || { unregisterListener: () => {} };
+    await window.__probe.install('/src/layouts/ResponsiveLayout.vue', '', ${
+      JSON.stringify(JSON.stringify({ router: true, hostHeight: `${H}px` }))
+    });
+    return true;
+  })()`);
+  // 种子：列表要有真实行文字（穿透的色差来自行文字），聊天列要有真实消息。
+  await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const conv = 'peer-demo';
+    chat.conversations = [
+      { id: conv, kind: 'single', name: '林岸', avatar: null, last_msg: '晚点把图发你', last_ts: 1700000000100, unread: 0, pinned: true },
+      { id: 'peer-2', kind: 'single', name: '安德烈 P4N', avatar: null, last_msg: '徽章做好了', last_ts: 1700000000090, unread: 2, pinned: false },
+      { id: 'peer-3', kind: 'group', name: '设计评审组', avatar: null, last_msg: '就按这个方向走', last_ts: 1700000000080, unread: 9, pinned: false },
+      { id: 'peer-4', kind: 'single', name: 'Kong', avatar: null, last_msg: '收到', last_ts: 1700000000070, unread: 0, pinned: false },
+      { id: 'peer-5', kind: 'group', name: '发版线', avatar: null, last_msg: '5.20.4 过闸', last_ts: 1700000000060, unread: 0, pinned: false },
+    ];
+    chat.messages[conv] = Array.from({ length: 12 }, (_, i) => ({
+      id: 'm' + i, conv_id: conv, sender_id: i % 2 ? conv : 'self', kind: 'text',
+      text: '第 ' + (i + 1) + ' 条：列表到聊天的转场中途，这里不该露出旧列表。',
+      ts: 1700000000000 + i * 1000, status: 'sent', media: null,
+    }));
+    chat.activeConv = conv;
+    const R = await import('/src/router/main.ts');
+    await R.mainRouter.push({ name: 'chats' });
+    await new Promise((r) => setTimeout(r, 900));
+    const A = await import('/src/utils/ambient.ts');
+    A.installAmbient();
+    document.documentElement.dataset.ambient = 'static';
+    await new Promise((r) => setTimeout(r, 500));
+    return true;
+  })()`);
+  await sleep(700);
+
+  const isMobile = await cdp.eval(`document.documentElement.classList.contains('is-mobile')`);
+  check("转场：探针落在移动档（否则这一段测的是桌面布局）", isMobile === true,
+    "html.is-mobile", String(isMobile));
+  if (!isMobile) return;
+
+  const animIds = [];
+  cdp.on("Animation.animationStarted", (p) => {
+    const a = p && p.animation;
+    if (a && a.type === "CSSTransition") animIds.push(a.id);
+  });
+  await cdp.send("Animation.enable").catch(() => {});
+
+  const pushConv = `(async () => {
+    const R = await import('/src/router/main.ts');
+    void R.mainRouter.push({ name: 'conversation', params: { convId: 'peer-demo' } });
+    return true;
+  })()`;
+  const backToChats = `(async () => {
+    const host = document.getElementById('probe-host');
+    const aside = host.querySelector('aside.ambient-canvas'), main = host.querySelector('main');
+    aside.style.cssText = ''; main.style.cssText = '';
+    for (const an of document.getAnimations()) { try { an.cancel(); } catch {} }
+    const R = await import('/src/router/main.ts');
+    await R.mainRouter.push({ name: 'chats' });
+    await new Promise((r) => setTimeout(r, 800));
+    return true;
+  })()`;
+
+  /** 起一次真实转场，把过渡按**平移进度** e 冻住（缓动前段很快，按时间来会偏到 0.95）。 */
+  const freezeAt = async (e) => {
+    let ids = [];
+    for (let attempt = 0; attempt < 2 && ids.length === 0; attempt++) {
+      animIds.length = 0;
+      await cdp.send("Animation.setPlaybackRate", { playbackRate: 0.05 }).catch(() => {});
+      await cdp.eval(pushConv);
+      for (let i = 0; i < 40 && animIds.length === 0; i++) await sleep(50);
+      await sleep(600);
+      ids = [...new Set(animIds)];
+      if (ids.length === 0) {
+        await cdp.send("Animation.setPlaybackRate", { playbackRate: 1 }).catch(() => {});
+        await cdp.eval(backToChats);
+      }
+    }
+    if (ids.length === 0) return null;
+    await cdp.send("Animation.setPaused", { animations: ids, paused: true }).catch(() => {});
+    let lo = 0;
+    let hi = DUR;
+    for (let i = 0; i < 9; i++) {
+      const mid = (lo + hi) / 2;
+      await cdp.send("Animation.seekAnimations", { animations: ids, currentTime: mid }).catch(() => {});
+      await cdp.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`);
+      const p = await cdp.eval(`(() => {
+        const aside = document.getElementById('probe-host').querySelector('aside.ambient-canvas');
+        const tx = new DOMMatrixReadOnly(getComputedStyle(aside).transform).m41;
+        return -tx / (innerWidth * 0.3);
+      })()`);
+      if (Math.abs(p - e) < 0.008) break;
+      if (p < e) lo = mid; else hi = mid;
+    }
+    await cdp.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`);
+    const pose = await cdp.eval(`(() => {
+      const host = document.getElementById('probe-host');
+      const aside = host.querySelector('aside.ambient-canvas');
+      const main = host.querySelector('main');
+      const as = getComputedStyle(aside);
+      const ar = aside.getBoundingClientRect(), mr = main.getBoundingClientRect();
+      const mainLeft = Math.round(mr.x);
+      const pts = [];
+      for (let y = 0; y < innerHeight; y += 10) for (let x = mainLeft + 4; x < innerWidth; x += 10) pts.push({ x, y });
+      const tx = new DOMMatrixReadOnly(as.transform).m41;
+      const clip = /inset\\(([^)]*)\\)/.exec(as.clipPath);
+      const clipRight = clip ? parseFloat((clip[1].split(/\\s+/)[1] || '0')) : 0;
+      return {
+        pan: +(-tx / (innerWidth * 0.3)).toFixed(4),
+        clipRight: +clipRight.toFixed(4),
+        vis: as.visibility,
+        asideRight: Math.round(ar.right),
+        mainLeft,
+        pts,
+      };
+    })()`);
+    return { pose, ids };
+  };
+
+  const sample = async (points) => {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    const hexes = await cdp.eval(`(async () => {
+      const im = new Image();
+      im.src = 'data:image/png;base64,' + ${JSON.stringify(shot.data)};
+      await new Promise((res, rej) => { im.onload = () => res(true); im.onerror = () => rej(new Error('img')); });
+      const cv = document.createElement('canvas');
+      cv.width = im.width; cv.height = im.height;
+      const ctx = cv.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(im, 0, 0);
+      const sx = im.width / innerWidth, sy = im.height / innerHeight;
+      const hex = (d) => '#' + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, '0')).join('');
+      return ${JSON.stringify(points)}.map((p) => {
+        const x = Math.min(im.width - 1, Math.max(0, Math.round(p.x * sx)));
+        const y = Math.min(im.height - 1, Math.max(0, Math.round(p.y * sy)));
+        const d = ctx.getImageData(x, y, 1, 1).data;
+        return hex(d);
+      });
+    })()`);
+    return { data: shot.data, hexes };
+  };
+  const diffOf = (pa, pb) => {
+    const hexRgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+    let max = 0;
+    let hit = 0;
+    let worst = null;
+    for (let i = 0; i < pa.length; i++) {
+      const x = hexRgb(pa[i]);
+      const y = hexRgb(pb[i]);
+      const d = Math.max(Math.abs(x[0] - y[0]), Math.abs(x[1] - y[1]), Math.abs(x[2] - y[2]));
+      if (d > max) { max = d; worst = { i, a: pa[i], b: pb[i] }; }
+      if (d > 2) hit += 1;
+    }
+    return { max, hit, n: pa.length, worst };
+  };
+
+  const measure = async (e, { unclip = false } = {}) => {
+    const fr = await freezeAt(e);
+    if (!fr) return null;
+    if (unclip) {
+      await cdp.eval(`(() => {
+        const a = document.getElementById('probe-host').querySelector('aside.ambient-canvas');
+        a.style.setProperty('clip-path', 'inset(0 0 0 0)', 'important');
+        return true;
+      })()`);
+      await sleep(80);
+    }
+    const a = await sample(fr.pose.pts);
+    const shotName = `${unclip ? "unclip" : "clip"}-e${String(e).replace(".", "_")}-A.png`;
+    fs.writeFileSync(path.join(shotDir, shotName), Buffer.from(a.data, "base64"));
+    await cdp.eval(`(() => {
+      const a = document.getElementById('probe-host').querySelector('aside.ambient-canvas');
+      a.style.setProperty('visibility', 'hidden', 'important');
+      return true;
+    })()`);
+    await sleep(120);
+    const b = await sample(fr.pose.pts);
+    const d = diffOf(a.hexes, b.hexes);
+    await cdp.send("Animation.setPlaybackRate", { playbackRate: 1 }).catch(() => {});
+    await cdp.send("Animation.releaseAnimations", { animations: fr.ids }).catch(() => {});
+    await cdp.eval(backToChats);
+    return { ...fr.pose, ...d, shot: shotName };
+  };
+
+  const rows = [];
+  for (const e of POSES) {
+    const r = await measure(e);
+    if (!r) {
+      check(`转场 e=${e}：抓到 aside/main 的 CSSTransition`, false,
+        "至少一条 transform transition", "0 条（动画没起，这一格无读数）");
+      continue;
+    }
+    rows.push({ e, kind: "clip", ...r });
+    console.log(`  · 转场 e=${e}：main.x=${r.mainLeft} pan=${r.pan} clip=${r.clipRight}% vis=${r.vis} | 盖住区 Δ=${r.max}（超2色阶 ${r.hit}/${r.n}）${r.shot ? " " + r.shot : ""}`);
+    check(`转场 e=${e}：列表被裁到聊天列左缘之外（薄纱下无可辨旧列表）`,
+      r.max <= 2,
+      "隐藏列表前后同点色差 ≤2（≈ 不存在可辨穿透）",
+      `Δ=${r.max} 超2色阶=${r.hit}/${r.n} clipRight=${r.clipRight}% pan=${r.pan}`);
+    // 两根时钟锁死：裁剪比例 / 70% 必须等于平移进度（e=0.4 实测 0.4034 对 28.2346/70）。
+    check(`转场 e=${e}：裁剪与平移同进度（不会在中间错开）`,
+      Math.abs(r.clipRight / 70 - r.pan) <= 0.02,
+      "|clipRight/70 − pan| ≤ 0.02",
+      `clipRight/70=${(r.clipRight / 70).toFixed(4)} pan=${r.pan}`);
+  }
+
+  // 反例自证：同一姿态摘掉裁剪，必须重新看见旧列表（否则上面几条是空转）。
+  const neg = await measure(0.95, { unclip: true });
+  if (neg) {
+    rows.push({ e: 0.95, kind: "unclip", ...neg });
+    console.log(`  · 反例 e=0.95 摘掉裁剪：Δ=${neg.max}（超2色阶 ${neg.hit}/${neg.n}）`);
+    check("转场反例自证：同一姿态摘掉裁剪必须重新透出旧列表",
+      neg.max > 2,
+      "Δ>2 色阶（量具没有空转）",
+      `Δ=${neg.max} 超2色阶=${neg.hit}/${neg.n}`);
+  } else {
+    check("转场反例自证：摘掉裁剪那一趟要能抓到动画", false, "抓到 CSSTransition", "0 条");
+  }
+
+  fs.writeFileSync(outFile, JSON.stringify({ poses: POSES, rows }, null, 2));
+}
+
+/**
  * 分栏把手命中区 vs 列表滚动条带 + 两个列表面板的内容竖线（2026-11-08）。
  *
  * 用户实测缺陷：左列与会话区之间的拖拽把手把左列滚动条盖住 ⇒ 想点滚动条只会触发左右拖拽。
@@ -20103,6 +20645,18 @@ async function runComposerMobile(cdp, url) {
         editorW: +er.width.toFixed(1),
         hasSend: !!send,
         hasEmoji: buttons.some((b) => (b.getAttribute('aria-label') || '').includes('表情')),
+        // 2026-11-09 用户：输入框上下边距要匀 + 与外框同心。两条都从真矩形现算。
+        rowPadTop: +(er.top - editor.parentElement.getBoundingClientRect().top).toFixed(1),
+        rowPadBottom: +(editor.parentElement.getBoundingClientRect().bottom - er.bottom).toFixed(1),
+        cardRadius: parseFloat(getComputedStyle(card).borderTopLeftRadius) || 0,
+        // 每个工具条按钮：圆角 vs「外框圆角 − 它到底边的内距」（同心弧度的定义）。
+        buttonRings: buttons.map((b) => {
+          const br = b.getBoundingClientRect();
+          return {
+            r: parseFloat(getComputedStyle(b).borderTopLeftRadius) || 0,
+            inset: +(card.getBoundingClientRect().bottom - br.bottom).toFixed(1),
+          };
+        }),
       };
     })()`);
     check("移动端输入框：工具栏与发送键都在视口内，编辑器没有被挤没",
@@ -20112,7 +20666,28 @@ async function runComposerMobile(cdp, url) {
     check("移动端输入框：发送键与表情入口都可见（不是被 390 宽挤掉）",
       m.ok === true && m.hasSend === true && m.hasEmoji === true,
       "send + emoji", JSON.stringify({ hasSend: m.hasSend, hasEmoji: m.hasEmoji }));
+    check("移动端输入框：单行文字在 44px 行里垂直居中（上下留白差 ≤1px）",
+      m.ok === true && Math.abs(m.rowPadTop - m.rowPadBottom) <= 1,
+      "|上留白 − 下留白| ≤1", `上=${m.rowPadTop} 下=${m.rowPadBottom}`);
+    const offRings = (m.buttonRings || []).filter(
+      (b) => b.r <= 0 || Math.abs(b.r - (m.cardRadius - b.inset)) > 1,
+    );
+    check("移动端输入框：工具条按钮圆角都跟外框同心（外圆角 − 各自到底边内距，±1px）",
+      m.ok === true && (m.buttonRings || []).length >= 4 && offRings.length === 0,
+      "每个按钮 r ≈ cardRadius − inset",
+      `card=${m.cardRadius} 不符=${JSON.stringify(offRings)} 全部=${JSON.stringify(m.buttonRings)}`);
     if (SHOT_PATH) {
+      // 取证时塞一行真文字并切浅色（用户那张截图就是浅色+一行字）：只影响取证，不动判据。
+      await cdp.eval(`(() => {
+        const ed = document.querySelector('.gosslan-composer-editor');
+        if (!ed) return false;
+        ed.focus();
+        ed.textContent = '在吗？晚点把图发你';
+        ed.dispatchEvent(new InputEvent('input', { bubbles: true }));
+        document.documentElement.classList.remove('dark');
+        return true;
+      })()`);
+      await sleep(400);
       const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
       fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-composermobile.png"), Buffer.from(shot.data, "base64"));
       console.log("  📷 移动端输入框取证帧 → " + SHOT_PATH.replace(/\.png$/, "-composermobile.png"));
@@ -25389,13 +25964,17 @@ async function runImageZoom(cdp, url) {
   await cdp.eval("window.__probe.zoomKey('+')");
   await cdp.eval("window.__probe.zoomKey('+')");
   await sleep(160);
+  const kbBeforeDbl = await cdp.eval("window.__probe.zoomInfo()");
   await cdp.eval("window.__probe.zoomDblclick()");
-  // 同一条弹性路径（双击 → reset()）⇒ 等弹簧落定，别看回弹中途的 1.017。
   await sleep(600);
   const kbDbl = await cdp.eval("window.__probe.zoomInfo()");
-  check("桌面覆盖层：双击复位（放大后双击回到 scale=1）",
-    !!kbDbl && Math.abs((kbDbl.scale ?? 0) - 1) <= 0.01,
-    "scale ≈1", JSON.stringify({ scale: kbDbl && kbDbl.scale }));
+  // ⚠️ 判据换向（2026-11-09）：双击原来是"缩放复位"，现已由用户裁决改成**只做全屏切换**
+  // （唯一含义，见 ImageLightbox 的 toggleFullscreen 注释与提交 7eb8c2c3）。全屏那条判据
+  // 在 `--only=previewwin`（false→true→false）；这里守的是"别加回第二套双击语义"：
+  // 放大状态下双击**不许**把 scale 复位。
+  check("桌面覆盖层：双击不再复位缩放（唯一含义是全屏；缩放走 +/−/适应/滚轮）",
+    !!kbDbl && !!kbBeforeDbl && Math.abs((kbDbl.scale ?? 0) - (kbBeforeDbl.scale ?? 0)) <= 0.01,
+    "scale 保持放大值", JSON.stringify({ before: kbBeforeDbl && kbBeforeDbl.scale, after: kbDbl && kbDbl.scale }));
 
   await cdp.eval("window.__probe.zoomMenu()");
   await sleep(120);

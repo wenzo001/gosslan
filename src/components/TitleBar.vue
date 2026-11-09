@@ -282,7 +282,7 @@ onBeforeUnmount(() => {
        层级由设计判据 ㉕ 从源码现算核对，不靠这里的数字被人记住。 -->
   <div
     v-if="!isMobile"
-    class="glass-1 relative z-[85] flex shrink-0 select-none items-center"
+    class="glass-1 chrome-surface relative z-[85] flex shrink-0 select-none items-center"
     data-caption
     :style="{ height: 'var(--gosslan-title-h)' }"
     @mousedown="onDragStart"

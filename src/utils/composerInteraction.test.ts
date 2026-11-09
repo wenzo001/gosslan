@@ -189,10 +189,13 @@ test("输入框高度收敛为三档（单行 36/40、多行 44；出现 h-7/h-8
   assert.ok(inspected >= 12, `至少要扫到 12 个单行文本输入，实际 ${inspected}`);
   assert.deepEqual(offenders, [], `只允许 h-9(36)/h-10(40)：\n${offenders.join("\n")}`);
 
-  // 多行主输入框取 lg 档 44px：改回旧 min-h-10(40) 会红。
-  assert.ok(
-    composerSrc.includes("gosslan-composer-editor min-h-11"),
-    "主输入框必须落在 lg 档 min-h-11（44px）",
-  );
-  assert.ok(!composerSrc.includes("gosslan-composer-editor min-h-10"), "不得回退到 40px 旧档");
+  // 多行主输入框仍取 lg 档 44px；2026-11-09 起 44px 落在**行容器**上（编辑区按内容高走、
+  // 单行在行里垂直居中）。判据跟着锚点一起搬家，反例自证也搬：摘掉行容器的 min-h-11 必须红。
+  const hasTouch44 = (src: string) =>
+    /class="flex min-h-11 items-center"/.test(src) && src.includes("gosslan-composer-editor");
+  assert.ok(hasTouch44(composerSrc), "主输入框必须保留 lg 档 44px（min-h-11 落在行容器上）");
+  assert.ok(!/gosslan-composer-editor min-h-10/.test(composerSrc), "不得回退到 40px 旧档");
+  const noRow44 = composerSrc.replace('class="flex min-h-11 items-center"', 'class="flex items-center"');
+  assert.notEqual(noRow44, composerSrc, "锚点没命中：输入行容器的类名绑定变了");
+  assert.ok(!hasTouch44(noRow44), "把 44px 触控档从行容器摘掉必须判红");
 });

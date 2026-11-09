@@ -135,6 +135,8 @@ const listView = computed<"chats" | "contacts">(() =>
 const favoritesOpen = computed(
   () => route.name === "favorites" || route.name === "favorite",
 );
+/** 桌面端聊天页保活：切导航不卸载 ChatWindow；移动端离开聊天仍卸载省内存。 */
+const keepChatMounted = computed(() => !app.isMobile);
 const isLinksView = computed(
   () => route.name === "links" || route.name === "me-links",
 );
@@ -961,10 +963,13 @@ function onResizeEnd() {
       style="--ambient-canvas-base: var(--gosslan-list)"
       :class="app.isMobile
         ? 'absolute inset-y-0 left-0 z-10 w-full ' +
-          (paneAnimate ? 'transition-transform duration-[var(--gosslan-duration)] ease-[var(--gosslan-ease)] ' : '') +
+          // 平移与裁剪共用一套时长/缓动（style.css `.pane-parallax`）：两者的进度必须同一根时钟，
+          // 否则裁剪边会在转场中途与聊天列左缘错开，重新漏出旧列表。
+          (paneAnimate ? 'pane-parallax ' : '') +
           (mobileView === 'list' && !favoritesOpen ? 'translate-x-0 ' : '-translate-x-[30%] ') +
           // 被 main（z-20）盖住时整层退出合成：main 只是 16%/14% 的薄纱，列表文字会从纱下透出来
-          // （用户 2026-11-06 524×1024 实测）。visibility 的延迟切换见 style.css `.pane-under-chat`。
+          // （用户 2026-11-06 524×1024 实测）。同时按平移进度裁剪（用户 2026-11-09 安卓端：
+          // 转场那 ~280ms 里旧的整屏列表从底部残余一下）。见 style.css `.pane-under-chat`。
           (mobileView === 'chat' || favoritesOpen
             ? 'pane-under-chat' + (paneAnimate ? '' : ' pane-under-chat--instant')
             : '')
@@ -1055,6 +1060,16 @@ function onResizeEnd() {
       >
         <!-- 发现页（navState='discover'）：纯内容，无额外头部。
              切换入口藏在内容右上角（FavoritePanel 里点 Compass 切链接，反之亦然）。 -->
+        <!-- 聊天页保活（2026-11-09）：桌面端切到通讯录/收藏/设置时**不卸载** ChatWindow，
+             回来时列表位置、测量表、输入草稿都还在，避免整块重建。移动端离开聊天仍卸载省内存。
+             `v-show` 只负责显隐；真正决定挂不挂的是 `v-if`。 -->
+        <ChatWindow
+          v-if="keepChatMounted || (navState === 'chats' && chat.activeConv)"
+          v-show="navState === 'chats' && !!chat.activeConv"
+          @open-share="shareOpen = true"
+        />
+        <!-- 非聊天页分支：聊天页保活时这里只渲染其它页面/空态，不会与 ChatWindow 同时可见。 -->
+        <template v-if="navState !== 'chats' || !chat.activeConv">
         <!-- 我的页面（navState='me'） -->
         <template v-if="navState === 'me'">
           <!-- 与聊天/通讯录列表**同族**：列表底 `--gosslan-list`、行悬停 `--gosslan-list-hover`、
@@ -1140,10 +1155,6 @@ function onResizeEnd() {
           :friend="profileFriend"
           @send-message="sendMessageTo"
           @remove="removeFriend"
-        />
-        <ChatWindow
-          v-else-if="navState === 'chats' && chat.activeConv"
-          @open-share="shareOpen = true"
         />
         <div
           v-else
@@ -1239,6 +1250,7 @@ function onResizeEnd() {
             {{ isMac ? t("layout.shortcutHintMac") : t("layout.shortcutHint") }}
           </div>
         </div>
+        </template>
       </div>
     </main>
     </div>

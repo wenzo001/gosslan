@@ -517,18 +517,33 @@ function twoPointerDistance(): number | null {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+/**
+ * 单指滑动的**起点**（与 `pointers` 分开存）。
+ *
+ * 用户 2026-11-09：「多图片预览模式，左右滑动图片没法上一张下一张」。
+ * 真因不是手指落点（图片外黑边也一样），而是 `pointers` 在 `pointermove` 里被持续改写成
+ * **当前位置**，`pointerup` 又拿它当起点 ⇒ `dx` 恒为 0，`swipeDirection` 永远返回 null。
+ * 只有"按下就抬起"（无 move）的手势碰巧能切图 —— 这也是"偶发能切"的来源。
+ */
+let swipeStart: { x: number; y: number } | null = null;
+
 function onPointerDown(e: PointerEvent) {
   // 开场 FLIP / 收场回缩期间不接受手势：否则手势与动画同时写 transform，图会抖。
   if (closing.value || pendingFlip.value) return;
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   if (pointers.size === 2) {
     // 进入双指：记下起点，随后按距离比例缩放
     pinchStart = { distance: twoPointerDistance() ?? 0, scale: scale.value };
+    swipeStart = null;
     dragging = false;
     return;
   }
+  swipeStart = { x: e.clientX, y: e.clientY };
   if (scale.value > 1) {
+    // 只在**放大拖动**时显式捕获：捕获会把后续 click/dblclick 的目标改成捕获元素，
+    // 而手势已挂到图片区域容器上 —— 原始尺寸的双击必须仍然落在 img 上（复位判据）。
+    // 触屏的指针本来就有隐式捕获，滑动不依赖这一句。
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     dragging = true;
     lastX = e.clientX;
     lastY = e.clientY;
@@ -560,9 +575,13 @@ function onPointerMove(e: PointerEvent) {
 }
 
 function onPointerUp(e: PointerEvent) {
-  const start = pointers.get(e.pointerId);
+  // 起点用 `swipeStart`：`pointers` 里的坐标已在 move 时被改成当前位置（见上）。
+  const start = swipeStart;
   pointers.delete(e.pointerId);
-  if (pointers.size === 0) pinchStart = null;
+  if (pointers.size === 0) {
+    pinchStart = null;
+    swipeStart = null;
+  }
   if (!start) return;
   // 触屏滑动切图：只有"原始尺寸 + 单指 + 触屏"才判（鼠标拖动不换图）
   if (e.pointerType === "touch" && !dragging && scale.value <= 1) {
@@ -746,6 +765,10 @@ useEventListener(window, "keydown", onKey);
             paddingTop: 'calc(var(--lb-top-h) + 8px)',
             paddingBottom: 'calc(var(--lb-bottom-h) + var(--gosslan-inset-bottom, 0px) + 8px)',
           }"
+          @pointerdown="onPointerDown"
+          @pointermove="onPointerMove"
+          @pointerup="onPointerUp"
+          @pointercancel="onPointerUp"
         >
         <!-- 深色顶栏（画板 DesktopPreviewWindow）：文件名 / 原图尺寸 / 计数在左，工具在右。
              ⚠️ 这些信息与缩放**只在这里出现一次**（用户 2026-11-08：底部再写一遍既重复又压图）。
@@ -899,10 +922,6 @@ useEventListener(window, "keydown", onKey);
               @click.stop
               @contextmenu="openMenu"
               @dblclick="toggleFullscreen"
-              @pointerdown="onPointerDown"
-              @pointermove="onPointerMove"
-              @pointerup="onPointerUp"
-              @pointercancel="onPointerUp"
               @error="onImageError"
             />
             </div>
