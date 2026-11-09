@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-09T10:27:09Z",
+  "updated_at": "2026-11-09T11:51:48Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -101,9 +101,9 @@
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "7e25d558c75b49b6ed6da187c31f3678918b2bf7ab3c7057f05e9e617044c817",
-      "size": 89913,
-      "normalized_sha256": "7e25d558c75b49b6ed6da187c31f3678918b2bf7ab3c7057f05e9e617044c817"
+      "sha256": "404b7fd65d29ff741c64de1b0ce3ee040a9cb5375e2909688f355fc854ec2ae1",
+      "size": 93281,
+      "normalized_sha256": "404b7fd65d29ff741c64de1b0ce3ee040a9cb5375e2909688f355fc854ec2ae1"
     },
     "CONTEXT.md": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "186bb74d42f6ba23c18f141f5670839a30d3d734fdf813dfdd2f7398c22b2b22",
-      "size": 431174,
-      "normalized_sha256": "186bb74d42f6ba23c18f141f5670839a30d3d734fdf813dfdd2f7398c22b2b22"
+      "sha256": "4f4c76a133b126bf3fca039db30035f09deecd8c0ed93b4a0e819d42dca28439",
+      "size": 444006,
+      "normalized_sha256": "4f4c76a133b126bf3fca039db30035f09deecd8c0ed93b4a0e819d42dca28439"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -872,6 +872,222 @@
       "sha256": "41e265e051b9b51682a39bc92e139b241d087a5f016efa97c6f59df46cf49975",
       "size": 12618,
       "normalized_sha256": "41e265e051b9b51682a39bc92e139b241d087a5f016efa97c6f59df46cf49975"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopShare.dc.html": {
+      "role": "index",
+      "sha256": "f1118cb107b85073a4b4982b1d7ad957ab33d62b46af0d8f5e786de9ae88a735",
+      "size": 22081,
+      "normalized_sha256": "f1118cb107b85073a4b4982b1d7ad957ab33d62b46af0d8f5e786de9ae88a735"
+    },
+    "designs/gosslan-redesign/design-canvas/project/DesktopTasks.dc.html": {
+      "role": "index",
+      "sha256": "28d3804b38da14d9d05559b37d0ef5f7571de05ad375abaf490f900ebc5bdd40",
+      "size": 14398,
+      "normalized_sha256": "28d3804b38da14d9d05559b37d0ef5f7571de05ad375abaf490f900ebc5bdd40"
+    },
+    "designs/gosslan-redesign/design-canvas/project/Foundations.dc.html": {
+      "role": "index",
+      "sha256": "a4984769bbcfdb1f56364378cf56b8c51d8201eabdfb706a6c200b7c28207ddb",
+      "size": 17002,
+      "normalized_sha256": "a4984769bbcfdb1f56364378cf56b8c51d8201eabdfb706a6c200b7c28207ddb"
+    },
+    "designs/gosslan-redesign/design-canvas/project/Layout.dc.html": {
+      "role": "index",
+      "sha256": "3345301983f75ad63b1773a4f7b7d7e660cf874016bbb4c7d72aa6eb56ecee12",
+      "size": 15532,
+      "normalized_sha256": "3345301983f75ad63b1773a4f7b7d7e660cf874016bbb4c7d72aa6eb56ecee12"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileChats.dc.html": {
+      "role": "index",
+      "sha256": "47c49a8c5ceea7c49e044d6cd35402fdb60e3ea3a3ff24c6ac213e9ac283eba6",
+      "size": 10000,
+      "normalized_sha256": "47c49a8c5ceea7c49e044d6cd35402fdb60e3ea3a3ff24c6ac213e9ac283eba6"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileContacts.dc.html": {
+      "role": "index",
+      "sha256": "b411969cbc2208b020067ca9715092fdc959a2b77f0b9e7dc4f564281aa40a1f",
+      "size": 9176,
+      "normalized_sha256": "b411969cbc2208b020067ca9715092fdc959a2b77f0b9e7dc4f564281aa40a1f"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileDark.dc.html": {
+      "role": "index",
+      "sha256": "d2c7cb7167a0c778e4dd783fa381f64c9cfbc9c8dec59c3ada3bcf00632b10b5",
+      "size": 11417,
+      "normalized_sha256": "d2c7cb7167a0c778e4dd783fa381f64c9cfbc9c8dec59c3ada3bcf00632b10b5"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileEmpty.dc.html": {
+      "role": "index",
+      "sha256": "f295b6d1cb0c9cb94994f955bd5b9378d861926bae48213fd2f00e707c8a03ad",
+      "size": 7751,
+      "normalized_sha256": "f295b6d1cb0c9cb94994f955bd5b9378d861926bae48213fd2f00e707c8a03ad"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileFavorites.dc.html": {
+      "role": "index",
+      "sha256": "f0cfe2606b094ab5c841723c4e2a6e65534999b0ac93284ad4b24fbe9cfc94e9",
+      "size": 11122,
+      "normalized_sha256": "f0cfe2606b094ab5c841723c4e2a6e65534999b0ac93284ad4b24fbe9cfc94e9"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileFriend.dc.html": {
+      "role": "index",
+      "sha256": "97bc0977470200217628769be8b4e4f13e377e6854ecca22eb77aa69d56afb01",
+      "size": 7914,
+      "normalized_sha256": "97bc0977470200217628769be8b4e4f13e377e6854ecca22eb77aa69d56afb01"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileGroupChat.dc.html": {
+      "role": "index",
+      "sha256": "4f4a4ffe2df4ed8243fea90ba643d6ddd7cc2ab63c3a5b4dc2b2d663a06c2ea9",
+      "size": 10643,
+      "normalized_sha256": "4f4a4ffe2df4ed8243fea90ba643d6ddd7cc2ab63c3a5b4dc2b2d663a06c2ea9"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileMe.dc.html": {
+      "role": "index",
+      "sha256": "1b208b1707ee3d4027b530acda3928d7505662ac1b59cd4ecbf0f67f2807f0ac",
+      "size": 10026,
+      "normalized_sha256": "1b208b1707ee3d4027b530acda3928d7505662ac1b59cd4ecbf0f67f2807f0ac"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileOneToOne.dc.html": {
+      "role": "index",
+      "sha256": "768f3d045b45472a4ea5ae9fb03be745d4469e93eb1effd972513c9076f83d5d",
+      "size": 9534,
+      "normalized_sha256": "768f3d045b45472a4ea5ae9fb03be745d4469e93eb1effd972513c9076f83d5d"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileRequests.dc.html": {
+      "role": "index",
+      "sha256": "464879ce07350ab0c668c5fe516715aee12f59bc3017789bc965e7a21f7420b4",
+      "size": 6480,
+      "normalized_sha256": "464879ce07350ab0c668c5fe516715aee12f59bc3017789bc965e7a21f7420b4"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileSearch.dc.html": {
+      "role": "index",
+      "sha256": "65aeda1f0574fe1730848f4108b44131e7e1176a44c78c2663264d62b0d5469a",
+      "size": 6269,
+      "normalized_sha256": "65aeda1f0574fe1730848f4108b44131e7e1176a44c78c2663264d62b0d5469a"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileSettings.dc.html": {
+      "role": "index",
+      "sha256": "369b222c74c1bf8dc03611850696bb437511816cb336540c99283fdd43c306dc",
+      "size": 8931,
+      "normalized_sha256": "369b222c74c1bf8dc03611850696bb437511816cb336540c99283fdd43c306dc"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileSettingsSection.dc.html": {
+      "role": "index",
+      "sha256": "9302e7cab714a724b473591bb8409304d2e9a9e3d10e3a9bbfa64345007f85b1",
+      "size": 8438,
+      "normalized_sha256": "9302e7cab714a724b473591bb8409304d2e9a9e3d10e3a9bbfa64345007f85b1"
+    },
+    "designs/gosslan-redesign/design-canvas/project/MobileStates.dc.html": {
+      "role": "index",
+      "sha256": "e7bb16d2f401163966fe90c0f5916856bfca60407d97bf5a576895c1ba70dd9f",
+      "size": 9938,
+      "normalized_sha256": "e7bb16d2f401163966fe90c0f5916856bfca60407d97bf5a576895c1ba70dd9f"
+    },
+    "designs/gosslan-redesign/design-canvas/project/PrototypeDesktop.dc.html": {
+      "role": "index",
+      "sha256": "ccaaa9b026c6e2c18852e2fb374e46b9caccb21e2750b1a1461459964b1b01f0",
+      "size": 35420,
+      "normalized_sha256": "ccaaa9b026c6e2c18852e2fb374e46b9caccb21e2750b1a1461459964b1b01f0"
+    },
+    "designs/gosslan-redesign/design-canvas/project/PrototypeMobile.dc.html": {
+      "role": "index",
+      "sha256": "1062dbf1f4900d0db75c301f4491f4a5f6adb100466d3733e58bf8899753add9",
+      "size": 37195,
+      "normalized_sha256": "1062dbf1f4900d0db75c301f4491f4a5f6adb100466d3733e58bf8899753add9"
+    },
+    "designs/gosslan-redesign/design-canvas/project/canvas.json": {
+      "role": "index",
+      "sha256": "2e231ae1068d57d2420abdbc7d8f102784b3523f213ddea80b3cd0498ee27528",
+      "size": 7880,
+      "normalized_sha256": "2e231ae1068d57d2420abdbc7d8f102784b3523f213ddea80b3cd0498ee27528"
+    },
+    "designs/gosslan-redesign/design-manifest.json": {
+      "role": "index",
+      "sha256": "36e510d047e61c9ec803ae1ded3ea02b251eea939dc090b79932137f0d95af61",
+      "size": 12948,
+      "normalized_sha256": "36e510d047e61c9ec803ae1ded3ea02b251eea939dc090b79932137f0d95af61"
+    },
+    "designs/gosslan-redesign/design-system-pulse/.gitignore": {
+      "role": "index",
+      "sha256": "0c15049f67e6885752caf1bb79be4fa9005df259c1f5c5d53acd03001dbabd27",
+      "size": 215,
+      "normalized_sha256": "0c15049f67e6885752caf1bb79be4fa9005df259c1f5c5d53acd03001dbabd27"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/README.md": {
+      "role": "index",
+      "sha256": "fcfd8ce0e0b014014cf94c6302e31c1157072c7b53779814973dc6939baab532",
+      "size": 14470,
+      "normalized_sha256": "fcfd8ce0e0b014014cf94c6302e31c1157072c7b53779814973dc6939baab532"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/BrandMascot/README.md": {
+      "role": "index",
+      "sha256": "27522954c5f74e675616d159d9b3c8ec875ef7b51f2993fb192cc6ff913444c8",
+      "size": 863,
+      "normalized_sha256": "27522954c5f74e675616d159d9b3c8ec875ef7b51f2993fb192cc6ff913444c8"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/BrandMascot/preview.html": {
+      "role": "index",
+      "sha256": "68f31e5be3c6ba6a942ecc823acec3313edc8095186c6826da0bae23e4ca06a0",
+      "size": 4970,
+      "normalized_sha256": "68f31e5be3c6ba6a942ecc823acec3313edc8095186c6826da0bae23e4ca06a0"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Button/README.md": {
+      "role": "index",
+      "sha256": "6bda5092a2f3cf0b071b89dd1edff9be276b2bbc4b2ca4f91f4af8ffea543638",
+      "size": 577,
+      "normalized_sha256": "6bda5092a2f3cf0b071b89dd1edff9be276b2bbc4b2ca4f91f4af8ffea543638"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Button/preview.html": {
+      "role": "index",
+      "sha256": "fba07607e1fc84ce187d0442b888c5f0b7bb739a6f52f4c2100bb9eccbef57dd",
+      "size": 4008,
+      "normalized_sha256": "fba07607e1fc84ce187d0442b888c5f0b7bb739a6f52f4c2100bb9eccbef57dd"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Cover/preview.html": {
+      "role": "index",
+      "sha256": "eac5bdc3ccc5daf42260a2849585b79c4e4ca7e87c4da7b1d4d4cea335f9a288",
+      "size": 3327,
+      "normalized_sha256": "eac5bdc3ccc5daf42260a2849585b79c4e4ca7e87c4da7b1d4d4cea335f9a288"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/IconSet/README.md": {
+      "role": "index",
+      "sha256": "44caffec9037e04f5c4950d56e8268c0b549463cd0162adb498a0a79fad45abe",
+      "size": 582,
+      "normalized_sha256": "44caffec9037e04f5c4950d56e8268c0b549463cd0162adb498a0a79fad45abe"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/IconSet/preview.html": {
+      "role": "index",
+      "sha256": "d14db5d501bdade004b2ec6d48cdc9d9f0482bfbb23fed768e3b75a99583e4cb",
+      "size": 5665,
+      "normalized_sha256": "d14db5d501bdade004b2ec6d48cdc9d9f0482bfbb23fed768e3b75a99583e4cb"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Input/README.md": {
+      "role": "index",
+      "sha256": "272f1adbaf0f2efa144ec98c7d009404cbb4f8c065169984e96ff3a3977170de",
+      "size": 787,
+      "normalized_sha256": "272f1adbaf0f2efa144ec98c7d009404cbb4f8c065169984e96ff3a3977170de"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Input/preview.html": {
+      "role": "index",
+      "sha256": "50957b2135d2c1d81b29491f906bc24a79f2b9389118a8f5ac71e8d56204786a",
+      "size": 6362,
+      "normalized_sha256": "50957b2135d2c1d81b29491f906bc24a79f2b9389118a8f5ac71e8d56204786a"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Message/README.md": {
+      "role": "index",
+      "sha256": "efe40513e4aed5a9159875f35ecfb2b784a8e3e7e46ebc4e16ca09ce7f9d9c6a",
+      "size": 1185,
+      "normalized_sha256": "efe40513e4aed5a9159875f35ecfb2b784a8e3e7e46ebc4e16ca09ce7f9d9c6a"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Message/preview.html": {
+      "role": "index",
+      "sha256": "ef7a3bc11f3ceb017b975c06ae83ed421e2784267b090c5fd9904497e448db71",
+      "size": 9195,
+      "normalized_sha256": "ef7a3bc11f3ceb017b975c06ae83ed421e2784267b090c5fd9904497e448db71"
+    },
+    "designs/gosslan-redesign/design-system-pulse/project/components/Navigation/README.md": {
+      "role": "index",
+      "sha256": "72e7735f98d4ad1c79b552e88ad48385ef98dcbe5c1b4a0e43eb088b04420cd1",
+      "size": 951,
+      "normalized_sha256": "72e7735f98d4ad1c79b552e88ad48385ef98dcbe5c1b4a0e43eb088b04420cd1"
     },
     "docs/AI_ENGINEERING_INDEX.md": {
       "role": "index",
@@ -6654,9 +6870,9 @@
     },
     "src/utils/composerInteraction.test.ts": {
       "role": "observe",
-      "sha256": "6a8c0459204a4530244cfd968b50c983fe5c3107d57ec67ba3c403b2f5795848",
-      "size": 11219,
-      "normalized_sha256": "6a8c0459204a4530244cfd968b50c983fe5c3107d57ec67ba3c403b2f5795848"
+      "sha256": "7893d2a657a169cab0e952a2711544732f3987842cfb9c32e160e01bf6754f74",
+      "size": 11789,
+      "normalized_sha256": "7893d2a657a169cab0e952a2711544732f3987842cfb9c32e160e01bf6754f74"
     },
     "src/utils/concurrencyGate.test.ts": {
       "role": "observe",

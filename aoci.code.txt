@@ -966,6 +966,7 @@ zh-CN.nsh[FL6T]: F:简体中文安装器语言文件：整份拷贝并把显示�
 ===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/===
 HANDOFF.md[SU8M]: F:设计改版 v2.2 的 AI 实现交接总入口：读文件顺序、硬规则、画板→代码映射、6 批实现顺序与验收清单 | R:code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-system-pulse/project/tokens.json,code:designs/gosslan-redesign/design-manifest.json,code:designs/gosslan-redesign/docs/decisions.md,code:designs/gosslan-redesign/docs/edge-cases.md | A:接手实现的 AI/工程师按它决定先读什么、能改什么、怎么验收 | S:画板只是 1000×680 / 390×844 的静态演示，不许照抄 DOM/CSS，也不许据此新增功能或改 Rust/协议/DB；token 必须落 src/style.css 变量，不在组件里散写十六进制。
 README.md[SU7M]: F:设计改版目录与画板索引：v2.1/v2.2 方向对比、每块画板的内容说明与本地预览方式 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/design-manifest.json | A:找某页面/状态对应哪块画板 | S:画板按 1000×680（桌面）与 390×844（移动）预览；截图与画板只建立印象，不是实现规格。
+design-manifest.json[FU6M]: F:Gosslan Pulse v2.2 交付总台账：entryPoint/readOrder、tokens、8 条 rules、27 个 screens、6 个 windows、品牌资产、verification 与 6 段 phases | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/design-system-pulse/project/README.md,code:designs/gosslan-redesign/design-system-pulse/project/tokens.json | A:实现按 screens 的 code 列找落点、按 phases 分六批；窗口尺寸以 windows 为准 | S:artboards 指向 **design-canvas-pulse** 画布；v2.1 still 画板在 design-canvas/ 下，改画板别认错目录。
 
 ===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/brand/===
 README.md[SU5T]: F:品牌资产清单与配色/尺寸规则：小院标记、吉祥物、各平台 App 图标源文件与 icon-manifest 用途 | R:code:designs/gosslan-redesign/brand/icon-manifest.json,code:designs/gosslan-redesign/brand/app-icon-light.svg,code:src-tauri/icons/icon.png | A:选哪个 SVG 作母版、导出时怎么处理圆角与 alpha | S:三色上限（蓝 #2F6BFF、奶油 #FFF8EA、绿 #07C160）；16px 去表情、小苗收成绿点；不用红色做身体。
@@ -1053,3 +1054,56 @@ DesktopOneToOne.dc.html[SU4M]: F:v2.1 桌面单聊画板：气泡、回执、引
 DesktopRequests.dc.html[SU4M]: F:v2.1 桌面好友申请画板：收到/发出与添加好友 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
 DesktopSearch.dc.html[SU4S]: F:v2.1 桌面搜索画板：结果列与会话上下文 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:1000×680 静态画板 | S:-
 DesktopSettings.dc.html[SU4S]: F:v2.1 设置窗口画板：780×600 双栏 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md | A:780×600 静态画板 | S:-
+DesktopShare.dc.html[SU4S]: F:v2.1 Still 桌面画板：共享目录（局域网文件同步的入口与状态） | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:1000×680 静态画板，画布坐标登记在 canvas.json | S:-
+DesktopTasks.dc.html[SU4S]: F:v2.1 Still 桌面画板：任务中心（进行中 / 历史任务两栏） | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:1000×680 静态画板 | S:-
+Foundations.dc.html[SU4M]: F:v2.1 Still 地基画板：色彩、字体、间距三组 token 的取值与用法 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:1120×760 静态画板；token 的**唯一可执行来源**是 tokens.json | S:画板只展示取值，改 token 要改 tokens.json 而不是这里的色块。
+Layout.dc.html[SU4M]: F:v2.1 Still 布局画板：桌面三列 / 两列、移动档与断点的响应式骨架 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:1120×880 静态画板 | S:断点与代码的 md 档同值，改宽度档要同时看 platform 的布局契约。
+MobileChats.dc.html[SU4S]: F:v2.1 Still 移动画板：会话列表（置顶、未读胶囊、时间、TabBar） | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+MobileContacts.dc.html[SU4S]: F:v2.1 Still 移动画板：通讯录与好友行操作 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+MobileDark.dc.html[SU4S]: F:v2.1 Still 移动画板：深色聊天与长按动作面板 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+MobileEmpty.dc.html[SU4S]: F:v2.1 Still 移动画板：首次启动空态（无会话时的引导） | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+MobileFavorites.dc.html[SU4S]: F:v2.1 Still 移动画板：收藏列表与详情入口 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+MobileFriend.dc.html[SU4S]: F:v2.1 Still 移动画板：好友资料页 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+MobileGroupChat.dc.html[SU4S]: F:v2.1 Still 移动画板：群聊（发送者名、@提及、已读） | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+MobileMe.dc.html[SU4S]: F:v2.1 Still 移动画板：「我的」页与设置入口 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+MobileOneToOne.dc.html[SU4S]: F:v2.1 Still 移动画板：单聊（气泡、回执、输入卡） | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+MobileRequests.dc.html[SU4S]: F:v2.1 Still 移动画板：好友申请（收到 / 发出） | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+MobileSearch.dc.html[SU4S]: F:v2.1 Still 移动画板：全局搜索（结果分组与空结果） | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+MobileSettings.dc.html[SU4S]: F:v2.1 Still 移动画板：设置首页（分组索引） | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+MobileSettingsSection.dc.html[SU4S]: F:v2.1 Still 移动画板：聊天样式设置页（字号、气泡、主题） | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:390×844 静态画板 | S:-
+MobileStates.dc.html[SU4S]: F:v2.1 Still 移动画板：离线与发送失败态 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 静态画板 | S:-
+PrototypeDesktop.dc.html[SU4M]: F:v2.1 Still 交互原型（桌面，is_interactive）：会话/详情/浮层的可点击串场 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:1000×680；在画布编辑器里点按走真实流程 | S:原型只演示交互顺序，样式仍以对应静态画板与 token 为准。
+PrototypeMobile.dc.html[SU4M]: F:v2.1 Still 交互原型（移动，is_interactive）：列表→聊天→详情的推拉与返回 | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-canvas/project/canvas.json | A:390×844 | S:原型只演示交互顺序，样式仍以对应静态画板与 token 为准。
+canvas.json[FU5M]: F:v3 画布台账：四页（foundations/desktop/mobile/prototypes）与 34 块画板的 title/page/x/y/w/h 及 order | R:code:designs/gosslan-redesign/HANDOFF.md,code:designs/gosslan-redesign/README.md,code:designs/gosslan-redesign/design-manifest.json | A:编辑器按 boards + order 还原排布；新增画板必须同时登记 title 与坐标 | S:v=3、attachments 为空；漏登记的画板在编辑器里是孤儿（与 design-canvas-pulse 同口径）。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/===
+.gitignore[FZ3T]: F:设计系统预览工程的本机产物忽略清单（依赖、导出、编辑器临时文件） | R:code:designs/gosslan-redesign/design-system-pulse/project | A:只在本机预览时生成的东西不入库 | S:服务本机预览，提交会把本机路径带进仓库。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/===
+README.md[SU7M]: F:Gosslan Pulse v2.2 设计系统正文：方向、色彩（表面/语义/气泡）、字体、形状与层级、图标与品牌、核心组件、动效、可访问性、与 Still 的差异、使用方式 | R:code:designs/gosslan-redesign/design-manifest.json,code:designs/gosslan-redesign/design-system-pulse/project/tokens.json,code:designs/gosslan-redesign/design-system-pulse/project/components/Message/README.md | A:实现按第 6 节组件规格与第 2 节 token 落地；第 9 节列出与 v2.0/Still 的差异 | S:Pulse 是 v2.2 **目标态**，代码现状是 v2.1（Still）——别把画板当现状，也别把本文当已实现。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/BrandMascot/===
+README.md[SU4T]: F:品牌标记「小院」：标记（无表情）用于 16–32px，吉祥物（有表情）用于空态/欢迎/成功/离线/出错 72–120px | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md,code:designs/gosslan-redesign/design-manifest.json | A:三色（院墙 accent、门洞 #fff8ea、苗 #07c160）；16px 去表情、苗收成绿点 | S:状态只改身体/表情/小徽标，不改基本轮廓；出错时身体仍蓝，红点只做提示。
+preview.html[SU4T]: F:小院预览页（静态）：标记与吉祥物的尺寸档与三态 | R:code:designs/gosslan-redesign/design-system-pulse/project/components/BrandMascot/README.md | A:浏览器直接打开 | S:预览页不是运行时资源，实现以品牌组件与 token 为准。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/Button/===
+README.md[SU4T]: F:按钮规格：primary/secondary/ghost/destructive/icon，桌面 36px、触屏 44px 单档高度 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:destructive 只在不可逆动作实心；loading 保宽换 14px spinner；disabled opacity 0.48 | S:标签用动词；破坏性动作不许只写「确定」。
+preview.html[SU4T]: F:Button 预览页（静态）：五档按钮与 loading/disabled | R:code:designs/gosslan-redesign/design-system-pulse/project/components/Button/README.md | A:浏览器直接打开 | S:预览页不是运行时资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/Cover/===
+preview.html[SU4T]: F:Gosslan Pulse 封面页（静态）：设计系统图录的入口页 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:静态展示 | S:非运行时资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/IconSet/===
+README.md[SU4T]: F:Rounded 2.0 图标集规格：24 网格、2px 圆头描边、视觉区 20×20 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:桌面/移动/设置共用同一套 path；尺寸 rail 23、tab 21、header 20、inline 16，16px 描边 1.8 | S:不混用线性与填充；点击热区始终 ≥44px。
+preview.html[SU4T]: F:Rounded 2.0 预览页（静态）：各语义图标与尺寸档 | R:code:designs/gosslan-redesign/design-system-pulse/project/components/IconSet/README.md | A:浏览器直接打开 | S:非运行时资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/Input/===
+README.md[SU4T]: F:输入区规格：浮动圆角卡（桌面 22px、移动 40px pill）、38px 发送圆盘、字段无边框 | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:焦点 2px focus-ring 画在卡上；多行到 160px 后内部滚动 | S:空内容时发送盘变 surface-field 但**不消失**。
+preview.html[SU4T]: F:输入区预览页（静态）：空/有字/多行/错误四态 | R:code:designs/gosslan-redesign/design-system-pulse/project/components/Input/README.md | A:浏览器直接打开 | S:非运行时资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/Message/===
+README.md[SU4T]: F:消息系统规格：自有实底 #2f6bff、对方 bubble-in、18px 圆角（贴边角 6）、组内 2px 组间 12px、单行 38px | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md | A:1:1 无头像列、群聊 24px 头像+11px 名字；回执只在最后一条；引用为发丝内嵌块 | S:时间戳归一组而非每条；表情回应 28px pill、溢出 +N。
+preview.html[SU4T]: F:消息预览页（静态）：单聊/群聊、引用、回执、回应、图片与文件气泡 | R:code:designs/gosslan-redesign/design-system-pulse/project/components/Message/README.md | A:浏览器直接打开 | S:非运行时资源。
+
+===/Users/wendongfu/Documents/code/gosslan/designs/gosslan-redesign/design-system-pulse/project/components/Navigation/===
+README.md[SU4T]: F:导航规格：桌面 64px rail、移动 56px+安全区 TabBar、顶栏 40px | R:code:designs/gosslan-redesign/design-system-pulse/project/README.md,code:designs/gosslan-redesign/design-manifest.json | A:移动列表页右上 44px「+」；详情页隐藏 TabBar、返回在左上 | S:未读数只用一个红色胶囊，不许点+数字并存。
