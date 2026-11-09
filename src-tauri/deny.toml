@@ -39,11 +39,21 @@ unsound = "workspace"
 #   可达路径: 仅 Windows 自更新解包（tauri-plugin-updater/src/updater.rs::extract_zip）
 #   前置缓解: 更新包必须先过 minisign 公钥验签；更新源由 tauri.conf.json 固定为官方 endpoint
 #   移除条件: 上游 tauri-plugin-updater stable 支持 zip >= 9.0.0 时删除本条
+#   RUSTSEC-2026-0459（2026-11-09 CI 新出现，单独复核）：
+#   受影响 crate/版本: libsqlite3-sys 0.28.0（经 rusqlite 0.31.0 的 bundled SQLite）
+#   漏洞要点: SQLite < 3.54.0 在打开「数据库文件 + 页大小不同的兄弟 -wal」时可返回
+#   未初始化的页缓存内存；攻击向量是**本地**，且需要受害者自己去打开那对文件。
+#   可达性: 本应用只打开 AppData 下自己的 DB 路径（无「导入外部数据库」入口）；
+#   能往该目录写 DB/WAL 的攻击者已经拿到本机文件权限，届时整条信任边界已失守。
+#   修复路径: libsqlite3-sys >= 0.39.0 / rusqlite >= 0.41（要求 Rust 1.89），是一次
+#   跨大版本升级，必须单独批次做全量回归 —— 不在 5.20.8 发布窗口内。
+#   移除条件: rusqlite 升到 0.41+（或改用系统 SQLite）时删除本条。
 ignore = [
   { id = "RUSTSEC-2026-0367", reason = "zip 4.6.1 解包保留 SUID/SGID；仅在 minisign 校验通过后的 Windows 更新路径，上游 tauri-plugin-updater 未放开 zip 大版本" },
   { id = "RUSTSEC-2026-0368", reason = "zip 4.6.1 symlink 越界写；同上，签名校验通过后才解包，且路径仅在 Windows 自更新 asset 目录" },
   { id = "RUSTSEC-2026-0369", reason = "zip 4.6.1 经 symlink 继承 Unix 权限；同上，签名校验通过后才解包，待上游放开 zip >= 9 即删除本豁免" },
   { id = "RUSTSEC-2026-0429", reason = "zip 4.6.1；依赖链 tauri-plugin-updater 2.14.0 -> zip ^4；仅 Windows 自更新解包可达；更新包先过 minisign 验签且更新源固定官方 endpoint；上游 stable 支持 zip >= 9.0.0 时删除本条" },
+  { id = "RUSTSEC-2026-0459", reason = "libsqlite3-sys 0.28.0 的 bundled SQLite<3.54；仅本地打开恶意 DB+页大小不同的 -wal 时触发，本应用只开自己的 AppData DB、无外部库导入；修复需 rusqlite 0.41/Rust 1.89，单独批次升级后删除本条" },
 ]
 
 [licenses]
