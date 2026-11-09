@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-09T14:50:57Z",
+  "updated_at": "2026-11-09T15:04:24Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -101,9 +101,9 @@
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "aa826d3dcb374417f0869cee03980326bd0c0b9980b5cac49dbd2d329d2ebd8f",
-      "size": 95895,
-      "normalized_sha256": "aa826d3dcb374417f0869cee03980326bd0c0b9980b5cac49dbd2d329d2ebd8f"
+      "sha256": "9d832433d0e81094c4da703da612378570fb7857cd482e3eb043109795f940a8",
+      "size": 96802,
+      "normalized_sha256": "9d832433d0e81094c4da703da612378570fb7857cd482e3eb043109795f940a8"
     },
     "CONTEXT.md": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "6e7aaac5828d4087d27ee2456cb4db83953b7dd5873b95cd113e255ca99fc5d0",
-      "size": 520908,
-      "normalized_sha256": "6e7aaac5828d4087d27ee2456cb4db83953b7dd5873b95cd113e255ca99fc5d0"
+      "sha256": "f7c8702e305e9caad564a4168535b7d48cfddbb47c7c82bf1523f60305484530",
+      "size": 521252,
+      "normalized_sha256": "f7c8702e305e9caad564a4168535b7d48cfddbb47c7c82bf1523f60305484530"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2003,9 +2003,9 @@
     },
     "docs/notes/handover-2026-11-09.md": {
       "role": "index",
-      "sha256": "2847050ab587084fa91eae4f210840379f53ce9dfe00a83c0eead617523fcd54",
-      "size": 59039,
-      "normalized_sha256": "2847050ab587084fa91eae4f210840379f53ce9dfe00a83c0eead617523fcd54"
+      "sha256": "bf1268ea5dfa4c4456d2bb026adc3669d2d871759cf0e9f23aeda030ab2df248",
+      "size": 59606,
+      "normalized_sha256": "bf1268ea5dfa4c4456d2bb026adc3669d2d871759cf0e9f23aeda030ab2df248"
     },
     "docs/notes/harmonyos-feasibility-2026-09-22.md": {
       "role": "index",
@@ -2849,9 +2849,9 @@
     },
     "scripts/check-ui-runtime.mjs": {
       "role": "index",
-      "sha256": "a57d77ca9bbc9df419b5d05450aefa8854134a5f34e195fe996feff9f22d289f",
-      "size": 1699034,
-      "normalized_sha256": "a57d77ca9bbc9df419b5d05450aefa8854134a5f34e195fe996feff9f22d289f"
+      "sha256": "195cc62697d387bf0ca7ea014e6afc664a68c218675c1dfd136e114f3fb30880",
+      "size": 1699038,
+      "normalized_sha256": "195cc62697d387bf0ca7ea014e6afc664a68c218675c1dfd136e114f3fb30880"
     },
     "scripts/ci-run.sh": {
       "role": "index",
@@ -4564,9 +4564,9 @@
     },
     "src-tauri/src/logging.rs": {
       "role": "index",
-      "sha256": "fef1932482a67b2bf6c7a07386cf02f3eec9fca7954a93a57f2fb4e58fad67b1",
-      "size": 227509,
-      "normalized_sha256": "fef1932482a67b2bf6c7a07386cf02f3eec9fca7954a93a57f2fb4e58fad67b1"
+      "sha256": "d6a7a6f8b95e572e14e44d7d31a7a7c3481cb43cc90dd30477c3536fb898b284",
+      "size": 229311,
+      "normalized_sha256": "d6a7a6f8b95e572e14e44d7d31a7a7c3481cb43cc90dd30477c3536fb898b284"
     },
     "src-tauri/src/macos_bookmark.rs": {
       "role": "index",
@@ -6384,9 +6384,9 @@
     },
     "src/components/ChatWindow.vue": {
       "role": "index",
-      "sha256": "1a09528f865e80d839a09cfac2e697f1451e68200f3f9c7dd2bcd1890777e447",
-      "size": 113089,
-      "normalized_sha256": "1a09528f865e80d839a09cfac2e697f1451e68200f3f9c7dd2bcd1890777e447"
+      "sha256": "c4c97fc042135edfad6c07f811d3867b58c89decce14524f94affd829843744e",
+      "size": 113137,
+      "normalized_sha256": "c4c97fc042135edfad6c07f811d3867b58c89decce14524f94affd829843744e"
     },
     "src/components/CodeBlock.vue": {
       "role": "index",
@@ -6696,9 +6696,9 @@
     },
     "src/components/chat/MessageComposer.vue": {
       "role": "index",
-      "sha256": "59cddd7107f3c50ac57504261a00cef02aaa5010b95b671c3e703b5f6e80b099",
-      "size": 74715,
-      "normalized_sha256": "59cddd7107f3c50ac57504261a00cef02aaa5010b95b671c3e703b5f6e80b099"
+      "sha256": "a946068ab5944470332ddc7269473e9302f1fd5d43be66d0fa4d83dac75ddf7b",
+      "size": 74859,
+      "normalized_sha256": "a946068ab5944470332ddc7269473e9302f1fd5d43be66d0fa4d83dac75ddf7b"
     },
     "src/components/conversation/ConversationContextMenu.vue": {
       "role": "index",
@@ -6744,9 +6744,9 @@
     },
     "src/components/message/ImageLightbox.vue": {
       "role": "index",
-      "sha256": "2244c67592b9b69ffdae9649a7611275c5332033f27e11050767241f4d67dd51",
-      "size": 45599,
-      "normalized_sha256": "2244c67592b9b69ffdae9649a7611275c5332033f27e11050767241f4d67dd51"
+      "sha256": "835628dd0de6e10b3350f24e5ef9616c1bd76d1fa739d6f50ba521f6b8ac7dac",
+      "size": 46036,
+      "normalized_sha256": "835628dd0de6e10b3350f24e5ef9616c1bd76d1fa739d6f50ba521f6b8ac7dac"
     },
     "src/components/message/MentionText.vue": {
       "role": "index",
@@ -7410,9 +7410,9 @@
     },
     "src/style.css": {
       "role": "index",
-      "sha256": "2346d566794a7673084d1ac531ccd329200b66890b035352273464be85c8f34e",
-      "size": 169445,
-      "normalized_sha256": "2346d566794a7673084d1ac531ccd329200b66890b035352273464be85c8f34e"
+      "sha256": "e8c3d851e0c986584b1f4bcd7c7ec3b558d1465c5d356b60b8c5ea4f3170f9a3",
+      "size": 169717,
+      "normalized_sha256": "e8c3d851e0c986584b1f4bcd7c7ec3b558d1465c5d356b60b8c5ea4f3170f9a3"
     },
     "src/styles/hljs-theme.css": {
       "role": "index",
@@ -7962,9 +7962,9 @@
     },
     "src/utils/designGuards.test.ts": {
       "role": "observe",
-      "sha256": "62c7196804839056d0c0bb29ce94c4d9b93291193b1f0575b29bf9fb2c94aea6",
-      "size": 553235,
-      "normalized_sha256": "62c7196804839056d0c0bb29ce94c4d9b93291193b1f0575b29bf9fb2c94aea6"
+      "sha256": "a1c0c5a3f128c0228cfc6bac44120f6b685f1b73525345a8158432adcdf5ead5",
+      "size": 553470,
+      "normalized_sha256": "a1c0c5a3f128c0228cfc6bac44120f6b685f1b73525345a8158432adcdf5ead5"
     },
     "src/utils/designGuards.ts": {
       "role": "index",
@@ -8322,15 +8322,15 @@
     },
     "src/utils/keyboardInsets.test.ts": {
       "role": "observe",
-      "sha256": "003dfea6cbbbe9a50c25f994339c75acc445d55c822d3232173323278cb99a8c",
-      "size": 2561,
-      "normalized_sha256": "003dfea6cbbbe9a50c25f994339c75acc445d55c822d3232173323278cb99a8c"
+      "sha256": "c57f7061890e6ba995d35830584b93c5505db8a9e84160bf379b203cc2e5a34f",
+      "size": 2865,
+      "normalized_sha256": "c57f7061890e6ba995d35830584b93c5505db8a9e84160bf379b203cc2e5a34f"
     },
     "src/utils/keyboardInsets.ts": {
       "role": "index",
-      "sha256": "302ca6c095e12a2c187acf15e1163c9248c0a2f079640e770753bb742ed3d1e6",
-      "size": 2616,
-      "normalized_sha256": "302ca6c095e12a2c187acf15e1163c9248c0a2f079640e770753bb742ed3d1e6"
+      "sha256": "2ccc57da44339a4437780e6c3f9038bcbaf9aba7a34dbef8ae788ae8b2623f81",
+      "size": 3038,
+      "normalized_sha256": "2ccc57da44339a4437780e6c3f9038bcbaf9aba7a34dbef8ae788ae8b2623f81"
     },
     "src/utils/lightboxGestures.test.ts": {
       "role": "observe",
@@ -8484,9 +8484,9 @@
     },
     "src/utils/messageHeight.ts": {
       "role": "index",
-      "sha256": "cedc2eeea947a3e5bcc5d6a8f2ad0e82a135051ba9dacad666071b6f34baccc5",
-      "size": 14248,
-      "normalized_sha256": "cedc2eeea947a3e5bcc5d6a8f2ad0e82a135051ba9dacad666071b6f34baccc5"
+      "sha256": "b42fd77e0ecb902e9b91b5cb6f90d86d4fa1fad8bdb7b4e8be87c13d12fc3886",
+      "size": 14250,
+      "normalized_sha256": "b42fd77e0ecb902e9b91b5cb6f90d86d4fa1fad8bdb7b4e8be87c13d12fc3886"
     },
     "src/utils/messageKinds.test.ts": {
       "role": "observe",
