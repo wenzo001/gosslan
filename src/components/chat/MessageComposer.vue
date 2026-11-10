@@ -1375,9 +1375,9 @@ async function onPaste(e: ClipboardEvent) {
          挂在**这张卡片自己的边框**上。编辑区（下面那个 contenteditable div）是卡片里一块
          透明矩形，不能给它画外框 —— 那会在卡片内部套一个方框（用户 2026-09-16 报的
          「输入框焦点态有个主题色方框」在消息输入框上就是这个形态）。 -->
-    <!-- Material 3 Text Field 规范：容器垂直 padding 8dp (pt-2 pb-2)，
-         这是文字可读性和点击热区的基线；WebView 中 1dp ≈ 1px（标准密度）。 -->
-    <div ref="composerCard" class="gosslan-composer relative rounded-[var(--gosslan-radius-2xl)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-panel)] px-4 pb-2 pt-2">
+    <!-- 容器 padding：上 8dp（基线）+ 下 12dp（2026-11-10 用户：底边与左右两侧的
+         视觉距离要相等；底边原本 9px、左右 13px，看起来"贴着底"）。WebView 中 1dp ≈ 1px。 -->
+    <div ref="composerCard" class="gosslan-composer relative rounded-[var(--gosslan-radius-2xl)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-panel)] px-4 pb-3 pt-2">
       <!-- 群聊 @ 成员选择：输入 @ 后浮出，↑↓ 导航 / Enter 或点击选中 -->
       <div
         v-if="mention && mentionFiltered.length > 0"
@@ -1522,11 +1522,11 @@ async function onPaste(e: ClipboardEvent) {
               的边距对称；`-mx-1` 同时让 28px 按钮的点击热区不越出卡片。
            ③ **统一规格**（2026-09-12 晚按微信参考图二次校准）：
               图标按钮 **32×32**（`h-8 w-8`）/ 图标 **20px**（`h-5 w-5`）/ 线宽 1.75 /
-              圆角 **13px**（= 外框 22 − 底内距 8 − 1px 描边；2026-11-09 审查按 border box
-              现算修正，原写 14 只减了 padding）——
-              口径是"内圆角 = 外框 22 − 到底边(8 + 1px 描边)"：工具条按钮与发送键、输入卡、
+              圆角 **9px**（= 外框 22 − 到底边 13；底边 = pb-3 12 + 1px 描边；
+              2026-11-10 用户要求底边与左右同距后由 13 改来）——
+              口径是"内圆角 = 外框 22 − 到底边(12 + 1px 描边)"：工具条按钮与发送键、输入卡、
               焦点外框落在同一族弧度里，hover 底色块也包在同一个圆角家族内；
-              按钮间距 8px、与文本间距 4px、卡片底距 8px。
+              按钮间距 8px、与文本间距 4px、卡片底距 12px、左右到按钮 13px。
            发送键改为**实心主按钮**（有草稿才点亮）：微信 4.0 的观感，
            无草稿时是低对比的占位态，不抢视觉。 -->
       <div class="-mx-1 mt-1 flex h-8 items-center gap-2">

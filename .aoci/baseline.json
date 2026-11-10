@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-10T03:55:28Z",
+  "updated_at": "2026-11-10T04:58:34Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -101,9 +101,9 @@
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "56539dc98759348ed22afc8e635c678d6d3ba41330b356949b1c6774f933fb38",
-      "size": 97853,
-      "normalized_sha256": "56539dc98759348ed22afc8e635c678d6d3ba41330b356949b1c6774f933fb38"
+      "sha256": "89f279d27bf060f221dfa52114c48bd0ee42fe892a2a849440a63efd3df64807",
+      "size": 98351,
+      "normalized_sha256": "89f279d27bf060f221dfa52114c48bd0ee42fe892a2a849440a63efd3df64807"
     },
     "CONTEXT.md": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "d7fff8baab48e20479f137e096ec7828cfe0377eea8326a51150305cc54f00da",
-      "size": 521643,
-      "normalized_sha256": "d7fff8baab48e20479f137e096ec7828cfe0377eea8326a51150305cc54f00da"
+      "sha256": "dbdc6b0039f9a7111db04cda63399bd5b11c9d3ee5b02927b895bc17597d517f",
+      "size": 521668,
+      "normalized_sha256": "dbdc6b0039f9a7111db04cda63399bd5b11c9d3ee5b02927b895bc17597d517f"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2003,9 +2003,9 @@
     },
     "docs/notes/handover-2026-11-09.md": {
       "role": "index",
-      "sha256": "b2c405fc28feec1947527f5df0a1a96ed008a51c3b6815e02bbfdf388f08f2cd",
-      "size": 62529,
-      "normalized_sha256": "b2c405fc28feec1947527f5df0a1a96ed008a51c3b6815e02bbfdf388f08f2cd"
+      "sha256": "7cf7695550596b610684e45d8c3c0e9dffa558359c180e48b3d9c82d83c64313",
+      "size": 63275,
+      "normalized_sha256": "7cf7695550596b610684e45d8c3c0e9dffa558359c180e48b3d9c82d83c64313"
     },
     "docs/notes/harmonyos-feasibility-2026-09-22.md": {
       "role": "index",
@@ -2231,15 +2231,15 @@
     },
     "package-lock.json": {
       "role": "index",
-      "sha256": "85a511def5120b4b46cae21748e94fa5545de301a5152ed50bf464ea0a42cc17",
-      "size": 138313,
-      "normalized_sha256": "85a511def5120b4b46cae21748e94fa5545de301a5152ed50bf464ea0a42cc17"
+      "sha256": "11101fa42eb4bc40878533346f926a1b312700dd0e7f22dacfeb35e90cf4d5ad",
+      "size": 138315,
+      "normalized_sha256": "11101fa42eb4bc40878533346f926a1b312700dd0e7f22dacfeb35e90cf4d5ad"
     },
     "package.json": {
       "role": "index",
-      "sha256": "ba2a6b0614c485de9a266850f16aadd8877e7e779c89ae17ad3e746a3048a066",
-      "size": 9139,
-      "normalized_sha256": "ba2a6b0614c485de9a266850f16aadd8877e7e779c89ae17ad3e746a3048a066"
+      "sha256": "e9764868d6559ddaa80bc9a426170f3febf1a2a7c6187cc2d011a5cf1f57c5c8",
+      "size": 9140,
+      "normalized_sha256": "e9764868d6559ddaa80bc9a426170f3febf1a2a7c6187cc2d011a5cf1f57c5c8"
     },
     "perf/README.md": {
       "role": "index",
@@ -3359,15 +3359,15 @@
     },
     "src-tauri/Cargo.lock": {
       "role": "index",
-      "sha256": "41893bbdcb5801d3e4c8326eeb0af9b839a58dd68d95878473026c20902cffd8",
-      "size": 156850,
-      "normalized_sha256": "41893bbdcb5801d3e4c8326eeb0af9b839a58dd68d95878473026c20902cffd8"
+      "sha256": "891310fb816d923ba1da2e16a662780895ffd30e8f08a756e26db4c15dde0d12",
+      "size": 156851,
+      "normalized_sha256": "891310fb816d923ba1da2e16a662780895ffd30e8f08a756e26db4c15dde0d12"
     },
     "src-tauri/Cargo.toml": {
       "role": "index",
-      "sha256": "663bfe0d5edda3ef60f21fe4debf43b2c49e8f90f7a90eb29e0df2c0de638b4d",
-      "size": 17121,
-      "normalized_sha256": "663bfe0d5edda3ef60f21fe4debf43b2c49e8f90f7a90eb29e0df2c0de638b4d"
+      "sha256": "d60d3f6505a13fde2c31919a16fa759b6198a3cb3fbedb99c34167f656ec7170",
+      "size": 17122,
+      "normalized_sha256": "d60d3f6505a13fde2c31919a16fa759b6198a3cb3fbedb99c34167f656ec7170"
     },
     "src-tauri/Info.plist": {
       "role": "index",
@@ -5206,9 +5206,9 @@
     },
     "src-tauri/tauri.conf.json": {
       "role": "index",
-      "sha256": "4d5f5ba9ac4d494fe49e382d38856a0bae0d3e7c1ace4cc9863e528958c05005",
-      "size": 2927,
-      "normalized_sha256": "4d5f5ba9ac4d494fe49e382d38856a0bae0d3e7c1ace4cc9863e528958c05005"
+      "sha256": "79559e0816a809e7fdd63474ee687ba8cd79aa7c6135942a1af27fb3236214c8",
+      "size": 2928,
+      "normalized_sha256": "79559e0816a809e7fdd63474ee687ba8cd79aa7c6135942a1af27fb3236214c8"
     },
     "src-tauri/tauri.nodrop.conf.json": {
       "role": "index",
@@ -6696,9 +6696,9 @@
     },
     "src/components/chat/MessageComposer.vue": {
       "role": "index",
-      "sha256": "a946068ab5944470332ddc7269473e9302f1fd5d43be66d0fa4d83dac75ddf7b",
-      "size": 74859,
-      "normalized_sha256": "a946068ab5944470332ddc7269473e9302f1fd5d43be66d0fa4d83dac75ddf7b"
+      "sha256": "8cea2f5b98e5f24f9f53fa00cb0a93fce90e21a2046d268ebc4b21826b6ca0b3",
+      "size": 74928,
+      "normalized_sha256": "8cea2f5b98e5f24f9f53fa00cb0a93fce90e21a2046d268ebc4b21826b6ca0b3"
     },
     "src/components/conversation/ConversationContextMenu.vue": {
       "role": "index",
@@ -7410,9 +7410,9 @@
     },
     "src/style.css": {
       "role": "index",
-      "sha256": "e8c3d851e0c986584b1f4bcd7c7ec3b558d1465c5d356b60b8c5ea4f3170f9a3",
-      "size": 169717,
-      "normalized_sha256": "e8c3d851e0c986584b1f4bcd7c7ec3b558d1465c5d356b60b8c5ea4f3170f9a3"
+      "sha256": "3a7b0631bb76a97e3465857e10ed75d63ab75b2564189b7da04014e10a615cd8",
+      "size": 169811,
+      "normalized_sha256": "3a7b0631bb76a97e3465857e10ed75d63ab75b2564189b7da04014e10a615cd8"
     },
     "src/styles/hljs-theme.css": {
       "role": "index",
