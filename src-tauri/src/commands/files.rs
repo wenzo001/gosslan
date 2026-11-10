@@ -92,16 +92,13 @@ pub async fn save_outgoing_image(
 ) -> Result<serde_json::Value, String> {
     let (ext, bytes) = decode_outgoing_image(&data_url)?;
     let name = format!("image-{}.{ext}", Uuid::new_v4());
-    let dl = state
-        .inner()
-        .downloads_dir
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    let path = dl.join(&name);
+    // 自己发出去的图落**托管 sent 目录**：不进 downloads（接收目录，会被保留期清理）、
+    // 也不进 cache（会被清缓存删掉）。2026-11-10 用户实报：自己发的图升级后打不开。
+    let dir = state.inner().sent_dir.clone();
+    let path = dir.join(&name);
     let size = bytes.len() as u64;
     tokio::task::spawn_blocking(move || {
-        std::fs::create_dir_all(&dl).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         std::fs::write(&path, &bytes).map_err(|e| {
             crate::error_codes::coded(
                 crate::error_codes::IMAGE_SAVE_FAILED,
@@ -126,9 +123,9 @@ pub async fn save_outgoing_image(
 
 /// 删除本地文件（用于图片发送初始化失败后清理孤儿文件）。
 ///
-/// ⚠️ **只允许删除下载目录内的文件**。读取侧早有这条边界（见 `resolve_media_path`：
+/// ⚠️ **只允许删除下载目录或本机已发媒体目录（sent）内的文件**。读取侧早有这条边界（见 `resolve_media_path`：
 /// canonicalize 后必须落在 downloads 内，或该消息确由本机发出），删除侧原先却接受任意路径。
-/// 当前唯一调用方只清理 `save_outgoing_image` 刚写进 downloads 的孤儿图片，
+/// 当前唯一调用方只清理 `save_outgoing_image` 刚写进 sent 的孤儿图片，
 /// 所以这条限制不影响任何既有功能；但若哪天有 UI 把它接到消息里的 `path`
 /// （该字段由对端控制），没有它就会变成「对端点一下按钮删掉本机任意文件」。
 ///
@@ -165,16 +162,20 @@ pub async fn delete_file(state: State<'_, Arc<AppState>>, path: String) -> Resul
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let under_downloads = std::fs::canonicalize(&dl)
-            .map(|dir| path_under_any(&file, &[dir]))
-            .unwrap_or(false);
-        if !under_downloads {
+        // 两个合法根：接收目录（downloads）与**本机已发媒体托管目录**（sent）。
+        // 后者是 2026-11-10 新增的落点；reason 仍叫 outside_downloads（安全信号码/判据不变）。
+        let roots: Vec<std::path::PathBuf> = [dl, s.sent_dir.clone()]
+            .iter()
+            .filter_map(|d| std::fs::canonicalize(d).ok())
+            .collect();
+        let under_managed = path_under_any(&file, &roots);
+        if !under_managed {
             return Err(reject_file_coded(
                 &s,
                 "delete",
                 "outside_downloads",
                 crate::error_codes::FILE_DELETE_OUTSIDE_DOWNLOADS,
-                "只能删除下载目录内的文件",
+                "只能删除下载目录或本机已发媒体目录内的文件",
             ));
         }
         std::fs::remove_file(&file).map_err(|e| e.to_string())

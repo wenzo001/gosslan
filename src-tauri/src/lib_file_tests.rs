@@ -1723,3 +1723,34 @@ fn file_command_rejections_are_traced_not_silent() {
             "正控失效：摘掉换算后尺子仍然匹配 ⇒ 这把尺子在空集上恒绿"
         );
     }
+
+    /// 2026-11-10 用户实报：**自己发的图片升级后打不开**，还要点「重新获取」。
+    /// 根因是安卓导入的媒体落在 `cache_dir/imports`（会被清缓存删掉），粘贴图片落在
+    /// `downloads_dir`（会被保留期清理）。两者都改为本机已发媒体托管目录 `sent_dir`，
+    /// 并把它排除在自动清理之外；这条按源码形状钉住，防止退回。
+    #[test]
+    fn outgoing_media_lives_in_sent_dir_not_cache_or_downloads() {
+        let files = include_str!("commands/files.rs");
+        let save = rust_fn_body(files, "async fn save_outgoing_image(");
+        assert!(save.contains("sent_dir"), "粘贴发图必须落 sent_dir");
+        assert!(
+            !save.contains("downloads_dir"),
+            "粘贴发图不许再落 downloads（保留期会删掉自己发的图）"
+        );
+
+        let picker = include_str!("commands/mobile_picker.rs");
+        let imp = rust_fn_body(picker, "async fn import_picked_file(");
+        assert!(imp.contains("state.sent_dir.clone()"), "安卓导入必须落 sent_dir");
+        assert!(
+            !imp.contains("cache_dir.join(\"imports\")"),
+            "安卓导入不许退回 cache/imports（清缓存会把已发图片删掉）"
+        );
+
+        let channel = include_str!("commands/channel.rs");
+        let clean = rust_fn_body(channel, "fn cleanable_dirs(");
+        assert!(!clean.contains("sent_dir"), "自动清理不得把 sent_dir 纳入删除面");
+
+        // 正控：把新落点改回旧写法，上面的断言必须咬住。
+        let legacy = imp.replace("state.sent_dir.clone()", "state.cache_dir.join(\"imports\")");
+        assert!(!legacy.contains("state.sent_dir.clone()"));
+    }

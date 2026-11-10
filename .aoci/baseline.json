@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-10T00:35:46Z",
+  "updated_at": "2026-11-10T02:48:59Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -101,9 +101,9 @@
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "9d832433d0e81094c4da703da612378570fb7857cd482e3eb043109795f940a8",
-      "size": 96802,
-      "normalized_sha256": "9d832433d0e81094c4da703da612378570fb7857cd482e3eb043109795f940a8"
+      "sha256": "56539dc98759348ed22afc8e635c678d6d3ba41330b356949b1c6774f933fb38",
+      "size": 97853,
+      "normalized_sha256": "56539dc98759348ed22afc8e635c678d6d3ba41330b356949b1c6774f933fb38"
     },
     "CONTEXT.md": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "2672919a5b9438db2d8a478e9a19a3680d43fcb4a611658d9ecc9a141e15bb9f",
-      "size": 521261,
-      "normalized_sha256": "2672919a5b9438db2d8a478e9a19a3680d43fcb4a611658d9ecc9a141e15bb9f"
+      "sha256": "250d9f628309ff797ec461e1cd380caa210f99c60f5659d05e90ce4b43f56a27",
+      "size": 521683,
+      "normalized_sha256": "250d9f628309ff797ec461e1cd380caa210f99c60f5659d05e90ce4b43f56a27"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2003,9 +2003,9 @@
     },
     "docs/notes/handover-2026-11-09.md": {
       "role": "index",
-      "sha256": "fb7293143b355757d56c288cdbbc35d8cf915639416444d04640ed593d5d2fae",
-      "size": 60046,
-      "normalized_sha256": "fb7293143b355757d56c288cdbbc35d8cf915639416444d04640ed593d5d2fae"
+      "sha256": "93f4c5a8e0d4ac4f5262fca5d6bbe9c7ffe344008d16321179968beacf5a5c7a",
+      "size": 62166,
+      "normalized_sha256": "93f4c5a8e0d4ac4f5262fca5d6bbe9c7ffe344008d16321179968beacf5a5c7a"
     },
     "docs/notes/harmonyos-feasibility-2026-09-22.md": {
       "role": "index",
@@ -2231,15 +2231,15 @@
     },
     "package-lock.json": {
       "role": "index",
-      "sha256": "97764600eab51fcdb74370d20e003edff71fa99c474edd55418429e46d2f2dca",
+      "sha256": "85a511def5120b4b46cae21748e94fa5545de301a5152ed50bf464ea0a42cc17",
       "size": 138313,
-      "normalized_sha256": "97764600eab51fcdb74370d20e003edff71fa99c474edd55418429e46d2f2dca"
+      "normalized_sha256": "85a511def5120b4b46cae21748e94fa5545de301a5152ed50bf464ea0a42cc17"
     },
     "package.json": {
       "role": "index",
-      "sha256": "c7fb837e7d5f5081b4574fa46e7e03123cd4ccd2657ce3feedd333673f364272",
+      "sha256": "ba2a6b0614c485de9a266850f16aadd8877e7e779c89ae17ad3e746a3048a066",
       "size": 9139,
-      "normalized_sha256": "c7fb837e7d5f5081b4574fa46e7e03123cd4ccd2657ce3feedd333673f364272"
+      "normalized_sha256": "ba2a6b0614c485de9a266850f16aadd8877e7e779c89ae17ad3e746a3048a066"
     },
     "perf/README.md": {
       "role": "index",
@@ -3359,15 +3359,15 @@
     },
     "src-tauri/Cargo.lock": {
       "role": "index",
-      "sha256": "a1d598b3039134bb6bf5429324ed1f11a44780d6fc966f007154c2572af09e4f",
+      "sha256": "41893bbdcb5801d3e4c8326eeb0af9b839a58dd68d95878473026c20902cffd8",
       "size": 156850,
-      "normalized_sha256": "a1d598b3039134bb6bf5429324ed1f11a44780d6fc966f007154c2572af09e4f"
+      "normalized_sha256": "41893bbdcb5801d3e4c8326eeb0af9b839a58dd68d95878473026c20902cffd8"
     },
     "src-tauri/Cargo.toml": {
       "role": "index",
-      "sha256": "6e7d743825c78623e0e7d25d0a78d5cedb2507f3c5f5f017be502498e86cb348",
+      "sha256": "663bfe0d5edda3ef60f21fe4debf43b2c49e8f90f7a90eb29e0df2c0de638b4d",
       "size": 17121,
-      "normalized_sha256": "6e7d743825c78623e0e7d25d0a78d5cedb2507f3c5f5f017be502498e86cb348"
+      "normalized_sha256": "663bfe0d5edda3ef60f21fe4debf43b2c49e8f90f7a90eb29e0df2c0de638b4d"
     },
     "src-tauri/Info.plist": {
       "role": "index",
@@ -3443,9 +3443,9 @@
     },
     "src-tauri/gen/android/app/build.gradle.kts": {
       "role": "index",
-      "sha256": "048d26e99ad6c97177d3fa924a29873022362ba1763f9f91b598eaf2d7fd9536",
-      "size": 3100,
-      "normalized_sha256": "048d26e99ad6c97177d3fa924a29873022362ba1763f9f91b598eaf2d7fd9536"
+      "sha256": "e0a90e1ac917c0111d6b134483b36328aacb1b8c4a13a74415ced77cfcfc2f7a",
+      "size": 3143,
+      "normalized_sha256": "e0a90e1ac917c0111d6b134483b36328aacb1b8c4a13a74415ced77cfcfc2f7a"
     },
     "src-tauri/gen/android/app/proguard-rules.pro": {
       "role": "index",
@@ -4084,9 +4084,9 @@
     },
     "src-tauri/src/commands/files.rs": {
       "role": "index",
-      "sha256": "64eb8aed60fa74669f72d5b99555f46d9711c49e3a32708d0b2a757c3aa7d56e",
-      "size": 94345,
-      "normalized_sha256": "64eb8aed60fa74669f72d5b99555f46d9711c49e3a32708d0b2a757c3aa7d56e"
+      "sha256": "9248aa69bfbff690e4676bf636779034172a74f06411c65574a79e207214df9d",
+      "size": 94862,
+      "normalized_sha256": "9248aa69bfbff690e4676bf636779034172a74f06411c65574a79e207214df9d"
     },
     "src-tauri/src/commands/files_tests.rs": {
       "role": "index",
@@ -4168,9 +4168,9 @@
     },
     "src-tauri/src/commands/mobile_picker.rs": {
       "role": "index",
-      "sha256": "6844548aab79d1ea94be7a5419c4b623334e3d5fa22f441e79095e92f3a91871",
-      "size": 41538,
-      "normalized_sha256": "6844548aab79d1ea94be7a5419c4b623334e3d5fa22f441e79095e92f3a91871"
+      "sha256": "0bbe6db842b8400f66a136636c7c5912a754fadbacf5b06fc20adc1516038a59",
+      "size": 41750,
+      "normalized_sha256": "0bbe6db842b8400f66a136636c7c5912a754fadbacf5b06fc20adc1516038a59"
     },
     "src-tauri/src/commands/network.rs": {
       "role": "index",
@@ -4504,15 +4504,15 @@
     },
     "src-tauri/src/lib_error_code_tests.rs": {
       "role": "index",
-      "sha256": "6d33f10a82fb2a9b8c2081c5ebe33c37f7f3d3be0c4f40b5f49410994b0d42fa",
-      "size": 33611,
-      "normalized_sha256": "6d33f10a82fb2a9b8c2081c5ebe33c37f7f3d3be0c4f40b5f49410994b0d42fa"
+      "sha256": "e7e66d29d16624ae4a9ea1143c3cd103dcea2fd2d17a5ee886c1f0a51d89b455",
+      "size": 33638,
+      "normalized_sha256": "e7e66d29d16624ae4a9ea1143c3cd103dcea2fd2d17a5ee886c1f0a51d89b455"
     },
     "src-tauri/src/lib_file_tests.rs": {
       "role": "index",
-      "sha256": "fb0dec47db57d17caa28084cff1e86a8a1d448771afa662a68213e36baaa632e",
-      "size": 92899,
-      "normalized_sha256": "fb0dec47db57d17caa28084cff1e86a8a1d448771afa662a68213e36baaa632e"
+      "sha256": "bed53b73a2a8f2cc2b95a40a495cde1e827d689557cb994960d822341b6501ac",
+      "size": 94646,
+      "normalized_sha256": "bed53b73a2a8f2cc2b95a40a495cde1e827d689557cb994960d822341b6501ac"
     },
     "src-tauri/src/lib_friend_identity_tests.rs": {
       "role": "index",
@@ -5086,9 +5086,9 @@
     },
     "src-tauri/src/state.rs": {
       "role": "index",
-      "sha256": "b07034b1b24d647d7c3c8700e051b3f133026e41df803a263a4c4ccdf585d93d",
-      "size": 208429,
-      "normalized_sha256": "b07034b1b24d647d7c3c8700e051b3f133026e41df803a263a4c4ccdf585d93d"
+      "sha256": "10c157bce1f3646f208b7408149be90d1fd58928183a3b46b86015a53330fd9f",
+      "size": 209283,
+      "normalized_sha256": "10c157bce1f3646f208b7408149be90d1fd58928183a3b46b86015a53330fd9f"
     },
     "src-tauri/src/storage/cache_cleaner.rs": {
       "role": "index",
@@ -5206,9 +5206,9 @@
     },
     "src-tauri/tauri.conf.json": {
       "role": "index",
-      "sha256": "8bd7f36f4a8aef4db3dd259ec9d1459e0d47c5639ae5f4511ca9f0bcd3102db7",
-      "size": 2860,
-      "normalized_sha256": "8bd7f36f4a8aef4db3dd259ec9d1459e0d47c5639ae5f4511ca9f0bcd3102db7"
+      "sha256": "4d5f5ba9ac4d494fe49e382d38856a0bae0d3e7c1ace4cc9863e528958c05005",
+      "size": 2927,
+      "normalized_sha256": "4d5f5ba9ac4d494fe49e382d38856a0bae0d3e7c1ace4cc9863e528958c05005"
     },
     "src-tauri/tauri.nodrop.conf.json": {
       "role": "index",
@@ -6510,9 +6510,9 @@
     },
     "src/components/MessageItem.vue": {
       "role": "index",
-      "sha256": "85bdd90e0b012d73b618c411cdc4a88480a69035999b59dee99d7dc174051e39",
-      "size": 118332,
-      "normalized_sha256": "85bdd90e0b012d73b618c411cdc4a88480a69035999b59dee99d7dc174051e39"
+      "sha256": "5b63c33cb40516c6793ea3a968f95f980b52b9b56ac225ba63cf80dc2324fc0c",
+      "size": 118747,
+      "normalized_sha256": "5b63c33cb40516c6793ea3a968f95f980b52b9b56ac225ba63cf80dc2324fc0c"
     },
     "src/components/MobilePageFrame.vue": {
       "role": "index",

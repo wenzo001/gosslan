@@ -1986,13 +1986,19 @@ async function copyFileToClipboard() {
                使这条新链末尾的 <div v-else> 变成"对所有 text / code 消息都成立的兜底"——
                于是每条文本消息都被渲染两遍（MessageTextBubble 一遍 + 原始文字一遍，
                表现为表情显示成 [摊手] 原文、普通消息整条重复）。历史缺陷见 fd02f62。 -->
+          <!-- 自己发的那张图没有「重取」语义（见下方注释）：这一支必须看起来**不可点**
+               —— 光标保持默认、没有 hover、也不进 Tab 序（2026-11-10 用户：
+               「自己发的图片，假设坏掉了，也不应该有什么点击重试这种」）。 -->
           <button
             v-else-if="message.kind === 'image' && attachmentMissing"
             type="button"
-            class="flex w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-            :class="mine ? 'self-end' : 'self-start'"
+            class="flex w-52 flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-caption text-[var(--gosslan-text-2)] transition focus-visible:outline-none"
+            :class="[
+              mine ? 'self-end cursor-default' : 'self-start cursor-pointer hover:bg-[var(--gosslan-pressed)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary',
+            ]"
             :style="{ height: `${IMAGE_PLACEHOLDER_HEIGHT}px` }"
             :aria-disabled="mine ? 'true' : undefined"
+            :tabindex="mine ? -1 : 0"
             @click="mine ? undefined : refetchContent()"
           >
             <Icon name="image-off" class="h-6 w-6 opacity-50" />
