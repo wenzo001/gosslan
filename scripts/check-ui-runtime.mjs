@@ -20750,6 +20750,29 @@ async function runTopology(cdp, url) {
 
   const mounted = await cdp.eval("window.__probe.install('/src/components/NetworkTopology.vue', '', "
     + JSON.stringify(JSON.stringify({ isolated: true })) + ")");
+  // 2b) 首帧位置（2026-11-11 用户：「自己的节点一开始在最左上角，过了一下才到中间」）：
+  //     挂载后立刻（种名单**之前**，此时图里只有 self）读**最早**那几笔落笔坐标 ——
+  //     首帧就该落在图区中心；先画在 (0,0)=左上角再被 zoomToFit 拉回来就是这条 bug。
+  await sleep(600);
+  const firstFrame = await cdp.eval(`(() => {
+    const canvas = document.querySelector('#probe-host .force-graph-container canvas');
+    if (!canvas) return { ok: false };
+    const cr = canvas.getBoundingClientRect();
+    const a = (window.__topoArcs || [])[0];
+    if (!a) return { ok: false, hasArc: false };
+    const cx = cr.left + cr.width / 2;
+    const cy = cr.top + cr.height / 2;
+    return {
+      ok: true,
+      dist: Math.round(Math.hypot(a.x - cx, a.y - cy)),
+      at: { x: Math.round(a.x), y: Math.round(a.y) },
+      center: { x: Math.round(cx), y: Math.round(cy) },
+    };
+  })()`);
+  check("拓扑首帧：self 节点一开始就画在图区中心（不许先挂左上角再弹回中间）",
+    firstFrame.ok === true && firstFrame.dist <= 150,
+    "最早落笔距图区中心 ≤ 150px",
+    JSON.stringify(firstFrame));
   // 3) 名单必须写进**组件正在用的那份 store**（install 之后才有同一个 pinia）。
   const seeded = await cdp.eval(`(async () => {
     const A = await import('/src/stores/useAppStore.ts');
