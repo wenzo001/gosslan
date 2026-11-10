@@ -829,10 +829,33 @@ function scrollToOffset(offset: number) {
  * clientWidth 随之变化 ⇒ 清缓存 ⇒ 高度重估 ⇒ 滚动条再变，形成 18px 级抖动环
  * （走查实测切会话出现 5 次方向反转）。容器 RO 只负责 nearBottom。
  */
+/**
+ * 窗口拖动缩放（2026-11-10 用户）：拖动过程中每个 resize 事件都 measure 会让整列
+ * 反复重估、滚动位置乱跳。这里**防抖到拖完**再测量一次：期间只压住瞬态吸附，
+ * 记录当前锚点（key + 行内偏移）；trailing 时先 measure，再按锚点恢复
+ * （贴底态则重新贴底）⇒ 内容在窗口里"位置不变"。
+ */
+const RESIZE_SETTLE_MS = 160;
+let resizeTimer = 0;
+let resizeAnchor: { key: string; offset: number; top: number } | null = null;
 function onWindowResize() {
+  if (!resizeAnchor) resizeAnchor = getAnchor();
   suppressTransient();
-  virtualizer.value.measure();
-  computeScrollState();
+  if (resizeTimer) window.clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(() => {
+    resizeTimer = 0;
+    const anchor = resizeAnchor;
+    resizeAnchor = null;
+    virtualizer.value.measure();
+    if (pinned) {
+      scrollToBottom();
+    } else if (anchor && anchor.key) {
+      scrollToAnchor(anchor.key, anchor.offset, anchor.top);
+    } else if (anchor) {
+      scrollToOffset(anchor.top);
+    }
+    computeScrollState();
+  }, RESIZE_SETTLE_MS);
 }
 useEventListener(window, "resize", onWindowResize);
 
@@ -876,6 +899,7 @@ onBeforeUnmount(() => {
   containerResizeObserver?.disconnect();
   containerResizeObserver = null;
   if (raf) cancelAnimationFrame(raf);
+  if (resizeTimer) window.clearTimeout(resizeTimer);
   if (settleTimer) window.clearTimeout(settleTimer);
   if (pinRaf) cancelAnimationFrame(pinRaf);
   if (jumpTimer) {

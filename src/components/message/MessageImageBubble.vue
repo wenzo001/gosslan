@@ -2,7 +2,7 @@
 import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import { computed, onUnmounted, ref, watch } from "vue";
-import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT, imageBubbleHeight } from "@/utils/previewMetrics";
+import { IMAGE_PLACEHOLDER_HEIGHT, imageBubbleBox } from "@/utils/previewMetrics";
 import { rememberImageOrigin } from "@/utils/imageZoom";
 
 const props = withDefaults(
@@ -16,11 +16,16 @@ const props = withDefaults(
   { mine: false, width: undefined, height: undefined },
 );
 
-/** 有真实尺寸就按比例预留；没有就沿用旧口径（上限 288）。 */
-const reservedHeight = computed(() =>
-  props.width && props.height ? imageBubbleHeight(props.width, props.height) : IMAGE_BUBBLE_HEIGHT,
-);
+/**
+ * 有真实尺寸：按「安全长宽比」算外框（超长图裁到 3:1 / 1:3，避免细条）。
+ * 没有尺寸：沿用旧口径固定 208×288（解码前无从推算比例）。
+ */
+const box = computed(() => imageBubbleBox(props.width, props.height));
+const reservedHeight = computed(() => box.value.height);
+const frameWidth = computed(() => box.value.width);
 const hasKnownSize = computed(() => !!(props.width && props.height));
+/** 比例被夹过的极端图用 object-cover 裁中间；普通比例仍 contain，不裁。 */
+const cover = computed(() => hasKnownSize.value && box.value.cover);
 /**
  * 失败态高度：**已知尺寸时保持预留高度**，不缩到 128。
  * 否则"图片加载失败"会再改一次行高，把下方内容推上去 —— 用户要的是"不跳"，
@@ -208,8 +213,8 @@ onUnmounted(() => {
   <div
     ref="frameEl"
     data-img-frame
-    class="relative flex w-52 max-w-full cursor-pointer touch-manipulation items-center justify-center overflow-hidden rounded-[var(--gosslan-bubble-radius)]"
-    :style="{ height: `${placeholderHeight}px` }"
+    class="relative flex max-w-full cursor-pointer touch-manipulation items-center justify-center overflow-hidden rounded-[var(--gosslan-bubble-radius)]"
+    :style="{ width: `${frameWidth}px`, height: `${placeholderHeight}px` }"
     :data-img-state="state"
     role="button"
     tabindex="0"
@@ -259,12 +264,24 @@ onUnmounted(() => {
          竖直居中交给外框的 flex（外框高度仍是预留值，加载前后尺寸不变）。
          圆角沿用气泡档（与外框 18px 一致；换成 radius-lg 反而会在框内多一圈小圆角）。
          已知边界见 docs/design-language/README.md 附录 B。 -->
-    <img ref="imgEl" decoding="async" :alt="t('msg.imageMessage')"
+    <!-- 普通比例：元素框贴住内容（contain），外框高度是预留值，加载前后不变。 -->
+    <img v-if="!cover" ref="imgEl" decoding="async" :alt="t('msg.imageMessage')"
       data-img-el
       :key="loadKey"
       :src="props.src"
       class="block max-w-full rounded-[var(--gosslan-bubble-radius)] object-contain"
       :style="{ maxHeight: `${reservedHeight}px`, height: hasKnownSize ? `${reservedHeight}px` : undefined }"
+      :class="state === 'loaded' ? '' : 'hidden'"
+      @load="clearTimer(); state = 'loaded'; syncContentInset()"
+      @error="onError()"
+    />
+    <!-- 超过安全长宽比的极端图：元素框铺满外框、object-cover 裁中间（点开灯箱看全图），
+         避免 1:5 的截图缩成一条几十像素宽的细线。 -->
+    <img v-else ref="imgEl" decoding="async" :alt="t('msg.imageMessage')"
+      data-img-el
+      :key="loadKey"
+      :src="props.src"
+      class="block h-full w-full rounded-[var(--gosslan-bubble-radius)] object-cover"
       :class="state === 'loaded' ? '' : 'hidden'"
       @load="clearTimer(); state = 'loaded'; syncContentInset()"
       @error="onError()"

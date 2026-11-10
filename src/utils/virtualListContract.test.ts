@@ -101,7 +101,15 @@ test("图片按载荷 w/h 预留，且预览 URL 到达前不先渲染文件卡"
   assert.match(item, /:height="fileMeta\?\.h"/);
   assert.match(item, /fileMeta\?\.subtype === 'image' && fileMeta\?\.w && fileMeta\?\.h/);
   const bubble = read("src/components/message/MessageImageBubble.vue");
-  assert.match(bubble, /imageBubbleHeight\(props\.width, props\.height\)/);
+  assert.match(bubble, /imageBubbleBox\(props\.width, props\.height\)/);
+});
+
+test("窗口 resize 防抖到拖完，并按锚点恢复（滚动内容不跳）", () => {
+  const src = read("src/components/VirtualList.vue");
+  assert.match(src, /RESIZE_SETTLE_MS/, "resize 必须防抖");
+  assert.match(src, /if \(!resizeAnchor\) resizeAnchor = getAnchor\(\)/, "拖动开始时记锚点");
+  assert.match(src, /scrollToAnchor\(anchor\.key, anchor\.offset, anchor\.top\)/, "trailing 后按锚点恢复");
+  assert.match(src, /if \(resizeTimer\) window\.clearTimeout\(resizeTimer\)/, "卸载要清计时器");
 });
 
 test("代码高亮移出首帧：Worker + 纯文本兜底 + 主题全局一份", () => {
