@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-10T02:48:59Z",
+  "updated_at": "2026-11-10T03:55:28Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "250d9f628309ff797ec461e1cd380caa210f99c60f5659d05e90ce4b43f56a27",
-      "size": 521683,
-      "normalized_sha256": "250d9f628309ff797ec461e1cd380caa210f99c60f5659d05e90ce4b43f56a27"
+      "sha256": "d7fff8baab48e20479f137e096ec7828cfe0377eea8326a51150305cc54f00da",
+      "size": 521643,
+      "normalized_sha256": "d7fff8baab48e20479f137e096ec7828cfe0377eea8326a51150305cc54f00da"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2003,9 +2003,9 @@
     },
     "docs/notes/handover-2026-11-09.md": {
       "role": "index",
-      "sha256": "93f4c5a8e0d4ac4f5262fca5d6bbe9c7ffe344008d16321179968beacf5a5c7a",
-      "size": 62166,
-      "normalized_sha256": "93f4c5a8e0d4ac4f5262fca5d6bbe9c7ffe344008d16321179968beacf5a5c7a"
+      "sha256": "b2c405fc28feec1947527f5df0a1a96ed008a51c3b6815e02bbfdf388f08f2cd",
+      "size": 62529,
+      "normalized_sha256": "b2c405fc28feec1947527f5df0a1a96ed008a51c3b6815e02bbfdf388f08f2cd"
     },
     "docs/notes/harmonyos-feasibility-2026-09-22.md": {
       "role": "index",
