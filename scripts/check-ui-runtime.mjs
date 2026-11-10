@@ -22810,6 +22810,57 @@ async function runOpsCenter(cdp, url) {
       return true;
     })()`);
 
+    // 长失败原因（2026-11-10 用户实报「文本挤出横向滚动条」）：判死行的整句人话
+    // （msg.fail.* 那一族）只能住**详情行**（块级、换行），不许塞进 shrink-0 的状态槽。
+    // 量三件事：状态=短标签、详情含整句、面板与行都没有横向溢出。
+    await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      const chat = S.useChatStore();
+      window.__probeFailBefore = chat.messageOps;
+      chat.messageOps = [...chat.messageOps, { msg_id: 'm-fail-long', kind: 'text', peer_id: 'p1',
+        group_id: null, waiting_for: 0, created_at: 11, preview: null, peer_offline: false,
+        can_cancel: false, failed: true, fail_code: 'SEND_RETRY_EXPIRED', some_delivered: false }];
+      const t = window.__probe.vue; await t.nextTick(); await t.nextTick(); return true;
+    })()`);
+    const failRead = await cdp.eval(`(async () => {
+      const I = await import('/src/i18n/index.ts');
+      const dialog = document.querySelector('[role="dialog"]');
+      const ul = dialog && dialog.querySelector('ul');
+      const reason = I.t('msg.fail.retryExpired');
+      const li = dialog
+        ? [...dialog.querySelectorAll('li')].find((x) => (x.textContent || '').includes(reason))
+        : null;
+      const spans = li ? [...li.querySelectorAll('span')].map((s) => (s.textContent || '').trim()) : [];
+      const detail = li
+        ? [...li.querySelectorAll('p')].map((p) => (p.textContent || '').trim())
+            .find((s) => s.includes(reason)) || ''
+        : '';
+      return {
+        found: !!li,
+        status: spans[1] || '',
+        detail,
+        wantStatus: I.t('task.state.failed'),
+        ulScrollW: ul ? ul.scrollWidth : -1,
+        ulClientW: ul ? ul.clientWidth : -1,
+        liW: li ? Math.round(li.getBoundingClientRect().width) : -1,
+      };
+    })()`);
+    check("判死行：状态槽只有短标签「发送失败」，整句原因住详情行",
+      failRead.found === true && failRead.status === failRead.wantStatus
+        && failRead.detail.length > 20,
+      "status=发送失败 + detail 含整句",
+      JSON.stringify(failRead));
+    check("判死行：面板没有横向滚动条（长原因不再把卡片撑出列表宽度）",
+      failRead.found === true && failRead.ulScrollW <= failRead.ulClientW + 1
+        && failRead.liW <= failRead.ulClientW + 1,
+      "ul/li 都不横向溢出",
+      JSON.stringify(failRead));
+    await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      S.useChatStore().messageOps = window.__probeFailBefore;
+      const t = window.__probe.vue; await t.nextTick(); await t.nextTick(); return true;
+    })()`);
+
     // ④b 移动端 390 与关闭：统一放在下面（先关面板，再以共享开关重开一次量宽度）。
 
     // 「确认了之后，应该是会在后台任务中加入后台任务重新发送」（负责人 2026-10-26）。

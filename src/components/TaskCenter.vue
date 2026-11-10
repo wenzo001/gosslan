@@ -10,12 +10,12 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import {
   FALLBACK_TITLE_KEYS,
+  operationDetailText,
   operationStatusText,
   type OperationAction,
   type OperationRow,
 } from "@/utils/taskCenter";
 import { clampProgress } from "@/utils/transferSummary";
-import { blockedReasonKey } from "@/utils/transferState";
 import { cancelOutcome, fileCancelKey, messageCancelNotice } from "@/utils/cancelFeedback";
 import { fileFailReasonText } from "@/utils/fileFailReason";
 
@@ -82,16 +82,9 @@ function statusText(row: OperationRow): string {
   return operationStatusText(row, t);
 }
 
-/** 卡在哪一句 + 已经试过几次 + 还差几个人。三件都是"为什么还不动"的答案。 */
-function detailText(row: OperationRow): string {
-  const parts: string[] = [];
-  const key = blockedReasonKey(row.blockedReason);
-  if (key) parts.push(t(key));
-  if (row.attempts && row.attempts > 0) parts.push(t("task.attempts", { n: row.attempts }));
-  // 只剩 1 个成员也要说（"还有 1 个人没收到"），否则半送达的群消息行会没有目标。
-  if (row.waitingFor && row.waitingFor > 0) parts.push(t("task.waitingFor", { n: row.waitingFor }));
-  return parts.join(" · ");
-}
+// 详情行（卡在哪一句 + 试了几次 + 还差几个人）同样只有一个家：
+// `utils/taskCenter::operationDetailText` —— 长失败原因在这里换行，不进状态槽。
+const detailText = (row: OperationRow): string => operationDetailText(row, t);
 
 const busy = ref<string | null>(null);
 /** 打开会话的请求令牌：后点的动作作废旧结果（IPC 不能 abort，但 UI 必须有终态）。 */
