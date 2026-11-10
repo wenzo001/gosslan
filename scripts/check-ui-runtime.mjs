@@ -18814,6 +18814,36 @@ async function runBleed(cdp, url) {
     }
   }
 
+  // 桌面标题栏 LAN 徽标（2026-11-10 用户）：桌面没有「我的」列表那一栏，
+  // 点标题栏这枚 LAN · N 必须能打开网络拓扑整页。量两件事：
+  // 徽标是带 aria-label 的按钮、点击后 force-graph 的 canvas 真的挂出来。
+  await boot(1280);
+  const lanEntry = await cdp.eval(`(async () => {
+    const I = await import('/src/i18n/index.ts');
+    const host = document.getElementById('probe-host');
+    const pill = [...host.querySelectorAll('button')]
+      .find((b) => (b.getAttribute('aria-label') || '') === I.t('topology.title'));
+    if (!pill) return { found: false };
+    const r = pill.getBoundingClientRect();
+    // @click 听的是 click 事件：直接派发一颗带坐标的 MouseEvent（pointerdown/up 不会合成 click）。
+    pill.dispatchEvent(new MouseEvent('click', {
+      bubbles: true, cancelable: true, button: 0,
+      clientX: Math.round(r.left + r.width / 2), clientY: Math.round(r.top + r.height / 2),
+    }));
+    // topology 是 defineAsyncComponent + 独立 chunk：给 dev 现编译留有界等待。
+    let opened = false;
+    for (let i = 0; i < 20 && !opened; i += 1) {
+      await new Promise((res) => setTimeout(res, 200));
+      opened = !!document.querySelector('#probe-host .force-graph-container canvas');
+    }
+    const stats = document.querySelector('[data-topo-stats]');
+    return { found: true, x: Math.round(r.left), y: Math.round(r.top), opened, hasStats: !!stats };
+  })()`);
+  check("桌面标题栏 LAN 徽标可点：点开网络拓扑整页（force-graph 真的挂出来）",
+    lanEntry.found === true && lanEntry.opened === true && lanEntry.hasStats === true,
+    "aria=网络拓扑 + 点后 canvas 与统计行出现",
+    JSON.stringify(lanEntry));
+
   fs.writeFileSync(outFile, JSON.stringify({ widths: WIDTHS, mobileMax: MOBILE_MAX, rows }, null, 2));
 }
 
