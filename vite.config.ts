@@ -126,6 +126,21 @@ export default defineConfig(async () => ({
             id.includes("hey-listen")
           )
             return "motion";
+          // 网络拓扑整包只在「我的 → 网络拓扑」打开时动态加载：force-graph 及其
+          // d3/lodash 传递依赖单独成块，不把主 vendor 拖大（2026-11-10）。
+          if (
+            id.includes("force-graph") ||
+            id.includes("d3-") ||
+            id.includes("kapsule") ||
+            id.includes("bezier-js") ||
+            id.includes("lodash-es") ||
+            id.includes("accessor-fn") ||
+            id.includes("float-tooltip") ||
+            id.includes("index-array-by") ||
+            id.includes("@tweenjs") ||
+            id.includes("canvas-color-tracker")
+          )
+            return "topology";
           if (id.includes("highlight.js")) return "highlight";
           if (id.includes("lucide-vue-next")) return "icons";
           if (id.includes("@tauri-apps")) return "tauri";

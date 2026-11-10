@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
-import { computed, ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
+import { computed, defineAsyncComponent, ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
 import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 import { navigationDirection } from "@/router/main";
 import { motion, useReducedMotion } from "@/utils/motion";
@@ -33,6 +33,8 @@ import ShareDirectory from "@/components/ShareDirectory.vue";
 import LogViewer from "@/components/LogViewer.vue";
 import FavoritePanel from "@/components/FavoritePanel.vue";
 import ToastHud from "@/components/ToastHud.vue";
+// 拓扑图整包（force-graph）只在打开时加载，不把主 bundle 拖大。
+const NetworkTopology = defineAsyncComponent(() => import("@/components/NetworkTopology.vue"));
 import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import LinksList from "@/components/LinksList.vue";
@@ -131,6 +133,8 @@ watch(
 const listView = computed<"chats" | "contacts">(() =>
   navState.value === "contacts" ? "contacts" : "chats",
 );
+/** 网络拓扑：从「我的」进入的全屏覆盖层（不占底部 Tab）。 */
+const topologyOpen = ref(false);
 /** 收藏打开时左列隐藏（整页态），links 时换成 LinksList。 */
 const favoritesOpen = computed(
   () => route.name === "favorites" || route.name === "favorite",
@@ -1099,10 +1103,12 @@ function onResizeEnd() {
                 <Icon name="settings" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
                 <span class="flex-1 text-sm">{{ t("nav.settings") }}</span>
               </button>
-              <!-- 行间内缩分隔线（从文本列起 = px-4 + 20 图标 + gap-3 = 48px ⇒ ml-12），
-                   与聊天/通讯录列表同款；末行不加。
-                   ⚠️ 放成**兄弟节点**而不是塞进 `<button>` 里：`<div>` 不是 phrasing content，
-                   塞进 button 是非法 HTML。 -->
+              <div class="ml-12 h-px shrink-0 bg-[var(--gosslan-divider)]"></div>
+              <!-- 网络拓扑（2026-11-10 用户）：可视化自己 / 直连 / 中转 / 好友关系。 -->
+              <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="topologyOpen = true">
+                <Icon name="network" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+                <span class="flex-1 text-sm">{{ t("topology.title") }}</span>
+              </button>
               <div class="ml-12 h-px shrink-0 bg-[var(--gosslan-divider)]"></div>
               <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="openMobileLinks">
                 <NavIcon name="links" variant="rail" class="text-[var(--gosslan-text-2)]" />
@@ -1400,6 +1406,13 @@ function onResizeEnd() {
       :open="preview.open && !preview.inWindow"
       :origin="preview.origin"
       @close="preview.close()"
+    />
+
+    <!-- 网络拓扑：全屏覆盖层；发消息时关掉它并切到聊天。 -->
+    <NetworkTopology
+      v-if="topologyOpen"
+      @close="topologyOpen = false"
+      @open-chat="(id) => { topologyOpen = false; void chat.openConversation(id); if (app.isMobile) app.mobileView = 'chat'; }"
     />
 
     <!-- Toast：主窗口与独立窗口共用的 HUD（见 `ToastHud.vue` 的说明）。 -->

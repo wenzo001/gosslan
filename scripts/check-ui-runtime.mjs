@@ -4706,6 +4706,7 @@ async function main() {
     const stage4mobile = want("stage4mobile");
     const stage6mobile = want("stage6mobile");
     const netcard = want("netcard");
+    const topology = want("topology");
     const composermobile = want("composermobile");
     const tasksmobile = want("tasksmobile");
     const opscenter = want("opscenter");
@@ -4973,6 +4974,7 @@ async function main() {
     await runSegment("stage4mobile", stage4mobile, () => runStage4Mobile(cdp, url));
     await runSegment("stage6mobile", stage6mobile, () => runStage6Mobile(cdp, url));
     await runSegment("netcard", netcard, () => runNetCard(cdp, url));
+    await runSegment("topology", topology, () => runTopology(cdp, url));
     await runSegment("composermobile", composermobile, () => runComposerMobile(cdp, url));
     await runSegment("tasksmobile", tasksmobile, () => runTasksMobile(cdp, url));
     await runSegment("opscenter", opscenter, () => runOpsCenter(cdp, url));
@@ -20639,6 +20641,213 @@ async function runFontSelect(cdp, url) {
   check("再切回系统默认：触发器恢复、落库值为空串（哨兵没有泄漏到设置里）",
     s.trigger === "系统默认" && s.stored === "",
     "触发器=系统默认 + stored=''", JSON.stringify({ trigger: s.trigger, stored: s.stored }));
+}
+
+/**
+ * 网络拓扑（--only=topology，2026-11-10）：挂**真组件 + 真 force-graph**，四条读数。
+ *
+ * 为什么要有这一段：拓扑是纯 Canvas 渲染，设计护栏只能盯源码形状（圆角/断点/安全区），
+ * 盯不到"图到底画出来了没有、点节点到底开不开面板"。这里用一针 `arc` 记录器拿到
+ * force-graph 真正落笔的节点圆心（含 zoom/DPR 变换），再用 CDP 真点一下，
+ * 避免用网格瞎扫（半径 11 的圆在 30px 网格下会漏）。
+ */
+async function runTopology(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  // 1) 三条 IPC 换成替身：4 个在线节点（2 好友 / 1 陌生 / 1 走 Mesh）+ 每条会话的链路读数。
+  await cdp.eval(`(async () => {
+    const m = await import('/src/api/index.ts');
+    const peer = (id, nickname, link) => ({
+      device_id: id, nickname, avatar: null, device_type: 'desktop', ip: '10.0.0.2',
+      tcp_port: 1420, last_seen: Date.now(), rtt_ms: 12, x25519_pubkey: null,
+      ed25519_pubkey: null, first_seen: null, link,
+    });
+    const peers = [
+      peer('f-lan', '直连好友', 'lan'),
+      peer('f-relay', '中转好友', 'relay'),
+      peer('p-routed', '陌生节点', 'routed'),
+      peer('f-mesh', 'Mesh 好友', null),
+    ];
+    const friends = [
+      { device_id: 'f-lan', nickname: '直连好友', avatar: null, device_type: 'desktop', online: true, peer_app_version: '5.20.11' },
+      { device_id: 'f-relay', nickname: '中转好友', avatar: null, device_type: 'desktop', online: true, peer_app_version: '5.20.11' },
+      { device_id: 'f-mesh', nickname: 'Mesh 好友', avatar: null, device_type: 'desktop', online: true, peer_app_version: '5.20.11' },
+    ];
+    m.api.getPeers = async () => peers;
+    m.api.getFriends = async () => friends;
+    m.api.getConvLink = async (id) => (id === 'f-lan'
+      ? { path: 'lan', hop: 0 }
+      : id === 'f-relay' ? { path: 'relay', hop: 1 } : { path: 'routed', hop: 2 });
+    window.__probeTopo = { peers, friends };
+    return true;
+  })()`);
+
+  // 2) `arc` 记录器：只记节点本体半径（11/12/18），把 canvas 变换一并算成 CSS 像素。
+  await cdp.eval(`(() => {
+    window.__topoArcs = [];
+    const proto = CanvasRenderingContext2D.prototype;
+    const orig = proto.arc;
+    proto.arc = function (x, y, r) {
+      try {
+        if (r >= 10 && r <= 19 && this.canvas && this.canvas.closest('#probe-host')) {
+          const t = this.getTransform();
+          window.__topoArcs.push({
+            x: (t.a * x + t.c * y + t.e) / devicePixelRatio,
+            y: (t.b * x + t.d * y + t.f) / devicePixelRatio,
+            r,
+          });
+        }
+      } catch {}
+      return orig.apply(this, arguments);
+    };
+    return true;
+  })()`);
+
+  const mounted = await cdp.eval("window.__probe.install('/src/components/NetworkTopology.vue', '', "
+    + JSON.stringify(JSON.stringify({ isolated: true })) + ")");
+  // 3) 名单必须写进**组件正在用的那份 store**（install 之后才有同一个 pinia）。
+  const seeded = await cdp.eval(`(async () => {
+    const A = await import('/src/stores/useAppStore.ts');
+    const C = await import('/src/stores/useChatStore.ts');
+    const app = A.useAppStore();
+    const chat = C.useChatStore();
+    app.device = { device_id: 'me', nickname: '本机', avatar: null, device_type: 'desktop',
+      tcp_port: 1, online: true, x25519_pubkey: '', ed25519_pubkey: '' };
+    chat.peers = window.__probeTopo.peers;
+    chat.friends = window.__probeTopo.friends;
+    await new Promise((r) => setTimeout(r, 0));
+    return { ok: true, peers: chat.peers.length, friends: chat.friends.length };
+  })()`);
+  // 等力导向**真的**停笔：软件渲染下 90 tick 可能慢过 2.5s，拿半途坐标去点会点空。
+  // 判据是 `arc` 记录器不再增长（force-graph 收尾后不再重绘），不是固定等几秒。
+  let lastDraws = -1;
+  let stableRounds = 0;
+  for (let i = 0; i < 24 && stableRounds < 2; i += 1) {
+    await sleep(300);
+    const draws = await cdp.eval("(window.__topoArcs || []).length");
+    if (draws === lastDraws) stableRounds += 1;
+    else { stableRounds = 0; lastDraws = draws; }
+  }
+
+  const m = await cdp.eval(`(async () => {
+    const I = await import('/src/i18n/index.ts');
+    const canvas = document.querySelector('#probe-host .force-graph-container canvas');
+    const legend = document.querySelector('[data-topo-legend]');
+    const stats = document.querySelector('[data-topo-stats]');
+    if (!canvas || !legend || !stats) {
+      return { ok: false, hasCanvas: !!canvas, hasLegend: !!legend, hasStats: !!stats };
+    }
+    const rect = canvas.getBoundingClientRect();
+    const ctx = canvas.getContext('2d');
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    let ink = 0; // 背景是透明的：采样到 alpha>0 就是真画了东西
+    for (let i = 3; i < data.length; i += 4 * 16) if (data[i] > 0) ink += 1;
+    const statsText = (stats.textContent || '').replace(/\\s+/g, ' ').trim();
+    const expect = [
+      I.t('topology.online', { n: 4 }),
+      I.t('topology.friends', { n: 3 }),
+      I.t('topology.relayed', { n: 1 }),
+      I.t('topology.mesh', { n: 1 }),
+    ];
+    const arcs = (window.__topoArcs || []).filter((a) => a.x > 0 && a.y > 0);
+    return {
+      ok: true,
+      vw: innerWidth,
+      vh: innerHeight,
+      canvasW: Math.round(rect.width),
+      canvasH: Math.round(rect.height),
+      canvasLeft: Math.round(rect.left),
+      canvasTop: Math.round(rect.top),
+      ink,
+      statsText,
+      statsHas: expect.map((s) => statsText.includes(s)),
+      legendRows: legend.children.length,
+      arcs: arcs.slice(-40).map((a) => ({ x: Math.round(a.x), y: Math.round(a.y), r: Math.round(a.r) })),
+      drawCalls: arcs.length,
+      // 候选点去重、保留最近一次落笔（同一节点在每帧都会重画）
+      candidates: (() => {
+        const seen = new Set();
+        const out = [];
+        for (const a of arcs.slice().reverse()) {
+          if (Math.round(a.r) !== 11) continue;
+          const k = Math.round(a.x) + '|' + Math.round(a.y);
+          if (seen.has(k)) continue;
+          seen.add(k);
+          out.push({ x: Math.round(a.x), y: Math.round(a.y) });
+          if (out.length >= 12) break;
+        }
+        return out;
+      })(),
+    };
+  })()`);
+  check("网络拓扑：Canvas 铺满图区并真的画出了东西（透明背景上采样到墨迹）",
+    mounted && mounted.ok === true && m.ok === true && m.canvasW > 200 && m.canvasH > 200 && m.ink >= 50,
+    "canvas > 200×200 + ink ≥ 50",
+    JSON.stringify({ mounted, ok: m.ok, w: m.canvasW, h: m.canvasH, ink: m.ink }));
+  check("网络拓扑：画布高度钉在真图区里（不许按整窗高度画到视口外，底部节点会被裁）",
+    m.ok === true && Math.abs(m.canvasTop + m.canvasH - m.vh) <= 1 && m.canvasH < m.vh,
+    "canvasTop + canvasH = 视口底",
+    JSON.stringify({ top: m.canvasTop, h: m.canvasH, vh: m.vh }));
+  check("网络拓扑：顶栏总数与四种计数（在线/好友/中转/Mesh）都渲染出来",
+    m.ok === true && m.statsHas.length === 4 && m.statsHas.every(Boolean),
+    "四项都在 stats 文本里",
+    JSON.stringify({ text: m.statsText, has: m.statsHas }));
+  check("网络拓扑：图例五行（好友/节点/中枢/直连/中转）齐备",
+    m.ok === true && m.legendRows === 5,
+    "legend children = 5",
+    JSON.stringify({ rows: m.legendRows }));
+  // 取证帧必须拍在点开详情卡**之前**：窄视口下底部卡会盖住大半张图。
+  if (SHOT_PATH) {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-topology.png"), Buffer.from(shot.data, "base64"));
+    console.log("  📷 网络拓扑取证帧 → " + SHOT_PATH.replace(/\.png$/, "-topology.png"));
+  }
+
+  // 4) 真点普通节点（r=11）：面板必须开，且动作键对得上节点身份。
+  //    点击走组件自己的 `screen2GraphCoords` 命中测试（见 §2.15），不依赖 force-graph
+  //    那块 800ms 节流的 hover 影子画布 —— 后者在数据刷新后可能拿着上一代颜色索引。
+  const candidates = m.candidates || [];
+  check("网络拓扑：力导向真的落了节点本体（arc 记录器认到 r=11 的节点）",
+    m.ok === true && candidates.length >= 3 && m.drawCalls >= 20,
+    "至少 3 个 r=11 节点 + 多次重绘",
+    JSON.stringify({ candidates, drawCalls: m.drawCalls }));
+  let panel = { ok: false, hasPanel: false };
+  const tried = [];
+  for (const c of candidates) {
+    const x = m.canvasLeft + c.x;
+    const y = m.canvasTop + c.y;
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" });
+    await sleep(80);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+    await sleep(60);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+    await sleep(320);
+    panel = await cdp.eval(`(async () => {
+      const I = await import('/src/i18n/index.ts');
+      const aside = document.querySelector('#probe-host aside');
+      if (!aside || !aside.getClientRects().length) return { ok: false, hasPanel: false };
+      const buttons = [...aside.querySelectorAll('button')].map((b) => (b.textContent || '').trim()).filter(Boolean);
+      const roleText = (aside.querySelector('[data-topo-role]')?.textContent || '').trim();
+      return {
+        ok: true, hasPanel: true, buttons, roleText,
+        hasChat: buttons.includes(I.t('topology.action.chat')),
+        hasAdd: buttons.includes(I.t('topology.action.add')),
+        role: roleText === I.t('topology.role.friend') ? 'friend'
+          : roleText === I.t('topology.role.peer') ? 'peer' : 'other',
+      };
+    })()`);
+    tried.push({ x, y, hasPanel: panel.hasPanel });
+    if (panel.hasPanel) break;
+  }
+  check("网络拓扑：点节点弹出详情卡（好友给「发消息」、陌生节点给「加好友」）",
+    panel.ok === true && panel.hasPanel === true
+      && ((panel.role === "friend" && panel.hasChat) || (panel.role === "peer" && panel.hasAdd)),
+    "panel 开 + 动作键与身份一致",
+    JSON.stringify({ panel, candidates, tried, canvasTop: m.canvasTop, canvasLeft: m.canvasLeft, canvasH: m.canvasH }));
 }
 
 /**
