@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-09T15:04:24Z",
+  "updated_at": "2026-11-10T00:35:46Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -53,9 +53,9 @@
     },
     ".github/workflows/verify.yml": {
       "role": "index",
-      "sha256": "1b094f2114f4c85ba04c834cf58343aaac85f425128b2817e357d1b57557bb35",
-      "size": 35828,
-      "normalized_sha256": "1b094f2114f4c85ba04c834cf58343aaac85f425128b2817e357d1b57557bb35"
+      "sha256": "d89468fcf3ddb67ce199d8e18aff6a09e28659fbe666f73e434a276dacade56b",
+      "size": 35869,
+      "normalized_sha256": "d89468fcf3ddb67ce199d8e18aff6a09e28659fbe666f73e434a276dacade56b"
     },
     ".gitignore": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "f7c8702e305e9caad564a4168535b7d48cfddbb47c7c82bf1523f60305484530",
-      "size": 521252,
-      "normalized_sha256": "f7c8702e305e9caad564a4168535b7d48cfddbb47c7c82bf1523f60305484530"
+      "sha256": "2672919a5b9438db2d8a478e9a19a3680d43fcb4a611658d9ecc9a141e15bb9f",
+      "size": 521261,
+      "normalized_sha256": "2672919a5b9438db2d8a478e9a19a3680d43fcb4a611658d9ecc9a141e15bb9f"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2003,9 +2003,9 @@
     },
     "docs/notes/handover-2026-11-09.md": {
       "role": "index",
-      "sha256": "bf1268ea5dfa4c4456d2bb026adc3669d2d871759cf0e9f23aeda030ab2df248",
-      "size": 59606,
-      "normalized_sha256": "bf1268ea5dfa4c4456d2bb026adc3669d2d871759cf0e9f23aeda030ab2df248"
+      "sha256": "fb7293143b355757d56c288cdbbc35d8cf915639416444d04640ed593d5d2fae",
+      "size": 60046,
+      "normalized_sha256": "fb7293143b355757d56c288cdbbc35d8cf915639416444d04640ed593d5d2fae"
     },
     "docs/notes/harmonyos-feasibility-2026-09-22.md": {
       "role": "index",
@@ -3395,9 +3395,9 @@
     },
     "src-tauri/deny.toml": {
       "role": "index",
-      "sha256": "32f4371b0f2f4564457f8f34db5ad8f7ae116fe94674636c9498b486f2561853",
-      "size": 4721,
-      "normalized_sha256": "32f4371b0f2f4564457f8f34db5ad8f7ae116fe94674636c9498b486f2561853"
+      "sha256": "25d7178f553329eea809ddc5c53793645b37eb60e2ffc9d533a9b507f50e4b08",
+      "size": 5892,
+      "normalized_sha256": "25d7178f553329eea809ddc5c53793645b37eb60e2ffc9d533a9b507f50e4b08"
     },
     "src-tauri/entitlements.plist": {
       "role": "index",
