@@ -2365,6 +2365,7 @@ window.__probe = (() => {
       imgH: Math.round(er.height),
       imgW: Math.round(er.width),
       imgDisplay: cs.display,
+      imgFit: cs.objectFit,
       // max-height 是内联样式绑上去的常量；<img> 隐藏时矩形量不到，只能读计算值
       imgMax: Math.round(parseFloat(cs.maxHeight) || 0),
       cap: M.IMAGE_BUBBLE_HEIGHT,
@@ -9926,6 +9927,29 @@ async function runImageSkeleton(cdp, url) {
   check("对照可逆：恢复固定外框后又等于常量",
     frameBack === true && stableAgain.ok === true && stableAgain.frameH === stableAgain.cap,
     "frameH == cap", JSON.stringify(stableAgain));
+
+  // ── 极端长宽比（2026-11-10 用户）：不许出现细长条，超 3:1 / 1:3 统一裁切 ──
+  const extreme = async (w, h) => {
+    await cdp.eval("window.__probe.install('/src/components/message/MessageImageBubble.vue', '', "
+      + JSON.stringify(JSON.stringify({ src: "/gosslan-probe-missing-image.png", width: w, height: h })) + ")");
+    await sleep(300);
+    return cdp.eval("window.__probe.imgBox()");
+  };
+  const tall = await extreme(1080, 5000);
+  check("超长竖图：外框夹到 1:3（宽 ≥96）且用 object-cover 裁中间，不再是细条",
+    !!tall && tall.ok === true && tall.frameW >= 95 && tall.frameW <= 97
+      && tall.frameH === 288 && tall.imgFit === "cover",
+    "frameW≈96 / frameH=288 / fit=cover", JSON.stringify(tall));
+  const wide = await extreme(5000, 1000);
+  check("超宽横图：外框夹到 3:1（高 ≥69）且用 object-cover 裁中间",
+    !!wide && wide.ok === true && wide.frameW === 208
+      && wide.frameH >= 68 && wide.frameH <= 70 && wide.imgFit === "cover",
+    "frameW=208 / frameH≈69 / fit=cover", JSON.stringify(wide));
+  const normal = await extreme(400, 300);
+  check("普通比例：不裁、保持 contain 与真实比例",
+    !!normal && normal.ok === true && normal.frameW === 208
+      && normal.frameH === 156 && normal.imgFit === "contain",
+    "frameW=208 / frameH=156 / fit=contain", JSON.stringify(normal));
 }
 
 /**
@@ -20655,6 +20679,10 @@ async function runComposerMobile(cdp, url) {
         buttons: buttons.length,
         outside: outside.map((b) => String(b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 20)),
         editorW: +er.width.toFixed(1),
+        // 2026-11-10 用户：输入框没内容不该有滚动条（移动端双滚动条）。
+        editorBarW: editor.offsetWidth - editor.clientWidth,
+        editorOverflow: editor.scrollHeight > editor.clientHeight + 1,
+        editorGutter: getComputedStyle(editor).scrollbarGutter || "",
         hasSend: !!send,
         hasEmoji: buttons.some((b) => (b.getAttribute('aria-label') || '').includes('表情')),
         // 2026-11-09 用户：输入框上下边距要匀 + 与外框同心。两条都从真矩形现算。
@@ -20681,6 +20709,10 @@ async function runComposerMobile(cdp, url) {
     check("移动端输入框：单行文字在 44px 行里垂直居中（上下留白差 ≤1px）",
       m.ok === true && Math.abs(m.rowPadTop - m.rowPadBottom) <= 1,
       "|上留白 − 下留白| ≤1", `上=${m.rowPadTop} 下=${m.rowPadBottom}`);
+    check("移动端输入框：空内容时编辑器没有滚动条/滚动槽（scrollbar-gutter=auto）",
+      m.ok === true && m.editorOverflow === false && m.editorBarW === 0 && m.editorGutter === "auto",
+      "overflow=false / barW=0 / gutter=auto",
+      JSON.stringify({ barW: m.editorBarW, overflow: m.editorOverflow, gutter: m.editorGutter }));
     const offRings = (m.buttonRings || []).filter(
       (b) => b.r <= 0 || Math.abs(b.r - (m.cardRadius - b.inset)) > 0.5,
     );

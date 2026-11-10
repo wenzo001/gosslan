@@ -1085,6 +1085,21 @@ body {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
+/* 输入编辑器例外：它按内容自动长高（到上限才滚），空内容/单行时**不该出现滚动条**。
+   `scrollbar-gutter: stable` 会常留 8px 槽位，配合自定义滚动条视觉上就是一条空栏
+   （用户 2026-11-10：「移动端双滚动条，输入框没输内容不应该有滚动条」）。
+   只在真正溢出时才让滚动条出现（宽度会跳 8px，但编辑器是编辑中状态，可接受）。 */
+.gosslan-composer-editor {
+  scrollbar-gutter: auto;
+}
+/* 移动端软键盘弹起时由系统 resize 布局：整页/头部不跟随滚动，只有内容区自己滚。 */
+html.is-mobile,
+html.is-mobile body {
+  overscroll-behavior: none;
+}
+html.is-mobile #app {
+  overflow: hidden;
+}
 /* 横排容器（标签条 / 工具行 / 状态条 / 面包屑）**只许横向滚**：纵向永远不长出滚动条或槽位。
    `overflow-x: auto` 会把另一轴的 `visible` 计算成 `auto` ⇒ 任何越界的绝对定位装饰都会实打实
    长出 8px 纵向滚动条（用户 2026-11-08 截图：群任务页签上挂着一条竖滚动条；实测读数

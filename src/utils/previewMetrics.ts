@@ -8,6 +8,7 @@
 
 import { fontPx, type FontSizeKey } from "@/utils/chatStyle";
 import { parseQuote, quoteBody } from "@/utils/quote";
+import { clampImageBox, type ImageBox } from "@/utils/imageAspect";
 // 列宽只有一把尺：截断（进 DOM 前切哪一刀）与估算（要不要截、多高）必须同源。
 import { columnWidth } from "@/utils/previewTruncate";
 // 连续消息合并的时间窗与时间分割线同值：超过它一定有一条分割行，组自然断开（唯一家在这里）。
@@ -206,7 +207,21 @@ export const IMAGE_BUBBLE_WIDTH = 208;
  */
 export function imageBubbleHeight(w?: number | null, h?: number | null): number {
   if (!w || !h || w <= 0 || h <= 0) return IMAGE_BUBBLE_HEIGHT;
-  return Math.min(IMAGE_BUBBLE_HEIGHT, Math.round(((IMAGE_BUBBLE_WIDTH * h) / w) * 100) / 100);
+  return imageBubbleBox(w, h).height;
+}
+
+/** 任意宽高比的最大安全档：超过就裁切（宽:高 3:1 / 1:3），原图仍可点开看全。 */
+export const IMAGE_MAX_ASPECT = 3;
+
+/**
+ * 缩略图的外框尺寸 + 是否裁切（`clampImageBox` 的零依赖规则 + 本文件的定宽/定高）。
+ * 极端长图不再渲染成一条细线；普通比例保持真实比例 contain。
+ */
+export function imageBubbleBox(w?: number | null, h?: number | null): ImageBox {
+  if (!w || !h || w <= 0 || h <= 0) {
+    return { width: IMAGE_BUBBLE_WIDTH, height: IMAGE_BUBBLE_HEIGHT, cover: false };
+  }
+  return clampImageBox(w, h, IMAGE_BUBBLE_WIDTH, IMAGE_BUBBLE_HEIGHT, IMAGE_MAX_ASPECT);
 }
 
 /**

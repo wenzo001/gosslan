@@ -14,6 +14,20 @@
 
 ## [Unreleased]
 
+## [5.20.11] - 2026-11-10
+
+### 修复
+- **输入框空内容不再显示滚动条**：编辑器吃了全局 `scrollbar-gutter: stable`，空内容/单行也
+  常留 8px 槽位；改为 `scrollbar-gutter: auto`，只在真的溢出时才出现滚动条。移动端
+  `html/body/#app` 加 `overscroll-behavior: none` / `overflow: hidden`，软键盘弹起时头部与
+  整页不跟随滚动，只有内容区自己滚。
+- **极端长宽比图片不再缩成细线**：气泡外框按安全比例夹到 **3:1 / 1:3**（`utils/imageAspect`），
+  超出的图用 `object-cover` 裁中间、`contain` 保留普通比例，不变形；点开灯箱仍看全图。
+  估算端共用同一函数，行高不跳。
+- **拖动窗口缩放不再让聊天内容乱滚**：`VirtualList` 的 window resize 改为 **160ms 防抖**，
+  拖动期间只压住瞬态吸附；trailing 时先重测再按锚点（消息 key + 行内偏移）恢复，贴底态
+  重新贴底 ⇒ 窗口大小变化后内容位置不变。
+
 ## [5.20.10] - 2026-11-10
 
 ### 修复
