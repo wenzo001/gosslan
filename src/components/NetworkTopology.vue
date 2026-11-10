@@ -429,7 +429,13 @@ function sizeGraphToHost() {
   // —— 那样画布比图区高出一个页头，底部节点被视口裁掉。这里按真实图区再钉一次。
   if (w > 0 && h > 0) {
     graph.width(w).height(h);
-    graph.zoomToFit(0, 60);
+    // 只在节点**有坐标**时才 zoomToFit：刚挂载时 d3 还没初始化位置（x=undefined），
+    // 这时调它会得到 NaN 变换把 zoom 打回 identity —— 首帧节点画在 (0,0)＝左上角，
+    // 等引擎停了才被第二次 zoomToFit 拉回中间（2026-11-11 用户实报"一开始在左上角"）。
+    const nodes = graphData.value.nodes;
+    if (nodes.length > 0 && nodes.every((n) => Number.isFinite(n.x) && Number.isFinite(n.y))) {
+      graph.zoomToFit(0, 60);
+    }
   }
 }
 
