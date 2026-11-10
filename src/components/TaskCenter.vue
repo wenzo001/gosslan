@@ -432,9 +432,16 @@ async function openConversation(row: OperationRow) {
             class="h-full w-1/3 animate-pulse rounded-full bg-[var(--gosslan-primary)] opacity-50 motion-reduce:animate-none"
           />
         </div>
+        <!-- 详情行：判死行（SEND_* 失败码）的整句原因跟状态同色（2026-11-11 用户：
+             「调」成橙色），别降级成灰字 —— 那句是这一行最重要的信息。 -->
         <p
           v-if="detailText(row)"
-          class="mt-1 text-meta leading-relaxed text-[var(--gosslan-text-2)]"
+          class="mt-1 text-meta leading-relaxed"
+          :class="
+            row.blockedReason?.startsWith('SEND_')
+              ? 'font-medium text-[var(--gosslan-warning-text-ink)]'
+              : 'text-[var(--gosslan-text-2)]'
+          "
         >
           {{ detailText(row) }}
         </p>
