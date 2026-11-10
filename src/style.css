@@ -430,9 +430,10 @@
      单独成档而不是复用 md/xl：外壳比气泡再大一圈，才能和内部 8px 内距保持视觉同心；
      CS-02 同时校验"用的是这档"和"这档就是 22px"，两半都红才算守住。 */
   --gosslan-radius-2xl: 22px;
-  /* 输入卡工具条/发送键：与外框 22 同心 = 22 − 底内距 8 − 1px 描边 = 13
-     （2026-11-09 审查按 border box 现算；此前写 radius-lg 14 只减了 padding）。 */
-  --gosslan-composer-control-radius: calc(var(--gosslan-radius-2xl) - 9px);
+  /* 输入卡工具条/发送键：与外框 22 同心 = 22 − 到底边 13（pb-3 12 + 描边 1）。
+     2026-11-10 用户要求「底边与左右同距」：左右到按钮 = 1 + px-4 16 − 行 -mx-1 4 = 13，
+     底边同步从 9 加到 13，因此内圆角由 13 收到 9。 */
+  --gosslan-composer-control-radius: calc(var(--gosslan-radius-2xl) - 13px);
   --gosslan-radius-pill: 9999px;
 
   /* ---------------- 品牌底盘（68px orb）内嵌标记的同心圆角（2026-11-07） ----------------
