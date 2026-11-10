@@ -23,6 +23,7 @@ import {
   deriveOperations,
   FALLBACK_TITLE_KEYS,
   isLiveTransferStatus,
+  operationDetailText,
   operationStatusText,
   sortOperations,
   type ContentTransfer,
@@ -480,7 +481,7 @@ test("判死的静默动作：任务中心给原因并留「重新发送」，�
     "队列里已经没有它 ⇒ 不能给「取消」；必须给「重新发送」这个能点的出口",
   );
   const text = operationStatusText(row, (k) => k);
-  assert.equal(text, "task.state.failed", "状态文案走唯一映射；原因由 fileFailReasonText 翻成人话");
+  assert.equal(text, "task.state.failed", "状态文案走唯一映射；长原因由详情行（operationDetailText）翻成人话");
   assert.ok(
     !text.includes("SEND_KIND_UNSUPPORTED"),
     "禁止把码本身显示给用户",
@@ -510,6 +511,31 @@ test("静默 kind 全覆盖：remind / 抖动 / merge 判死后都能列出、�
   const text = operationStatusText(byId(rows, "m-nudge"), (k) => k);
   assert.equal(text, "task.state.failed");
   assert.ok(!text.includes("SEND_KIND_UNSUPPORTED"), "裸码不上屏");
+});
+
+test("长失败原因住详情行，不进 shrink-0 的状态槽（2026-11-10 横向滚动条）", () => {
+  // 状态槽是 `shrink-0` 的短标签位；把「这条消息没能送达：…」整句插值进去，
+  // 卡片会被撑出横向滚动条（用户实报）。状态只许短标签，原因由详情行换行说。
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    messageOps: [
+      msgOp({ msg_id: "m-long", preview: null, failed: true, fail_code: "SEND_RETRY_EXPIRED" }),
+    ],
+  });
+  const row = byId(rows, "m-long");
+  assert.ok(row, "判死的行必须在列");
+  // tr 带 "T:" 前缀：fileFailReasonText 对"词典缺条"的回落是返回原始码，
+  // 身份 tr 会让这个回落把断言骗绿 —— 前缀能分清"真的翻译了"还是"回落了"。
+  const trT = (k: string) => `T:${k}`;
+  const status = operationStatusText(row, trT);
+  assert.equal(status, "T:task.state.failed", "状态槽只许短标签，不许带长原因");
+  const detail = operationDetailText(row, trT);
+  assert.ok(
+    detail.includes("T:msg.fail.retryExpired"),
+    "长原因走详情行（fileFailReasonText 的唯一映射，不另抄第二张码表）",
+  );
+  assert.ok(!detail.includes("SEND_RETRY_EXPIRED"), "裸码不上屏");
 });
 
 test("静默 kind 的标题回落：按业务 kind 出类型文案，抖动优先于强提醒", () => {

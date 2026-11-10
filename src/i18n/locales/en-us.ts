@@ -1747,7 +1747,7 @@ export const enUS: MessageDict = {
   "task.actionFail": "Action failed",
   "task.alreadyGone": "That one already finished",
   "task.state.waiting": "Waiting",
-  "task.state.failed": "Send failed: {reason}",
+  "task.state.failed": "Send failed",
   "task.state.partial": "Some members received",
   "task.state.waitingAck": "Sent, waiting for acknowledgement",
   "task.state.finalizing": "Finishing up",

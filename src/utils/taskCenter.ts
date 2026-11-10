@@ -35,6 +35,7 @@
  */
 import type { ContentTransfer, GroupHistoryProgress, TransferInfo } from "@/types";
 import { fileFailReasonText } from "./fileFailReason.ts";
+import { blockedReasonKey } from "./transferState.ts";
 
 /** 任务种类。取值稳定：日志、动作分发、i18n key 都读它，改名要一起改。 */
 export type OperationKind =
@@ -448,12 +449,12 @@ export function operationStatusText(
   // 那一条之后，否则这句永远读不到（那一条会先把 null 进度判成泛称「进行中」）。
   if (row.kind === "message_send" && row.state === "running") return tr("task.state.resending");
   if (row.blockedReason === "waiting_ack") return tr("task.state.waitingAck");
-  // 判死的静默动作：`blockedReason` 是后端 `fail_code`（`SEND_KIND_UNSUPPORTED` 等），
-  // 翻译仍只走 `fileFailReasonText` —— 绝不在这一层再写第二张码表，也绝不把裸码上屏。
+  // 判死的静默动作：`blockedReason` 是后端 `fail_code`（`SEND_KIND_UNSUPPORTED` 等）。
+  // 状态槽只放**短标签**「发送失败」—— 长原因（"这条消息没能送达：…"那几句）是整句
+  // 人话，塞进这个 `shrink-0` 槽会把卡片撑出横向滚动条（2026-11-10 用户实报；
+  // 修复后长原因由 `operationDetailText` 放进详情行，那里本来就该换行）。
   if (row.blockedReason?.startsWith("SEND_")) {
-    return tr("task.state.failed", {
-      reason: fileFailReasonText(row.blockedReason, tr),
-    });
+    return tr("task.state.failed");
   }
   if (row.state === "blocked") return tr("task.state.waiting");
   // 读不到 total 时不硬造一个 0%：进度是 null ⇒ 只说"进行中"。
@@ -470,6 +471,30 @@ export function operationStatusText(
     }
   }
   return tr(runningTextKey(row.kind), { pct: Math.round(row.progress * 100) });
+}
+
+/**
+ * 详情行（"卡在哪一句 + 已经试过几次 + 还差几个人"）。与 `operationStatusText` 同一约定：
+ * 映射只此一份 —— 长失败原因在这里翻成人话（`fileFailReasonText`），绝不把裸码上屏。
+ *
+ * 为什么长原因住这里而不是状态槽：状态槽是 `shrink-0` 的短标签位，整句人话进去会把
+ * 卡片撑出横向滚动条（2026-11-10 用户实报）；详情行是普通块级文本，本来就换行。
+ */
+export function operationDetailText(
+  row: OperationRow,
+  tr: (key: string, params?: Record<string, string | number>) => string,
+): string {
+  const parts: string[] = [];
+  const key = blockedReasonKey(row.blockedReason);
+  if (key) {
+    parts.push(tr(key));
+  } else if (row.blockedReason?.startsWith("SEND_")) {
+    parts.push(fileFailReasonText(row.blockedReason, tr));
+  }
+  if (row.attempts && row.attempts > 0) parts.push(tr("task.attempts", { n: row.attempts }));
+  // 只剩 1 个成员也要说（"还有 1 个人没收到"），否则半送达的群消息行会没有目标。
+  if (row.waitingFor && row.waitingFor > 0) parts.push(tr("task.waitingFor", { n: row.waitingFor }));
+  return parts.join(" · ");
 }
 
 /**
