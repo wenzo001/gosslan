@@ -1645,7 +1645,6 @@ export const zhCN: MessageDict = {
   "layout.shortcutHintMac": "按 ⌘K 搜索，按 ⌘, 打开设置",
   "layout.shortcutHint": "按 Ctrl+K 搜索，按 Ctrl+, 打开设置",
   // 主窗口标题栏右侧功能组（画板 DesktopChats）。
-  "titlebar.devices": "局域网内 {n} 台设备在线",
   "titlebar.search": "全局搜索",
   "titlebar.personalize": "个性化设置",
   // 应用显示名（用户 2026-10-23：中文名由「相闻」改为「小院儿」，英文名仍是 Gosslan）。

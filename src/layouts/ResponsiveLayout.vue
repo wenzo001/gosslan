@@ -890,13 +890,18 @@ function onResizeEnd() {
       <!-- 主窗口标题栏右侧功能组（画板 DesktopChats）。辅助窗口不传插槽 ⇒ 完全保持原样。
            本人头像与在线点从 rail 移到这里：同一份身份状态只出现一次。 -->
       <template #right>
-        <span
-          class="flex h-5 items-center gap-1.5 rounded-full bg-[var(--gosslan-field)] px-2 text-caption font-medium tabular-nums text-[var(--gosslan-text-2)]"
-          :title="t('titlebar.devices', { n: onlineDeviceCount })"
+        <!-- LAN 徽标是**按钮**（2026-11-10 用户）：桌面没有「我的」页那一栏，点标题栏这枚
+             LAN · N 就是网络拓扑的入口（移动端入口仍在「我的」列表里）。 -->
+        <button
+          type="button"
+          class="tap-safe flex h-5 items-center gap-1.5 rounded-full bg-[var(--gosslan-field)] px-2 text-caption font-medium tabular-nums text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
+          :title="t('topology.title')"
+          :aria-label="t('topology.title')"
+          @click="topologyOpen = true"
         >
           <span class="h-1.5 w-1.5 rounded-full bg-[var(--gosslan-success)]" aria-hidden="true"></span>
           LAN · {{ onlineDeviceCount }}
-        </span>
+        </button>
         <button
           type="button"
           class="tap-safe flex h-[30px] w-[30px] items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"

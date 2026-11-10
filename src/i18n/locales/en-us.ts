@@ -1611,7 +1611,6 @@ export const enUS: MessageDict = {
   "layout.chipPureP2p": "Pure P2P",
   "layout.shortcutHintMac": "Press ⌘K to search, ⌘, for settings",
   "layout.shortcutHint": "Press Ctrl+K to search, Ctrl+, for settings",
-  "titlebar.devices": "{n} devices online on the LAN",
   "titlebar.search": "Global search",
   "titlebar.personalize": "Personalize",
   /** English display name stays "Gosslan" (the zh side is 「小院儿」). */
