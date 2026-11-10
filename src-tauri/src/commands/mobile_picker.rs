@@ -137,7 +137,9 @@ pub async fn import_picked_file(
         // 桌面 / 已经是真实路径（`file://` 或普通路径）：原样返回
         return Ok(path);
     }
-    let dir = state.cache_dir.join("imports");
+    // 落**本机已发媒体托管目录**（app_data/sent），不是 cache：
+    // 自己发出去的图必须长期可看，不能跟着「清缓存」一起消失（2026-11-10 用户实报）。
+    let dir = state.sent_dir.clone();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建导入目录失败：{e}"))?;
     let tmp = dir.join(format!(".incoming-{}", uuid::Uuid::new_v4()));
     // `content://` 必须走 `FilePath::Url`（fs 插件在安卓侧据此走 ContentResolver 解析）
@@ -242,7 +244,7 @@ pub async fn import_picked_file(
     state.logger.info(
         "file",
         format!(
-            "已把所选文件落地到缓存：{}（{} 字节）",
+            "已把所选文件落地到本机已发媒体目录：{}（{} 字节）",
             dest.display(),
             std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0)
         ),

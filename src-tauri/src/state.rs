@@ -1307,6 +1307,15 @@ pub struct AppState {
     /// —— 微信的收藏也是独立存储，删聊天记录、清缓存都不该把它弄丢。
     /// 所以它**不在** `media_dirs` 里，清理逻辑不会碰它；只有「清除数据」会显式清空。
     pub favorites_dir: PathBuf,
+    /// 本机**发出的图片/文件**的托管副本目录（`app_data/sent`）。
+    ///
+    /// 为什么不能继续放 `cache_dir/imports` 或 `downloads_dir`（2026-11-10 用户实报：
+    /// 自己发的图片升级后打不开、还要点「重新获取」）：
+    /// - `cache_dir` 会被系统/OEM「清缓存」或不定期清理，自己发出去的图不该跟着消失；
+    /// - `downloads_dir` 是**接收**目录，用户可改、也会按保留期清理。
+    ///
+    /// 自己发的媒体是"用户明确给过的东西"，与收藏同一档：只计入占用、不参与自动清理。
+    pub sent_dir: PathBuf,
     /// SQLite 数据库文件路径（存储页展示占用用；含 -wal/-shm 伴生文件）。
     pub db_path: PathBuf,
     /// 应用级运行日志（内存 ring buffer + 落盘文件），供「运行日志」页读取与排查。
@@ -2120,6 +2129,9 @@ impl AppState {
         // 收藏副本目录：独立于 cache/downloads，存储清理不碰（见字段注释）。
         let favorites_dir = app_data.join("favorites").join("media");
         make_private_dir(&favorites_dir)?;
+        // 自己发出的媒体：独立于 cache/downloads（见字段注释），清理器不碰。
+        let sent_dir = app_data.join("sent");
+        make_private_dir(&sent_dir)?;
 
         // 多开支持：`--instance N`（或环境变量 GOSSLAN_INSTANCE）→ 独立数据库 / 端口 / 设备指纹
         let instance = instance_id();
@@ -2484,6 +2496,7 @@ impl AppState {
             downloads_dir: Mutex::new(downloads_dir),
             cache_dir,
             favorites_dir,
+            sent_dir,
             db_path,
             logger,
             previous_exit,

@@ -124,7 +124,7 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("IMAGE_TOO_LARGE", "commands/helpers.rs", "图片过大（{} 字节，上限 {} 字节），未保存"),
     ("IMAGE_SAVE_FAILED", "commands/files.rs", "图片保存失败：{e}"),
     ("IMAGE_SOURCE_MISSING", "commands/helpers.rs", "缺少图片来源"),
-    ("FILE_DELETE_OUTSIDE_DOWNLOADS", "commands/files.rs", "只能删除下载目录内的文件"),
+    ("FILE_DELETE_OUTSIDE_DOWNLOADS", "commands/files.rs", "只能删除下载目录或本机已发媒体目录内的文件"),
     ("FILE_NO_CONTENT_ID", "commands/files.rs", "这条内容没有内容指纹，无法取消"),
     ("FILE_NO_CONTENT_ID", "commands/files.rs", "这条内容没有内容指纹（对方版本较旧），无法重新获取"),
     ("FILE_NO_CONTENT_ID", "commands/files.rs", "这条内容没有内容指纹，无法重新获取"),
