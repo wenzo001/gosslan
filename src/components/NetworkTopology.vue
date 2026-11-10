@@ -197,16 +197,20 @@ const linkStyle: Record<TopoLink["kind"], { color: string; dash: number[] | null
 
 function drawNode(node: TopoNode, ctx: CanvasRenderingContext2D, scale: number) {
   const p = palette();
-  const r = node.kind === "self" ? 18 : node.kind === "hub" ? 12 : 11;
+  // force-graph 每次 graphData 更新都会按节点数自动 re-zoom（k = F/∛n，只剩自己时 k≈4）。
+  // 节点几何**全部除以 scale**：屏幕上恒为设计尺寸（18/12/11px），不随自动缩放膨胀 ——
+  // 否则只有一个节点时 self 会被画成 ~144px 大圆，把空态提示压在身上（2026-11-11 用户实报）。
+  const s = Math.max(Number(scale) || 1, 0.1);
+  const r = (node.kind === "self" ? 18 : node.kind === "hub" ? 12 : 11) / s;
   const x = node.x ?? 0;
   const y = node.y ?? 0;
   ctx.save();
   if (node.kind === "hub") {
     ctx.fillStyle = "rgba(245,158,11,.16)";
     ctx.strokeStyle = linkStyle[node.hub === "mesh" ? "mesh" : "relay"].color;
-    ctx.lineWidth = 1.4;
+    ctx.lineWidth = 1.4 / s;
     ctx.beginPath();
-    ctx.arc(x, y, r + 3, 0, Math.PI * 2);
+    ctx.arc(x, y, r + 3 / s, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = p.warn;
@@ -214,10 +218,10 @@ function drawNode(node: TopoNode, ctx: CanvasRenderingContext2D, scale: number) 
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = "#fff";
-    ctx.font = `600 ${10 / scale}px sans-serif`;
+    ctx.font = `600 ${10 / s}px sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(node.hub === "relay" ? "⇄" : "⌁", x, y + 0.5);
+    ctx.fillText(node.hub === "relay" ? "⇄" : "⌁", x, y + 0.5 / s);
   } else {
     if (node.kind === "self") {
       const glow = ctx.createRadialGradient(x, y, r * 0.6, x, y, r * 2.2);
@@ -233,16 +237,16 @@ function drawNode(node: TopoNode, ctx: CanvasRenderingContext2D, scale: number) 
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = p.panel;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2 / s;
     ctx.stroke();
     ctx.fillStyle = "#fff";
-    ctx.font = `600 ${(node.kind === "self" ? 13 : 10) / scale}px sans-serif`;
+    ctx.font = `600 ${(node.kind === "self" ? 13 : 10) / s}px sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText((node.label || "?").slice(0, 1).toUpperCase(), x, y + 0.5);
+    ctx.fillText((node.label || "?").slice(0, 1).toUpperCase(), x, y + 0.5 / s);
   }
   // 名称与链路徽标：只画两层小字，避免图面被文字淹没。
-  const labelY = y + r + 10 / scale;
+  const labelY = y + r + 10 / s;
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
   ctx.font = `500 ${10 / scale}px sans-serif`;
@@ -380,6 +384,9 @@ function buildGraph() {
     .cooldownTicks(90)
     .d3AlphaDecay(0.035)
     .d3VelocityDecay(0.35)
+    // 库的自动 re-zoom 只看节点数（k=4/∛n），不看实际包围盒 —— 节点会被推出视口
+    // （实测 7 节点时"陌生节点"飞出画布顶）。引擎每次停下都按包围盒装进图区（留 60px 边距）。
+    .onEngineStop(() => graph?.zoomToFit(400, 60))
     .graphData(graphData.value);
   // 默认斥力太挤：节点名 + 链路徽标是两行小字，彼此压住就看不清"谁是谁"。
   graph.d3Force("charge")?.strength(-110);
@@ -420,7 +427,10 @@ function sizeGraphToHost() {
   const h = el.clientHeight;
   // 构造时容器可能还没拿到 flex 后的高度，force-graph 会退回 window 尺寸
   // —— 那样画布比图区高出一个页头，底部节点被视口裁掉。这里按真实图区再钉一次。
-  if (w > 0 && h > 0) graph.width(w).height(h);
+  if (w > 0 && h > 0) {
+    graph.width(w).height(h);
+    graph.zoomToFit(0, 60);
+  }
 }
 
 onMounted(() => {
@@ -465,10 +475,13 @@ const selectedRole = computed(() => {
 
 <template>
   <div class="fixed inset-x-0 bottom-0 top-[var(--gosslan-window-safe-top)] z-[70] flex flex-col bg-[var(--gosslan-chat)]">
-    <!-- 顶栏：返回 / 标题 / 刷新 -->
+    <!-- 顶栏：返回 / 标题 / 刷新。让顶只让**刘海那一段**（--gosslan-inset-top）：
+         桌面的自绘 caption 已经由外壳的 top-[window-safe-top] 让过了，这里再读
+         --gosslan-safe-top（= max(caption, 刘海)）会把 caption 高度算第二遍，
+         桌面上返回键上方多出一条死间距（2026-11-11 用户实报）。 -->
     <header
       class="flex shrink-0 items-center gap-3 border-b border-[var(--gosslan-divider)] px-3"
-      :style="{ paddingTop: 'var(--gosslan-safe-top)', minHeight: 'calc(var(--gosslan-header-h) + var(--gosslan-safe-top))' }"
+      :style="{ paddingTop: 'var(--gosslan-inset-top)', minHeight: 'calc(var(--gosslan-header-h) + var(--gosslan-inset-top))' }"
     >
       <button
         class="tap-safe -ml-1 flex h-9 w-9 items-center justify-center rounded-[var(--gosslan-radius-md)] transition hover:bg-[var(--gosslan-hover)]"
@@ -508,10 +521,16 @@ const selectedRole = computed(() => {
         <span class="flex items-center gap-1.5"><i class="inline-block h-0.5 w-4 border-t border-dashed border-[var(--gosslan-warning)]"></i>{{ t("topology.legend.relay") }}</span>
       </div>
 
-      <div v-if="chat.peers.length === 0" class="absolute inset-0 flex items-center justify-center">
+      <!-- 空态提示：放在**自己节点下方**（center + 64px），别盖住居中的 self 节点
+           （2026-11-11 用户：只有一个节点时文字压住了自己）。外层不吃指针，
+           刷新按钮自己恢复可点。 -->
+      <div
+        v-if="chat.peers.length === 0"
+        class="pointer-events-none absolute inset-x-0 top-[calc(50%+64px)] flex justify-center"
+      >
         <div class="max-w-[280px] text-center text-caption leading-relaxed text-[var(--gosslan-text-2)]">
           {{ t("topology.empty") }}
-          <button class="mt-2 block w-full text-[var(--gosslan-primary)]" @click="refreshAll">{{ t("topology.refresh") }}</button>
+          <button class="pointer-events-auto mt-2 block w-full text-[var(--gosslan-primary)]" @click="refreshAll">{{ t("topology.refresh") }}</button>
         </div>
       </div>
 

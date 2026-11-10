@@ -20687,6 +20687,12 @@ async function runTopology(cdp, url) {
   await cdp.settled();
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    window.__pageErrors = [];
+    window.addEventListener('error', (e) => window.__pageErrors.push(String(e.message || e)));
+    window.addEventListener('unhandledrejection', (e) => window.__pageErrors.push('rej:' + String(e.reason && e.reason.message || e.reason)));
+    return true;
+  })()`);
 
   // 1) 三条 IPC 换成替身：4 个在线节点（2 好友 / 1 陌生 / 1 走 Mesh）+ 每条会话的链路读数。
   await cdp.eval(`(async () => {
@@ -20723,13 +20729,18 @@ async function runTopology(cdp, url) {
     const orig = proto.arc;
     proto.arc = function (x, y, r) {
       try {
-        if (r >= 10 && r <= 19 && this.canvas && this.canvas.closest('#probe-host')) {
+        if (this.canvas && this.canvas.closest('#probe-host') && r > 0.5) {
           const t = this.getTransform();
-          window.__topoArcs.push({
-            x: (t.a * x + t.c * y + t.e) / devicePixelRatio,
-            y: (t.b * x + t.d * y + t.f) / devicePixelRatio,
-            r,
-          });
+          // 组件现在按 **graph 坐标 / globalScale** 画节点（屏幕尺寸恒定），
+          // 所以这里换算回**屏幕半径**再套 10..19 的节点半径窗口。
+          const sr = (r * t.a) / devicePixelRatio;
+          if (sr >= 10 && sr <= 19) {
+            window.__topoArcs.push({
+              x: (t.a * x + t.c * y + t.e) / devicePixelRatio,
+              y: (t.b * x + t.d * y + t.f) / devicePixelRatio,
+              r: sr,
+            });
+          }
         }
       } catch {}
       return orig.apply(this, arguments);
@@ -20814,6 +20825,7 @@ async function runTopology(cdp, url) {
       })(),
     };
   })()`);
+  console.log("  · 页面错误：" + JSON.stringify(await cdp.eval("(window.__pageErrors || []).slice(0, 5)")));
   check("网络拓扑：Canvas 铺满图区并真的画出了东西（透明背景上采样到墨迹）",
     mounted && mounted.ok === true && m.ok === true && m.canvasW > 200 && m.canvasH > 200 && m.ink >= 50,
     "canvas > 200×200 + ink ≥ 50",
@@ -20878,6 +20890,61 @@ async function runTopology(cdp, url) {
       && ((panel.role === "friend" && panel.hasChat) || (panel.role === "peer" && panel.hasAdd)),
     "panel 开 + 动作键与身份一致",
     JSON.stringify({ panel, candidates, tried, canvasTop: m.canvasTop, canvasLeft: m.canvasLeft, canvasH: m.canvasH }));
+
+  // 空态与顶栏（2026-11-11 用户）：
+  // ① 只剩自己时，提示文字不许盖住居中的 self 节点（提示在 center+64px 起）；
+  // ② 桌面顶栏只让刘海（--gosslan-inset-top），返回键上方不许再有 caption 第二遍的死间距。
+  await cdp.eval(`(async () => {
+    const C = await import('/src/stores/useChatStore.ts');
+    const chat = C.useChatStore();
+    chat.peers = [];
+    chat.friends = [];
+    await new Promise((r) => setTimeout(r, 0));
+    return true;
+  })()`);
+  await sleep(1_200); // 力导向把唯一的 self 节点收回中心
+  const emptyRead = await cdp.eval(`(() => {
+    // 顶栏那条判据量的是**桌面 token 环境**（inset-top 回落 0）：探针窗口 <768 时
+    // applyIsMobile 给 html 挂了 is-mobile（回落 24px）。这里只摘类、不改视口 ——
+    // 变视口会干扰 force-graph 的 zoom 读数（2026-11-11 实测）。
+    document.documentElement.classList.remove('is-mobile');
+    const canvas = document.querySelector('#probe-host .force-graph-container canvas');
+    const hint = document.querySelector('#probe-host [class*="50%+64px"]');
+    const header = document.querySelector('#probe-host header');
+    const back = header ? header.querySelector('button') : null;
+    const cr = canvas ? canvas.getBoundingClientRect() : null;
+    const hr = hint ? hint.getBoundingClientRect() : null;
+    return {
+      hasCanvas: !!canvas,
+      hasHint: !!hint,
+      canvasMidY: cr ? Math.round(cr.top + cr.height / 2) : -1,
+      hintTop: hr ? Math.round(hr.top) : -1,
+      headerTop: header ? Math.round(header.getBoundingClientRect().top) : -1,
+      headerH: header ? Math.round(header.getBoundingClientRect().height) : -1,
+      backTop: back ? Math.round(back.getBoundingClientRect().top) : -1,
+      backH: back ? Math.round(back.getBoundingClientRect().height) : -1,
+      headerPadTop: header ? getComputedStyle(header).paddingTop : '',
+      insetTop: getComputedStyle(document.documentElement).getPropertyValue('--gosslan-inset-top').trim(),
+    };
+  })()`);
+  check("网络拓扑：只有自己时空态提示落在节点下方（不盖住 self 节点）",
+    emptyRead.hasCanvas === true && emptyRead.hasHint === true
+      && emptyRead.hintTop >= emptyRead.canvasMidY + 40,
+    `hintTop ≥ canvasMidY + 40`,
+    JSON.stringify(emptyRead));
+  // 桌面上 inset-top=0 ⇒ header 的 padding-top 必须是 0（caption 已由外壳让过，
+  // 再读 --gosslan-safe-top 就是把 caption 高度算第二遍 = 用户报的那条死间距）；
+  // 返回键在 52px 页头里垂直居中，上方余量 = (headerH − backH) / 2，不许更多。
+  check("网络拓扑：桌面顶栏不再读 safe-top（padding-top=0，返回键上方只剩居中余量）",
+    emptyRead.headerTop >= 0 && emptyRead.headerPadTop === '0px'
+      && Math.abs((emptyRead.backTop - emptyRead.headerTop) - (emptyRead.headerH - emptyRead.backH) / 2) <= 1,
+    "headerPadTop=0px + backTop−headerTop=(headerH−backH)/2",
+    JSON.stringify(emptyRead));
+  if (SHOT_PATH) {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-topology-empty.png"), Buffer.from(shot.data, "base64"));
+    console.log("  📷 拓扑空态取证帧 → " + SHOT_PATH.replace(/\.png$/, "-topology-empty.png"));
+  }
 }
 
 /**
@@ -23209,23 +23276,72 @@ async function runOpsCenter(cdp, url) {
         await sleep(50);
       }
       if (loc) loc.waitedMs = Date.now() - tFind;
-      if (!loc || !loc.found) return { ok: false, why: "button", loc, seeded };
+      if (loc && loc.found) {
+        loc.at = await cdp.eval(`(() => {
+          const el = document.elementFromPoint(${loc.x}, ${loc.y});
+          const d = el && el.closest('[role="dialog"]');
+          return { tag: el && el.tagName, inDialog: !!d, state: d && d.getAttribute('data-state') };
+        })()`);
+      }
+      if (!loc || !loc.found) {        // 找不到按钮时把弹窗里真实渲染出来的文字带回去：下次再红能直接看到是
+        // "面板没开 / 行没画 / 文案变了" 中的哪一种，不用再猜。
+        const dom = await cdp.eval(`(() => {
+          const d = document.querySelector('[role="dialog"]');
+          return {
+            hasDialog: !!d,
+            buttons: [...document.querySelectorAll('[role="dialog"] button')]
+              .map((b) => (b.textContent || '').trim()).filter(Boolean).slice(0, 12),
+            head: d ? (d.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 160) : '',
+          };
+        })()`);
+        return { ok: false, why: "button", loc, seeded, dom };
+      }
+      // 等**布局稳了**再点：down 与 up 之间面板还会长出迟到的一行（昵称/详情异步补齐）
+      // 或 Reka DialogContent 开场 transform 还没走完 —— rect 刚非空时坐标在飘，
+      // down 落在按钮上、up 已飘到 li，click 永远合不成（2026-11-11 实测 clickLog：
+      // down=BUTTON / up=LI；这也是"形状 A 偶发找不到按钮"的同族根因）。
+      // 判据 = 按钮矩形**连续两次读数完全一致**（预算 2.5s），才按最后一次矩形中心点下去。
+      const rectOf = `(async () => {
+        const I = await import('/src/i18n/index.ts');
+        const want = I.t('task.openChat');
+        const b = [...document.querySelectorAll('[role="dialog"] button')]
+          .find((x) => (x.textContent || '').trim() === want);
+        if (!b) return null;
+        const r = b.getBoundingClientRect();
+        return JSON.stringify([r.left, r.top, r.width, r.height].map(Math.round));
+      })()`;
+      let prevRect = null;
+      let finalRect = null;
+      const tStable = Date.now();
+      for (;;) {
+        const got = await cdp.eval(rectOf);
+        if (got && got === prevRect) { finalRect = got; break; }
+        prevRect = got;
+        if (Date.now() - tStable >= 2500) break;
+        await sleep(120);
+      }
+      loc.stableMs = Date.now() - tStable;
+      if (!finalRect) return { ok: false, why: "button-unstable", loc, seeded };
+      const [rx, ry, rw, rh] = JSON.parse(finalRect);
+      loc.x = rx + Math.floor(rw / 2);
+      loc.y = ry + Math.floor(rh / 2);
       await cdp.click(loc.x, loc.y);
       await sleep(1500);
       const after = await cdp.eval(`(async () => {
         const S = await import('/src/stores/useChatStore.ts');
         const chat = S.useChatStore();
-        return {
+        const real = {
           active: chat.activeConv,
           rowVisible: chat.conversations.some((c) => c.id === ${JSON.stringify(jumpCid)}),
           groupVisible: chat.groups.some((g) => g.id === ${JSON.stringify(jumpGid)}),
           groupsLoaded: chat.groupsLoaded,
           conversationsLoaded: chat.conversationsLoaded,
         };
+        return real;
       })()`);
       // 与 TaskCenter.vue 那一格同一份条件（"我看不见"被当成"它不存在"就是从这里出去的）。
       const failCondition = after.active !== jumpCid || (!after.rowVisible && !after.groupVisible);
-      return { ok: true, seeded, after, failCondition, waitedMs: loc.waitedMs };
+      return { ok: true, seeded, after, failCondition, waitedMs: loc.waitedMs, loc };
     };
     // ⚠️ 这三格只判**store 那一半**（到达 + 不报"不存在"）。"屏幕换没换"的另一半权威是路由
     //   （`navState = navOfRoute()`），但探针**判不了它**：给挂载的组件挂上应用那份 mainRouter
