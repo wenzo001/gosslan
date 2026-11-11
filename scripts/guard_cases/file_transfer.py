@@ -982,8 +982,8 @@ CASES: list[Case] = [
         "     注入方式：从 `content_features()` 的并集里摘掉那一项。",
         file=TAURI / "src" / "protocol.rs",
         injections=[(
-            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_FILE_CANCEL\n        | CONTENT_FEATURE_CREATOR_RECALL\n        | CONTENT_FEATURE_FRIEND_WITHDRAW\n        | CONTENT_FEATURE_FILE_RECEIPT\n}",
-            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_CREATOR_RECALL\n        | CONTENT_FEATURE_FRIEND_WITHDRAW\n        | CONTENT_FEATURE_FILE_RECEIPT\n}",
+            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_FILE_CANCEL\n        | CONTENT_FEATURE_CREATOR_RECALL\n        | CONTENT_FEATURE_FRIEND_WITHDRAW\n        | CONTENT_FEATURE_FILE_RECEIPT\n        | CONTENT_FEATURE_GROUP_ADMINS\n}",
+            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_CREATOR_RECALL\n        | CONTENT_FEATURE_FRIEND_WITHDRAW\n        | CONTENT_FEATURE_FILE_RECEIPT\n        | CONTENT_FEATURE_GROUP_ADMINS\n}",
         )],
         cmd=cargo("test", "--lib", "file_cancel_frame_is_advertised_distinct_and_round_trips"),
         cwd=TAURI,
@@ -1168,7 +1168,7 @@ CASES: list[Case] = [
         "     「永远 Author」）⇒ 接线判据必须红在「必须按本地 creator 现选档位」。",
         file=TAURI / "src" / "commands" / "group_announcements.rs",
         injections=[(
-            "let authority = recall_authority_for(is_creator);",
+            "let authority = recall_authority_for(is_manager);",
             "let authority = recall_authority_for(false); // 注入",
         )],
         cmd=cargo(

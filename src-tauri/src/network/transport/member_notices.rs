@@ -21,12 +21,16 @@ pub enum MemberRemovedAction {
 /// 单独抽出来的理由：这次 bug 的根因就是**少了一个分支** —— 接收端只处理「我本人被
 /// 移出」，其余成员直接 return，于是群里其他人的成员表不变小、也看不到任何提示。
 /// 把三分支的选择做成纯函数，「必须有 RemoveOther」这件事就被测试钉住了。
+///
+/// 管理员 feature 后：发起者须是**群主或管理员**（`sender_is_manager`，凭本机名单判定），
+/// 且**目标不能是群主**（`to_is_owner` ⇒ Ignore，管理员不能移除群主的接收侧兜底）。
 pub fn member_removed_action(
     sender_is_me: bool,
-    sender_is_creator: bool,
+    sender_is_manager: bool,
     to_is_me: bool,
+    to_is_owner: bool,
 ) -> MemberRemovedAction {
-    if sender_is_me || !sender_is_creator {
+    if sender_is_me || !sender_is_manager || to_is_owner {
         return MemberRemovedAction::Ignore;
     }
     if to_is_me {
@@ -81,6 +85,24 @@ pub fn group_creator_changed_text(state: &AppState, name: &str) -> String {
         format!("「{name}」成为新群主")
     } else {
         format!("“{name}” is now the group owner")
+    }
+}
+
+/// **任命管理员**的群内系统消息（群主操作，两侧共用）。
+pub fn group_admin_appointed_text(state: &AppState, name: &str) -> String {
+    if state.is_zh() {
+        format!("「{name}」成为管理员")
+    } else {
+        format!("“{name}” is now an admin")
+    }
+}
+
+/// **撤销管理员**的群内系统消息（群主操作，两侧共用）。
+pub fn group_admin_removed_text(state: &AppState, name: &str) -> String {
+    if state.is_zh() {
+        format!("「{name}」的管理员身份已被撤销")
+    } else {
+        format!("“{name}” is no longer an admin")
     }
 }
 

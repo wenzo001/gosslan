@@ -78,8 +78,16 @@ const todoSummary = computed(() => {
 function retryTodoRows() {
   if (todoConvId.value) void chat.ensureGroupTodoRows(todoConvId.value);
 }
-/** 当前用户是否为群主（可见「添加/移除成员」操作） */
+/** 当前用户是否为群主（可见「任免管理员 / 转让群主」操作） */
 const isOwner = computed(() => !!group.value && group.value.creator === myId.value);
+/** 当前用户是否为管理员（群主任命，≤3）。 */
+const isAdmin = computed(() => !!group.value && group.value.admins.includes(myId.value));
+/** 群主或管理员 ⇒ 可改名/加人/踢人/发公告（与后端 is_manager 同口径）。 */
+const canManage = computed(() => isOwner.value || isAdmin.value);
+/** 现任管理员数（任免按钮据此判断是否已达上限）。 */
+const adminCount = computed(() => group.value?.admins.length ?? 0);
+/** 群主且未满 3 个 ⇒ 还能再任命。 */
+const canAppointAdmin = computed(() => isOwner.value && adminCount.value < 3);
 /** 展示「添加成员」面板 */
 const showAdd = ref(false);
 /** 待确认的破坏性操作（转让群主 / 移除成员 / 退出群聊）。null = 无弹窗。
@@ -228,6 +236,28 @@ function askRemoveMember(id: string) {
   pendingConfirm.value = { kind: "remove", targetId: id, name: memberProfile(id).name };
 }
 
+/** 任命管理员（仅群主， additive 低风险 ⇒ 直接执行 + toast，与「加人」同档）。 */
+async function appointAdmin(id: string) {
+  if (!props.groupId) return;
+  try {
+    await chat.appointAdmin(props.groupId, id);
+    app.toast(t("group.toast.adminAppointed", { name: memberProfile(id).name }), "success");
+  } catch (e) {
+    app.toastError(e, t("group.toast.adminAppointFail"));
+  }
+}
+
+/** 撤销管理员（仅群主，可逆 ⇒ 直接执行 + toast）。 */
+async function removeAdmin(id: string) {
+  if (!props.groupId) return;
+  try {
+    await chat.removeAdmin(props.groupId, id);
+    app.toast(t("group.toast.adminRemoved", { name: memberProfile(id).name }), "success");
+  } catch (e) {
+    app.toastError(e, t("group.toast.adminRemoveFail"));
+  }
+}
+
 /** 转让群主（仅当前群主）：把管理权交给指定成员，避免换机后群无法管理。 */
 function transferOwner(id: string) {
   if (!props.groupId) return;
@@ -284,9 +314,9 @@ async function confirmAction() {
         <div class="mb-1.5 flex items-baseline justify-between gap-2">
           <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("group.rename.title") }}</span>
           <!-- 只读那一档不给读数：非群主改不了，报"多少/上限"是凭空噪声。 -->
-          <CharCounter v-if="isOwner" :text="nameDraft" :max="MAX_GROUP_NAME_CHARS" />
+          <CharCounter v-if="canManage" :text="nameDraft" :max="MAX_GROUP_NAME_CHARS" />
         </div>
-        <div v-if="isOwner" class="flex items-center gap-2">
+        <div v-if="canManage" class="flex items-center gap-2">
           <input
             v-model="nameDraft"
             :maxlength="MAX_GROUP_NAME_CHARS"
@@ -316,9 +346,9 @@ async function confirmAction() {
           <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("group.announce") }}</span>
           <!-- 公告是会被**整段替换**的字段：粘一条超长的进来、maxlength 静默砍掉尾巴，
                发出去的公告就少了半段而人不知道。读数只在编辑那一档出现。 -->
-          <CharCounter v-if="isOwner" :text="announceDraft" :max="MAX_ANNOUNCEMENT_CHARS" />
+          <CharCounter v-if="canManage" :text="announceDraft" :max="MAX_ANNOUNCEMENT_CHARS" />
         </div>
-        <template v-if="isOwner">
+        <template v-if="canManage">
           <textarea
             v-model="announceDraft"
             :maxlength="MAX_ANNOUNCEMENT_CHARS"
@@ -373,13 +403,15 @@ async function confirmAction() {
             <div class="flex items-center gap-1.5">
               <span class="truncate text-sm font-medium" :title="row.name">{{ row.name }}</span>
               <Icon name="crown" v-if="group.creator === row.id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" :title="t('group.owner')" />
+              <Icon name="shield" v-else-if="group.admins.includes(row.id)" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-primary)]" :title="t('group.admin')" />
               <span v-if="row.id === myId" class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("group.me") }}</span>
             </div>
             <div class="text-xs text-[var(--gosslan-text-2)]">
               {{ row.online ? t("common.online") : t("common.offline") }}
             </div>
           </div>
-          <!-- 群主操作：转让群主 / 移除成员（不能操作自己/创建者本人） -->
+          <!-- 管理操作：转让群主**仅群主**；任免管理员**仅群主**；踢人群主/管理员皆可。
+               三者都不能操作自己，踢人/任免还不能操作群主本人（群主是最终权威）。 -->
           <button
             v-if="isOwner && row.id !== myId"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-warning-soft)] hover:text-[var(--gosslan-warning-ink)]"
@@ -389,7 +421,23 @@ async function confirmAction() {
             <Icon name="arrow-right-left" class="h-4 w-4" />
           </button>
           <button
-            v-if="isOwner && row.id !== myId"
+            v-if="isOwner && row.id !== myId && row.id !== group.creator && group.admins.includes(row.id)"
+            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-warning-soft)] hover:text-[var(--gosslan-warning-ink)]"
+            :title="t('group.removeAdmin', { name: row.name })" :aria-label="t('group.removeAdmin', { name: row.name })"
+            @click="removeAdmin(row.id)"
+          >
+            <Icon name="shield-alert" class="h-4 w-4" />
+          </button>
+          <button
+            v-else-if="canAppointAdmin && row.id !== myId && row.id !== group.creator"
+            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-primary)]"
+            :title="t('group.appointAdmin', { name: row.name })" :aria-label="t('group.appointAdmin', { name: row.name })"
+            @click="appointAdmin(row.id)"
+          >
+            <Icon name="shield" class="h-4 w-4" />
+          </button>
+          <button
+            v-if="canManage && row.id !== myId && row.id !== group.creator"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
             :title="t('group.removeMember', { name: row.name })" :aria-label="t('group.removeMember', { name: row.name })"
             @click="askRemoveMember(row.id)"
@@ -456,8 +504,8 @@ async function confirmAction() {
         <StateBlock v-else inline kind="loading" :title="t('todo.loading')" class="mt-1.5" />
       </div>
 
-      <!-- 添加成员（仅群主）：切换出一列可选好友 -->
-      <template v-if="isOwner">
+      <!-- 添加成员（群主/管理员）：切换出一列可选好友 -->
+      <template v-if="canManage">
         <button
           v-if="!showAdd"
           class="flex w-full items-center justify-center gap-1.5 rounded-[var(--gosslan-radius-lg)] border border-dashed border-[var(--gosslan-border)] py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
@@ -510,7 +558,7 @@ async function confirmAction() {
         <Icon name="log-out" class="h-4 w-4" />
         {{ t("group.leave") }}
       </button>
-      <p v-if="!isOwner" class="text-caption text-[var(--gosslan-text-2)]">
+      <p v-if="!canManage" class="text-caption text-[var(--gosslan-text-2)]">
         {{ t("group.manageHint") }}
       </p>
       <p v-else class="text-caption text-[var(--gosslan-text-2)]">

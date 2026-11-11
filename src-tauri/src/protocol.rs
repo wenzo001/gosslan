@@ -198,6 +198,14 @@ pub const CONTENT_FEATURE_FRIEND_WITHDRAW: u32 = 1 << 10;
 /// （那位管"能解析轮次号"，与"能回答收件结果"是两件事）。
 pub const CONTENT_FEATURE_FILE_RECEIPT: u32 = 1 << 11;
 
+/// 能力位：**接收侧认「群管理员」这一档授权**（管理员可改名/加人/踢人/轮换密钥）。
+///
+/// 与 [`CONTENT_FEATURE_CREATOR_RECALL`] 同形：只做**可观测**，不门控任何帧。
+/// 管理员名单随 `GroupKey.admins`（`serde(default)`）下发，老端忽略该字段、仍按群主-only
+/// 裁决 ⇒ 管理员轮换的密钥老端不采信（退化但不报错、不断链）。这一位让发送端能如实提示
+/// "有 N 人的版本还不认管理员"，而不假装全群生效。不进 `kind_required_feature`。
+pub const CONTENT_FEATURE_GROUP_ADMINS: u32 = 1 << 12;
+
 /// 群历史一页的**条数**上限（服务端一页最多交几条消息）。
 /// 与下面那个字节上限同住 `protocol.rs`：一条页的预算只有一个家（INV-P23），
 /// 收发两侧都从这里取，不许在调用点各写一遍字面量。
@@ -231,6 +239,7 @@ pub fn content_features() -> u32 {
         | CONTENT_FEATURE_CREATOR_RECALL
         | CONTENT_FEATURE_FRIEND_WITHDRAW
         | CONTENT_FEATURE_FILE_RECEIPT
+        | CONTENT_FEATURE_GROUP_ADMINS
 }
 
 /// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
@@ -2373,6 +2382,10 @@ pub enum Message {
         group_name: String,
         #[serde(default)]
         members: Vec<String>,
+        /// 群主权威的管理员名单（≤3，不含群主）。旧端无此字段 ⇒ 默认空（仍按群主-only 裁决，
+        /// 退化但不报错）。管理员踢人轮换密钥时随帧携带，接收端凭本机名单判定是否采信。
+        #[serde(default)]
+        admins: Vec<String>,
         /// 该群的当前逻辑时钟：成员上线拿到密钥时同步本地时钟，
         /// 保证其后续新消息序号大于清空边界等本地水位。
         #[serde(default)]

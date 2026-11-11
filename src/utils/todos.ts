@@ -906,9 +906,10 @@ export function canUpdateTodo(
   actor: string,
   groupCreator: string,
   structural: boolean,
+  groupAdmins: readonly string[] = [],
 ): boolean {
-  // 创建者 / 群主：改什么都行。
-  if (item.creator === actor || groupCreator === actor) return true;
+  // 创建者 / 群主 / 管理员：改什么都行。
+  if (item.creator === actor || groupCreator === actor || groupAdmins.includes(actor)) return true;
   // 被指派人：能改描述 / 图片 / 指派人 / 状态，但不能改结构（标题 / 删除）。
   if (structural) return false;
   return item.assignees.includes(actor);
@@ -932,9 +933,10 @@ export function canEditAssignees(
   item: Pick<TodoItem, "creator" | "assignees">,
   actor: string,
   groupCreator: string,
+  groupAdmins: readonly string[] = [],
 ): boolean {
   if (item.creator === actor) return true;
-  if (groupCreator === actor) return true;
+  if (groupCreator === actor || groupAdmins.includes(actor)) return true;
   return item.assignees.includes(actor);
 }
 
@@ -957,8 +959,9 @@ export function canArchiveOrReopenTodo(
   actor: string,
   groupCreator: string,
   memberIds: readonly string[],
+  groupAdmins: readonly string[] = [],
 ): boolean {
-  if (canUpdateTodo(item, actor, groupCreator, false)) return true;
+  if (canUpdateTodo(item, actor, groupCreator, false, groupAdmins)) return true;
   return !!actor && memberIds.includes(actor);
 }
 

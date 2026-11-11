@@ -491,6 +491,21 @@ test("授权矩阵：创建者与群主全权 / 被指派人不能改结构 / �
   assert.equal(canUpdateTodo(item, "dave", "owner", true), false);
 });
 
+test("管理员档：与群主同权改任务，无关成员仍被拒（管理员 feature）", () => {
+  const item = { creator: "alice", assignees: ["bob"] };
+  const admins = ["admin"];
+  // 管理员：改状态、改结构都行（与群主同权）。
+  assert.ok(canUpdateTodo(item, "admin", "owner", false, admins));
+  assert.ok(canUpdateTodo(item, "admin", "owner", true, admins));
+  assert.ok(canEditAssignees(item, "admin", "owner", admins));
+  assert.ok(canArchiveOrReopenTodo(item, "admin", "owner", ["alice", "bob"], admins));
+  // 管理员档没有外溢：不在名单里的 dave 仍然什么都不行。
+  assert.equal(canUpdateTodo(item, "dave", "owner", true, admins), false);
+  assert.equal(canEditAssignees(item, "dave", "owner", admins), false);
+  // 不传管理员名单（旧调用）⇒ 退回群主-only，admin 不再是管理者。
+  assert.equal(canUpdateTodo(item, "admin", "owner", true), false);
+});
+
 /**
  * 成员窄档（用户 2026-09-24 #37 + 同日追加：「归档和被归档的数据还原，任何人都可以操作，
  * 其他权限不变」）—— **必须与 Rust `commands::may_change_todo` 的用例表逐项一致**

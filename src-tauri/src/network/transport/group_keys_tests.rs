@@ -16,12 +16,14 @@
                 name: "b".into(),
                 creator: "me".into(),
                 members: vec!["me".into(), "p1".into()],
+                admins: vec![],
             },
             crate::state::Group {
                 id: "g1".into(),
                 name: "a".into(),
                 creator: "me".into(),
                 members: vec!["me".into(), "p2".into()],
+                admins: vec![],
             },
         ];
         // 只含"成员里有他"的那几个，且**顺序稳定**（登记进 HashSet 后靠它保证重试次序可预期）
@@ -175,19 +177,22 @@
     #[test]
     fn member_removed_action_full_truth_table() {
         use MemberRemovedAction::*;
-        // 发起方不是创建者 → 一律忽略（防成员互踢），与 `to` 是谁无关
-        assert_eq!(member_removed_action(false, false, false), Ignore);
-        assert_eq!(member_removed_action(false, false, true), Ignore);
+        // 发起方不是群主/管理员 → 一律忽略（防成员互踢），与 `to` 是谁无关
+        assert_eq!(member_removed_action(false, false, false, false), Ignore);
+        assert_eq!(member_removed_action(false, false, true, false), Ignore);
         // 本机自己发起的 → 忽略（本地已处理，含群主自己的系统消息）
-        assert_eq!(member_removed_action(true, true, false), Ignore);
-        assert_eq!(member_removed_action(true, true, true), Ignore);
-        assert_eq!(member_removed_action(true, false, false), Ignore);
-        assert_eq!(member_removed_action(true, false, true), Ignore);
-        // 创建者发起 + 被移出者是别人 → **同步成员表**（本次补齐的分支，
+        assert_eq!(member_removed_action(true, true, false, false), Ignore);
+        assert_eq!(member_removed_action(true, true, true, false), Ignore);
+        assert_eq!(member_removed_action(true, false, false, false), Ignore);
+        assert_eq!(member_removed_action(true, false, true, false), Ignore);
+        // 群主/管理员发起 + 被移出者是别人 → **同步成员表**（本次补齐的分支，
         // 这条断言正是对「其余成员不能 Ignore」的回归钉子）
-        assert_eq!(member_removed_action(false, true, false), RemoveOther);
-        // 创建者发起 + 被移出者是我 → 清理本地群
-        assert_eq!(member_removed_action(false, true, true), RemoveSelf);
+        assert_eq!(member_removed_action(false, true, false, false), RemoveOther);
+        // 群主/管理员发起 + 被移出者是我 → 清理本地群
+        assert_eq!(member_removed_action(false, true, true, false), RemoveSelf);
+        // 管理员 feature：目标是群主 → 一律忽略（管理员不能移除群主，接收侧兜底）
+        assert_eq!(member_removed_action(false, true, false, true), Ignore);
+        assert_eq!(member_removed_action(false, true, true, true), Ignore);
     }
 
     // ---- 拨号决策（M2 双向建链 + P1-2 镜像重复连接修正）----

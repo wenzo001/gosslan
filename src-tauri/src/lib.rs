@@ -872,6 +872,8 @@ pub fn run() {
             commands::rename_group,
             commands::group_add_member,
             commands::group_remove_member,
+            commands::group_appoint_admin,
+            commands::group_remove_admin,
             commands::transfer_group_creator,
             commands::leave_group,
             commands::get_groups,

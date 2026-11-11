@@ -495,6 +495,21 @@ pub struct Group {
     pub name: String,
     pub creator: String,
     pub members: Vec<String>,
+    /// 管理员名单（≤ [`MAX_GROUP_ADMINS`]，不含群主）。群主权威同步（随 GroupKey 下发），
+    /// 各设备凭**本机这份**判定授权（去中心化，发帧人自报不作数）。旧端无此字段 ⇒ 默认空。
+    #[serde(default)]
+    pub admins: Vec<String>,
+}
+
+/// 每群管理员上限（不含群主）。命令层与前端共用这一份口径。
+pub const MAX_GROUP_ADMINS: usize = 3;
+
+impl Group {
+    /// 群主或管理员 ⇒ 拥有管理权（改名/加人/踢人/公告/特权撤回/待办全权/轮换密钥）。
+    /// 任免管理员与转让群主仍**仅群主**，不走这个谓词。
+    pub fn is_manager(&self, device_id: &str) -> bool {
+        self.creator == device_id || self.admins.iter().any(|a| a == device_id)
+    }
 }
 
 /// 本机信息

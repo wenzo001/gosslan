@@ -97,6 +97,7 @@ async fn try_send_group_key(
         key: STANDARD.encode(&sealed),
         group_name: g.name.clone(),
         members: g.members.clone(),
+        admins: g.admins.clone(),
         clock,
     };
     // try_send 返回 Err 只可能是「未建立连接」（links 无该 peer）

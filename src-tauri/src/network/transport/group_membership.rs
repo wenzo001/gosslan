@@ -8,14 +8,14 @@ async fn handle_group_rename(state: &Arc<AppState>, group_id: String, from: Stri
         return;
     }
     let name: String = name.chars().take(MAX_GROUP_NAME_LEN).collect();
-    // 只接受群创建者的改名
-    let is_creator = {
+    // 只接受群主或管理员的改名（凭本机管理员名单判定）
+    let is_manager = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id)
-            .map(|g| g.creator == from)
+            .map(|g| g.is_manager(&from))
             .unwrap_or(false)
     };
-    if !is_creator {
+    if !is_manager {
         return;
     }
     {
@@ -42,14 +42,15 @@ async fn handle_group_member_removed(
     if from == state.device_id {
         return; // 本机发起的移人，本地已处理（含系统消息）
     }
-    // 只接受**群创建者**发起的移人（防成员互踢）
-    let is_creator = {
+    // 只接受**群主或管理员**发起的移人（防成员互踢，凭本机管理员名单判定）；
+    // 目标若是群主则拒绝——管理员不能移除群主（接收侧兜底，与命令层同一规则）。
+    let (is_manager, to_is_owner) = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id)
-            .map(|g| g.creator == from)
-            .unwrap_or(false)
+            .map(|g| (g.is_manager(&from), g.creator == to))
+            .unwrap_or((false, false))
     };
-    match member_removed_action(false, is_creator, to == state.device_id) {
+    match member_removed_action(false, is_manager, to == state.device_id, to_is_owner) {
         MemberRemovedAction::Ignore => return,
         // ---- ① 我本人被移出 ----
         MemberRemovedAction::RemoveSelf => {

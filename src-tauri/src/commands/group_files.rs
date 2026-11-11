@@ -641,9 +641,10 @@ fn may_update_todo(
     def: &crate::protocol::TodoPayload,
     actor: &str,
     group_creator: &str,
+    group_admins: &[String],
     edits_structure: bool,
 ) -> bool {
-    if def.creator == actor || group_creator == actor {
+    if def.creator == actor || group_creator == actor || group_admins.iter().any(|a| a == actor) {
         return true;
     }
     // 被指派人：能改指派人 / 状态（两者判定相同），但不能改结构（标题 / 描述 / 图片 / 删除）。
@@ -888,10 +889,11 @@ fn may_change_todo(
     def: &crate::protocol::TodoPayload,
     actor: &str,
     group_creator: &str,
+    group_admins: &[String],
     edits_structure: bool,
     lane: MemberLane,
 ) -> bool {
-    may_update_todo(def, actor, group_creator, edits_structure) || lane.allows()
+    may_update_todo(def, actor, group_creator, group_admins, edits_structure) || lane.allows()
 }
 
 /// 终态（完成 / 做不了）与归档字段的**权威推导**（纯函数，便于单测）。
@@ -992,12 +994,12 @@ pub async fn update_group_todo(
         ));
         }
     }
-    let (def, group_creator, members) = {
+    let (def, group_creator, group_admins, members) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let def = latest_todo_def(&dbc, &format!("group:{group_id}"), &todo_id)
             .ok_or_else(|| "任务不存在".to_string())?;
         let g = db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?;
-        (def, g.creator, g.members)
+        (def, g.creator, g.admins, g.members)
     };
     // `None` ⇒ 保留库里原值（不让"只改状态"的请求把描述/图片清空）；
     // `Some(x)` ⇒ 用传来的（显式传空串即表示清空）。
@@ -1092,6 +1094,7 @@ pub async fn update_group_todo(
         &def,
         &s.device_id,
         &group_creator,
+        &group_admins,
         edits_structure,
         lane,
     ) {
@@ -1228,10 +1231,10 @@ pub async fn send_group_announcement(
         let g = db::get_group(&dbc, &group_id).ok_or_else(|| {
                     crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
                 })?;
-        if g.creator != s.device_id {
+        if !g.is_manager(&s.device_id) {
             return Err(crate::error_codes::coded(
                 crate::error_codes::GROUP_ANNOUNCEMENT_OWNER_ONLY,
-                reject(s, &group_id, "announcement", "not_owner", "只有群主可以发布公告"),
+                reject(s, &group_id, "announcement", "not_owner", "只有群主或管理员可以发布公告"),
             ));
         }
     }
@@ -1264,7 +1267,7 @@ pub async fn delete_group_announcement(
         let g = db::get_group(&dbc, &group_id).ok_or_else(|| {
                     crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
                 })?;
-        if g.creator != s.device_id {
+        if !g.is_manager(&s.device_id) {
             return Err(crate::error_codes::coded(
                 crate::error_codes::GROUP_ANNOUNCEMENT_OWNER_ONLY,
                 reject(
@@ -1272,7 +1275,7 @@ pub async fn delete_group_announcement(
                     &group_id,
                     "announcement_delete",
                     "not_owner",
-                    "只有群主可以删除公告",
+                    "只有群主或管理员可以删除公告",
                 ),
             ));
         }

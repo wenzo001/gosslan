@@ -877,9 +877,11 @@ const announcement = computed(() => {
 
 /** 只有群主能发布/删除公告（后端同样校验；前端隐藏入口是为了不让用户白点一次）。
  *  发布/修改入口在「成员管理」弹窗（用户 2026-09-17：公告与群名/成员一起管）。 */
-const canPublishAnnouncement = computed(
-  () => !!activeGroupId.value && chat.groups.find((g) => g.id === activeGroupId.value)?.creator === app.device?.device_id,
-);
+const canPublishAnnouncement = computed(() => {
+  const id = app.device?.device_id;
+  const g = chat.groups.find((x) => x.id === activeGroupId.value);
+  return !!id && !!g && (g.creator === id || g.admins.includes(id));
+});
 
 // ---------------- 公告横幅的「本机已看过」（用户 2026-09-29 需求汇总八） ----------------
 

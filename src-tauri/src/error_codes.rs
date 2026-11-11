@@ -186,6 +186,20 @@ pub const GROUP_TRANSFER_TO_SELF: &str = "GROUP_TRANSFER_TO_SELF";
 pub const GROUP_TRANSFER_MEMBER_ONLY: &str = "GROUP_TRANSFER_MEMBER_ONLY";
 /// 退群：群主必须先转让。
 pub const GROUP_OWNER_LEAVE_TRANSFER_FIRST: &str = "GROUP_OWNER_LEAVE_TRANSFER_FIRST";
+/// 移除成员：目标是群主（管理员不能移除群主）。
+pub const GROUP_REMOVE_OWNER_FORBIDDEN: &str = "GROUP_REMOVE_OWNER_FORBIDDEN";
+/// 任命管理员：不是群主（任免管理员仅群主）。
+pub const GROUP_APPOINT_ADMIN_OWNER_ONLY: &str = "GROUP_APPOINT_ADMIN_OWNER_ONLY";
+/// 撤销管理员：不是群主。
+pub const GROUP_REMOVE_ADMIN_OWNER_ONLY: &str = "GROUP_REMOVE_ADMIN_OWNER_ONLY";
+/// 任命管理员：已达上限（每群最多 3 个）。
+pub const GROUP_ADMIN_LIMIT: &str = "GROUP_ADMIN_LIMIT";
+/// 任命管理员：目标不是群成员。
+pub const GROUP_APPOINT_ADMIN_NOT_MEMBER: &str = "GROUP_APPOINT_ADMIN_NOT_MEMBER";
+/// 任命管理员：目标是群主本人（群主无需也不应为管理员）。
+pub const GROUP_APPOINT_ADMIN_SELF: &str = "GROUP_APPOINT_ADMIN_SELF";
+/// 撤销管理员：目标不是管理员。
+pub const GROUP_REMOVE_ADMIN_NOT_ADMIN: &str = "GROUP_REMOVE_ADMIN_NOT_ADMIN";
 /// 群聊发送：不支持的消息类型。
 pub const GROUP_FILE_KIND_UNSUPPORTED: &str = "GROUP_FILE_KIND_UNSUPPORTED";
 /// 自定义待办类型：名称为空。

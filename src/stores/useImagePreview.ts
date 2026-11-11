@@ -34,6 +34,21 @@ import type { PreviewImage } from "@/types";
 export type { PreviewImage } from "@/types";
 
 /**
+ * 关闭后抑制「同源立刻重开」的冷却窗（用户 2026-11-11 生产实报：单人聊天点图预览，
+ * 关了又弹开、关好几次才好）。
+ *
+ * 根因不在某一条事件，而在**关闭是异步的**：`requestClose` 先播 FLIP 把大图精确缩回
+ * 缩略图矩形、停留 60ms 才 `emit("close")`，遮罩退场后焦点又归还到那个 `tabindex=0`
+ * 的缩略图外框（`MessageImageBubble` 的 `@click` 与 `@keydown.enter/.space` 共用一个
+ * 无守卫的 `onFrameClick`）。于是遮罩刚抬起、落在原图坐标的一次 click / 按键就会
+ * 原样再开一次。所有重开都必经 `openGallery` 这一个入口 ⇒ 在这里对「刚关掉的同一来源」
+ * 设一段冷却即可斩断全部重触发路径（合成点击、焦点归还后的按键都覆盖）。
+ * 取值略大于收场动画（FLIP≈200ms + 停留 60ms + 退场≈100ms）；只认同来源，
+ * 关掉 A 立刻点 B 不受影响，冷却过后再点同一张也照常打开。
+ */
+const REOPEN_GUARD_MS = 400;
+
+/**
  * 这份相册能不能交给独立预览窗口：**每个条目都可寻址**（`msgId` / `cid`），
  * 或者带一个**自包含**的 `data:` URL。
  *
@@ -78,6 +93,10 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
    */
   const overlayMounted = ref(false);
 
+  /** 最近一次关闭的时刻与来源：`openGallery` 据此抑制收场回声式的同源重开。 */
+  let lastClosedAt = 0;
+  let lastClosedSource: string | null = null;
+
   /**
    * 打开相册。`items` 为空**什么都不做** —— 调用方不必各自判空
    * （"点了没反应"比弹一个空白看图器好，也不该把空数组塞进状态里让别处读到）。
@@ -85,6 +104,8 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
    */
   function openGallery(items: PreviewImage[], startIndex = 0, from: string | null = null) {
     if (items.length === 0) return;
+    // 刚关掉同一来源 ⇒ 冷却窗内的重开是收场动画/焦点归还触发的回声，不是用户意图（见 REOPEN_GUARD_MS）。
+    if (from === lastClosedSource && performance.now() - lastClosedAt < REOPEN_GUARD_MS) return;
     const at = Math.min(Math.max(startIndex, 0), items.length - 1);
     images.value = items;
     index.value = at;
@@ -153,6 +174,9 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
    * 只会吃掉"关预览"、弹窗关不掉（要按两次），而且切会话后窗里还挂着上一份相册。
    */
   function resetState() {
+    // 先记下「刚关掉的是哪个来源」再清：openGallery 的冷却守卫要拿它比对（清掉后就没了）。
+    lastClosedSource = source.value;
+    lastClosedAt = performance.now();
     open.value = false;
     source.value = null;
     images.value = [];

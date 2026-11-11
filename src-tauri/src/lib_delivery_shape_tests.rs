@@ -520,9 +520,9 @@
             .join("\n");
         let body = code_flat(&code);
         let at = body
-            .find("ifgroup.creator!=from{")
-            .expect("群主早退那一支没了 ⇒ 先确认是不是把整道闸拆了（那是密钥注入的防线，不许拆）");
-        // 只取这一支到 `return;` 为止：早退之后是群主专属路径，算不得"非群主也会推进时钟"的证据。
+            .find("if!group.is_manager(&from){")
+            .expect("非管理者早退那一支没了 ⇒ 先确认是不是把整道闸拆了（那是密钥注入的防线，不许拆）");
+        // 只取这一支到 `return;` 为止：早退之后是群主/管理员专属路径，算不得"非管理者也会推进时钟"的证据。
         let branch = &body[at..];
         let end = branch.find("return;").unwrap_or(branch.len());
         let branch = &branch[..end];
@@ -1165,8 +1165,28 @@ fn group_management_authorization_is_checked_before_the_write() {
     for (sig, denial, write) in [
         (
             "pub async fn rename_group(",
-            "只有群创建者可以修改群名称",
+            "只有群主或管理员可以修改群名称",
             "db::rename_group(",
+        ),
+        (
+            "pub async fn group_add_member(",
+            "只有群主或管理员可以添加成员",
+            "db::add_group_member(",
+        ),
+        (
+            "pub async fn group_remove_member(",
+            "只有群主或管理员可以移除成员",
+            "db::remove_group_member(",
+        ),
+        (
+            "pub async fn group_appoint_admin(",
+            "只有群主可以任命管理员",
+            "db::add_group_admin(",
+        ),
+        (
+            "pub async fn group_remove_admin(",
+            "只有群主可以撤销管理员",
+            "db::remove_group_admin(",
         ),
         (
             "pub async fn transfer_group_creator(",

@@ -126,12 +126,13 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             key,
             group_name,
             members,
+            admins,
             clock,
         } => {
             if from != peer_id {
                 return;
             }
-            handle_group_key(state, group_id, from, to, key, group_name, members, clock).await;
+            handle_group_key(state, group_id, from, to, key, group_name, members, admins, clock).await;
         }
         Message::GroupRename {
             group_id,

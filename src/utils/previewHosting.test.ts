@@ -199,6 +199,35 @@ test("恢复的预览窗口文件确实存在（正面分母）", () => {
 });
 
 /**
+ * **关后回声式重开**（用户 2026-11-11 生产实报：单人聊天点图预览，关了又弹开、关好几次才好）。
+ *
+ * 关闭是异步的：FLIP 把大图精确缩回缩略图矩形 + 停留 + 退场，遮罩抬起后焦点归还到那个
+ * `tabindex=0` 的缩略图外框（`@click` 与 `@keydown.enter/.space` 共用无守卫的 onFrameClick）。
+ * 落在原图坐标的一次 click/按键就会原样重开。所有重开都必经 `openGallery` 这一个入口 ⇒
+ * 守卫钉在这里：对「刚关掉的同一来源」设冷却窗，且必须在 `open.value = true` **之前**拦。
+ *
+ * 反例自证：删掉 openGallery 里那行冷却守卫 ⇒ 第一条断言点名报红；
+ * 把 resetState 里记录 lastClosed* 的两行删掉 ⇒ 第三条报红（守卫拿不到比对基准）。
+ */
+test("openGallery 对刚关掉的同源设冷却守卫（斩断收场回声式重开）", () => {
+  assert.match(STORE, /const REOPEN_GUARD_MS = \d+/, "没有冷却窗常量 ⇒ 守卫没有时长基准");
+  const open = /function openGallery\([^)]*\) \{([\s\S]*?)\n  \}/.exec(STORE)?.[1] ?? "";
+  assert.ok(open.length > 0, "找不到 openGallery() 函数体 ⇒ 这条判据没有分母");
+  const guardIdx = open.search(/lastClosedSource[\s\S]{0,80}?REOPEN_GUARD_MS[\s\S]{0,40}?return;/);
+  const openIdx = open.indexOf("open.value = true;");
+  assert.ok(guardIdx >= 0, "openGallery 没有「同源 + 冷却窗内 ⇒ return」的守卫 ⇒ 关了又弹开那条回来了");
+  assert.ok(openIdx >= 0 && guardIdx < openIdx, "冷却守卫必须在置 open=true 之前拦 ⇒ 否则先开了再拦就晚了");
+  // 守卫只认同来源：关掉 A 立刻点 B 不许被误伤。
+  assert.match(open, /from === lastClosedSource/, "守卫没比对来源 ⇒ 会把『关 A 立刻点 B』也误拦");
+  const reset = /function resetState\(\) \{([\s\S]*?)\n  \}/.exec(STORE)?.[1] ?? "";
+  assert.match(reset, /lastClosedSource = source\.value;/, "resetState 没记关闭来源 ⇒ 守卫没有比对基准");
+  assert.match(reset, /lastClosedAt = performance\.now\(\);/, "resetState 没记关闭时刻 ⇒ 冷却窗无从算起");
+  const recIdx = reset.indexOf("lastClosedAt = performance.now();");
+  const clearIdx = reset.indexOf("source.value = null;");
+  assert.ok(recIdx >= 0 && clearIdx >= 0 && recIdx < clearIdx, "必须在清掉 source 之前记录关闭来源");
+});
+
+/**
  * 双击手势（2026-11-09）：**只做全屏切换**，不再缩放。
  *
  * 用户口径：「双击那个查看图片的窗口可以全屏切换」+「双击只用于最大化/全屏切换，不加第二个

@@ -40,11 +40,17 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<Group>> {
             .query_map(params![id], |r| r.get(0))?
             .filter_map(|r| r.ok())
             .collect();
+        let admins: Vec<String> = conn
+            .prepare("SELECT device_id FROM group_admins WHERE group_id = ?1")?
+            .query_map(params![id], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
         groups.push(Group {
             id,
             name,
             creator,
             members,
+            admins,
         });
     }
     Ok(groups)
@@ -138,10 +144,15 @@ pub fn add_group_member(conn: &Connection, group_id: &str, device_id: &str) -> R
     Ok(())
 }
 
-/// 移除一个群成员（群创建者「踢人」）。
+/// 移除一个群成员（群主/管理员「踢人」）。同时摘掉其管理员身份（若有）：
+/// 离开群的人不该再留在管理员名单里。
 pub fn remove_group_member(conn: &Connection, group_id: &str, device_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM group_members WHERE group_id = ?1 AND device_id = ?2",
+        params![group_id, device_id],
+    )?;
+    conn.execute(
+        "DELETE FROM group_admins WHERE group_id = ?1 AND device_id = ?2",
         params![group_id, device_id],
     )?;
     Ok(())
@@ -163,6 +174,50 @@ pub fn replace_group_members(conn: &Connection, group_id: &str, members: &[Strin
         tx.execute(
             "INSERT OR IGNORE INTO group_members(group_id, device_id) VALUES(?1, ?2)",
             params![group_id, m],
+        )?;
+    }
+    // 成员表收敛后，管理员名单里不再是成员的人也要摘掉（管理员必先是成员）。
+    tx.execute(
+        "DELETE FROM group_admins WHERE group_id = ?1 AND device_id NOT IN
+         (SELECT device_id FROM group_members WHERE group_id = ?1)",
+        params![group_id],
+    )?;
+    tx.commit()
+}
+
+/// 任命管理员（调用方负责校验：仅群主、目标是成员、未超上限）。幂等。
+pub fn add_group_admin(conn: &Connection, group_id: &str, device_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO group_admins(group_id, device_id) VALUES(?1, ?2)",
+        params![group_id, device_id],
+    )?;
+    Ok(())
+}
+
+/// 撤销管理员（调用方负责校验：仅群主）。幂等。
+pub fn remove_group_admin(conn: &Connection, group_id: &str, device_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM group_admins WHERE group_id = ?1 AND device_id = ?2",
+        params![group_id, device_id],
+    )?;
+    Ok(())
+}
+
+/// 用群主权威的管理员名单**替换**本地集合（随 GroupKey 下发）。
+/// 只保留仍是成员的人（管理员必先是成员），与 `replace_group_members` 同一收敛口径。
+/// 仅群主分发的密钥帧可调用（管理员踢人帧携带的名单不覆盖本地——任免权只归群主）。
+pub fn replace_group_admins(conn: &Connection, group_id: &str, admins: &[String]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM group_admins WHERE group_id = ?1",
+        params![group_id],
+    )?;
+    for a in admins {
+        tx.execute(
+            "INSERT OR IGNORE INTO group_admins(group_id, device_id)
+             SELECT ?1, ?2 WHERE EXISTS
+             (SELECT 1 FROM group_members WHERE group_id = ?1 AND device_id = ?2)",
+            params![group_id, a],
         )?;
     }
     tx.commit()
@@ -196,11 +251,16 @@ pub fn get_group_checked(conn: &Connection, group_id: &str) -> Result<Option<Gro
     let members = stmt
         .query_map(params![group_id], |r| r.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
+    let mut astmt = conn.prepare("SELECT device_id FROM group_admins WHERE group_id = ?1")?;
+    let admins = astmt
+        .query_map(params![group_id], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(Group {
         id,
         name,
         creator,
         members,
+        admins,
     }))
 }
 
@@ -249,6 +309,10 @@ pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
     let conv_id = format!("group:{group_id}");
     tx.execute(
         "DELETE FROM group_members WHERE group_id = ?1",
+        params![group_id],
+    )?;
+    tx.execute(
+        "DELETE FROM group_admins WHERE group_id = ?1",
         params![group_id],
     )?;
     // 群文件投递数据随群删除，避免悬挂（按 group_id 关联逐层清理）
@@ -691,5 +755,101 @@ mod group_read_strictness_tests {
             get_group_checked(&conn, "g1").is_err(),
             "成员读失败不许折成空名单 —— 那会被读成「这个群一个人也没有」"
         );
+    }
+}
+
+#[cfg(test)]
+mod group_admin_tests {
+    use super::{
+        add_group_admin, delete_group, get_group, remove_group_admin, remove_group_member,
+        replace_group_admins, replace_group_members, upsert_group,
+    };
+    use crate::db::SCHEMA;
+    use rusqlite::Connection;
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        upsert_group(
+            &conn,
+            "g1",
+            "群",
+            "owner",
+            &["owner".to_string(), "a".to_string(), "b".to_string()],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn admins(conn: &Connection) -> Vec<String> {
+        let mut a = get_group(conn, "g1").unwrap().admins;
+        a.sort();
+        a
+    }
+
+    #[test]
+    fn is_manager_covers_owner_and_admin_but_not_plain_member() {
+        let g = crate::state::Group {
+            id: "g1".into(),
+            name: "群".into(),
+            creator: "owner".into(),
+            members: vec!["owner".into(), "a".into(), "b".into()],
+            admins: vec!["a".into()],
+        };
+        assert!(g.is_manager("owner"), "群主是管理者");
+        assert!(g.is_manager("a"), "管理员是管理者");
+        assert!(!g.is_manager("b"), "普通成员不是管理者");
+        assert!(!g.is_manager("stranger"), "外人不是管理者");
+    }
+
+    #[test]
+    fn add_and_remove_group_admin_roundtrip() {
+        let conn = mem();
+        assert!(admins(&conn).is_empty());
+        add_group_admin(&conn, "g1", "a").unwrap();
+        add_group_admin(&conn, "g1", "a").unwrap(); // 幂等
+        assert_eq!(admins(&conn), vec!["a".to_string()]);
+        remove_group_admin(&conn, "g1", "a").unwrap();
+        assert!(admins(&conn).is_empty());
+    }
+
+    #[test]
+    fn replace_group_admins_keeps_only_members() {
+        let conn = mem();
+        // b 是成员、ghost 不是 ⇒ 权威替换后只留 b（管理员必先是成员）。
+        replace_group_admins(&conn, "g1", &["b".to_string(), "ghost".to_string()]).unwrap();
+        assert_eq!(admins(&conn), vec!["b".to_string()]);
+        // 再次替换为空 ⇒ 清空（群主撤销全部管理员）。
+        replace_group_admins(&conn, "g1", &[]).unwrap();
+        assert!(admins(&conn).is_empty());
+    }
+
+    #[test]
+    fn removing_a_member_also_drops_their_admin_seat() {
+        let conn = mem();
+        add_group_admin(&conn, "g1", "a").unwrap();
+        remove_group_member(&conn, "g1", "a").unwrap();
+        assert!(admins(&conn).is_empty(), "被踢的人不该再留在管理员名单里");
+    }
+
+    #[test]
+    fn replace_group_members_reconciles_admins() {
+        let conn = mem();
+        add_group_admin(&conn, "g1", "a").unwrap();
+        add_group_admin(&conn, "g1", "b").unwrap();
+        // 权威成员表收敛掉 a ⇒ a 的管理员身份也要跟着摘掉。
+        replace_group_members(&conn, "g1", &["owner".to_string(), "b".to_string()]).unwrap();
+        assert_eq!(admins(&conn), vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn delete_group_clears_admins() {
+        let conn = mem();
+        add_group_admin(&conn, "g1", "a").unwrap();
+        delete_group(&conn, "g1").unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM group_admins WHERE group_id='g1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0, "删群必须连带清管理员表（否则留下无主残留）");
     }
 }

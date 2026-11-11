@@ -273,6 +273,10 @@ export const api = {
     invoke<void>("group_add_member", { groupId, deviceId }),
   groupRemoveMember: (groupId: string, deviceId: string) =>
     invoke<void>("group_remove_member", { groupId, deviceId }),
+  groupAppointAdmin: (groupId: string, deviceId: string) =>
+    invoke<void>("group_appoint_admin", { groupId, deviceId }),
+  groupRemoveAdmin: (groupId: string, deviceId: string) =>
+    invoke<void>("group_remove_admin", { groupId, deviceId }),
   transferGroupCreator: (groupId: string, newCreator: string) =>
     invoke<void>("transfer_group_creator", { groupId, newCreator }),
   /**

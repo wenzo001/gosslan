@@ -889,19 +889,18 @@ const emit = defineEmits<{
  * 都出现撤回入口）。
  */
 /**
- * 本机是不是**这个群**的群主。口径与 `ChatWindow.canPublishAnnouncement` 同一份
- * （读本地 `groups.creator`）；它只决定入口要不要显示 —— 真正的裁决在后端命令层，
+ * 本机是不是**这个群**的群主或管理员。口径与 `ChatWindow.canPublishAnnouncement` 同一份
+ * （读本地 `groups.creator` / `groups.admins`）；它只决定入口要不要显示 —— 真正的裁决在后端命令层，
  * 而**每台接收设备还各自判一次**（`protocol::recall_receive_allowed`），
  * 前端这一份改不动别人的库。
  */
-const isGroupOwnerHere = computed(() => {
+const isGroupManagerHere = computed(() => {
   if (!props.isGroup) return false;
   const conv = props.message.conv_id || "";
   if (!conv.startsWith("group:")) return false;
-  return (
-    chat.groups.find((g) => g.id === conv.slice("group:".length))?.creator
-    === app.device?.device_id
-  );
+  const g = chat.groups.find((x) => x.id === conv.slice("group:".length));
+  const id = app.device?.device_id;
+  return !!g && !!id && (g.creator === id || g.admins.includes(id));
 });
 
 /**
@@ -922,7 +921,7 @@ function canRecallNow(): boolean {
   }
   // 群主档：替别人撤、或撤自己早就过窗的那条。分母与作者档**同一份**（卡片没有独立真源，
   // 撤卡等于删本体，见 utils/recall.ts 与 ADR-0023 §3.6）。
-  return isGroupOwnerHere.value && isRecallableKind(props.message.kind);
+  return isGroupManagerHere.value && isRecallableKind(props.message.kind);
 }
 
 /** 已撤回那一行显示哪句话：撤的人不是作者 ⇒ 说清是群主干的（索引缺失退回通用文案）。 */
@@ -1254,7 +1253,7 @@ function doRecall() {
  * 卡片那一支不塞摘要：它的 `content` 是载荷 JSON，贴出来只会糊一屏花括号。
  */
 const recallConfirmBody = computed(() => {
-  if (!(isGroupOwnerHere.value && !mine.value)) return t("msg.recallConfirm");
+  if (!(isGroupManagerHere.value && !mine.value)) return t("msg.recallConfirm");
   const name = props.senderName || chat.nicknameOf(props.message.sender_id);
   // 摘要必须走 `previewBody` 那一份同源实现：直接切 `content` 的话，`image` / `file`
   // 的载荷是 JSON，会把**本机绝对路径**贴进弹窗（载荷形状见 commands/files.rs 的 name/path/size），

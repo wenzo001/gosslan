@@ -132,6 +132,42 @@ export function createGroupsModule(ctx: ChatContext) {
     await refreshConversations();
   }
 
+  /** 任命管理员（仅群主）。乐观把目标加进 admins，失败回滚。 */
+  async function appointAdmin(groupId: string, deviceId: string) {
+    await withGroupRollback(
+      () => {
+        const prev = groups.value;
+        groups.value = groups.value.map((g) =>
+          g.id === groupId && !g.admins.includes(deviceId)
+            ? { ...g, admins: [...g.admins, deviceId] }
+            : g,
+        );
+        return () => {
+          groups.value = prev;
+        };
+      },
+      () => api.groupAppointAdmin(groupId, deviceId),
+    );
+    await refreshGroups();
+  }
+
+  /** 撤销管理员（仅群主）。乐观把目标移出 admins，失败回滚。 */
+  async function removeAdmin(groupId: string, deviceId: string) {
+    await withGroupRollback(
+      () => {
+        const prev = groups.value;
+        groups.value = groups.value.map((g) =>
+          g.id === groupId ? { ...g, admins: g.admins.filter((a) => a !== deviceId) } : g,
+        );
+        return () => {
+          groups.value = prev;
+        };
+      },
+      () => api.groupRemoveAdmin(groupId, deviceId),
+    );
+    await refreshGroups();
+  }
+
   /** 转让群主（仅当前群主）。后端会向全体成员广播新群主。 */
   async function transferGroupCreator(groupId: string, newCreator: string) {
     await withGroupRollback(
@@ -200,6 +236,8 @@ export function createGroupsModule(ctx: ChatContext) {
     withGroupRollback,
     addGroupMember,
     removeGroupMember,
+    appointAdmin,
+    removeAdmin,
     transferGroupCreator,
     leaveGroup,
     handleSelfRemovedFromGroup,

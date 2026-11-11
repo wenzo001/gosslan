@@ -137,6 +137,8 @@ const { mentionNames, selfMention } = useMentionContext(() => props.groupId);
 const convId = computed(() => (props.groupId ? `group:${props.groupId}` : ""));
 const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? null);
 const groupCreator = computed(() => group.value?.creator ?? "");
+/** 本群管理员名单（与群主同权编辑任务，见 `canUpdateTodo` 的管理员档）。 */
+const groupAdmins = computed<string[]>(() => group.value?.admins ?? []);
 /** 本群成员名单（归档/还原那条窄档的判据：只给本群成员，见 `canArchiveOrReopenTodo`）。 */
 const groupMembers = computed<string[]>(() => group.value?.members ?? []);
 /**
@@ -533,7 +535,7 @@ function autoArchiveTip(x: TodoItem): string {
 
 // ---------------- 权限（显示用的镜像，后端才是权威） ----------------
 function canChangeStatus(x: TodoItem): boolean {
-  return canUpdateTodo(x, myId.value, groupCreator.value, false);
+  return canUpdateTodo(x, myId.value, groupCreator.value, false, groupAdmins.value);
 }
 /** 「我是不是本群成员」—— 删除已归档那一条窄档的判据（后端 `MemberLane.is_member` 的镜像）。 */
 const myMembership = computed(() => !!myId.value && groupMembers.value.includes(myId.value));
@@ -548,10 +550,10 @@ function canDelete(x: TodoItem): boolean {
   return canEditStructure(x) || canDeleteArchived(x);
 }
 function canEditStructure(x: TodoItem): boolean {
-  return canUpdateTodo(x, myId.value, groupCreator.value, true);
+  return canUpdateTodo(x, myId.value, groupCreator.value, true, groupAdmins.value);
 }
 function canEditAssigneesOf(x: TodoItem): boolean {
-  return canEditAssignees(x, myId.value, groupCreator.value);
+  return canEditAssignees(x, myId.value, groupCreator.value, groupAdmins.value);
 }
 /**
  * 「归档」这一档对**全体群成员**开放（用户 2026-09-24 #37），
@@ -562,7 +564,7 @@ function canEditAssigneesOf(x: TodoItem): boolean {
  * 门控被拿掉时由 `taskRowHierarchy.test.ts` 的判据拦下（含反例自证）。
  */
 function canArchive(x: TodoItem): boolean {
-  return isTodoTerminalStatus(x.status) && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value);
+  return isTodoTerminalStatus(x.status) && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value, groupAdmins.value);
 }
 /**
  * 「还原」= 把终态（完成 / 做不了）退回「待办」（后端 `resolve_done_archive` 据此一并清掉
@@ -571,7 +573,7 @@ function canArchive(x: TodoItem): boolean {
  * 判据带上"当前是终态"：非终态的行不配还原，后端也不认那是还原。
  */
 function canReopen(x: TodoItem): boolean {
-  return isTodoTerminalStatus(x.status) && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value);
+  return isTodoTerminalStatus(x.status) && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value, groupAdmins.value);
 }
 /**
  * 「认领」只开给**需求**（用户 2026-09-29），四条前提与后端 `claim_only_change` 一一对应：

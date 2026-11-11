@@ -1420,19 +1420,19 @@ async fn handle_group_key(
     key: String,
     group_name: String,
     members: Vec<String>,
+    admins: Vec<String>,
     clock: i64,
 ) {
     if to != state.device_id {
         return;
     }
-    // 只有群创建者能够分发/轮换群密钥；同时要求消息携带的成员表
+    // 群主**或本机已知的管理员**能够分发/轮换群密钥；同时要求消息携带的成员表
     // 明确包含发送者和接收者，避免任意好友注入一个伪造群或密钥。
     //
     // ⚠️ 这道校验**不能放宽给普通成员**：若任意成员都能推送新密钥，恶意成员即可用
     // 自己持有的密钥替换受害者的群密钥，从而读到受害者后续发出的群消息。
-    // 因此「群主离线时密钥无法传播」不能靠放宽此处解决，而靠**不制造只有群主才有的密钥**——
-    // 见 `group_add_member`：加人不再轮换群密钥；轮换只保留在「移除成员」路径
-    // （那个时机群主必然在线，且撤权本就需要换新密钥）。
+    // 管理员之所以可信：名单由**群主**权威下发（见下方 replace_group_admins 仅群主帧），
+    // 各设备凭本机这份名单判定，发帧人自报不作数（去中心化授权，INV-P21）。
     // 无本地群记录时（新成员首次拿密钥）此处放行，这是新成员入群的唯一途径。
     // 这一份读数**同时**是"本机是不是第一次成为这个群的成员"的判据 ——
     // 群历史同步（2026-10-16 需求）只在该它为 `None` 时才记待同步标记：
@@ -1442,8 +1442,10 @@ async fn handle_group_key(
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id)
     };
+    // 管理员名单只认群主帧（首次接触按 TOFU）；管理员踢人帧携带的名单不覆盖本地任免。
+    let from_is_owner = known_group.as_ref().map_or(true, |g| g.creator == from);
     if let Some(group) = &known_group {
-        if group.creator != from {
+        if !group.is_manager(&from) {
             // 群资料/密钥仍只认群主（下面那批写入一概不做），但**逻辑时钟谁都能推进**：每一帧
             // `GroupKey` 都带 `clock`，而建链/Hello 时**每个成员**都会重发一遍（`requeue_group_keys_for_peer`）。
             // 旧写法在这里直接 return ⇒ ADR-0012 §7 承诺的"离线成员靠 `GroupKey.clock` 对齐"对非群主
@@ -1527,6 +1529,16 @@ async fn handle_group_key(
                 "group",
                 format!("code=GROUP_SYNC_WRITE_FAILED op=members group={group_id} err={e}"),
             );
+        }
+        // 管理员名单只由**群主**帧权威替换（任免权归群主）；管理员踢人帧虽携带名单，
+        // 但不覆盖本地——否则管理员就能借踢人帧自我提权/任免他人。首次接触按 TOFU 采信。
+        if from_is_owner {
+            if let Err(e) = db::replace_group_admins(&dbc, &group_id, &admins) {
+                state.logger.warn(
+                    "group",
+                    format!("code=GROUP_SYNC_WRITE_FAILED op=admins group={group_id} err={e}"),
+                );
+            }
         }
         // ★ 会话标题跟着群资料走（负责人 2026-10-10 拍板的 #22）：群主改名时**离线**的成员
         // 此前要等群主下次在群里说话才看得到新名 —— 而新名其实**早就到了他机器上**

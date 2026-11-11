@@ -612,6 +612,7 @@ pub async fn clear_all_data(
         "group_file_acks",
         "group_recalled_messages",
         "group_members",
+        "group_admins",
         "groups",
         // 任务标签是群任务消息的派生索引：群都清掉了，两张表留着也只是无主残留。
         "todo_task_tags",
