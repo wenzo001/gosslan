@@ -6110,8 +6110,8 @@ test("群任务指派：候选只取当前成员，权威成员表到达时能�
   assert.match(transport, /db::replace_group_members\(&dbc, &group_id, &all\)/,
     "GroupKey 是群主权威成员表，接到后必须整体替换（否则只增不减）");
   const gossip = readFileSync(join(root, "..", "src-tauri", "src", "network", "transport", "gossip.rs"), "utf8");
-  assert.match(gossip, /let authoritative_members = is_self_declared_creator/,
-    "群 Gossip 信封只有群主自称的成员表才可整体替换");
+  assert.match(gossip, /let authoritative_members = sender_is_manager/,
+    "群 Gossip 信封只有本机群主/管理员的成员表才可整体替换");
   assert.match(gossip, /db::replace_group_members\(&dbc, &gid, &all\)/,
     "群主权威成员表到达后没有调用替换");
 });

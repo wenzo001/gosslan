@@ -4640,6 +4640,7 @@ async function main() {
     const files = want("files");
     const share = want("share");
     const lightbox = want("lightbox");
+    const groupadmin = want("groupadmin");
     const toast = want("toast");
     const select = want("select");
     const task = want("task");
@@ -4896,6 +4897,7 @@ async function main() {
     await runSegment("files", files, () => runGroupFiles(cdp, url));
     await runSegment("share", share, () => runShareDirectory(cdp, url));
     await runSegment("lightbox", lightbox, () => runLightbox(cdp, url));
+    await runSegment("groupadmin", groupadmin, () => runGroupAdmin(cdp, url));
     await runSegment("toast", toast, () => runToast(cdp, url));
     await runSegment("select", select, () => runSelect(cdp, url));
     await runSegment("task", task, () => runTaskCard(cdp, url));
@@ -7766,7 +7768,7 @@ async function runTodoDelete(cdp, url) {
     const { useChatStore } = await import('/src/stores/useChatStore.ts');
     const chat = useChatStore();
     // 我不是创建者（creator=other），但我是群成员 ⇒ 已归档任务应当可删。
-    const group = { id: 'group-del', name: '删除探针群', creator: 'other', members: ['dev-me', 'other'] };
+    const group = { id: 'group-del', name: '删除探针群', creator: 'other', members: ['dev-me', 'other'], admins: [] };
     const rec = (msg_id, seq, p) => ({
       msg_id, conv_id: 'group:group-del', sender_id: 'other', kind: 'todo',
       content: JSON.stringify(p), ts: 1700000000000 + seq, seq, status: 'sent',
@@ -7915,7 +7917,7 @@ async function runTodoArchive(cdp, url) {
     const { useChatStore } = await import('/src/stores/useChatStore.ts');
     const chat = useChatStore();
     // 我不是创建者，但我是群成员 ⇒ 终态行应当可归档（窄档判据是"全体群成员"）。
-    const group = { id: 'group-arch', name: '归档探针群', creator: 'other', members: ['dev-me', 'other'] };
+    const group = { id: 'group-arch', name: '归档探针群', creator: 'other', members: ['dev-me', 'other'], admins: [] };
     const rec = (msg_id, seq, p) => ({
       msg_id, conv_id: 'group:group-arch', sender_id: 'other', kind: 'todo',
       content: JSON.stringify(p), ts: 1700000000000 + seq, seq, status: 'sent',
@@ -8068,7 +8070,7 @@ async function runTaskPaste(cdp, url) {
     const { api } = await import('/src/api/index.ts');
     const { useChatStore } = await import('/src/stores/useChatStore.ts');
     const chat = useChatStore();
-    const group = { id: 'group-paste', name: '探针群', creator: 'dev-me', members: ['dev-me'] };
+    const group = { id: 'group-paste', name: '探针群', creator: 'dev-me', members: ['dev-me'], admins: [] };
     api.getGroupTodoMessages = async () => [];
     // 看板/成员名会触发群资料与好友关系重拉；裸浏览器的 invoke 返回 null 会把 store
     // 里的数组覆盖成 null（组件随即在 groups.find 上崩）。这三条读接口给空数据集。
@@ -8237,7 +8239,7 @@ async function runTodoDraft(cdp, url) {
     const { api } = await import('/src/api/index.ts');
     const { useChatStore } = await import('/src/stores/useChatStore.ts');
     const chat = useChatStore();
-    const group = { id: 'group-draft', name: '草稿探针群', creator: 'dev-me', members: ['dev-me'] };
+    const group = { id: 'group-draft', name: '草稿探针群', creator: 'dev-me', members: ['dev-me'], admins: [] };
     api.getGroupTodoMessages = async () => [];
     api.getGroups = async () => [group];
     api.getGroupReads = async () => [];
@@ -16922,7 +16924,7 @@ async function runCtxMenu(cdp, url) {
     const seededGroup = await cdp.eval(`(async () => {
       const { useChatStore } = await import('/src/stores/useChatStore.ts');
       const chat = useChatStore(window.__pinia);
-      chat.groups = [{ id: 'g1', name: '探针群', creator: 'dev-me', members: ['dev-me', 'bob'], avatar: null }];
+      chat.groups = [{ id: 'g1', name: '探针群', creator: 'dev-me', members: ['dev-me', 'bob'], admins: [], avatar: null }];
       window.__probe.vue && await window.__probe.vue.nextTick();
       return { ok: true, groups: chat.groups.length, members: chat.groups[0].members.length };
     })()`);
@@ -23346,7 +23348,7 @@ async function runOpsCenter(cdp, url) {
       id: jumpCid, kind: "group", name: "探针群", avatar: null, last_msg: "在吗",
       last_ts: 1, unread: 0, mentioned: 0, pinned: 0, muted: 0,
     };
-    const jumpGroup = { id: jumpGid, name: "探针群", creator: "dev-me", members: ["dev-me", "p1"] };
+    const jumpGroup = { id: jumpGid, name: "探针群", creator: "dev-me", members: ["dev-me", "p1"], admins: [] };
     const jumpOnce = async (shape) => {
       // 每种形状重新挂一次面板（install 会清 body ⇒ 上一格的 DOM 不残留）。
       await cdp.eval("window.__probe.install('/src/components/TaskCenter.vue', '', '')");
@@ -25349,6 +25351,39 @@ async function runLightbox(cdp, url) {
   check("Esc 关闭：浮层 DOM 撤净且焦点回到 opener（FocusScope 的卸载归还）",
     s.open === false && focusBack === "opener",
     "dialog=0 且 activeElement=#opener", JSON.stringify({ s, focusBack }));
+
+  /*
+   * 关后回声式重开（用户 2026-11-11 生产实报：单人聊天点图预览，关了又弹开、关好几次才好）。
+   * 用**真 store** 走唯一开入口 openGallery：关掉同源后立刻重开必须被冷却窗抑制；
+   * 异源立刻开、冷却窗过后再开同源都照常。blob: 相册不可跨文档投递 ⇒ 走覆盖层分支、不发 IPC。
+   * 反例自证：删掉 openGallery 的冷却守卫 ⇒ suppressed 变 false，这条点名报红。
+   */
+  const reopen = await cdp.eval(`(async () => {
+    const M = await import('/src/stores/useImagePreview.ts');
+    const s = M.useImagePreviewStore(window.__pinia);
+    const items = [{ dataSrc: 'blob:probe-reopen', name: 'reopen.gif' }];
+    const src = 'conv:probe-reopen';
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    s.close();
+    await wait(450);
+    s.openGallery(items, 0, src);
+    const openedFirst = s.open === true;
+    s.close();
+    s.openGallery(items, 0, src);
+    const suppressed = s.open === false;
+    s.openGallery(items, 0, 'conv:probe-other');
+    const otherOpens = s.open === true;
+    s.close();
+    await wait(450);
+    s.openGallery(items, 0, src);
+    const afterCooldown = s.open === true;
+    s.close();
+    return { openedFirst, suppressed, otherOpens, afterCooldown };
+  })()`);
+  console.log("  · 关后重开冷却实测 → " + JSON.stringify(reopen));
+  check("图片预览：关后同源立刻重开被抑制（异源/冷却窗后照常开）",
+    !!reopen && reopen.openedFirst && reopen.suppressed && reopen.otherOpens && reopen.afterCooldown,
+    "openedFirst/suppressed/otherOpens/afterCooldown 全 true", JSON.stringify(reopen));
 }
 
 /**
@@ -25360,6 +25395,86 @@ async function runLightbox(cdp, url) {
  * 阈值 4 的理由：实测干净态的噪声上限是 1（抗锯齿只抹 1 个通道档位），取 2 倍 = 4；
  * 暗边一旦出现，实测差 ≥ 20，离阈值一个数量级。
  */
+async function runGroupAdmin(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1400, height: 900, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    if (!window.__TAURI_INTERNALS__) {
+      window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+        invoke: async () => null,
+        transformCallback: (cb) => cb,
+        convertFileSrc: (p) => p,
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+  // 先借 install 把页面那份 vue/pinia 拿进来（与 ctxmenu 段同口径）。
+  await cdp.eval("window.__probe.install('/src/components/GroupMemberPanel.vue', '', "
+    + JSON.stringify(JSON.stringify({ open: true, groupId: 'g1' })) + ")");
+
+  // 群：群主 dev-me，管理员 bob，普通成员 carol。三种视角各挂一次面板数按钮。
+  const GROUP = { id: 'g1', name: '管理员探针群', creator: 'dev-me', members: ['dev-me', 'bob', 'carol'], admins: ['bob'], avatar: null };
+  const view = async (deviceId) => {
+    await cdp.eval(`window.__probe.installMenu(${JSON.stringify(JSON.stringify({ open: true, groupId: 'g1' }))}, ${JSON.stringify(JSON.stringify({
+      path: '/src/components/GroupMemberPanel.vue',
+      emits: ['close', 'open-tasks', 'mention', 'open-profile'],
+    }))})`);
+    await sleep(300);
+    return await cdp.eval(`(async () => {
+      const { useChatStore } = await import('/src/stores/useChatStore.ts');
+      const { useAppStore } = await import('/src/stores/useAppStore.ts');
+      const { t } = await import('/src/i18n/index.ts');
+      const chat = useChatStore(window.__pinia);
+      const app = useAppStore(window.__pinia);
+      chat.groups = [${JSON.stringify(GROUP)}];
+      app.device = { device_id: ${JSON.stringify(deviceId)}, nickname: ${JSON.stringify(deviceId)}, avatar: null, device_type: 'desktop', tcp_port: 1, online: true, x25519_pubkey: '', ed25519_pubkey: '' };
+      window.__probe.vue && await window.__probe.vue.nextTick();
+      await new Promise((res) => setTimeout(res, 150));
+      // 标题前缀（去掉 {name}）⇒ 中英两册都稳健。
+      const prefix = (key) => t(key, { name: '\\u0000' }).split('\\u0000')[0];
+      const titles = [...document.querySelectorAll('button[title]')].map((b) => b.getAttribute('title') || '');
+      const count = (key) => titles.filter((x) => x.startsWith(prefix(key))).length;
+      const buttons = [...document.querySelectorAll('button')];
+      return {
+        transfer: count('group.transferOwner'),
+        appoint: count('group.appointAdmin'),
+        removeAdmin: count('group.removeAdmin'),
+        kick: count('group.removeMember'),
+        renameInput: !!document.querySelector('input'),
+        addMember: buttons.some((b) => (b.textContent || '').includes(t('group.addMember'))),
+        leave: buttons.some((b) => (b.textContent || '').includes(t('group.leave'))),
+      };
+    })()`);
+  };
+
+  const owner = await view('dev-me');
+  console.log("  · 群主视角 → " + JSON.stringify(owner));
+  check("群管理员·群主：可转让/任免管理员/踢人/改名/加人（任免与转让仅群主）",
+    owner.transfer === 2 && owner.appoint === 1 && owner.removeAdmin === 1 && owner.kick === 2
+      && owner.renameInput && owner.addMember,
+    "transfer=2 appoint=1 removeAdmin=1 kick=2 rename+add", JSON.stringify(owner));
+
+  const admin = await view('bob');
+  console.log("  · 管理员视角 → " + JSON.stringify(admin));
+  check("群管理员·管理员：可踢人/改名/加人，但不能任免管理员/转让群主（踢人不含群主）",
+    admin.transfer === 0 && admin.appoint === 0 && admin.removeAdmin === 0 && admin.kick === 1
+      && admin.renameInput && admin.addMember,
+    "transfer=0 appoint=0 removeAdmin=0 kick=1 rename+add", JSON.stringify(admin));
+
+  const member = await view('carol');
+  console.log("  · 普通成员视角 → " + JSON.stringify(member));
+  check("群管理员·普通成员：无任何管理按钮，只读群名，可退群",
+    member.transfer === 0 && member.appoint === 0 && member.removeAdmin === 0 && member.kick === 0
+      && !member.renameInput && !member.addMember && member.leave,
+    "全 0 + 无改名/加人 + 可退群", JSON.stringify(member));
+}
+
 async function runFavThumb(cdp, url) {
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 1400, height: 900, deviceScaleFactor: 1, mobile: false,
@@ -27084,7 +27199,7 @@ async function runFieldContrast(cdp, url) {
     const app = useAppStore(window.__pinia);
     // isOwner = group.creator === app.device.device_id ⇒ 两边都种成 dev-me，编辑区才会渲染。
     app.device = { device_id: 'dev-me', name: 'dev-me', avatar: null };
-    chat.groups = [{ id: 'g1', name: '探针群', creator: 'dev-me', members: ['dev-me', 'bob'], avatar: null, announcement: '' }];
+    chat.groups = [{ id: 'g1', name: '探针群', creator: 'dev-me', members: ['dev-me', 'bob'], admins: [], avatar: null, announcement: '' }];
     window.__probe.vue && await window.__probe.vue.nextTick();
     return { ok: true, myId: app.device.device_id };
   })()`);

@@ -260,6 +260,8 @@ export interface Group {
   name: string;
   creator: string;
   members: string[];
+  /** 管理员名单（≤3，不含群主）。群主权威同步；旧后端无此字段时前端兜底为空。 */
+  admins: string[];
 }
 
 /**

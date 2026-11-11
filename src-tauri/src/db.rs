@@ -925,6 +925,13 @@ CREATE TABLE IF NOT EXISTS group_members (
     PRIMARY KEY (group_id, device_id)
 );
 
+-- 群管理员（≤3，不含群主）：群主权威任免，随 GroupKey 同步到各成员本机。
+CREATE TABLE IF NOT EXISTS group_admins (
+    group_id  TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    PRIMARY KEY (group_id, device_id)
+);
+
 -- 群成员已读位置：每个成员只保留读到的最大时间戳
 CREATE TABLE IF NOT EXISTS group_reads (
     group_id      TEXT NOT NULL,

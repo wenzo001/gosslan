@@ -373,7 +373,7 @@ export const useChatStore = defineStore("chat", () => {
   const { refreshConversations, refreshGroups, resetAfterDataCleared, clearAllData, sendReadReceipt, chatViewerLooking, groupReaderIds, unreadJump, locateRequest, clearLocateRequest, locateInLoaded, locateMessageInConv, openConversation, loadMessages, refreshGroupDeliveries, clearHistoryError, loadMoreMessages, onGroupRead, onGroupHistoryProgress, syncGroupHistoryNow, cancelGroupHistory, deleteConversation, setConversationPinned, historyLoadErrors } = conversationsModule;
   const { openTodoByConv, groupTodoRowsErrors, ensureGroupTodoRows, todosLoadedOnce, loadGroupTodos, watchGroupTodos, createTodo, updateTodo, pinMessage } = todosModule;
   const { refreshPeers, searchNearbyPeers, refreshFriends, refreshPending, refreshOutgoingRequests, refreshKeyRotations, syncFriendKeys, sendFriendRequest, cancelFriendRequest, respondRequest, removeFriend, favorites, refreshFavorites, addFavorite, removeFavorite, addFavorites } = contactsModule;
-  const { activeAnnouncements, publishAnnouncement, refreshAnnouncements, deleteAnnouncement, createGroup, renameGroup, addGroupMember, removeGroupMember, transferGroupCreator, leaveGroup, handleSelfRemovedFromGroup } = groupsModule;
+  const { activeAnnouncements, publishAnnouncement, refreshAnnouncements, deleteAnnouncement, createGroup, renameGroup, addGroupMember, removeGroupMember, appointAdmin, removeAdmin, transferGroupCreator, leaveGroup, handleSelfRemovedFromGroup } = groupsModule;
   const { sendFileTo, sendGroupFileTo, sendImage, stalledTransfers, isTransferStalled, transferStallReason, setTransferStalled, onFileStalled, updateTransferProgress, onFileDone, onGroupFileLog, onFileFailed, groupFileDiag } = mediaModule;
 
   async function init() {
@@ -908,6 +908,8 @@ export const useChatStore = defineStore("chat", () => {
     renameGroup,
     addGroupMember,
     removeGroupMember,
+    appointAdmin,
+    removeAdmin,
     transferGroupCreator,
     leaveGroup,
     handleSelfRemovedFromGroup,

@@ -317,16 +317,16 @@ mod files_gate_tests {
         // 2026-10-29 把 `if is_creator {…} else {…}` 抽成纯函数后，这里钉"命令确实调它"，
         // "真/假各选哪档"由下面的行为用例判（审计 TST-07：形状断言不算行为）。
         assert!(
-            group.contains("let authority = recall_authority_for(is_creator);"),
-            "群撤回命令必须按本地 creator 现选档位；只留纯函数 = 功能根本没接上"
+            group.contains("let authority = recall_authority_for(is_manager);"),
+            "群撤回命令必须按本地群主/管理员身份现选档位；只留纯函数 = 功能根本没接上"
         );
         assert!(
             !group.contains("CancelNotify::LocalOnly"),
             "发起侧不该用 LocalOnly（那等于发起撤回的人自己不再通知对端）"
         );
         assert!(
-            group.contains("g.creator == s.device_id"),
-            "群主身份必须现读本地库里那份 creator；换成别的来源就是把授权交给发帧人自报"
+            group.contains("g.is_manager(&s.device_id)"),
+            "管理身份必须现读本地库里那份 creator/admins；换成别的来源就是把授权交给发帧人自报"
         );
         assert!(
             !chat.contains("RecallAuthority::GroupCreator"),

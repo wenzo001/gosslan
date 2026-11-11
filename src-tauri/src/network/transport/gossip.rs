@@ -1635,10 +1635,16 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         // 里那个读数同一个用途，只是这一路是"从未收到 GroupKey、只收到群消息"的成员）。
                         let first_membership = known.is_none();
                         let is_self_declared_creator = env.sender_id == creator;
+                        // 群名/成员表的权威 = **本机记录里的群主或管理员**（去中心化授权：
+                        // 凭本机管理员名单判定，发帧人自报的 group_creator 不作数）；
+                        // 首次接触（无本地记录）按 TOFU 采信自称群主者，与建链口径一致。
+                        let sender_is_manager = known
+                            .as_ref()
+                            .map_or(is_self_declared_creator, |g| g.is_manager(&env.sender_id));
                         let display_name = match &known {
-                            // 已有该群：只有群主自称时才更新名字，否则沿用本地名字
+                            // 已有该群：只有群主/管理员才更新名字，否则沿用本地名字
                             Some(g) => {
-                                if is_self_declared_creator {
+                                if sender_is_manager {
                                     env.group_name.clone().unwrap_or_else(|| g.name.clone())
                                 } else {
                                     g.name.clone()
@@ -1655,11 +1661,10 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                                 format!("code=GROUP_SYNC_WRITE_FAILED op=upsert group={gid} err={e}"),
                             );
                         }
-                        // 只有「发送者自称群主且与本地已知群主一致（首次接触按 TOFU）」的成员表
-                        // 才当权威表整体替换；普通成员的成员表仍只增不减，避免一条伪造的
-                        // group_members 把别人从本地成员视图里抹掉。
-                        let authoritative_members = is_self_declared_creator
-                            && known.as_ref().map_or(true, |g| g.creator == creator);
+                        // 只有**本机记录里的群主或管理员**（首次接触按 TOFU）的成员表才当权威表
+                        // 整体替换；普通成员的成员表仍只增不减，避免一条伪造的 group_members
+                        // 把别人从本地成员视图里抹掉。管理员名单不在此路更新（只走群主 GroupKey 帧）。
+                        let authoritative_members = sender_is_manager;
                         if authoritative_members {
                             if let Err(e) = db::replace_group_members(&dbc, &gid, &all) {
                                 state.logger.warn(
@@ -1704,11 +1709,11 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             // 信封去清 B 群的一条消息）只有拿到目标自己的 conv_id 才判得了。
                             let target_row = db::get_message_record(&dbc, &p.target);
                             let is_group = conv_id.starts_with("group:");
-                            let (is_creator_here, is_member_here) = if is_group {
+                            let (is_manager_here, is_member_here) = if is_group {
                                 db::get_group(&dbc, &group_id_for_check)
                                     .map(|g| {
                                         (
-                                            g.creator == env.sender_id,
+                                            g.is_manager(&env.sender_id),
                                             g.members.contains(&env.sender_id),
                                         )
                                     })
@@ -1723,7 +1728,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                                 &env.sender_id,
                                 &conv_id,
                                 is_group,
-                                is_creator_here,
+                                is_manager_here,
                                 is_member_here,
                             );
                             if allowed {
@@ -1813,14 +1818,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     || kind == crate::protocol::KIND_ANNOUNCEMENT_DELETE
                 {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    let is_creator = db::get_group(&dbc, &group_id_for_check)
-                        .map(|g| g.creator == env.sender_id)
+                    let is_manager = db::get_group(&dbc, &group_id_for_check)
+                        .map(|g| g.is_manager(&env.sender_id))
                         .unwrap_or(false);
-                    if !is_creator {
+                    if !is_manager {
                         state.logger.warn(
                             "group",
                             format!(
-                                "丢弃非群主发布的公告：sender={} group={group_id_for_check}",
+                                "丢弃非群主/管理员发布的公告：sender={} group={group_id_for_check}",
                                 env.sender_id
                             ),
                         );
@@ -1868,11 +1873,11 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     // 而界面上那句「群主撤回了这条消息」也跟着说错话。
                     if let Some((tconv, recaller)) = db::recall_source(&dbc, &rec.msg_id) {
                         let is_group = tconv.starts_with("group:");
-                        let (is_creator, is_member) = if is_group {
+                        let (is_manager, is_member) = if is_group {
                             let gid = tconv.strip_prefix("group:").unwrap_or_default().to_string();
                             db::get_group(&dbc, &gid)
                                 .map(|g| {
-                                    (g.creator == recaller, g.members.contains(&recaller))
+                                    (g.is_manager(&recaller), g.members.contains(&recaller))
                                 })
                                 .unwrap_or((false, false))
                         } else {
@@ -1883,7 +1888,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             &recaller,
                             &tconv,
                             is_group,
-                            is_creator,
+                            is_manager,
                             is_member,
                         );
                         if ok {

@@ -169,8 +169,8 @@ test("recalledRowKey：撤的人不是作者才说「群主撤回了」，索引
 test("接线：群主档入口、提示行两式文案、跨人确认话术各有一处出口", () => {
   const item = readFileSync(join(root, "src", "components", "MessageItem.vue"), "utf8");
   assert.ok(
-    /return isGroupOwnerHere\.value && isRecallableKind\(props\.message\.kind\)/.test(item),
-    "canRecallNow 的群主那一半必须接**同一份**分母（两档只差「不看作者、不看时限」）",
+    /return isGroupManagerHere\.value && isRecallableKind\(props\.message\.kind\)/.test(item),
+    "canRecallNow 的管理那一半必须接**同一份**分母（两档只差「不看作者、不看时限」）",
   );
   assert.ok(
     /previewBody\(props\.message\.kind, props\.message\.content, 40\)/.test(item),
@@ -179,10 +179,10 @@ test("接线：群主档入口、提示行两式文案、跨人确认话术各�
   );
   assert.match(
     item,
-    /const isGroupOwnerHere = computed\(\(\) => \{[\s\S]{0,400}?chat\.groups\.find\([\s\S]{0,120}?\.creator[\s\S]{0,60}app\.device\?\.device_id/,
-    "群主判定必须读本地 groups.creator（与 canPublishAnnouncement 同一份口径）",
+    /const isGroupManagerHere = computed\(\(\) => \{[\s\S]{0,500}?g\.creator === id \|\| g\.admins\.includes\(id\)/,
+    "管理判定必须读本地 groups.creator/admins（与 canPublishAnnouncement 同一份口径）",
   );
-  assert.match(item, /return isGroupOwnerHere\.value &&/, "canRecallNow 必须真的用上群主那一档");
+  assert.match(item, /return isGroupManagerHere\.value &&/, "canRecallNow 必须真的用上管理那一档");
   assert.match(
     item,
     /t\(recalledTextKey\)/,

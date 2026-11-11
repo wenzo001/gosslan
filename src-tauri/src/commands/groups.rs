@@ -83,6 +83,7 @@ pub fn create_group(
         name,
         creator: s.device_id.clone(),
         members: all,
+        admins: Vec::new(),
     })
 }
 
@@ -100,7 +101,7 @@ pub async fn distribute_group_key(
             crate::error_codes::coded(crate::error_codes::GROUP_KEY_MISSING, "群密钥缺失")
         })?;
     // 同时取群名与成员：成员端靠它建立/刷新本地群记录（含成员表）
-    let (group_name, members) = {
+    let (group_name, members, admins) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         // 「这个群不存在」与「这次没读出来」是两个值（INV-P36）。负责人 2026-11-02 拍板：
         // 这四处群读**只留痕、不当场失败** —— 调用方是密钥补发臂（没有能承接错误的界面，
@@ -108,7 +109,7 @@ pub async fn distribute_group_key(
         // 但"一份都没补发"这件事必须查得到：这一轮没收到密钥的人，此后每条群消息都解不开
         // （首次分发或换密钥那一轮尤其致命）。
         match db::get_group_checked(&dbc, &group_id) {
-            Ok(Some(g)) => (g.name, g.members),
+            Ok(Some(g)) => (g.name, g.members, g.admins),
             Ok(None) => Default::default(),
             Err(e) => {
                 if crate::logging::log_throttled("gk_distribute_group_read_failed", 300_000) {
@@ -170,6 +171,7 @@ pub async fn distribute_group_key(
             key: STANDARD.encode(&sealed),
             group_name: group_name.clone(),
             members: members.clone(),
+            admins: admins.clone(),
             clock,
         };
         if try_send(s, m, &msg).await.is_err() {
@@ -257,10 +259,10 @@ pub async fn rename_group(
             crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
         })?
     };
-    if group.creator != s.device_id {
+    if !group.is_manager(&s.device_id) {
         return Err(crate::error_codes::coded(
             crate::error_codes::GROUP_RENAME_OWNER_ONLY,
-            "只有群创建者可以修改群名称",
+            "只有群主或管理员可以修改群名称",
         ));
     }
     {
@@ -284,11 +286,11 @@ pub async fn rename_group(
 
 /// 向成员列表里的每一位重发当前群密钥（携带群名 + 最新成员表）。
 async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], key: [u8; 32]) {
-    let group_name = {
+    let (group_name, admins) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         // 群名是**装饰性**字段（成员表由调用方传进来），折成空不改变任何行为 ⇒ 同一口径只留痕。
         match db::get_group_checked(&dbc, group_id) {
-            Ok(g) => g.map(|x| x.name).unwrap_or_default(),
+            Ok(g) => g.map(|x| (x.name, x.admins)).unwrap_or_default(),
             Err(e) => {
                 if crate::logging::log_throttled("gk_resend_group_name_read_failed", 300_000) {
                     s.logger.warn(
@@ -296,7 +298,7 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
                         format!("code=GROUP_NAME_READ_FAILED group={group_id} 群名读不出来 ⇒ 补发帧里的群名为空：{e}"),
                     );
                 }
-                String::new()
+                Default::default()
             }
         }
     };
@@ -348,6 +350,7 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
             key: STANDARD.encode(&sealed),
             group_name: group_name.clone(),
             members: members.to_vec(),
+            admins: admins.clone(),
             clock,
         };
         if try_send(s, m, &msg).await.is_err() {
@@ -383,10 +386,10 @@ pub async fn group_add_member(
             crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
         })?
     };
-    if group.creator != s.device_id {
+    if !group.is_manager(&s.device_id) {
         return Err(crate::error_codes::coded(
             crate::error_codes::GROUP_ADD_MEMBER_OWNER_ONLY,
-            "只有群创建者可以添加成员",
+            "只有群主或管理员可以添加成员",
         ));
     }
     if group.members.contains(&device_id) {
@@ -461,16 +464,23 @@ pub async fn group_remove_member(
             crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
         })?
     };
-    if group.creator != s.device_id {
+    if !group.is_manager(&s.device_id) {
         return Err(crate::error_codes::coded(
             crate::error_codes::GROUP_REMOVE_OWNER_ONLY,
-            "只有群创建者可以移除成员",
+            "只有群主或管理员可以移除成员",
         ));
     }
     if device_id == s.device_id {
         return Err(crate::error_codes::coded(
             crate::error_codes::GROUP_REMOVE_SELF,
             "不能移除自己",
+        ));
+    }
+    // 管理员不能移除群主（群主是群的最终权威，撤群主走「转让」而非「移除」）。
+    if device_id == group.creator {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_REMOVE_OWNER_FORBIDDEN,
+            "不能移除群主",
         ));
     }
     if !group.members.contains(&device_id) {
@@ -603,6 +613,140 @@ pub async fn transfer_group_creator(
         &group_id,
         &crate::network::transport::group_creator_changed_text(s, &name),
     );
+    let _ = s.app.emit("groups-updated", &group_id);
+    Ok(())
+}
+
+/// 任命管理员：**仅群主**。目标须是群成员、非群主本人、未超上限（≤3）。
+/// 不轮换密钥（无人被移除）；用当前密钥重发携带新管理员名单，成员端据群主帧权威更新。
+#[tauri::command(async)]
+pub async fn group_appoint_admin(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    device_id: String,
+) -> Result<(), String> {
+    let s = state.inner().clone();
+    // 读群 + 校验 + 写管理员名单进阻塞池（INV-P34 / worker_bound_heavy_commands_do_not_grow）：
+    // 等 DB 锁不该占住 tokio worker。返回 None = 已是管理员（幂等，跳过后续广播）。
+    let gid = group_id.clone();
+    let did = device_id.clone();
+    let members = tokio::task::spawn_blocking({
+        let s = s.clone();
+        move || -> Result<Option<Vec<String>>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let group = db::get_group(&dbc, &gid).ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+        })?;
+        if group.creator != s.device_id {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_APPOINT_ADMIN_OWNER_ONLY,
+                "只有群主可以任命管理员",
+            ));
+        }
+        if did == s.device_id {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_APPOINT_ADMIN_SELF,
+                "群主无需任命自己为管理员",
+            ));
+        }
+        if !group.members.contains(&did) {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_APPOINT_ADMIN_NOT_MEMBER,
+                "只能任命群成员为管理员",
+            ));
+        }
+        if group.admins.contains(&did) {
+            return Ok(None); // 幂等：已是管理员
+        }
+        if group.admins.len() >= crate::state::MAX_GROUP_ADMINS {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_ADMIN_LIMIT,
+                "管理员最多 3 个",
+            ));
+        }
+        db::add_group_admin(&dbc, &gid, &did).map_err(|e| e.to_string())?;
+        Ok(Some(group.members))
+        }
+    })
+    .await
+    .map_err(|e| format!("任命管理员被线程池中断: {e}"))??;
+    let Some(members) = members else {
+        return Ok(());
+    };
+    let key = get_group_key(&s, &group_id)
+        .await
+        .ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_KEY_MISSING, "群密钥缺失")
+        })?;
+    // 重发当前密钥携带新管理员名单（resend 内部从库里读最新 admins）。
+    resend_group_key_to(&s, &group_id, &members, key).await;
+    let name = resolve_nickname(&s, &device_id);
+    send_group_payload(
+        &s,
+        &group_id,
+        "system",
+        crate::network::transport::group_admin_appointed_text(&s, &name),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    let _ = s.app.emit("groups-updated", &group_id);
+    Ok(())
+}
+
+/// 撤销管理员：**仅群主**。目标须是现任管理员。不轮换密钥；重发携带新名单。
+#[tauri::command(async)]
+pub async fn group_remove_admin(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    device_id: String,
+) -> Result<(), String> {
+    let s = state.inner().clone();
+    let gid = group_id.clone();
+    let did = device_id.clone();
+    let members = tokio::task::spawn_blocking({
+        let s = s.clone();
+        move || -> Result<Vec<String>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let group = db::get_group(&dbc, &gid).ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+        })?;
+        if group.creator != s.device_id {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_REMOVE_ADMIN_OWNER_ONLY,
+                "只有群主可以撤销管理员",
+            ));
+        }
+        if !group.admins.contains(&did) {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_REMOVE_ADMIN_NOT_ADMIN,
+                "该成员不是管理员",
+            ));
+        }
+        db::remove_group_admin(&dbc, &gid, &did).map_err(|e| e.to_string())?;
+        Ok(group.members)
+        }
+    })
+    .await
+    .map_err(|e| format!("撤销管理员被线程池中断: {e}"))??;
+    let key = get_group_key(&s, &group_id)
+        .await
+        .ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_KEY_MISSING, "群密钥缺失")
+        })?;
+    resend_group_key_to(&s, &group_id, &members, key).await;
+    let name = resolve_nickname(&s, &device_id);
+    send_group_payload(
+        &s,
+        &group_id,
+        "system",
+        crate::network::transport::group_admin_removed_text(&s, &name),
+        None,
+        None,
+        None,
+    )
+    .await?;
     let _ = s.app.emit("groups-updated", &group_id);
     Ok(())
 }

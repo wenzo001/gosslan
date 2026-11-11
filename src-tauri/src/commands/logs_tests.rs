@@ -1277,29 +1277,34 @@ mod tests {
             related_on: None,
             tags: vec![],
         };
-        // 参数顺序：(def, actor, group_creator, edits_structure)
+        // 参数顺序：(def, actor, group_creator, group_admins, edits_structure)
         // 档位只有两档（结构 = 改标题/删除；其余 = 描述/图片/指派人/状态/归档），
         // 所以每条断言都是**不同的行为** —— 旧矩阵里那些只换 `edits_assignees` 的行
         // 判的是同一件事（那个入参根本不参与判权，v4.23.1 已删）。
         // 创建者 alice：两档都可以
-        assert!(super::may_update_todo(&def, "alice", "owner", false));
-        assert!(super::may_update_todo(&def, "alice", "owner", true));
+        assert!(super::may_update_todo(&def, "alice", "owner", &[], false));
+        assert!(super::may_update_todo(&def, "alice", "owner", &[], true));
         // 被指派人 bob：能改状态 / 指派人 / 描述；不能改标题 / 删除。
         // 后一条就是"同时改指派人 + 标题"必须被拒的形状（旧实现先判指派人会放行它）。
-        assert!(super::may_update_todo(&def, "bob", "owner", false));
+        assert!(super::may_update_todo(&def, "bob", "owner", &[], false));
         assert!(
-            !super::may_update_todo(&def, "bob", "owner", true),
+            !super::may_update_todo(&def, "bob", "owner", &[], true),
             "被指派人不得改标题 / 删除任务"
         );
         // 群主 owner：两档都可以（用户 2026-09-20「群主不能编辑群任务」）
-        assert!(super::may_update_todo(&def, "owner", "owner", false));
-        assert!(super::may_update_todo(&def, "owner", "owner", true));
+        assert!(super::may_update_todo(&def, "owner", "owner", &[], false));
+        assert!(super::may_update_todo(&def, "owner", "owner", &[], true));
+        // 管理员 admin：与群主同权，两档都可以（管理员 feature）
+        let admins = vec!["admin".to_string()];
+        assert!(super::may_update_todo(&def, "admin", "owner", &admins, false));
+        assert!(super::may_update_todo(&def, "admin", "owner", &admins, true));
         // 无关成员 carol：两档都不行（放宽群主权限**没有**顺带放进第三人）
-        assert!(!super::may_update_todo(&def, "carol", "owner", false));
-        assert!(!super::may_update_todo(&def, "carol", "owner", true));
+        assert!(!super::may_update_todo(&def, "carol", "owner", &[], false));
+        assert!(!super::may_update_todo(&def, "carol", "owner", &[], true));
+        assert!(!super::may_update_todo(&def, "carol", "owner", &admins, true));
         // 自洽检查：actor 恰好等于群主时才算群主，别人冒充群主无效
-        assert!(super::may_update_todo(&def, "dave", "dave", true));
-        assert!(!super::may_update_todo(&def, "carol", "dave", true));
+        assert!(super::may_update_todo(&def, "dave", "dave", &[], true));
+        assert!(!super::may_update_todo(&def, "carol", "dave", &[], true));
     }
 
     /// 「成员窄档」：归档 与 还原（用户 2026-09-24 与同日追加
@@ -1531,6 +1536,7 @@ mod tests {
                 &req_def,
                 "carol",
                 "someone_else",
+                &[],
                 false,
                 super::MemberLane {
                     archive_only: false,
@@ -1548,6 +1554,7 @@ mod tests {
                 &req_def,
                 "carol",
                 "someone_else",
+                &[],
                 false,
                 super::MemberLane {
                     archive_only: false,
@@ -1716,6 +1723,7 @@ mod tests {
                 &def,
                 "carol",
                 "owner",
+                &[],
                 false,
                 super::MemberLane { archive_only, reopen_only, claim_only: false, is_member, delete_archived: false, attributes_only: false },
             )
@@ -1733,6 +1741,7 @@ mod tests {
                 &def,
                 "carol",
                 "owner",
+                &[],
                 true,
                 super::MemberLane { archive_only: false, reopen_only: false, claim_only: false, is_member: true, delete_archived: false, attributes_only: false }
             ),

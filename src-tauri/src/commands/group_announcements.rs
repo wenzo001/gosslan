@@ -144,10 +144,10 @@ pub async fn recall_group_message(
                 "消息不存在",
             ));
         };
-        let is_creator = db::get_group(&dbc, &group_id)
-            .map(|g| g.creator == s.device_id)
+        let is_manager = db::get_group(&dbc, &group_id)
+            .map(|g| g.is_manager(&s.device_id))
             .unwrap_or(false);
-        let authority = recall_authority_for(is_creator);
+        let authority = recall_authority_for(is_manager);
         // 作者 / 群归属 / 类型分母 / 时限四件事由 protocol 的唯一裁决函数给出；
         // 时间窗**只在发送端强制**（接收端无法验证对方的时钟）。
         crate::protocol::recall_verdict(
