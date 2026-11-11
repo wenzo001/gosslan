@@ -20745,6 +20745,19 @@ async function runTopology(cdp, url) {
       } catch {}
       return orig.apply(this, arguments);
     };
+    window.__topoCands = () => {
+      const seen = new Set();
+      const out = [];
+      for (const a of (window.__topoArcs || []).slice().reverse()) {
+        if (Math.round(a.r) !== 11) continue;
+        const key = Math.round(a.x) + '|' + Math.round(a.y);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ x: Math.round(a.x), y: Math.round(a.y) });
+        if (out.length >= 14) break;
+      }
+      return out;
+    };
     return true;
   })()`);
 
@@ -20842,7 +20855,7 @@ async function runTopology(cdp, url) {
           if (seen.has(k)) continue;
           seen.add(k);
           out.push({ x: Math.round(a.x), y: Math.round(a.y) });
-          if (out.length >= 12) break;
+          if (out.length >= 14) break;
         }
         return out;
       })(),
@@ -20913,6 +20926,59 @@ async function runTopology(cdp, url) {
     "panel 开 + 动作键与身份一致",
     JSON.stringify({ panel, candidates, tried, canvasTop: m.canvasTop, canvasLeft: m.canvasLeft, canvasH: m.canvasH }));
 
+  // 相机归属 + 增量更新（2026-11-11 用户）：
+  // ① 用户滚轮放大后，数据刷新（新增节点）不得把缩放重置回 1；
+  // ② 老节点不得大幅移动（新节点在自己的槽位就地出现）。
+  // 选一个离所有节点最远的角落做**平移**（拖拽 = 用户动了相机）。
+  const cand0 = await cdp.eval("window.__topoCands()");
+  const corner = (() => {
+    const spots = [
+      { x: m.canvasLeft + 30, y: m.canvasTop + 30 },
+      { x: m.canvasLeft + m.canvasW - 30, y: m.canvasTop + 30 },
+      { x: m.canvasLeft + 30, y: m.canvasTop + m.canvasH - 30 },
+      { x: m.canvasLeft + m.canvasW - 30, y: m.canvasTop + m.canvasH - 30 },
+    ];
+    return spots
+      .map((sp) => ({ ...sp, d: Math.min(...(cand0 || [{ x: -9999, y: -9999 }]).map((c) => Math.hypot(c.x + m.canvasLeft - sp.x, c.y + m.canvasTop - sp.y))) }))
+      .sort((a, b) => b.d - a.d)[0];
+  })();
+  const camPre = await cdp.eval("(() => { const c = document.querySelector('#probe-host .force-graph-container canvas'); return c && c.__zoom ? { k: c.__zoom.k, x: c.__zoom.x, y: c.__zoom.y } : null; })()");
+  await cdp.drag(corner.x, corner.y, corner.x + 80, corner.y + 60);
+  await sleep(350);
+  const cam0 = await cdp.eval("(() => { const c = document.querySelector('#probe-host .force-graph-container canvas'); return c && c.__zoom ? { k: c.__zoom.k, x: c.__zoom.x, y: c.__zoom.y } : null; })()");
+  // 清一次 arc 历史：候选数要等于**当前**节点数（历史位置会把计数撑爆）。
+  await cdp.eval("window.__topoArcs = []");
+  await sleep(350);
+  const candBefore = await cdp.eval("window.__topoCands()");
+  await cdp.eval("window.__topoArcs = []");
+  await cdp.eval(`(async () => {
+    const C = await import('/src/stores/useChatStore.ts');
+    const chat = C.useChatStore();
+    chat.peers = [...chat.peers, { device_id: 'p-new', nickname: '新节点', avatar: null,
+      device_type: 'desktop', ip: '10.0.0.9', tcp_port: 1420, last_seen: Date.now(), rtt_ms: 9,
+      x25519_pubkey: null, ed25519_pubkey: null, first_seen: null, link: 'lan' }];
+    await new Promise((r) => setTimeout(r, 0));
+    return true;
+  })()`);
+  await sleep(1_000);
+  const cam2 = await cdp.eval("(() => { const c = document.querySelector('#probe-host .force-graph-container canvas'); return c && c.__zoom ? { k: c.__zoom.k, x: c.__zoom.x, y: c.__zoom.y } : null; })()");
+  const candAfter = await cdp.eval("window.__topoCands()");
+  const kept = (candBefore || []).filter((b) => (candAfter || [])
+    .some((a) => Math.hypot(a.x - b.x, a.y - b.y) <= 20)).length;
+  check("拓扑相机：用户平移后数据刷新不重置相机（平移量/缩放都保持）",
+    !!camPre && !!cam0 && !!cam2
+      && Math.abs(cam0.k - camPre.k) <= 0.001  // 拖拽是平移，不改 k
+      && Math.abs(cam0.x - camPre.x) >= 20 && Math.abs(cam0.y - camPre.y) >= 20
+      && Math.abs(cam2.x - cam0.x) <= 2 && Math.abs(cam2.y - cam0.y) <= 2
+      && Math.abs(cam2.k - cam0.k) <= 0.001,
+    "拖出平移量，刷新后 x/y/k 原样",
+    JSON.stringify({ camPre, cam0, cam2 }));
+  check("拓扑增量：新增节点后老节点不动（≤20px）、新节点就地出现",
+    (candBefore || []).length >= 3 && kept >= Math.min(3, (candBefore || []).length)
+      && (candAfter || []).length >= (candBefore || []).length + 1,
+    `老节点 kept=${kept} / 候选 ${candBefore && candBefore.length} → ${candAfter && candAfter.length}`,
+    JSON.stringify({ kept, before: candBefore && candBefore.length, after: candAfter && candAfter.length }));
+
   // 空态与顶栏（2026-11-11 用户）：
   // ① 只剩自己时，提示文字不许盖住居中的 self 节点（提示在 center+64px 起）；
   // ② 桌面顶栏只让刘海（--gosslan-inset-top），返回键上方不许再有 caption 第二遍的死间距。
@@ -20967,10 +21033,13 @@ async function runTopology(cdp, url) {
   // 点空态提示里的「刷新」按钮（它调 refreshAll），横幅要带出真实原因。
   await cdp.eval(`(async () => {
     const m = await import('/src/api/index.ts');
+    const C = await import('/src/stores/useChatStore.ts');
+    C.useChatStore().peers = []; // 相机阶段加过 p-new：兜底量的是**空名单 + 读失败**
     m.api.getPeers = async () => { throw new Error('probe-net-down'); };
     m.api.getFriends = async () => { throw new Error('probe-net-down'); };
     return true;
   })()`);
+  await sleep(300);
   await cdp.eval(`(async () => {
     const I = await import('/src/i18n/index.ts');
     const btn = [...document.querySelectorAll('#probe-host button')]
