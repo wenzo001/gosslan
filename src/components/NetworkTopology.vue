@@ -8,17 +8,20 @@
  * 因此本视图不画虚构的 P2P 连线：中转一律归到中枢节点，路径未知的 hop 只作标注。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useMediaQuery } from "@vueuse/core";
 import ForceGraph from "force-graph";
 import Icon from "@/components/ui/Icon.vue";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
 import { t } from "@/i18n";
-import { prefersReducedMotion } from "@/utils/platform";
+import { REDUCED_MOTION_QUERY } from "@/utils/platform";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import { detailText } from "@/composables/useErrorText";
 import type { Friend, LinkState, Peer } from "@/types";
 
 const emit = defineEmits<{
@@ -33,8 +36,10 @@ const SELF_ID = "__self__";
 const HUB_RELAY = "__hub_relay__";
 const HUB_MESH = "__hub_mesh__";
 
-/** reduce 档只淡入淡出：滑动位移交还给系统偏好（判据见 design-guidelines §11.3.7）。 */
-const panelTransition = prefersReducedMotion() ? "topo-panel-fade" : "topo-panel";
+/** reduce 档只淡入淡出：滑动位移交还给系统偏好（判据见 design-guidelines §11.3.7）。
+ *  用媒体查询的**响应式**读数 —— 会话中途开/关"减弱动态"也要跟着换档。 */
+const prefersReducedMotion = useMediaQuery(REDUCED_MOTION_QUERY);
+const panelTransition = computed(() => (prefersReducedMotion.value ? "topo-panel-fade" : "topo-panel"));
 
 interface TopoNode {
   id: string;
@@ -72,6 +77,10 @@ let boundHost: HTMLElement | null = null;
 let refreshTimer = 0;
 let cooldownTimer = 0;
 let lastSig = "";
+/** force-graph 正在画的那份节点。15s 轮询会重算 graphData（签名没变就不重灌），
+ *  命中测试必须对**画布上真正画着**的这份对象做，而不是对新算的 graphData.value ——
+ *  后者的节点对象是全新的（x=undefined），拿它测距永远点不中（2026-11-11 实测）。 */
+let drawnNodes: TopoNode[] = [];
 
 const friendById = computed(() => new Map(chat.friends.map((f) => [f.device_id, f])));
 const onlinePeerIds = computed(() => new Set(chat.peers.map((p) => p.device_id)));
@@ -172,7 +181,14 @@ const selectedPeer = computed<Peer | null>(() => {
     : null;
 });
 
-function palette() {
+type TopoPalette = ReturnType<typeof buildPalette>;
+
+/** 主题令牌缓存：drawNode 每节点每帧都跑，getComputedStyle 不能跟着跑。
+ *  键取 html 的 class + **内联 style 原文** —— applyTheme 换主题/主色改的是内联
+ *  变量，只看 class 会拿到旧主色（2026-11-11 review 发现）。 */
+let paletteCache: { key: string; value: TopoPalette } | null = null;
+
+function buildPalette() {
   const cs = getComputedStyle(document.documentElement);
   const v = (name: string, fallback: string) => cs.getPropertyValue(name).trim() || fallback;
   return {
@@ -182,8 +198,16 @@ function palette() {
     text2: v("--gosslan-text-2", "#6b7280"),
     border: v("--gosslan-border", "#e5e7eb"),
     warn: v("--gosslan-warning", "#f59e0b"),
-
   };
+}
+
+function palette(): TopoPalette {
+  const root = document.documentElement;
+  const key = `${root.className}|${root.getAttribute("style") ?? ""}`;
+  if (paletteCache?.key === key) return paletteCache.value;
+  const value = buildPalette();
+  paletteCache = { key, value };
+  return value;
 }
 
 const linkStyle: Record<TopoLink["kind"], { color: string; dash: number[] | null; width: number }> = {
@@ -296,7 +320,7 @@ function nodeAt(ev: PointerEvent): TopoNode | null {
   const k = graph.zoom();
   let best: TopoNode | null = null;
   let bestDist = Infinity;
-  for (const n of graphData.value.nodes) {
+  for (const n of drawnNodes) {
     const d = Math.hypot((n.x ?? 0) - pt.x, (n.y ?? 0) - pt.y);
     if (d <= hitRadius(n, k) && d < bestDist) {
       best = n;
@@ -345,10 +369,19 @@ async function refreshLinks() {
   }
 }
 
-function refreshAll() {
-  void chat.refreshPeers();
-  void chat.refreshFriends();
-  void refreshLinks();
+/** 名单读取失败要**说出来**（INV-P36 同族）：把 IO 失败画成"没有发现其他节点"
+ *  是假陈述 —— 用户会以为真的没人在线。只在列表为空时升横幅；有旧数据时数据说话。 */
+const loadError = ref<string | null>(null);
+
+async function refreshAll() {
+  loadError.value = null;
+  const [peers, friends] = await Promise.allSettled([chat.refreshPeers(), chat.refreshFriends()]);
+  if (peers.status === "rejected") {
+    loadError.value = detailText(peers.reason, { log: true });
+  } else if (friends.status === "rejected") {
+    loadError.value = detailText(friends.reason, { log: true });
+  }
+  await refreshLinks();
 }
 
 function addFriend(peerId: string) {
@@ -371,6 +404,7 @@ function addFriend(peerId: string) {
 
 function buildGraph() {
   if (!host.value || graph) return;
+  drawnNodes = graphData.value.nodes;
   graph = new ForceGraph<TopoNode, TopoLink>(host.value)
     .backgroundColor("rgba(0,0,0,0)")
     .nodeId("id")
@@ -408,6 +442,7 @@ function syncGraph() {
   const sig = topoSig();
   if (sig === lastSig) return;
   lastSig = sig;
+  drawnNodes = graphData.value.nodes;
   graph.graphData(graphData.value);
 }
 
@@ -450,8 +485,8 @@ onMounted(() => {
     resizeObs = new ResizeObserver(sizeGraphToHost);
     resizeObs.observe(host.value);
   }
-  void refreshLinks();
-  refreshTimer = window.setInterval(() => void refreshLinks(), 15_000);
+  void refreshAll();
+  refreshTimer = window.setInterval(() => void refreshAll(), 15_000);
 });
 onBeforeUnmount(() => {
   boundHost?.removeEventListener("pointerdown", onHostPointerDown);
@@ -527,11 +562,27 @@ const selectedRole = computed(() => {
         <span class="flex items-center gap-1.5"><i class="inline-block h-0.5 w-4 border-t border-dashed border-[var(--gosslan-warning)]"></i>{{ t("topology.legend.relay") }}</span>
       </div>
 
-      <!-- 空态提示：放在**自己节点下方**（center + 64px），别盖住居中的 self 节点
+      <!-- 空态/失败态：失败优先 —— 名单读不到时说"读不到 + 重试"（INV-P36 同族），
+           把 IO 失败画成"没有发现其他节点"是假陈述；真·空场才给空态提示。
+           两者都放在**自己节点下方**（center + 64px），别盖住居中的 self 节点
            （2026-11-11 用户：只有一个节点时文字压住了自己）。外层不吃指针，
-           刷新按钮自己恢复可点。 -->
+           StateBlock / 刷新按钮自己恢复可点。 -->
       <div
-        v-if="chat.peers.length === 0"
+        v-if="chat.peers.length === 0 && loadError"
+        class="pointer-events-none absolute inset-x-0 top-[calc(50%+64px)] flex justify-center px-6"
+      >
+        <StateBlock
+          kind="error"
+          compact
+          class="pointer-events-auto max-w-[340px]"
+          :title="loadError"
+          :detail="t('topology.loadFailedHint')"
+          :retry-label="t('common.retry')"
+          @retry="refreshAll"
+        />
+      </div>
+      <div
+        v-else-if="chat.peers.length === 0"
         class="pointer-events-none absolute inset-x-0 top-[calc(50%+64px)] flex justify-center"
       >
         <div class="max-w-[280px] text-center text-caption leading-relaxed text-[var(--gosslan-text-2)]">

@@ -891,12 +891,13 @@ function onResizeEnd() {
            本人头像与在线点从 rail 移到这里：同一份身份状态只出现一次。 -->
       <template #right>
         <!-- LAN 徽标是**按钮**（2026-11-10 用户）：桌面没有「我的」页那一栏，点标题栏这枚
-             LAN · N 就是网络拓扑的入口（移动端入口仍在「我的」列表里）。 -->
+             LAN · N 就是网络拓扑的入口（移动端入口仍在「我的」列表里）。
+             aria-label 带上在线数：可见文本是 "LAN · N"，读屏不该比可见信息更少。 -->
         <button
           type="button"
           class="tap-safe flex h-5 items-center gap-1.5 rounded-full bg-[var(--gosslan-field)] px-2 text-caption font-medium tabular-nums text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
           :title="t('topology.title')"
-          :aria-label="t('topology.title')"
+          :aria-label="`${t('topology.title')} · ${t('topology.online', { n: onlineDeviceCount })}`"
           @click="topologyOpen = true"
         >
           <span class="h-1.5 w-1.5 rounded-full bg-[var(--gosslan-success)]" aria-hidden="true"></span>
@@ -1101,13 +1102,17 @@ function onResizeEnd() {
               </div>
             </button>
             <!-- 菜单列表。不再重复放「资料」：上方头像本身已是资料入口（用户 2026-09-20）。
-                 顺序：设置 → 链接 → 日志（链接在日志上面，用户 2026-09-20）。
+                 顺序：设置 → 网络拓扑 → 链接 → 日志（链接在日志上面，用户 2026-09-20）。
                  图标与桌面 NavRail 一致用 lucide 线性图标，不再用 📋 emoji（用户 2026-09-20「日志图标好奇怪」）。 -->
             <div class="flex flex-col">
               <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="openSettings()">
                 <Icon name="settings" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
                 <span class="flex-1 text-sm">{{ t("nav.settings") }}</span>
               </button>
+              <!-- 行间内缩分隔线（从文本列起 = px-4 + 20 图标 + gap-3 = 48px ⇒ ml-12），
+                   与聊天/通讯录列表同款；末行不加。
+                   ⚠️ 放成**兄弟节点**而不是塞进 `<button>` 里：`<div>` 不是 phrasing content，
+                   塞进 button 是非法 HTML。 -->
               <div class="ml-12 h-px shrink-0 bg-[var(--gosslan-divider)]"></div>
               <!-- 网络拓扑（2026-11-10 用户）：可视化自己 / 直连 / 中转 / 好友关系。 -->
               <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="topologyOpen = true">

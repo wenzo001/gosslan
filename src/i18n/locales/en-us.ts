@@ -1886,6 +1886,7 @@ export const enUS: MessageDict = {
   "topology.mesh": "{n} via mesh",
   "topology.offline": "{n} offline friends hidden",
   "topology.empty": "No other nodes discovered yet. Check that the other device is online and LAN/Bluetooth is enabled.",
+  "topology.loadFailedHint": "The node list could not be read: the connection to the discovery service failed. Check your network and retry; no data is lost.",
   "topology.legend.friend": "Friend",
   "topology.legend.peer": "Discovered",
   "topology.legend.hub": "Relay",
