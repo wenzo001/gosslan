@@ -44,6 +44,8 @@ const panelTransition = computed(() => (prefersReducedMotion.value ? "topo-panel
 interface TopoNode {
   id: string;
   kind: "self" | "friend" | "peer" | "hub";
+  /** first_seen（缺省 0）：放射布局的**插入序** —— 新节点追加在队尾，老节点不动。 */
+  ts?: number;
   label: string;
   avatar?: string | null;
   deviceType?: string;
@@ -102,8 +104,9 @@ function linkText(link?: string | null, hop?: number): string {
   return t("topology.link.unknown");
 }
 
-/** 纯数据拼装：以 self 为中心；relay 与 hop>0 各挂一个合成中枢。 */
-const graphData = computed<{ nodes: TopoNode[]; links: TopoLink[] }>(() => {
+/** 纯数据拼装：以 self 为中心；relay 与 hop>0 各挂一个合成中枢。
+ *  只产出**规格**（不含坐标）—— 坐标由 buildGraphData 的确定性放射布局给。 */
+const topoSpec = computed<{ nodes: TopoNode[]; links: TopoLink[] }>(() => {
   const nodes: TopoNode[] = [
     {
       id: SELF_ID,
@@ -137,6 +140,7 @@ const graphData = computed<{ nodes: TopoNode[]; links: TopoLink[] }>(() => {
       link: peer.link ?? null,
       hop,
       rtt: peer.rtt_ms,
+      ts: peer.first_seen ?? peer.last_seen ?? 0,
     };
     nodes.push(node);
     if (link === "relay" || link === "mesh") {
@@ -162,13 +166,13 @@ const graphData = computed<{ nodes: TopoNode[]; links: TopoLink[] }>(() => {
 const stats = computed(() => ({
   online: chat.peers.length,
   friends: onlineFriends.value.length,
-  relay: graphData.value.links.filter((l) => l.kind === "relay" && l.target !== HUB_RELAY).length,
-  mesh: graphData.value.links.filter((l) => l.kind === "mesh" && l.target !== HUB_MESH).length,
+  relay: topoSpec.value.links.filter((l) => l.kind === "relay" && l.target !== HUB_RELAY).length,
+  mesh: topoSpec.value.links.filter((l) => l.kind === "mesh" && l.target !== HUB_MESH).length,
 }));
 
 const selectedNode = computed(() => {
   if (!selectedId.value) return null;
-  return graphData.value.nodes.find((n) => n.id === selectedId.value) ?? null;
+  return topoSpec.value.nodes.find((n) => n.id === selectedId.value) ?? null;
 });
 const selectedFriend = computed<Friend | null>(() => {
   const n = selectedNode.value;
@@ -335,7 +339,19 @@ function onHostPointerDown(ev: PointerEvent) {
 }
 
 function onHostPointerMove(ev: PointerEvent) {
+  // 按住拖超过 6px = 平移画布 ⇒ 相机从此归用户（数据刷新不再自动归位）。
+  if (pointerDownAt && Math.hypot(ev.clientX - pointerDownAt.x, ev.clientY - pointerDownAt.y) > 6) {
+    userAdjustedCamera = true;
+  }
   if (host.value) host.value.style.cursor = nodeAt(ev) ? "pointer" : "";
+}
+
+function onHostWheel() {
+  userAdjustedCamera = true;
+}
+
+function onHostTouchStart(ev: TouchEvent) {
+  if (ev.touches.length > 1) userAdjustedCamera = true;
 }
 
 function onHostPointerUp(ev: PointerEvent) {
@@ -402,9 +418,129 @@ function addFriend(peerId: string) {
     .catch((e) => app.toastError(e, t("msg.sendFailed")));
 }
 
+/**
+ * 确定性**放射布局**（2026-11-11 用户：去中心化网络用力导向画不直观、刷新还大幅重排）。
+ * 本图天然是"星的星"（深度 ≤2）：self 居中，直连节点与两个中枢均匀占第一圈，
+ * 中枢的孩子在第二圈、以中枢角为中心的扇区内 —— 每条边都是短的放射线。
+ * 所有节点 fx/fy 钉死 ⇒ 没有力导向动画；新增节点只在自己的槽位出现，
+ * 老节点最多因同组均分角度挪一小步；相机完全归用户，永不自动重置。
+ */
+function layoutRadial(nodes: TopoNode[], links: TopoLink[], w: number, h: number) {
+  const minDim = Math.max(Math.min(w, h), 260);
+  let r2 = minDim / 2 - 48;
+  let r1 = Math.max(96, Math.min(170, minDim / 3.1));
+  r1 = Math.min(r1, r2 - 56);
+  r2 = Math.max(r2, r1 + 56);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const self = byId.get(SELF_ID);
+  if (self) { self.fx = 0; self.fy = 0; self.x = 0; self.y = 0; }
+
+  // 中枢固定角（公网中转在上、Mesh 在下）；既有孩子的偏移角**不随新增变化** ——
+  // 插入稳定是新节点"就地出现、老节点不动"的前提。
+  const hubBase: Record<string, number> = { relay: -Math.PI / 2, mesh: Math.PI / 2 };
+  const hubs = nodes
+    .filter((n) => n.kind === "hub")
+    .sort((a, b) => (a.hub === "relay" ? 0 : 1) - (b.hub === "relay" ? 0 : 1));
+  const childrenByHub = new Map<string, TopoNode[]>();
+  for (const l of links) {
+    if (l.kind !== "relay" && l.kind !== "mesh") continue;
+    const child = byId.get(l.target);
+    if (child) {
+      const arr = childrenByHub.get(l.source) ?? [];
+      arr.push(child);
+      childrenByHub.set(l.source, arr);
+    }
+  }
+  for (const arr of childrenByHub.values()) {
+    arr.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0) || a.id.localeCompare(b.id));
+  }
+
+  const exclusions: { a: number; half: number }[] = [];
+  for (const hub of hubs) {
+    const a0 = hubBase[hub.hub ?? "relay"] ?? 0;
+    hub.fx = Math.cos(a0) * r1;
+    hub.fy = Math.sin(a0) * r1;
+    hub.x = hub.fx;
+    hub.y = hub.fy;
+    const kids = childrenByHub.get(hub.id) ?? [];
+    const half = Math.min(1.25, 0.3 + kids.length * 0.17);
+    exclusions.push({ a: a0, half: half + 0.14 });
+    kids.forEach((c, j) => {
+      // 0 → 正下；之后左右交替外扩（0, +0.34, −0.34, +0.68, …）：插入只追加新偏移
+      const order = j === 0 ? 0 : Math.ceil(j / 2) * (j % 2 === 1 ? 1 : -1);
+      const ca = a0 + order * 0.34;
+      c.fx = Math.cos(ca) * r2;
+      c.fy = Math.sin(ca) * r2;
+      c.x = c.fx;
+      c.y = c.fy;
+    });
+  }
+
+  // 直连叶子：固定步距顺时针走，**跳过中枢扇区**。角度只前进不重排 ⇒
+  // 新增叶子追加在队尾，既有叶子一像素都不动。
+  // ⚠️ 中枢的孩子**不算叶子** —— 否则它们先被摆上 ring1、又被中枢循环摆到 ring2，
+  // 谁后写谁生效，结构就乱了。
+  const childIds = new Set([...childrenByHub.values()].flat().map((c) => c.id));
+  const leaves = nodes
+    .filter((n) => (n.kind === "friend" || n.kind === "peer") && !childIds.has(n.id))
+    .sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0) || a.id.localeCompare(b.id));
+  const step = (Math.PI * 2) / 12;
+  const angDiff = (a: number, b: number) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
+  let a = Math.PI / 2 + 0.6;
+  leaves.forEach((leaf, i) => {
+    let guard = 0;
+    while (guard++ < 64 && exclusions.some((e) => Math.abs(angDiff(a, e.a)) < e.half)) a += step;
+    // 奇偶双半径：相邻叶子径向错开一档，标签不再横向叠在一起（桌面/移动都松一格）。
+    const rr = i % 2 === 1 ? r1 * 0.82 : r1;
+    leaf.fx = Math.cos(a) * rr;
+    leaf.fy = Math.sin(a) * rr;
+    leaf.x = leaf.fx;
+    leaf.y = leaf.fy;
+    a += step;
+  });
+}
+
+/** 节点对象按 id **持久化**：graphData 重算时复用同一对象（只改字段），d3 就不会
+ *  重新初始化坐标 —— 这是"增量更新、老节点不大动"的根基。 */
+const nodeStore = new Map<string, TopoNode>();
+
+function buildGraphData(): { nodes: TopoNode[]; links: TopoLink[] } {
+  const spec = topoSpec.value;
+  const w = host.value?.clientWidth ?? 800;
+  const h = host.value?.clientHeight ?? 600;
+  const nodes = spec.nodes.map((sp) => {
+    let n = nodeStore.get(sp.id);
+    if (!n) {
+      n = sp;
+      nodeStore.set(sp.id, n);
+    } else {
+      Object.assign(n, sp);
+    }
+    return n;
+  });
+  for (const id of [...nodeStore.keys()]) {
+    if (!spec.nodes.some((sp) => sp.id === id)) nodeStore.delete(id);
+  }
+  const links = spec.links.map((l) => ({ ...l }));
+  layoutRadial(nodes, links, w, h);
+  return { nodes, links };
+}
+
+function topoSig(): string {
+  const d = topoSpec.value;
+  return d.nodes.map((n) => `${n.id}:${n.kind}:${n.label}`).join(",")
+    + "|"
+    + d.links.map((l) => `${l.source}>${l.target}:${l.kind}:${l.hop ?? ""}`).join(",");
+}
+
+/** 用户一旦自己缩放/平移过，相机就**永远归用户** —— 数据刷新不再自动归位
+ *  （2026-11-11 用户："正在放大缩小的时候一刷新又回到原点"）。 */
+let userAdjustedCamera = false;
+
 function buildGraph() {
   if (!host.value || graph) return;
-  drawnNodes = graphData.value.nodes;
+  const data = buildGraphData();
+  drawnNodes = data.nodes;
   graph = new ForceGraph<TopoNode, TopoLink>(host.value)
     .backgroundColor("rgba(0,0,0,0)")
     .nodeId("id")
@@ -415,35 +551,34 @@ function buildGraph() {
     .linkDirectionalParticles((l) => (l.kind === "lan" || l.kind === "bluetooth" ? 2 : 0))
     .linkDirectionalParticleWidth(1.4)
     .linkDirectionalParticleSpeed(0.004)
-    .cooldownTicks(90)
-    .d3AlphaDecay(0.035)
-    .d3VelocityDecay(0.35)
-    // 库的自动 re-zoom 只看节点数（k=4/∛n），不看实际包围盒 —— 节点会被推出视口
-    // （实测 7 节点时"陌生节点"飞出画布顶）。引擎每次停下都按包围盒装进图区（留 60px 边距）。
-    .onEngineStop(() => graph?.zoomToFit(400, 60))
-    .graphData(graphData.value);
-  // 默认斥力太挤：节点名 + 链路徽标是两行小字，彼此压住就看不清"谁是谁"。
-  graph.d3Force("charge")?.strength(-110);
-  graph.d3Force("link")?.distance(90);
+    // 节点全部钉死（fx/fy）⇒ 引擎无事可做：不预热、不冷却，更新落点即终态。
+    .cooldownTicks(0)
+    .warmupTicks(0)
+    .graphData(data);
+  guardCamera();
   lastSig = topoSig();
 }
 
-function topoSig(): string {
-  const d = graphData.value;
-  return d.nodes.map((n) => `${n.id}:${n.kind}:${n.label}`).join(",")
-    + "|"
-    + d.links.map((l) => `${l.source}>${l.target}:${l.kind}:${l.hop ?? ""}`).join(",");
+/** 抵消库的"按节点数自动 re-zoom"（k=4/∛n，onFinishUpdate 里触发）：
+ *  用户没动过相机时把 k 钉回 1 —— 布局本来就是按屏幕像素给的。
+ *  用户动过就不碰（数据更新也不夺走用户的缩放/平移）。 */
+function guardCamera() {
+  if (!graph || userAdjustedCamera) return;
+  graph.zoom(1, 0);
 }
 
-function syncGraph() {
+function syncGraph(force = false) {
   if (!graph) return;
-  // 15s 轮询会把 convLinks 整个换新；内容没变还重灌 graphData 会让力导向每 15s
-  // 重排一次（节点抖一下、命中区也跟着漂）。按拓扑签名去重，只在真变了才重开模拟。
+  // 15s 轮询会把 convLinks 整个换新；内容没变还重灌 graphData 会让引擎空转。
+  // 按拓扑签名去重，只在真变了才重灌（对象持久化 ⇒ 老节点坐标不动，新节点就地出现）。
+  // force=true 用于 resize：尺寸变了布局半径就得重算，签名没变也要重排。
   const sig = topoSig();
-  if (sig === lastSig) return;
+  if (!force && sig === lastSig) return;
   lastSig = sig;
-  drawnNodes = graphData.value.nodes;
-  graph.graphData(graphData.value);
+  const data = buildGraphData();
+  drawnNodes = data.nodes;
+  graph.graphData(data);
+  guardCamera();
 }
 
 watch(
@@ -453,7 +588,7 @@ watch(
     void refreshLinks();
   },
 );
-watch(convLinks, syncGraph);
+watch(convLinks, () => syncGraph());
 
 function sizeGraphToHost() {
   const el = host.value;
@@ -462,16 +597,9 @@ function sizeGraphToHost() {
   const h = el.clientHeight;
   // 构造时容器可能还没拿到 flex 后的高度，force-graph 会退回 window 尺寸
   // —— 那样画布比图区高出一个页头，底部节点被视口裁掉。这里按真实图区再钉一次。
-  if (w > 0 && h > 0) {
-    graph.width(w).height(h);
-    // 只在节点**有坐标**时才 zoomToFit：刚挂载时 d3 还没初始化位置（x=undefined），
-    // 这时调它会得到 NaN 变换把 zoom 打回 identity —— 首帧节点画在 (0,0)＝左上角，
-    // 等引擎停了才被第二次 zoomToFit 拉回中间（2026-11-11 用户实报"一开始在左上角"）。
-    const nodes = graphData.value.nodes;
-    if (nodes.length > 0 && nodes.every((n) => Number.isFinite(n.x) && Number.isFinite(n.y))) {
-      graph.zoomToFit(0, 60);
-    }
-  }
+  if (w > 0 && h > 0) graph.width(w).height(h);
+  // 布局是按**当前图区尺寸**现算的像素坐标，缩放恒为 1；尺寸变化由下一次
+  // buildGraphData（任一数据签名变化）或 resize 事件里的重排消化，不再 zoomToFit。
 }
 
 onMounted(() => {
@@ -481,8 +609,13 @@ onMounted(() => {
   boundHost?.addEventListener("pointerdown", onHostPointerDown);
   boundHost?.addEventListener("pointermove", onHostPointerMove);
   boundHost?.addEventListener("pointerup", onHostPointerUp);
+  boundHost?.addEventListener("wheel", onHostWheel, { passive: true });
+  boundHost?.addEventListener("touchstart", onHostTouchStart, { passive: true });
   if (typeof ResizeObserver !== "undefined" && host.value) {
-    resizeObs = new ResizeObserver(sizeGraphToHost);
+    resizeObs = new ResizeObserver(() => {
+      sizeGraphToHost();
+      syncGraph(true);
+    });
     resizeObs.observe(host.value);
   }
   void refreshAll();
@@ -492,6 +625,8 @@ onBeforeUnmount(() => {
   boundHost?.removeEventListener("pointerdown", onHostPointerDown);
   boundHost?.removeEventListener("pointermove", onHostPointerMove);
   boundHost?.removeEventListener("pointerup", onHostPointerUp);
+  boundHost?.removeEventListener("wheel", onHostWheel);
+  boundHost?.removeEventListener("touchstart", onHostTouchStart);
   boundHost = null;
   resizeObs?.disconnect();
   resizeObs = null;
