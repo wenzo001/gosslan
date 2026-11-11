@@ -18822,7 +18822,7 @@ async function runBleed(cdp, url) {
     const I = await import('/src/i18n/index.ts');
     const host = document.getElementById('probe-host');
     const pill = [...host.querySelectorAll('button')]
-      .find((b) => (b.getAttribute('aria-label') || '') === I.t('topology.title'));
+      .find((b) => (b.getAttribute('aria-label') || '').startsWith(I.t('topology.title')));
     if (!pill) return { found: false };
     const r = pill.getBoundingClientRect();
     // @click 听的是 click 事件：直接派发一颗带坐标的 MouseEvent（pointerdown/up 不会合成 click）。
@@ -20962,6 +20962,44 @@ async function runTopology(cdp, url) {
       && Math.abs((emptyRead.backTop - emptyRead.headerTop) - (emptyRead.headerH - emptyRead.backH) / 2) <= 1,
     "headerPadTop=0px + backTop−headerTop=(headerH−backH)/2",
     JSON.stringify(emptyRead));
+  // 兜底态（INV-P36 同族）：名单**读不到**时必须给错误横幅 + 重试，
+  // 不许把 IO 失败画成"还没有发现其他节点"。让 getPeers/getFriends 抛错，
+  // 点空态提示里的「刷新」按钮（它调 refreshAll），横幅要带出真实原因。
+  await cdp.eval(`(async () => {
+    const m = await import('/src/api/index.ts');
+    m.api.getPeers = async () => { throw new Error('probe-net-down'); };
+    m.api.getFriends = async () => { throw new Error('probe-net-down'); };
+    return true;
+  })()`);
+  await cdp.eval(`(async () => {
+    const I = await import('/src/i18n/index.ts');
+    const btn = [...document.querySelectorAll('#probe-host button')]
+      .find((b) => (b.textContent || '').trim() === I.t('topology.refresh'));
+    if (btn) btn.click();
+    return true;
+  })()`);
+  await sleep(700);
+  const failRead = await cdp.eval(`(async () => {
+    const I = await import('/src/i18n/index.ts');
+    const zone = document.querySelector('#probe-host [class*="50%+64px"]');
+    const text = (zone && zone.textContent || '').replace(/\s+/g, ' ').trim();
+    return {
+      showsError: text.includes('probe-net-down'),
+      showsHint: text.includes(I.t('topology.loadFailedHint')),
+      emptyGone: !text.includes(I.t('topology.empty')),
+    };
+  })()`);
+  failRead.hasRetry = await cdp.eval(`(async () => {
+    const I = await import('/src/i18n/index.ts');
+    const zone = document.querySelector('#probe-host [class*="50%+64px"]');
+    return !!zone && [...zone.querySelectorAll('button')]
+      .some((b) => (b.textContent || '').trim() === I.t('common.retry'));
+  })()`);
+  check("拓扑兜底：名单读不到时给错误横幅（原因行 + 重试键），不说成空场",
+    failRead.showsHint === true && failRead.emptyGone === true && failRead.hasRetry === true,
+    "横幅含 loadFailedHint + 重试键，空态文案消失",
+    JSON.stringify(failRead));
+
   // 渲染循环死掉（如 createRadialGradient(NaN) 那次）在这里现形：本段页面零未捕获错误。
   const pageErrors = await cdp.eval("(window.__pageErrors || [])");
   check("拓扑段：页面零未捕获错误（error / unhandledrejection）",

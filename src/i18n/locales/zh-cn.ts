@@ -1934,6 +1934,7 @@ export const zhCN: MessageDict = {
   "topology.mesh": "Mesh 中转 {n}",
   "topology.offline": "{n} 位好友离线未显示",
   "topology.empty": "还没有发现其他节点。确认对方在线，并打开局域网/蓝牙通道后再试。",
+  "topology.loadFailedHint": "节点名单没有读到：本机与发现服务的连接出了问题。请检查网络后重试；列表不会因此丢失数据。",
   "topology.legend.friend": "好友",
   "topology.legend.peer": "已发现",
   "topology.legend.hub": "中转",
