@@ -20848,7 +20848,6 @@ async function runTopology(cdp, url) {
       })(),
     };
   })()`);
-  console.log("  · 页面错误：" + JSON.stringify(await cdp.eval("(window.__pageErrors || []).slice(0, 5)")));
   check("网络拓扑：Canvas 铺满图区并真的画出了东西（透明背景上采样到墨迹）",
     mounted && mounted.ok === true && m.ok === true && m.canvasW > 200 && m.canvasH > 200 && m.ink >= 50,
     "canvas > 200×200 + ink ≥ 50",
@@ -20963,6 +20962,11 @@ async function runTopology(cdp, url) {
       && Math.abs((emptyRead.backTop - emptyRead.headerTop) - (emptyRead.headerH - emptyRead.backH) / 2) <= 1,
     "headerPadTop=0px + backTop−headerTop=(headerH−backH)/2",
     JSON.stringify(emptyRead));
+  // 渲染循环死掉（如 createRadialGradient(NaN) 那次）在这里现形：本段页面零未捕获错误。
+  const pageErrors = await cdp.eval("(window.__pageErrors || [])");
+  check("拓扑段：页面零未捕获错误（error / unhandledrejection）",
+    Array.isArray(pageErrors) && pageErrors.length === 0,
+    "0 条", JSON.stringify(pageErrors));
   if (SHOT_PATH) {
     const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
     fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-topology-empty.png"), Buffer.from(shot.data, "base64"));
