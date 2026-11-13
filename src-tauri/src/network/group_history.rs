@@ -336,10 +336,7 @@ fn peer_supports_group_history(state: &AppState, peer: &str) -> bool {
         .get(peer)
         .copied()
         .unwrap_or(0);
-    if feats & CONTENT_FEATURE_GROUP_HISTORY == 0 {
-        return false;
-    }
-    true
+    feats & CONTENT_FEATURE_GROUP_HISTORY != 0
 }
 
 async fn eligible_peers(state: &Arc<AppState>, members: &[String]) -> Vec<String> {
@@ -2003,11 +2000,11 @@ mod group_history_engine_tests {
     fn the_frame_is_gated_and_advertised() {
         let body = engine_body();
         assert_eq!(
-            body.matches("feats&CONTENT_FEATURE_GROUP_HISTORY==0")
+            body.matches("feats&CONTENT_FEATURE_GROUP_HISTORY!=0")
                 .count(),
             1,
             "候选筛选里的能力位闸现数到 {} 处（登记 1 处）：0 = 会对老端发它不认的帧",
-            body.matches("feats&CONTENT_FEATURE_GROUP_HISTORY==0")
+            body.matches("feats&CONTENT_FEATURE_GROUP_HISTORY!=0")
                 .count()
         );
         let proto = code_flat(include_str!("../protocol.rs"));
