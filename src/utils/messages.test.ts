@@ -145,6 +145,7 @@ const PREVIEW_LOCALES = [
     locale: "zh-CN",
     labels: {
       file: "[文件]", image: "[图片]", code: "[代码]", todo: "[任务]",
+      todoReply: "[回复]",
       poll: "[投票]", merge: "[聊天记录]", announcement: "[公告]",
       unsupported: "[不支持的消息]", mergeCount3: "[聊天记录] 3 条",
     },
@@ -153,6 +154,7 @@ const PREVIEW_LOCALES = [
     locale: "en-US",
     labels: {
       file: "[File]", image: "[Image]", code: "[Code]", todo: "[Task]",
+      todoReply: "[Reply]",
       poll: "[Poll]", merge: "[Chat history]", announcement: "[Announcement]",
       unsupported: "[Unsupported message]", mergeCount3: "[Chat history] 3 messages",
     },
@@ -209,6 +211,7 @@ for (const { locale, labels } of PREVIEW_LOCALES) {
       ["merge", '{"title":"群聊的聊天记录","messages":[{"content":"x"}]}'],
       ["todo", '{"title":"情报状态","assignees":["d1"],"description":"周五前交"}'],
       ["todo_update", '{"title":"情报状态","status":"doing"}'],
+      ["todo_reply", '{"todo_id":"t1","reply_id":"r1","parent_reply_id":null,"text":"收到，周五前给结论"}'],
       ["poll", '{"question":"周五团建去哪","options":["山","海"]}'],
       ["announcement", '{"text":"下周三停网半天","pinned":true}'],
     ];
@@ -221,6 +224,11 @@ for (const { locale, labels } of PREVIEW_LOCALES) {
     // 卡片那一句人话确实被取出来了（不是统统退化成光秃秃的标签）
     assert.equal(previewBody("todo", '{"title":"情报状态"}', 0), `${labels.todo} 情报状态`);
     assert.equal(previewBody("poll", '{"question":"去哪"}', 0), `${labels.poll} 去哪`);
+    // 任务回复经通知例外发给关联人：正文取回复那句话，绝不铺 JSON（回归会红）。
+    assert.equal(
+      previewBody("todo_reply", '{"todo_id":"t1","reply_id":"r1","text":"收到，周五前给结论"}', 0),
+      `${labels.todoReply} 收到，周五前给结论`,
+    );
   });
 
   /**

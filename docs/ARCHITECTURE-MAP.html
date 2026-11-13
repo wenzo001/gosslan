@@ -722,8 +722,9 @@ const CMDS = [
   ["delete_group_announcement", "group_files", "group_id str; ann_id str", "MessageRecord|err"],
   ["send_group_announcement", "group_files", "group_id str; text str", "MessageRecord|err"],
   ["send_group_message", "group_files", "group_id str; content str; kind str; mentions str[]?; local_id str?", "MessageRecord|err"],
-  ["send_group_todo", "group_files", "group_id str; title str; assignees str[]; description str?; images TodoImage[]?; category str?", "MessageRecord|err"],
+  ["send_group_todo", "group_files", "group_id str; title str; assignees str[]; description str?; images TodoImage[]?; category str?; custom_category str?; custom_icon str?; related_on str?; tags str[]?; linked_from str?", "MessageRecord|err"],
   ["update_group_todo", "group_files", "group_id str; todo_id str; title str; assignees str[]; status str; deleted bool; description str?; images TodoImage[]?; archived bool?; priority str?; category str?; tags str[]?", "MessageRecord|err"],
+  ["send_group_todo_reply", "group_files", "group_id str; todo_id str; text str; parent_reply_id str?", "MessageRecord|err"],
   ["list_group_todo_tags", "group_files", "group_id str", "TodoTagCandidate[]|err"],
   ["save_todo_image_bytes", "group_todo_media", "request Request<'_>", "str|err"],
   ["todo_image_meta", "group_todo_media", "path str", "TodoImage|err"],
@@ -905,14 +906,15 @@ const SEM = {
   send_todo_image: { d: "给任务上传一张图：落盘 → 作为 <code>scope=todo</code> 的群文件登记。" },
 
   /* ── commands/group_files.rs ── */
-  get_group_todo_messages: { d: "按会话 id 批量取 <code>kind IN (todo, todo_update)</code> 的原始行，给前端算「与我相关」徽标用。"
+  get_group_todo_messages: { d: "按会话 id 批量取 <code>kind IN (todo, todo_update, todo_reply)</code> 的原始行，给前端算「与我相关」徽标与折叠任务回复用。"
     + "<b>为什么必须有它</b>：会话消息缓存有上限（<code>enforceMessageCacheBound</code> 会挤掉冷会话），拿内存数据算徽标 = 缓存没到就是一片空，那是假状态；"
     + "折叠与判定<b>仍只有前端 <code>utils/todos.ts::foldTodos</code> 那一份</b>（这里不重复实现）" },
   send_group_message: { d: "群消息（走统一的 <code>send_group_payload</code>：取群密钥 → 信封 → 每人一行 group_outbox → broadcast_gossip）。<code>mentions</code>=这条<b>文本</b> @ 了谁（设备 id，三态：缺省=不发这个键=对端按昵称兜底；空数组=明确谁都没 @）；只进加密明文，<b>不落库</b>。★ 但同一句话里的另一份信息<b>落库待遇相反</b>：落点 <code>mention_targets</code>（#122 第二段，<code>messages</code> 表那一列，迁移 v10→v11）是那句话的历史事实，重启后仍按身份标；两份的分界写在 <code>state::MessageRecord</code> 的字段文档上。）" },
   send_group_announcement: { d: "发布群公告（<b>仅群主</b>）：权限口径与改名逐字同构（<code>group.creator == 我</code>）。"
     + "公告是发给全群的权威信息，人人可发就失去意义；<b>群主离线就是发不了</b> —— 无中心即无中心授权，不降级成谁都能发" },
-  send_group_todo: { d: "建任务。<code>kind=todo</code> 属 <b>Card 类</b>（计未读）。通知只给<b>相关人</b>：创建人 + 被指派人（判据 <code>utils/todos::todoCardConcernsMe</code>）—— 2026-11-02 之前实现是全群每个人都弹，与本图那句「通知被指派人」不符。", w: "messages(JSON)" },
-  update_group_todo: { d: "改任务（标题 / 指派 / 状态 / 归档 / 删除 / 图片 / <b>关联时间 / 类型 / 标签</b>）。<code>kind=todo_update</code> 属 <b>Silent 类</b>：不通知。⚠️ <b>状态存在 JSON content 里，不是表列</b>，读的时候由 <code>foldTodos</code> 折叠。标签的关联行由入库钩子同步进 <code>todo_task_tags</code>，候选池在 <code>todo_tag_pool</code>。" },
+  send_group_todo: { d: "建任务。<code>kind=todo</code> 属 <b>Card 类</b>（计未读）。通知只给<b>相关人</b>：创建人 + 被指派人（判据 <code>utils/todos::todoCardConcernsMe</code>）—— 2026-11-02 之前实现是全群每个人都弹，与本图那句「通知被指派人」不符。<code>linked_from</code>=基于另一条任务新建时记下来源 todo_id（两条各自独立管理，只是溯源指针；命令层校验它真实存在）。", w: "messages(JSON)" },
+  update_group_todo: { d: "改任务（标题 / 指派 / 状态 / 归档 / 删除 / 图片 / <b>关联时间 / 类型 / 标签</b>）。<code>kind=todo_update</code> 属 <b>Silent 类</b>：不通知。⚠️ <b>状态存在 JSON content 里，不是表列</b>，读的时候由 <code>foldTodos</code> 折叠。标签的关联行由入库钩子同步进 <code>todo_task_tags</code>，候选池在 <code>todo_tag_pool</code>。<code>linked_from</code> 不可经此命令改：折叠时从已有定义沿用（carry-absent），来源指针只在创建那一刻定。" },
+  send_group_todo_reply: { d: "任务详情回复（任意群成员）。<code>kind=todo_reply</code> 属 <b>Silent 类</b>：不改进程任何任务定义，只追加一条独立事件（与 reaction 同构，避免并发丢更新）。接收端按 <code>todo_id</code> 折叠成平铺楼层（<code>utils/todos::foldTodoReplies</code>），<code>parent_reply_id</code> 只引用一层「谁回复谁」、不嵌套渲染。通知只给<b>任务关联人</b>（创建人 + 被指派人，判据 <code>utils/todos::todoReplyConcernsMe</code>）。命令层校验目标任务存在、父回复（若给）真实存在、正文非空且 ≤ <code>MAX_TODO_REPLY_LEN</code>。", w: "messages(JSON)" },
   list_group_todo_tags: { d: "读任务标签的历史候选池（按 <code>use_count</code> / <code>last_used_at</code> 排序；顺手清理 <code>TODO_TAG_POOL_RETENTION_DAYS</code>=90 天未用的候选）。" },
   delete_group_announcement: { d: "删公告（<code>announcement_delete</code>）。" },
 

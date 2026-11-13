@@ -16,7 +16,7 @@ import { mergeNoticesInto, notificationBody, type QueuedNotice } from "@/utils/n
 import { batchIsUrgent } from "@/utils/notifyUrgency";
 import { buildRemindAckPayload, parseRemind } from "@/utils/reminders";
 import { countsTowardUnread } from "@/utils/messageKinds";
-import { todoCardConcernsMe, todoMentionsMe, todoTerminalForCreator } from "@/utils/todos";
+import { todoCardConcernsMe, todoMentionsMe, todoTerminalForCreator, todoReplyConcernsMe, foldTodos } from "@/utils/todos";
 import { t } from "@/i18n";
 import {
   createChannel,
@@ -29,7 +29,7 @@ import type { MessageRecord } from "@/types";
 import type { ChatContext } from "./runtime";
 
 export function createNotificationsModule(ctx: ChatContext) {
-  const { app, activeConv, totalUnread, groups, myDeviceId, nicknameOf } = ctx.state;
+  const { app, activeConv, totalUnread, groups, myDeviceId, nicknameOf, groupTodoRows } = ctx.state;
   const { send, openConversation, locateMessageInConv } = ctx.api;
 
   let notifSeq = 1;
@@ -215,6 +215,10 @@ export function createNotificationsModule(ctx: ChatContext) {
   const notifiedTodoDone = new Set<string>();
   const NOTIFIED_TODO_DONE_MAX = 500;
 
+  /** 已提示过的「任务回复」msg_id：同一事件经多条投递路径反复 emit 时不重复提示关联人。 */
+  const notifiedTodoReply = new Set<string>();
+  const NOTIFIED_TODO_REPLY_MAX = 500;
+
   function maybeNotify(rec: MessageRecord) {
     const myId = app.device?.device_id;
     if (!myId || rec.sender_id === myId) return;
@@ -224,6 +228,17 @@ export function createNotificationsModule(ctx: ChatContext) {
     // 这里只拦通知，**不动**未读与时间线 —— 卡片照旧进列表、照旧计未读，
     // 别人建的、没派给我的活不该弹一条系统通知把我从别的事里拽出来。
     if (!todoCardConcernsMe(rec, myId)) return;
+
+    // 任务详情回复只打扰**任务关联人**（创建人 + 被指派人，用户 2026-11-13）。
+    // todo_reply 是 Silent（不计未读、不进时间线），但"我派/我建的任务有人回复"是该知道的变化，
+    // 与 todo_update 终态给创建人那条例外同族。查不到目标任务定义时放行（宁可多打扰一条，
+    // 与 todoCardConcernsMe 的兜底同向）；判据本体在 utils/todos::todoReplyConcernsMe。
+    if (
+      !todoReplyConcernsMe(rec, myId, (id) =>
+        foldTodos(groupTodoRows.value[rec.conv_id] ?? []).find((x) => x.todoId === id),
+      )
+    )
+      return;
 
     // 任务进入终态（完成 / 做不了）→ 给**创建人**提示。`todo_update` 本是静默事件
     //（不打扰全群），但"我派的活有了结论"对创建人是个该知道的变化，单独放行；
@@ -242,6 +257,21 @@ export function createNotificationsModule(ctx: ChatContext) {
       // 正看着该会话：系统通知会被抑制，改用应用内 toast —— 否则创建人"什么都看不到"。
       if (!document.hidden && document.hasFocus() && activeConv.value === rec.conv_id) {
         app.toast(terminalText, "info");
+        return;
+      }
+      if (!app.notifyEnabled) return;
+      queueNotification(rec);
+      return;
+    }
+
+    // 任务详情回复 → 给任务关联人提示（上面 todoReplyConcernsMe 已过滤掉不相关的）。
+    // todo_reply 是静默事件（不计未读、不进时间线），与「终态给创建人」那条例外同族：
+    // 单独放行通知，按 msg_id 去重；正看着该会话时用 toast，否则进系统通知队列。
+    if (rec.kind === "todo_reply" && !notifiedTodoReply.has(rec.msg_id)) {
+      notifiedTodoReply.add(rec.msg_id);
+      trimOldest(notifiedTodoReply, NOTIFIED_TODO_REPLY_MAX);
+      if (!document.hidden && document.hasFocus() && activeConv.value === rec.conv_id) {
+        app.toast(previewText(rec), "info");
         return;
       }
       if (!app.notifyEnabled) return;

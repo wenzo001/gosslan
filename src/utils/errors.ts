@@ -222,6 +222,12 @@ const CODE_RULES: Record<string, string> = {
   GROUP_TODO_DESC_TOO_LONG: "errors.rule.groupTodoDescTooLong",
   GROUP_ANNOUNCEMENT_TOO_LONG: "errors.rule.groupAnnouncementTooLong",
   GROUP_TODO_IMAGE_TOO_LARGE: "errors.rule.groupTodoImageTooLarge",
+  // 任务回复 + 关联任务（用户 2026-11-13）
+  GROUP_TODO_LINKED_FROM_NOT_FOUND: "errors.rule.groupTodoLinkedFromNotFound",
+  GROUP_TODO_REPLY_TARGET_MISSING: "errors.rule.groupTodoReplyTargetMissing",
+  GROUP_TODO_REPLY_EMPTY: "errors.rule.groupTodoReplyEmpty",
+  GROUP_TODO_REPLY_TOO_LONG: "errors.rule.groupTodoReplyTooLong",
+  GROUP_TODO_REPLY_PARENT_MISSING: "errors.rule.groupTodoReplyParentMissing",
   FAVORITE_DELETE_BATCH_TOO_LARGE: "errors.rule.favoriteDeleteBatchTooLarge",
   // B6 第十三批：群管理 reject 族。
   GROUP_TODO_ASSIGNEE_NOT_MEMBER: "errors.rule.groupTodoAssigneeNotMember",

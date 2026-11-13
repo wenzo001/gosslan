@@ -511,6 +511,7 @@ export const PREVIEW_LABEL_KEYS = {
   code: "msg.code",
   merge: "msg.preview.merge",
   todo: "msg.preview.todo",
+  todoReply: "msg.preview.todoReply",
   poll: "msg.preview.poll",
   announcement: "msg.preview.announcement",
   reaction: "msg.preview.reaction",
@@ -543,6 +544,20 @@ export function previewBody(kind: string, content: string, textLimit = 30): stri
         /* 落到回落值 */
       }
       return t(PREVIEW_LABEL_KEYS.todo);
+    }
+    case "todo_reply": {
+      // 任务详情回复：载荷是 JSON，取回复正文（截断到 textLimit），回落到标签。
+      // 回复是 Silent（不进时间线），但会经通知例外发给任务关联人 ⇒ 通知正文不能露 JSON。
+      try {
+        const p = JSON.parse(content) as { text?: unknown };
+        if (typeof p.text === "string" && p.text) {
+          const text = textLimit > 0 ? p.text.slice(0, textLimit) : p.text;
+          return `${t(PREVIEW_LABEL_KEYS.todoReply)} ${text}`;
+        }
+      } catch {
+        /* 落到回落值 */
+      }
+      return t(PREVIEW_LABEL_KEYS.todoReply);
     }
     case "poll":
     case "poll_vote": {

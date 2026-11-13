@@ -337,6 +337,7 @@ export const api = {
     customIcon?: string,
     relatedOn?: string,
     tags?: string[],
+    linkedFrom?: string,
   ) =>
     invoke<MessageRecord>("send_group_todo", {
       groupId,
@@ -349,6 +350,24 @@ export const api = {
       customIcon: customIcon ?? null,
       relatedOn: relatedOn ?? null,
       tags: tags ?? null,
+      linkedFrom: linkedFrom ?? null,
+    }),
+  /**
+   * 任务详情回复（用户 2026-11-13）：任意群成员可回，独立事件消息（kind=todo_reply）。
+   * `parentReplyId` 给了 = 回复某条回复（平铺引用一层，界面画"A 回复 B"，不嵌套）。
+   * 对关联人（创建人 + 被指派人）的通知由前端 maybeNotify 单独放行。
+   */
+  sendGroupTodoReply: (
+    groupId: string,
+    todoId: string,
+    text: string,
+    parentReplyId?: string,
+  ) =>
+    invoke<MessageRecord>("send_group_todo_reply", {
+      groupId,
+      todoId,
+      text,
+      parentReplyId: parentReplyId ?? null,
     }),
   /**
    * 更新群任务：改状态 / 改标题与指派人 / 改描述与图片 / 删除（`deleted: true`）。

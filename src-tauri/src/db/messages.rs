@@ -149,7 +149,7 @@ pub fn get_messages(
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-/// 一次拿到**多个会话**里全部的任务行（`todo` / `todo_update`），供前端折叠出徽标数字。
+/// 一次拿到**多个会话**里全部的任务行（`todo` / `todo_update` / `todo_reply`），供前端折叠出徽标数字与回复列表。
 ///
 /// 为什么只到"取原始行"为止：一条任务的真值是**多写者 LWW**（`(seq, msg_id)` 元组取最新）
 /// 加两态排除（完成 / 归档，其中归档还含"完成满 7 天自动归档"），这套折叠语义
@@ -166,7 +166,7 @@ pub fn get_todo_messages_for_conns(
     for conv_id in conv_ids {
         let mut stmt = conn.prepare(
             "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id, fail_code
-             FROM messages WHERE conv_id = ?1 AND kind IN ('todo', 'todo_update')
+             FROM messages WHERE conv_id = ?1 AND kind IN ('todo', 'todo_update', 'todo_reply')
              ORDER BY seq ASC, id ASC",
         )?;
         let rows = stmt.query_map(params![conv_id], |r| {

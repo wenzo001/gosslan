@@ -446,6 +446,16 @@ pub const GROUP_TODO_DESC_TOO_LONG: &str = "GROUP_TODO_DESC_TOO_LONG";
 pub const GROUP_ANNOUNCEMENT_TOO_LONG: &str = "GROUP_ANNOUNCEMENT_TOO_LONG";
 /// 群待办图片超过单张体积上限。
 pub const GROUP_TODO_IMAGE_TOO_LARGE: &str = "GROUP_TODO_IMAGE_TOO_LARGE";
+/// 群待办：关联的来源任务不存在（用户 2026-11-13 关联任务）。
+pub const GROUP_TODO_LINKED_FROM_NOT_FOUND: &str = "GROUP_TODO_LINKED_FROM_NOT_FOUND";
+/// 群待办回复：目标任务不存在（用户 2026-11-13 任务回复）。
+pub const GROUP_TODO_REPLY_TARGET_MISSING: &str = "GROUP_TODO_REPLY_TARGET_MISSING";
+/// 群待办回复：内容为空。
+pub const GROUP_TODO_REPLY_EMPTY: &str = "GROUP_TODO_REPLY_EMPTY";
+/// 群待办回复：内容超长。
+pub const GROUP_TODO_REPLY_TOO_LONG: &str = "GROUP_TODO_REPLY_TOO_LONG";
+/// 群待办回复：被回复的那条回复不存在（悬空引用）。
+pub const GROUP_TODO_REPLY_PARENT_MISSING: &str = "GROUP_TODO_REPLY_PARENT_MISSING";
 
 // ── B6 第十三批：收藏 ──────────────────────────────────────────────────────
 /// 收藏批量删除超过一次上限。
