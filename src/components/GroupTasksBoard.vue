@@ -67,6 +67,7 @@ import type { IconName } from "@/components/ui/iconRegistry";
 import { TODO_CUSTOM_ICON_NAMES } from "@/utils/todoCustomIcons";
 import { errorText } from "@/composables/useErrorText";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
+import { useCopyToast } from "@/composables/useCopyToast";
 import { api } from "@/api";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
@@ -1313,6 +1314,8 @@ function removeImage(idx: number) {
 }
 
 const ime = useImeEnterGuard();
+// 双击右栏详情标题整段复制（与弹窗标题、描述同口径，见 useCopyToast）。
+const copyWithToast = useCopyToast();
 
 async function saveDraft() {
   // 保存按钮与标题框 Enter 共用这一条：在途时重入会重复建/改同一条任务。
@@ -1998,6 +2001,7 @@ watch(
           <h3
             class="gosslan-selectable min-w-0 flex-1 truncate text-body font-medium text-[var(--gosslan-text)]"
             :title="detailItem.title"
+            @dblclick="copyWithToast(detailItem.title)"
           >{{ detailItem.title }}</h3>
         </div>
         <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto px-[var(--gosslan-scroll-inset)] py-3">

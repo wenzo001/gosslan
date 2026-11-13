@@ -5,6 +5,7 @@ import { nextTick, watch } from "vue";
 import { useBackLayer } from "@/composables/useBackLayer";
 import BackArrow from "@/components/ui/BackArrow.vue";
 import { useAppStore } from "@/stores/useAppStore";
+import { useCopyToast } from "@/composables/useCopyToast";
 import { t } from "@/i18n";
 
 /**
@@ -17,6 +18,16 @@ import { t } from "@/i18n";
  * 放在 `BaseModal` 一处，所有弹窗（创建群聊/改名/转发/加好友/搜索…）一起生效。
  */
 const app = useAppStore();
+const copyWithToast = useCopyToast();
+
+/**
+ * 用户内容标题（titleSelectable，目前只有群任务详情）双击即整段复制。
+ * 与原生选字并存：双击选词是浏览器默认，这里把**完整标题**塞进剪贴板并 toast，
+ * 省掉「全选→复制」两步。chrome 名字标题（titleSelectable=false）不触发。
+ */
+function onTitleDblclick() {
+  if (props.titleSelectable && props.title) void copyWithToast(props.title);
+}
 
 const props = withDefaults(
   defineProps<{
@@ -181,7 +192,7 @@ function onOpenChange(value: boolean) {
               >
                 <BackArrow />
               </button>
-              <DialogTitle v-if="title" as="h2" class="min-w-0 flex-1 truncate text-title font-medium" :class="titleSelectable ? 'gosslan-selectable' : ''" :title="title">{{ title }}</DialogTitle>
+              <DialogTitle v-if="title" as="h2" class="min-w-0 flex-1 truncate text-title font-medium" :class="titleSelectable ? 'gosslan-selectable' : ''" :title="title" @dblclick="onTitleDblclick">{{ title }}</DialogTitle>
               <!-- Reka 要求每份 DialogContent 都有可访问名称；整页形态允许不传 title，
                    这里补一个只给读屏的兜底，避免 aria-labelledby 指向不存在的节点。 -->
               <DialogTitle v-if="!title" class="sr-only">{{ t("common.dialog") }}</DialogTitle>
@@ -219,6 +230,7 @@ function onOpenChange(value: boolean) {
                 class="line-clamp-2 min-w-0 flex-1 break-words text-title font-semibold leading-6"
                 :class="titleSelectable ? 'gosslan-selectable' : ''"
                 :title="title"
+                @dblclick="onTitleDblclick"
               >
                 {{ title }}
               </DialogTitle>
