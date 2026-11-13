@@ -1126,6 +1126,30 @@ CREATE TABLE IF NOT EXISTS todo_tag_pool (
     PRIMARY KEY (group_id, tag)
 );
 CREATE INDEX IF NOT EXISTS idx_todo_tag_pool_recent ON todo_tag_pool(group_id, last_used_at DESC);
+
+-- 外部应用设备认证（2026-11-13，external-app-device-auth Phase 2）：RP 专属绑定。
+--
+-- 每个 RP（rp_origin + client_id）一条独立绑定：RP 专属 Ed25519 登录密钥（与 P2P 身份密钥
+-- 分开，避免跨站关联）+ pairwise 随机 subject。secret_key 与身份密钥同一保护类（本地 SQLite
+-- + 0700 目录，无系统 Keychain，限制见设计文档 §3.1）；**绝不**经命令/事件序列化到前端
+-- （INV-P18：内部行结构不 derive Serialize，前端清单只拿公钥面）。撤销只置 status/revoked_at，
+-- 不静默删密钥；旧公钥须由 RP 账号页撤销，重装/清数据后需重新显式绑定。
+CREATE TABLE IF NOT EXISTS rp_device_bindings (
+    rp_origin        TEXT NOT NULL,
+    client_id        TEXT NOT NULL,
+    display_name     TEXT NOT NULL,
+    kid              TEXT NOT NULL,
+    public_key       TEXT NOT NULL,
+    secret_key       TEXT NOT NULL,
+    pairwise_subject TEXT NOT NULL,
+    scopes           TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'active',
+    created_at       INTEGER NOT NULL,
+    last_used_at     INTEGER,
+    revoked_at       INTEGER,
+    PRIMARY KEY (rp_origin, client_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rp_bindings_kid ON rp_device_bindings(kid);
 "#;
 
 /// 迁移前备份的保留份数（含本次刚生成的那一份）。
@@ -1548,6 +1572,7 @@ include!("db/recalls.rs");
 // 群历史同步的两半：服务端分页取数 + 新成员侧幂等落库（2026-10-16 需求）
 include!("db/group_history.rs");
 include!("db/todo_tags.rs");
+include!("db/device_auth.rs");
 
 #[cfg(test)]
 mod cascade_tests;

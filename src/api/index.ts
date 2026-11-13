@@ -2,7 +2,7 @@
 
 import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, RpBindingInfo, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -875,6 +875,21 @@ export const api = {
   removeExternalLink: (id: string) => invoke<ExternalLink[]>("remove_external_link", { id }),
   /** 拖进来的路径先读元数据（名字/大小/是否目录），给"确认后再发送"的弹窗用。 */
   inspectDropPaths: (paths: string[]) => invoke<DropPathInfo[]>("inspect_drop_paths", { paths }),
+
+  // ---------------- 外部应用设备认证（Phase 2，本地设备确认器） ----------------
+  /** 处理授权深链：拉 metadata/请求 → 校验 → 存待确认 → 唤起主窗并 emit 确认页。 */
+  deviceAuthHandleLink: (url: string) => invoke<DeviceAuthPrompt>("device_auth_handle_link", { url }),
+  deviceAuthGetPending: (requestId: string) =>
+    invoke<DeviceAuthPrompt>("device_auth_get_pending", { requestId }),
+  deviceAuthApprove: (requestId: string, allowNickname: boolean) =>
+    invoke<DeviceAuthOutcome>("device_auth_approve", { requestId, allowNickname }),
+  deviceAuthDeny: (requestId: string) => invoke<DeviceAuthOutcome>("device_auth_deny", { requestId }),
+  deviceAuthListBindings: () => invoke<RpBindingInfo[]>("device_auth_list_bindings"),
+  deviceAuthRevoke: (rpOrigin: string, clientId: string) =>
+    invoke<boolean>("device_auth_revoke", { rpOrigin, clientId }),
+  /** 深链到达时后端 emit 的确认页数据（主窗订阅，弹出强制确认 UI）。 */
+  onDeviceAuthRequest: (cb: (p: DeviceAuthPrompt) => void) =>
+    listen<DeviceAuthPrompt>("device-auth-request", (e) => cb(e.payload)),
 
   updaterCheck: () => invoke<UpdaterInfo | null>("updater_check"),
   updaterDownload: (onEvent: (event: UpdaterDownloadEvent) => void) => {

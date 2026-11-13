@@ -50,7 +50,7 @@ thiserror = "2"
 # `storage/cache_cleaner.rs` 的手写深度栈换成 walkdir（仍不跟随软链），`logging.rs` 的
 # 手写 civil_from_days 换成 time。决策记录：docs/architecture/backend-modernization.md §B8。
 walkdir = "2"
-time = { version = "0.3", default-features = false, features = ["std"] }
+time = { version = "0.3", default-features = false, features = ["std", "parsing", "formatting"] }
 socket2 = { version = "0.5", features = ["all"] }
 # `hooks` feature：给 SQLite 装 `sqlite3_progress_handler`（决策 2 的 VACUUM 时间预算靠它
 # 在语句执行途中中止）。它是 `hooks = []` —— 不引入任何新依赖，Cargo.lock 不变。
@@ -82,6 +82,9 @@ notify-rust = "4.11"
 #    给 android/ios 装上会编译失败；有一条源码判据钉着两边一致）。
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
+# 外部应用设备认证（Phase 2）：接收 gosslan:// 授权深链（macOS URL events / Windows/Linux
+# 协议唤起）。真机唤起与系统协议注册语义待实机验收（NOT RUN）；契约 mock 驱动客户端逻辑。
+tauri-plugin-deep-link = "2"
 
 # machine-uid 0.5 上游不支持 Android/iOS（`machine_id` 模块仅对 linux/macos/windows 等定义），
 # 在 aarch64-linux-android 目标上会编译失败。因此仅对非移动目标引入；

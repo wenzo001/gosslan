@@ -1,0 +1,135 @@
+<script setup lang="ts">
+/**
+ * 外部应用设备认证的**强制确认页**（Phase 2）。深链到达时后端 emit `device-auth-request`，
+ * 本组件订阅并弹出。设计文档 §5/§6：来源域取 metadata.issuer 规范化值（主要防钓鱼线索），
+ * 不信任深链里的显示名；关闭/拒绝都 fail closed；昵称默认不共享（用户主动勾选才给）。
+ */
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import BaseModal from "@/components/BaseModal.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
+import SettingsToggle from "@/components/settings/SettingsToggle.vue";
+import { api } from "@/api";
+import { useDeviceAuthStore } from "@/stores/useDeviceAuthStore";
+import { useAppStore } from "@/stores/useAppStore";
+import { deviceAuthClaimKey, deviceAuthSecondsLeft } from "@/utils/deviceAuth";
+import { createInitScope } from "@/utils/initScope";
+import { t } from "@/i18n";
+
+const store = useDeviceAuthStore();
+const app = useAppStore();
+const allowNickname = ref(false);
+const now = ref(Date.now());
+
+// 订阅与定时器都交给 initScope 成对拆除（判据 ㊷：不许手工卸载句柄）。
+const scope = createInitScope();
+onMounted(() => {
+  void api.onDeviceAuthRequest((p) => {
+    allowNickname.value = false;
+    store.setPending(p);
+  }).then((un) => scope.onDispose(un));
+  const timer = window.setInterval(() => {
+    now.value = Date.now();
+  }, 1000);
+  scope.onDispose(() => window.clearInterval(timer));
+});
+onUnmounted(() => scope.dispose());
+
+// 新事务到达时向后端复核一次（过期/已消费则清掉确认页）；request_id 不变不会重复触发。
+watch(
+  () => store.pending?.request_id,
+  (id) => {
+    if (id) void store.refreshPending(id);
+  },
+);
+
+const prompt = computed(() => store.pending);
+const secondsLeft = computed(() =>
+  prompt.value ? deviceAuthSecondsLeft(prompt.value.expires_at_ms, now.value) : 0,
+);
+const expired = computed(() => secondsLeft.value <= 0);
+const actionLabel = computed(() =>
+  prompt.value?.action === "authenticate" ? t("deviceAuth.authAction") : t("deviceAuth.linkAction"),
+);
+
+function claimLabel(c: string): string {
+  return t(deviceAuthClaimKey(c));
+}
+
+async function onApprove() {
+  try {
+    const out = await store.approve(allowNickname.value);
+    if (out) app.toast(t("deviceAuth.approved"), "success");
+  } catch (e) {
+    app.toastError(e, t("deviceAuth.approveFail"));
+  }
+}
+async function onDeny() {
+  try {
+    await store.deny();
+  } catch {
+    // 事务可能已被消费/过期：本地仍清掉确认页（用户意图是拒绝）。
+    store.clear();
+  }
+}
+/** 关闭（遮罩/Esc）= 拒绝，fail closed。 */
+function onClose() {
+  void onDeny();
+}
+</script>
+
+<template>
+  <BaseModal :open="!!prompt" :title="t('deviceAuth.title')" width="max-w-md" @close="onClose">
+    <div v-if="prompt" class="space-y-3">
+      <!-- 来源域：主要防钓鱼线索，等宽大字号展示规范化 origin。 -->
+      <div class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-2.5">
+        <div class="text-caption text-[var(--gosslan-text-2)]">{{ t("deviceAuth.originLabel") }}</div>
+        <div class="break-all font-mono text-body font-medium text-[var(--gosslan-text)]">{{ prompt.rp_origin }}</div>
+        <div class="mt-0.5 text-meta text-[var(--gosslan-text-2)]">{{ prompt.display_name }}</div>
+      </div>
+
+      <div class="text-body font-medium text-[var(--gosslan-text)]">{{ actionLabel }}</div>
+
+      <div class="text-meta text-[var(--gosslan-text-2)]">
+        {{ t("deviceAuth.accountLabel") }}{{ prompt.account_hint || t("deviceAuth.noAccountHint") }}
+      </div>
+
+      <div>
+        <div class="mb-1 text-caption text-[var(--gosslan-text-2)]">{{ t("deviceAuth.claimsLabel") }}</div>
+        <ul class="space-y-1">
+          <li
+            v-for="c in prompt.requested_claims"
+            :key="c"
+            class="flex items-center gap-2 text-meta text-[var(--gosslan-text)]"
+          >
+            <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--gosslan-success-solid)] text-[var(--gosslan-on-primary)]" aria-hidden="true"></span>
+            {{ claimLabel(c) }}
+          </li>
+        </ul>
+        <div
+          v-if="prompt.requested_claims.includes('nickname')"
+          class="mt-2 flex items-center gap-2"
+        >
+          <SettingsToggle v-model="allowNickname" :label="t('deviceAuth.nicknameToggle')" size="sm" />
+          <span class="text-meta text-[var(--gosslan-text-2)]">{{ t("deviceAuth.nicknameToggle") }}</span>
+        </div>
+      </div>
+
+      <p class="text-caption leading-relaxed text-[var(--gosslan-text-2)]">{{ t("deviceAuth.warning") }}</p>
+
+      <div
+        class="text-caption tabular-nums"
+        :class="expired ? 'text-[var(--gosslan-danger-ink)]' : 'text-[var(--gosslan-text-2)]'"
+      >
+        {{ expired ? t("deviceAuth.expired") : t("deviceAuth.expiresIn", { s: secondsLeft }) }}
+      </div>
+    </div>
+
+    <template #footer>
+      <div class="flex items-center justify-end gap-2">
+        <SecondaryBtn :disabled="store.busy" @click="onDeny">{{ t("deviceAuth.deny") }}</SecondaryBtn>
+        <PrimaryBtn :disabled="store.busy || expired" @click="onApprove">{{ t("deviceAuth.approve") }}</PrimaryBtn>
+      </div>
+    </template>
+  </BaseModal>
+</template>

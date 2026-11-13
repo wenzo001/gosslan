@@ -24,6 +24,7 @@ import type { UiRecoveryNotice } from "@/api";
 import VersionMismatchNotice from "@/components/VersionMismatchNotice.vue";
 import ResponsiveLayout from "@/layouts/ResponsiveLayout.vue";
 import TaskCenter from "@/components/TaskCenter.vue";
+import DeviceAuthConfirmModal from "@/components/DeviceAuthConfirmModal.vue";
 import { version } from "../package.json";
 import { detectVersionMismatch, type VersionMismatch } from "@/utils/versionGuard";
 
@@ -383,4 +384,6 @@ onUnmounted(stopWatchdogTimers);
     没有未完成的任务时什么都不渲染。
   -->
   <TaskCenter />
+  <!-- 外部应用设备认证强制确认页：深链到达时弹出，关闭=拒绝（fail closed）。 -->
+  <DeviceAuthConfirmModal />
 </template>

@@ -352,6 +352,39 @@ pub const LINK_NETWORK_INIT_FAILED: &str = "LINK_NETWORK_INIT_FAILED";
 pub const LINK_EXPORT_FAILED: &str = "LINK_EXPORT_FAILED";
 /// 外链清理：删导出文件失败（human 带底层原因）。
 pub const LINK_CLEAN_FAILED: &str = "LINK_CLEAN_FAILED";
+
+// ── 外部应用设备认证（2026-11-13，external-app-device-auth Phase 2）─────────────
+//
+// Gosslan 作为本地设备确认器：RP 来源/端点/事务校验失败、用户拒绝、重放、绑定撤销等。
+// 全部 fail closed；与前端 utils/errors.ts CODE_RULES + errors.rule.* 双向对账。
+/// 授权深链格式不正确 / scheme 不支持 / 缺事务引用。
+pub const DEVICE_AUTH_INVALID_LINK: &str = "DEVICE_AUTH_INVALID_LINK";
+/// RP 来源不是合法 HTTPS origin（http 降级 / 带 userinfo/query/fragment / 缺主机）。
+pub const DEVICE_AUTH_INVALID_ORIGIN: &str = "DEVICE_AUTH_INVALID_ORIGIN";
+/// metadata issuer 与来源不一致，或端点跨域 / 非 HTTPS。
+pub const DEVICE_AUTH_CROSS_ORIGIN: &str = "DEVICE_AUTH_CROSS_ORIGIN";
+/// metadata 畸形（client_id 空 / 端点格式坏）。
+pub const DEVICE_AUTH_BAD_METADATA: &str = "DEVICE_AUTH_BAD_METADATA";
+/// 不支持的协议版本 / 动作。
+pub const DEVICE_AUTH_UNSUPPORTED: &str = "DEVICE_AUTH_UNSUPPORTED";
+/// 请求了未知或未支持的 claim（整笔拒）。
+pub const DEVICE_AUTH_UNKNOWN_CLAIM: &str = "DEVICE_AUTH_UNKNOWN_CLAIM";
+/// 事务畸形（request_id 空 / challenge 熵不足 / expires_at 非法）。
+pub const DEVICE_AUTH_BAD_REQUEST: &str = "DEVICE_AUTH_BAD_REQUEST";
+/// 事务或 challenge 已过期。
+pub const DEVICE_AUTH_EXPIRED: &str = "DEVICE_AUTH_EXPIRED";
+/// 拉取 metadata/请求或回写 decision 的网络失败（human 带底层原因）。
+pub const DEVICE_AUTH_NETWORK: &str = "DEVICE_AUTH_NETWORK";
+/// 事务已被消费 / 重复批准（防重放）。
+pub const DEVICE_AUTH_REPLAYED: &str = "DEVICE_AUTH_REPLAYED";
+/// 待确认事务不存在（已清除 / request_id 错）。
+pub const DEVICE_AUTH_NOT_FOUND: &str = "DEVICE_AUTH_NOT_FOUND";
+/// 绑定已撤销，不能用于 authenticate（须重新显式绑定）。
+pub const DEVICE_AUTH_BINDING_REVOKED: &str = "DEVICE_AUTH_BINDING_REVOKED";
+/// 已存在撤销态绑定，不许静默覆盖旧公钥（须先在 RP 解绑）。
+pub const DEVICE_AUTH_BINDING_EXISTS: &str = "DEVICE_AUTH_BINDING_EXISTS";
+/// authenticate 但本机尚无 active 绑定（须先 link）。
+pub const DEVICE_AUTH_NO_BINDING: &str = "DEVICE_AUTH_NO_BINDING";
 /// 共享目录：路径不存在 / 不是目录。
 pub const SHARE_DIR_MISSING: &str = "SHARE_DIR_MISSING";
 /// 共享目录：打开接收目录的阻塞任务失败（human 带底层原因）。

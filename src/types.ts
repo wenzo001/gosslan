@@ -1061,3 +1061,45 @@ export interface LogEntry {
   target: string;
   message: string;
 }
+
+// ---------------- 外部应用设备认证（2026-11-13，Phase 2） ----------------
+// 字段与 Rust device_auth.rs 的 Serialize 结构逐字对应（snake_case）；**无密钥材料**。
+
+/** 确认页数据（来源取 metadata.issuer 规范化值，防钓鱼）。 */
+export interface DeviceAuthPrompt {
+  request_id: string;
+  rp_origin: string;
+  client_id: string;
+  display_name: string;
+  /** link | authenticate */
+  action: string;
+  account_hint: string;
+  requested_claims: string[];
+  expires_at_ms: number;
+  nickname_default: boolean;
+}
+
+/** 已授权应用清单条目（只公钥面）。 */
+export interface RpBindingInfo {
+  rp_origin: string;
+  client_id: string;
+  display_name: string;
+  kid: string;
+  public_key: string;
+  pairwise_subject: string;
+  scopes: string[];
+  /** active | revoked */
+  status: string;
+  created_at: number;
+  last_used_at: number | null;
+  revoked_at: number | null;
+}
+
+/** 批准/拒绝结果（无断言/密钥）。 */
+export interface DeviceAuthOutcome {
+  /** approved | denied */
+  decision: string;
+  rp_origin: string;
+  client_id: string;
+  display_name: string;
+}

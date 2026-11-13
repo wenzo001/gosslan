@@ -1207,6 +1207,10 @@ pub struct AppState {
     /// LAN announce 触发的 ensure_link）会同时看到"还没连上" ⇒ 同一目标被拨两次，
     /// `links[peer]` 出现两条完全相同的端点。有了在途标记，第二个拨号直接返回。
     pub dialing: Mutex<std::collections::HashSet<String>>,
+    /// 外部应用设备认证的**待确认事务**（request_id → pending）。内存态、cap 4、过期清除；
+    /// 拒绝/批准即消费移除（一次性，防重放）。不含密钥材料（设计文档 §5）。
+    pub device_auth_pending:
+        Mutex<std::collections::HashMap<String, crate::device_auth::PendingDeviceAuth>>,
     /// 并发拨号上限信号量（**不是**在途去重，是资源上限）。
     ///
     /// 为什么还要它：在途集合只挡"同一目标"，挡不住"一万个不同目标"——伪造 announce
@@ -2542,6 +2546,7 @@ impl AppState {
             #[cfg(feature = "bluetooth")]
             ble_dial_failures: Mutex::new(std::collections::HashMap::new()),
             dialing: Mutex::new(std::collections::HashSet::new()),
+            device_auth_pending: Mutex::new(std::collections::HashMap::new()),
             todo_focus_request: Mutex::new(std::collections::HashMap::new()),
             task_window_group: Mutex::new(None),
             preview_gallery: Mutex::new(None),

@@ -15,6 +15,7 @@ import FilesSection from "@/components/settings/FilesSection.vue";
 import NetworkSection from "@/components/settings/NetworkSection.vue";
 import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
+import AuthorizedAppsSection from "@/components/settings/AuthorizedAppsSection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import { t } from "@/i18n";
@@ -259,6 +260,7 @@ watch(
             <!-- 安全并入关于：同一页里先安全、后关于（与桌面分组顺序一致）。 -->
             <template v-else-if="mobileNav === 'about'">
               <SecuritySection />
+              <AuthorizedAppsSection />
               <AboutSection @dev-open="devDiagOpen = true" />
             </template>
             <ResetSection v-else-if="mobileNav === 'reset'" @restored="reloadToken++" />
@@ -282,6 +284,7 @@ watch(
       <FilesSection :active="open" :reload-token="reloadToken" />
       <ResetSection @restored="reloadToken++" />
       <SecuritySection />
+      <AuthorizedAppsSection />
       <AboutSection @dev-open="devDiagOpen = true" />
     </div>
   </BaseModal>

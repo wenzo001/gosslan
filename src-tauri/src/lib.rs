@@ -34,6 +34,8 @@ pub mod crypto;
 mod db;
 mod db_hold;
 mod device;
+/// 外部应用设备认证协议核心（RP 来源/事务校验 + RP 专属密钥 JWS 签名），见该文件注释。
+mod device_auth;
 /// 用户可导出的脱敏诊断包（`logs/` 里那三份文件 → 纯文本），见该文件模块注释。
 mod diagnostics;
 pub mod discovery;
@@ -745,13 +747,23 @@ pub fn run() {
     // 单实例守卫：第二个进程不再建窗，而是把**已有那份**主窗叫到前台。
     // 平台清单必须与 Cargo.toml 里那条依赖的 `cfg` 同一组（判据在 lib_startup_config_tests）。
     #[cfg(all(desktop, any(target_os = "macos", windows, target_os = "linux")))]
-    if !allow_second_instance_launch(
-        std::env::var("GOSSLAN_INSTANCE").ok().as_deref(),
-        std::env::var("GOSSLAN_AUTOSTART").ok().as_deref(),
-    ) {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            crate::tray::show_main_window(app);
-        }));
+    {
+        if !allow_second_instance_launch(
+            std::env::var("GOSSLAN_INSTANCE").ok().as_deref(),
+            std::env::var("GOSSLAN_AUTOSTART").ok().as_deref(),
+        ) {
+            builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+                crate::tray::show_main_window(app);
+                // 第二个进程由授权深链唤起时 argv 里带着 gosslan://…（Windows/Linux 协议
+                // 唤起走单实例转发）；转给设备认证处理，仍只弹强制确认页、不静默批准。
+                if let Some(url) = commands::authorize_link_from_args(&argv) {
+                    commands::spawn_device_auth_link(app.clone(), url);
+                }
+            }));
+        }
+        // 外部应用设备认证深链（macOS URL events / Windows/Linux 协议唤起）。
+        // 回调在 setup 里经 DeepLinkExt::on_open_url 注册；系统协议注册与真机唤起待实机验收。
+        builder = builder.plugin(tauri_plugin_deep_link::init());
     }
 
     let built = builder
@@ -804,6 +816,32 @@ pub fn run() {
             #[cfg(unix)]
             crate::signals::register_sigterm(app.handle().clone());
             finish_boot(app.handle(), state);
+            // 外部应用设备认证深链：运行时 URL event 回调 + 冷启动取当前深链。
+            // 真机唤起/系统协议注册语义待实机验收（NOT RUN）；契约 mock 驱动客户端逻辑。
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        commands::spawn_device_auth_link(handle.clone(), url.to_string());
+                    }
+                });
+                // 冷启动：插件取当前深链（macOS 缓存的 launch URL）+ argv 兜底（Windows/Linux）。
+                // 同一 request_id 重复到达由待确认 map 幂等覆盖，不会弹两份确认页。
+                let cold = app
+                    .deep_link()
+                    .get_current()
+                    .ok()
+                    .flatten()
+                    .and_then(|urls| urls.into_iter().next().map(|u| u.to_string()))
+                    .or_else(|| {
+                        commands::authorize_link_from_args(&std::env::args().collect::<Vec<_>>())
+                    });
+                if let Some(url) = cold {
+                    commands::spawn_device_auth_link(app.handle().clone(), url);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -975,6 +1013,12 @@ pub fn run() {
             commands::preview_external_links_file,
             commands::import_external_links_file,
             commands::import_external_links_from_url,
+            commands::device_auth_handle_link,
+            commands::device_auth_get_pending,
+            commands::device_auth_approve,
+            commands::device_auth_deny,
+            commands::device_auth_list_bindings,
+            commands::device_auth_revoke,
             commands::updater_check,
             commands::updater_download,
             commands::updater_cancel,

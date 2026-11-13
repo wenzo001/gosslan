@@ -670,6 +670,12 @@ const CMDS = [
   ["import_external_links_file", "external_links", "path str", "ExternalLinkImportResult|err"],
   ["import_external_links_from_url", "external_links", "url str", "ExternalLinkImportResult|err"],
   ["get_external_links_import_source", "external_links", "", "str|null|err"],
+  ["device_auth_handle_link", "device_auth", "url str", "DeviceAuthPrompt|err"],
+  ["device_auth_get_pending", "device_auth", "request_id str", "DeviceAuthPrompt|err"],
+  ["device_auth_approve", "device_auth", "request_id str; allow_nickname bool", "DeviceAuthOutcome|err"],
+  ["device_auth_deny", "device_auth", "request_id str", "DeviceAuthOutcome|err"],
+  ["device_auth_list_bindings", "device_auth", "", "RpBindingInfo[]|err"],
+  ["device_auth_revoke", "device_auth", "rp_origin str; client_id str", "bool|err"],
   ["updater_check", "updater", "", "UpdaterInfo|null|err"],
   ["updater_download", "updater", "onEvent channel", "()|err"],
   ["updater_cancel", "updater", "", "()|err"],
@@ -1224,6 +1230,7 @@ const PIPES = [
 /* 方向核对 */
 const DOMAINS = [
   {"id": "identity", "name": "身份", "tier": "L3", "paths": ["src-tauri/src/device.rs", "src-tauri/src/crypto.rs", "src-tauri/src/nickname.rs"], "inv": ["INV-P11", "INV-P12", "INV-P18", "INV-007", "INV-P22"], "home": "src-tauri/src/crypto.rs", "cons": [], "notes": "「我是谁」不负责「我怎么找到别人」。E2EE 密钥派生与 Hello 验签都在这。私钥永不过 UI 边界（INV-P18）。"},
+  {"id": "device-auth", "name": "外部应用设备认证", "tier": "L3", "paths": ["src-tauri/src/device_auth.rs", "src-tauri/src/device_auth"], "inv": [], "home": "src-tauri/src/device_auth.rs", "cons": ["observability"], "notes": "外部应用设备认证（Phase 2）：RP 专属 Ed25519 密钥（不复用 P2P 身份钥）+ pairwise subject + 强制确认；与核心身份隔离，不触好友/传输；真机深链唤起 NOT RUN。"},
   {"id": "presence", "name": "在线状态与发现", "tier": "L3", "paths": ["src-tauri/src/network/discovery.rs", "src-tauri/src/discovery"], "inv": ["INV-P21"], "home": "src-tauri/src/network/discovery.rs", "cons": ["routing", "messaging", "transport", "observability", "persistence"], "notes": "用户可见症状（2026-09-14）：「局域网直连上了，好友在线状态却不实时」——已有非空转护栏（「在线状态必须包含有活跃链路的节点」）。迁移详见 docs/migration-ledger.md 的「局域网发现」条。｜cons 里的 observability 是 5.15.26（DUP-03）加的：sweep_peers 的墙上时钟改从 logging::now_ms 一个家取；persistence 是 5.17.6 加的：按需跨网段探测要读 routed 端点配置（顶层 use crate::db::get_setting_checked）。⚠️ 本行是 docs/domains.data.mjs 的**手抄快照**，check-domain-map.mjs 只读那份 .mjs、不看本文件 ⇒ 改那边必须同改这里，没有东西会替你红。"},
   {"id": "friendship", "name": "好友关系", "tier": "L3", "paths": [], "inv": ["INV-P12", "INV-P33", "INV-P37"], "home": null, "cons": [], "notes": "⚠️ **Friend ≠ Peer**：`Peer` 是「发现到了」，`Friend` 是「关系已建立」。混同是 Presence 类 bug 的常见来源。"},
   {"id": "messaging", "name": "消息", "tier": "L3", "paths": ["src-tauri/src/protocol.rs", "src-tauri/src/gossip_engine.rs"], "inv": ["INV-001", "INV-002", "INV-P13", "INV-003", "INV-004", "INV-005", "INV-006", "INV-P01", "INV-P02", "INV-P03", "INV-P04", "INV-P07", "INV-P08", "INV-P19", "INV-P22", "INV-P24", "INV-P29"], "home": "src-tauri/src/protocol.rs", "cons": ["identity"], "notes": "直发 + Gossip + 离线补发统一 msg_id 幂等去重；消息先落 outbox，ACK 到达才删。**已知例外**（protocol-invariants §22）：「和自己聊天」不进 outbox、不 gossip、不加密（INV-P03/P04 例外）。消息语义的**实际执行点**仍在 network/transport.rs（现算 7056 行，正按 include! 分册中）—— 那是 Phase 7 的拆分目标。"},
@@ -1475,7 +1482,7 @@ function buildModCards() {
 }
 
 /* ---------- 接口表 ---------- */
-const DOM_ORDER = ["chat","groups","group_files","files","share","friends","channel","settings","relay","routed","favorites","external_links","window","logs","system","dev_diag","helpers","mobile_picker","chat_search","group_todo_media","group_announcements","group_file_dispatch","group_file_keys"];
+const DOM_ORDER = ["chat","groups","group_files","files","share","friends","channel","settings","relay","routed","favorites","external_links","device_auth","window","logs","system","dev_diag","helpers","mobile_picker","chat_search","group_todo_media","group_announcements","group_file_dispatch","group_file_keys"];
 const DOM_CN = {
   chat: "单聊消息", groups: "群与群密钥", group_files: "群载荷（公告/任务/卡片）", files: "文件发送与补拉",
   share: "共享目录", friends: "好友关系", channel: "通道开关与缓存策略", settings: "设置读写",

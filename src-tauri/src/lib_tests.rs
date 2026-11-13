@@ -57,6 +57,8 @@ mod tests {
             "\n",
             include_str!("commands/external_links.rs"),
             "\n",
+            include_str!("commands/device_auth.rs"),
+            "\n",
             include_str!("commands/logs.rs"),
             "\n",
             include_str!("commands/chat_search.rs"),
@@ -122,6 +124,8 @@ mod tests {
             include_str!("db/group_history.rs"),
             "\n",
             include_str!("db/todo_tags.rs"),
+            "\n",
+            include_str!("db/device_auth.rs"),
         )
     }
 
