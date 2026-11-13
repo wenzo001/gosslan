@@ -32,16 +32,20 @@ fn ids(rows: &[MessageRecord]) -> Vec<String> {
     rows.iter().map(|r| r.msg_id.clone()).collect()
 }
 
-/// ① 只有两种 kind 进得来 —— 混进 text/file 会让前端 fold 出错位的任务。
+/// ① 只有任务三种 kind 进得来 —— 混进 text/file 会让前端 fold 出错位的任务。
 #[test]
 fn todo_read_returns_only_todo_kinds() {
     let conn = fresh();
     put(&conn, "t1", "group:g1", "todo", 10, "{}");
     put(&conn, "u1", "group:g1", "todo_update", 11, "{}");
-    put(&conn, "x1", "group:g1", "text", 12, "正文");
-    put(&conn, "f1", "group:g1", "file", 13, "{}");
+    put(&conn, "r1", "group:g1", "todo_reply", 12, "{}");
+    put(&conn, "x1", "group:g1", "text", 13, "正文");
+    put(&conn, "f1", "group:g1", "file", 14, "{}");
     let rows = get_todo_messages_for_conns(&conn, &["group:g1".to_string()]).unwrap();
-    assert_eq!(ids(&rows), vec!["t1".to_string(), "u1".to_string()]);
+    assert_eq!(
+        ids(&rows),
+        vec!["t1".to_string(), "u1".to_string(), "r1".to_string()]
+    );
 }
 
 /// ② 全量语义：任务行**自己**超过任何一页的容量时也不许被截断。

@@ -50,6 +50,8 @@ export function todoFixturePayload(deviceId, over = {}) {
     related_on: null,
     // 任务标签：生产侧没填时写的就是空数组（`Vec<String>`），与 `related_on` 同理。
     tags: [],
+    // 关联来源任务：生产侧没关联时写的就是 `null`（`Option<String>`），与 `related_on` 同理。
+    linked_from: null,
     ...over,
   };
 }

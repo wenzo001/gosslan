@@ -10,7 +10,8 @@
  * 纯展示 + 意图上抛：真正的改状态/归档/编辑/删除都在 `GroupTasksBoard`。
  */
 import Icon from "@/components/ui/Icon.vue";
-import { computed } from "vue";
+import CharCounter from "@/components/ui/CharCounter.vue";
+import { computed, ref } from "vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
@@ -30,17 +31,20 @@ import {
   TODO_STATUS_LABEL_KEY,
   TODO_STATUS_PILL,
   TODO_CUSTOM_ICON_DEFAULT,
+  MAX_TODO_REPLY_CHARS,
   type TodoCategory,
   type TodoCustomIcon,
   type TodoHistoryChange,
   type TodoHistoryEntry,
   type TodoItem,
   type TodoPriority,
+  type TodoReply,
   type TodoStatus,
 } from "@/utils/todos";
 import type { TodoTagCandidate } from "@/api";
 import { fmtTodoTime } from "@/utils/time";
 import { t } from "@/i18n";
+import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 
 const props = defineProps<{
   item: TodoItem;
@@ -57,6 +61,16 @@ const props = defineProps<{
    * 右栏点击切换任务时也要按同一个 key 收，两处必须同一个来源口径。
    */
   sourceKey: string | null;
+  /** 本任务的回复（平铺、旧→新，用户 2026-11-13）；由宿主从 groupTodoRows 折叠注入。 */
+  replies?: TodoReply[];
+  /** 能否回复（任意群成员）；由宿主按成员资格判定。 */
+  canReply?: boolean;
+  /** 本机 device_id（标记"我"的回复）。 */
+  selfId?: string;
+  /** 关联来源任务（linked_from 指向的那条）；null = 无关联。 */
+  linkedFromTodo?: TodoItem | null;
+  /** 以本任务为来源新建的任务（被关联任务）。 */
+  linkedToTodos?: TodoItem[];
 }>();
 
 const emit = defineEmits<{
@@ -67,6 +81,12 @@ const emit = defineEmits<{
   (e: "category", category: TodoCategory, customName?: string): void;
   (e: "icon", icon: TodoCustomIcon): void;
   (e: "claim"): void;
+  /** 发一条回复；parentReplyId 给了 = 回复某条回复（平铺引用，不嵌套）。 */
+  (e: "reply", text: string, parentReplyId?: string): void;
+  /** 跳到某条关联任务（来源或被关联）。 */
+  (e: "open-linked", todoId: string): void;
+  /** 基于本任务新建一条关联任务。 */
+  (e: "create-linked"): void;
 }>();
 
 const assignees = computed(() =>
@@ -157,6 +177,42 @@ const gallery = computed(() => props.item.images.map((im) => ({ cid: im.sha256, 
 const preview = useImagePreviewStore();
 function openAt(i: number) {
   preview.openGallery(gallery.value, i, props.sourceKey);
+}
+
+// ---------------- 任务回复（用户 2026-11-13） ----------------
+// 平铺楼层（旧→新），parentReplyId 只画一层"A 回复 B"引用，不嵌套渲染（用户明确不要无限递归）。
+const replyDraft = ref("");
+// 回车发送必须让路给输入法（与任务描述编辑器同一个守卫，判据 53）。
+const ime = useImeEnterGuard();
+/** 正在回复的那条回复的 reply_id；null = 直接回复任务。 */
+const replyTarget = ref<string | null>(null);
+const repliesList = computed(() => props.replies ?? []);
+function replyAuthor(id: string): string {
+  return props.nameOf(id);
+}
+/** 某条回复的父回复作者名（用于"A 回复 B"）；无父或父已不在列表 ⇒ 空串。 */
+function parentAuthorOf(r: TodoReply): string {
+  if (!r.parentReplyId) return "";
+  const parent = repliesList.value.find((x) => x.replyId === r.parentReplyId);
+  return parent ? props.nameOf(parent.author) : "";
+}
+const replyTargetAuthor = computed(() => {
+  if (!replyTarget.value) return "";
+  const parent = repliesList.value.find((x) => x.replyId === replyTarget.value);
+  return parent ? props.nameOf(parent.author) : "";
+});
+function startReplyTo(replyId: string) {
+  replyTarget.value = replyId;
+}
+function cancelReplyTo() {
+  replyTarget.value = null;
+}
+function submitReply() {
+  const text = replyDraft.value.trim();
+  if (!text) return;
+  emit("reply", text, replyTarget.value ?? undefined);
+  replyDraft.value = "";
+  replyTarget.value = null;
 }
 </script>
 
@@ -254,6 +310,45 @@ function openAt(i: number) {
       <div v-else-if="item.doneAt && item.status === 'impossible'">{{ t("todo.impossibleAt", { time: fmtTodoTime(item.doneAt) }) }}</div>
     </div>
 
+    <!-- 关联任务（用户 2026-11-13）：来源 + 被关联任务各自独立管理，这里只做溯源与导航。 -->
+    <div class="space-y-1.5">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.linkedTitle") }}</span>
+        <button
+          type="button"
+          class="tap-safe inline-flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2 py-1 text-meta text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
+          @click="emit('create-linked')"
+        >
+          <Icon name="plus" class="h-3.5 w-3.5" aria-hidden="true" />
+          {{ t("todo.createLinked") }}
+        </button>
+      </div>
+      <button
+        v-if="linkedFromTodo"
+        type="button"
+        class="flex w-full items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1.5 text-left text-meta transition hover:bg-[var(--gosslan-hover)]"
+        @click="emit('open-linked', linkedFromTodo.todoId)"
+      >
+        <Icon name="link2" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+        <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("todo.linkedFrom") }}</span>
+        <span class="gosslan-selectable min-w-0 flex-1 truncate text-[var(--gosslan-text)]" :title="linkedFromTodo.title">{{ linkedFromTodo.title }}</span>
+      </button>
+      <button
+        v-for="lt in linkedToTodos ?? []"
+        :key="lt.todoId"
+        type="button"
+        class="flex w-full items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1.5 text-left text-meta transition hover:bg-[var(--gosslan-hover)]"
+        @click="emit('open-linked', lt.todoId)"
+      >
+        <Icon name="link2" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+        <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("todo.linkedTo") }}</span>
+        <span class="gosslan-selectable min-w-0 flex-1 truncate text-[var(--gosslan-text)]" :title="lt.title">{{ lt.title }}</span>
+      </button>
+      <p v-if="!linkedFromTodo && !(linkedToTodos && linkedToTodos.length)" class="text-meta text-[var(--gosslan-text-2)]">
+        {{ t("todo.noLinked") }}
+      </p>
+    </div>
+
     <!-- 描述（全文，不截断） -->
     <div>
       <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.description") }}</div>
@@ -282,6 +377,73 @@ function openAt(i: number) {
           clickable
           @open="openAt(i)"
         />
+      </div>
+    </div>
+
+    <!-- 任务回复（用户 2026-11-13）：平铺楼层（旧→新），"谁回复谁"只引用一层，不嵌套渲染。 -->
+    <div class="border-t border-[var(--gosslan-divider)] pt-3">
+      <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">
+        {{ t("todo.repliesTitle") }}<span v-if="repliesList.length">{{ t("todo.repliesCount", { n: repliesList.length }) }}</span>
+      </div>
+      <ul v-if="repliesList.length" class="gosslan-selectable space-y-2.5">
+        <li v-for="r in repliesList" :key="r.replyId" class="text-meta leading-relaxed">
+          <div class="flex items-baseline gap-2">
+            <span class="shrink-0 font-medium text-[var(--gosslan-text)]">{{ replyAuthor(r.author) }}</span>
+            <span v-if="parentAuthorOf(r)" class="shrink-0 text-[var(--gosslan-text-2)]">
+              {{ t("todo.replyTo", { name: parentAuthorOf(r) }) }}
+            </span>
+            <span class="shrink-0 tabular-nums text-[var(--gosslan-text-2)]">{{ fmtTodoTime(r.ts) }}</span>
+            <button
+              v-if="canReply"
+              type="button"
+              class="ml-auto shrink-0 text-xs text-[var(--gosslan-accent-ink)] transition hover:opacity-80"
+              @click="startReplyTo(r.replyId)"
+            >
+              {{ t("todo.replyAction") }}
+            </button>
+          </div>
+          <p class="whitespace-pre-wrap break-words text-[var(--gosslan-text)]">{{ r.text }}</p>
+        </li>
+      </ul>
+      <p v-else class="text-meta text-[var(--gosslan-text-2)]">{{ t("todo.noReplies") }}</p>
+
+      <!-- 回复输入：任意群成员可回；回复某条回复时顶部显示"回复 @X"，可取消。 -->
+      <div v-if="canReply" class="mt-2.5 space-y-1.5">
+        <div v-if="replyTarget" class="flex items-center gap-2 text-xs text-[var(--gosslan-text-2)]">
+          <span>{{ t("todo.replyingTo", { name: replyTargetAuthor }) }}</span>
+          <button
+            type="button"
+            class="tap-safe inline-flex items-center justify-center rounded-[var(--gosslan-radius-sm)] p-0.5 transition hover:bg-[var(--gosslan-hover)]"
+            :aria-label="t('todo.cancelReplyTo')"
+            @click="cancelReplyTo"
+          >
+            <Icon name="x" class="h-3 w-3" aria-hidden="true" />
+          </button>
+        </div>
+        <div class="flex items-end gap-2">
+          <textarea
+            v-model="replyDraft"
+            rows="2"
+            :maxlength="MAX_TODO_REPLY_CHARS"
+            class="gosslan-selectable w-full resize-none rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-3 py-2 text-sm outline-none transition focus:border-[var(--gosslan-primary)]"
+            :placeholder="t('todo.replyPlaceholder')"
+            @keydown.meta.enter.prevent="ime.enter(submitReply, $event)"
+            @keydown.ctrl.enter.prevent="ime.enter(submitReply, $event)"
+            @compositionstart="ime.onStart"
+            @compositionend="ime.onEnd"
+          ></textarea>
+          <button
+            type="button"
+            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3 py-2 text-sm text-[var(--gosslan-on-primary)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="!replyDraft.trim()"
+            @click="submitReply"
+          >
+            {{ t("todo.replySend") }}
+          </button>
+        </div>
+        <div v-if="replyDraft" class="flex justify-end">
+          <CharCounter :text="replyDraft" :max="MAX_TODO_REPLY_CHARS" />
+        </div>
       </div>
     </div>
 

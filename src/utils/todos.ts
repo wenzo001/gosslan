@@ -258,6 +258,9 @@ export const MAX_TODO_TITLE_CHARS = 200;
 /** 任务描述上限（Rust `group_files.rs::MAX_TODO_DESC_LEN`）。 */
 export const MAX_TODO_DESC_CHARS = 4000;
 
+/** 任务回复上限（Rust `protocol.rs::MAX_TODO_REPLY_LEN`）；由 textLimits.test.ts 跨语言对账。 */
+export const MAX_TODO_REPLY_CHARS = 2000;
+
 /**
  * 一条任务最多能带几张图片（用户 2026-10-25 拍板：20）。
  *
@@ -477,6 +480,11 @@ export interface TodoItem {
   doneAt: number | null;
   /** 创建时间（创建那条 `todo` 消息的 ts）；由 `foldTodos` 从创建记录回填，旧数据可能为 null。 */
   createdAt: number | null;
+  /**
+   * 关联来源任务的 todo_id（用户 2026-11-13）：基于另一条任务新建时记下那条。
+   * 两条任务各自独立管理，这一格只是溯源指针；null = 无关联 / 旧载荷。
+   */
+  linkedFrom: string | null;
 }
 
 interface TodoDef extends TodoItem {
@@ -504,6 +512,8 @@ interface TodoAbsent {
   relatedOn: boolean;
   /** 载荷里没带 `tags`（老对端不认识这一格）⇒ 折叠时沿用已知标签，别把已挂的抹光。 */
   tags: boolean;
+  /** 载荷里没带 `linked_from`（老对端不认识这一格）⇒ 折叠时沿用已知来源，别把关联抹掉。 */
+  linkedFrom: boolean;
 }
 
 /** 完成态超过该天数后自动归档（前端计算，见 `isEffectivelyArchived`）。 */
@@ -531,6 +541,19 @@ function readTodoRelatedOn(v: unknown): { value: string | null; absent: boolean 
   return { value: null, absent: true };
 }
 
+/**
+ * 读 `linked_from` 一格（关联来源任务，用户 2026-11-13），三态同 related_on：
+ *   键不存在 ⇒ 没说（absent=true，折叠时沿用旧值）；null/空串 ⇒ 明确无关联；非空串 ⇒ 来源 todo_id。
+ */
+function readTodoLinkedFrom(v: unknown): { value: string | null; absent: boolean } {
+  if (v === undefined) return { value: null, absent: true };
+  if (v === null) return { value: null, absent: false };
+  if (typeof v !== "string") return { value: null, absent: true };
+  const s = v.trim();
+  if (s === "") return { value: null, absent: false };
+  return { value: s, absent: false };
+}
+
 export function parseTodo(rec: MessageRecord): TodoDef | null {
   // 两种 kind 同构：`todo` = 创建（Card，会通知），`todo_update` = 改状态/改标题/删除
   // （Silent，不打扰全群）。它们同属一条 LWW 序列，所以折叠时一视同仁。
@@ -541,6 +564,7 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
     // 「这一格没说」= 键不存在 **或** 值本端读不出合法值（后者含未来新增的档位：
     // 本端表达不了就等于没说，宁可沿用自己的已知值，也不要每来一份新载荷就回落默认值抖一次）。
     const related = readTodoRelatedOn(p.related_on);
+    const linked = readTodoLinkedFrom(p.linked_from);
     // 键不存在 = 没说；数组（含空数组）= 说过（空数组就是明确清空）。非数组算没说。
     const tagsAbsent = !Array.isArray(p.tags);
     const absent: TodoAbsent = {
@@ -550,6 +574,7 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
       customIcon: !isTodoCustomIcon(p.custom_icon),
       relatedOn: related.absent,
       tags: tagsAbsent,
+      linkedFrom: linked.absent,
     };
     return {
       todoId: p.todo_id,
@@ -582,6 +607,7 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
       number: typeof p.number === "number" && p.number > 0 ? Math.trunc(p.number) : 0,
       relatedOn: related.value,
       tags: tagsAbsent ? [] : normalizeTodoTags(p.tags),
+      linkedFrom: linked.value,
       doneAt: typeof p.done_at === "number" ? p.done_at : null,
       createdAt: null,
       seq: rec.seq,
@@ -605,7 +631,7 @@ export function carryAbsentTodoFields(prev: TodoDef, next: TodoDef): TodoDef {
   const a = next.absent;
   if (
     !a ||
-    (!a.priority && !a.category && !a.number && !a.customIcon && !a.relatedOn && !a.tags)
+    (!a.priority && !a.category && !a.number && !a.customIcon && !a.relatedOn && !a.tags && !a.linkedFrom)
   ) {
     return next;
   }
@@ -623,6 +649,8 @@ export function carryAbsentTodoFields(prev: TodoDef, next: TodoDef): TodoDef {
     relatedOn: a.relatedOn ? prev.relatedOn : next.relatedOn,
     // 标签同理：老对端不认识这一格 ⇒ 不许把别人挂过的标签抹光。
     tags: a.tags ? prev.tags : next.tags,
+    // 关联来源同理：老对端不认识这一格 ⇒ 不许把"它是从哪条任务来的"抹成无关联。
+    linkedFrom: a.linkedFrom ? prev.linkedFrom : next.linkedFrom,
     number: a.number ? prev.number : next.number,
   };
 }
@@ -718,7 +746,7 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       if (a.seq !== b.seq) return b.seq - a.seq; // 新的在前
       return a.msgId < b.msgId ? 1 : -1; // 同 seq 按 msg_id 比（与 newer 同规则）
     })
-    .map(({ todoId, title, assignees, status, creator, priority, category, customCategory, customIcon, description, images, archived, relatedOn, tags, doneAt }) => ({
+    .map(({ todoId, title, assignees, status, creator, priority, category, customCategory, customIcon, description, images, archived, relatedOn, tags, linkedFrom, doneAt }) => ({
       todoId,
       number: numbers.get(todoId) ?? 0,
       title,
@@ -736,6 +764,7 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       archived,
       relatedOn,
       tags,
+      linkedFrom,
       doneAt,
       createdAt: created.get(todoId) ?? null,
     }));
@@ -1022,6 +1051,84 @@ export function todoCardConcernsMe(rec: MessageRecord, myId: string): boolean {
   return d.creator === myId || todoMentionsMe(rec, myId);
 }
 
+// ---------------- 任务详情回复（用户 2026-11-13） ----------------
+
+/** 一条任务回复（独立事件消息 kind=todo_reply，与 reaction 同构，非任务 LWW 数组）。 */
+export interface TodoReply {
+  replyId: string;
+  todoId: string;
+  /** 回复的目标回复（平铺引用一层，不嵌套渲染）；null = 直接回复任务。 */
+  parentReplyId: string | null;
+  text: string;
+  /** 作者 = 消息 sender_id（签名不可伪造），不在载荷里自报。 */
+  author: string;
+  ts: number;
+  seq: number;
+  msgId: string;
+}
+
+/** 读一条 todo_reply；畸形/缺格返回 null（与 parseTodo 同口径）。 */
+export function parseTodoReply(rec: MessageRecord): TodoReply | null {
+  if (rec.kind !== "todo_reply") return null;
+  try {
+    const p = rawOf(rec);
+    if (typeof p.todo_id !== "string" || !p.todo_id) return null;
+    if (typeof p.reply_id !== "string" || !p.reply_id) return null;
+    if (typeof p.text !== "string" || !p.text.trim()) return null;
+    const parent =
+      typeof p.parent_reply_id === "string" && p.parent_reply_id.trim()
+        ? p.parent_reply_id
+        : null;
+    return {
+      replyId: p.reply_id,
+      todoId: p.todo_id,
+      parentReplyId: parent,
+      text: p.text,
+      author: rec.sender_id,
+      ts: rec.ts,
+      seq: rec.seq,
+      msgId: rec.msg_id,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 折叠某条任务的全部回复，按 (seq, msg_id) **正序**（旧→新，平铺楼层）。
+ * 按 reply_id 去重：同一条回复经多投递路径重复 emit 时只留一份（msg_id 幂等之外的双保险）。
+ * 不做嵌套：parentReplyId 只是引用，渲染层画"A 回复 B"，不递归展开。
+ */
+export function foldTodoReplies(records: MessageRecord[], todoId: string): TodoReply[] {
+  const seen = new Map<string, TodoReply>();
+  for (const rec of records) {
+    const r = parseTodoReply(rec);
+    if (!r || r.todoId !== todoId) continue;
+    if (!seen.has(r.replyId)) seen.set(r.replyId, r);
+  }
+  return [...seen.values()].sort((a, b) =>
+    a.seq !== b.seq ? a.seq - b.seq : a.msgId < b.msgId ? -1 : 1,
+  );
+}
+
+/**
+ * 这条回复是否「跟我有关」—— 只用于回复的通知闸门：通知**任务关联人**（创建人 + 被指派人）。
+ * 需要目标任务定义来判断关联人，由调用方注入 findTodo（避免这里再依赖成员/任务数据源）。
+ * 兜底方向与 todoCardConcernsMe 一致：myId 未就绪 / 非回复 / 读不出 / 查不到任务 ⇒ 放行（宁可多打扰一条）。
+ */
+export function todoReplyConcernsMe(
+  rec: MessageRecord,
+  myId: string,
+  findTodo: (todoId: string) => TodoItem | undefined,
+): boolean {
+  if (!myId || rec.kind !== "todo_reply") return true;
+  const r = parseTodoReply(rec);
+  if (!r) return true;
+  const todo = findTodo(r.todoId);
+  if (!todo) return true;
+  return todo.creator === myId || todo.assignees.includes(myId);
+}
+
 // ---------------- 操作记录（全员对这条任务的改动流水） ----------------
 //
 // 数据源就是消息库里这条任务的全部 `todo`/`todo_update` 事件：任务定义是 LWW 寄存器，
@@ -1223,7 +1330,9 @@ export function mergeIncomingTodoRows(
   rows: TodoRowsByConv,
   incoming: MessageRecord[],
 ): TodoRowsByConv {
-  const todo = incoming.filter((m) => parseTodo(m) !== null);
+  // 任务定义（todo/todo_update）与任务回复（todo_reply）都落这份源：看板折定义、详情折回复
+  // （foldTodoReplies）。实时收到的回复若不进来，就要等整表重读才看得见 —— 与建卡同一份增量口。
+  const todo = incoming.filter((m) => parseTodo(m) !== null || parseTodoReply(m) !== null);
   if (todo.length === 0) return rows;
   const next: TodoRowsByConv = { ...rows };
   let changed = false;

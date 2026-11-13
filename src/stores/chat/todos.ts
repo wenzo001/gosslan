@@ -290,6 +290,7 @@ export function createTodosModule(ctx: ChatContext) {
     customIcon?: string,
     relatedOn?: string,
     tags?: string[],
+    linkedFrom?: string,
   ): Promise<MessageRecord> {
     const rec = await api.sendGroupTodo(
       groupId,
@@ -302,7 +303,24 @@ export function createTodosModule(ctx: ChatContext) {
       customIcon,
       relatedOn,
       tags,
+      linkedFrom,
     );
+    enqueueMessage(rec);
+    return rec;
+  }
+
+  /**
+   * 任务详情回复（用户 2026-11-13）：任意群成员可回。独立事件消息（kind=todo_reply），
+   * 不改进程任务定义；`parentReplyId` 给了 = 回复某条回复（平铺引用，不嵌套）。
+   * 对关联人的通知由 maybeNotify 单独放行。返回的消息记录 enqueue 进本地列表。
+   */
+  async function sendTodoReply(
+    groupId: string,
+    todoId: string,
+    text: string,
+    parentReplyId?: string,
+  ): Promise<MessageRecord> {
+    const rec = await api.sendGroupTodoReply(groupId, todoId, text, parentReplyId);
     enqueueMessage(rec);
     return rec;
   }
@@ -400,6 +418,7 @@ export function createTodosModule(ctx: ChatContext) {
     watchGroupTodos,
     createTodo,
     updateTodo,
+    sendTodoReply,
     pinMessage,
   };
 }

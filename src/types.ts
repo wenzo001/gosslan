@@ -97,6 +97,8 @@ export type MsgKind =
   | "announcement_delete"
   | "todo"
   | "todo_update"
+  /** 任务详情回复（Silent 类：独立事件，不进任务 LWW、不计未读；通知只给任务关联人）。 */
+  | "todo_reply"
   | "poll"
   | "poll_vote"
   /** 合并转发的聊天记录（微信式卡片）。Bubble 类：进时间线、计未读、可搜索。 */

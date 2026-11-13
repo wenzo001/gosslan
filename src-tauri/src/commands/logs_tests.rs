@@ -1068,6 +1068,7 @@ mod tests {
             custom_icon: String::new(),
             related_on: None,
             tags: vec![],
+            linked_from: None,
         };
         let insert = |msg_id: &str, seq: i64, p: &TodoPayload| {
             conn.execute(
@@ -1276,6 +1277,7 @@ mod tests {
             custom_icon: String::new(),
             related_on: None,
             tags: vec![],
+            linked_from: None,
         };
         // 参数顺序：(def, actor, group_creator, group_admins, edits_structure)
         // 档位只有两档（结构 = 改标题/删除；其余 = 描述/图片/指派人/状态/归档），
@@ -1393,6 +1395,7 @@ mod tests {
             custom_icon: String::new(),
             related_on: None,
             tags: vec![],
+            linked_from: None,
         };
         // 成员窄档只对"什么别的都没动"的请求成立，所以每个否定用例都从**已满足**的那一位
         // 出发再加一处改动 —— 否则测的是另一个判据，不是"夹带"这一条。

@@ -585,6 +585,11 @@ pub const WIRE_KINDS: &[(&str, KindClass)] = &[
     //     （2026-09-16 实现时先按单 kind 做过，发现这条才拆开）。
     ("todo", KindClass::Card),
     ("todo_update", KindClass::Silent),
+    // 任务详情回复（用户 2026-11-13）：与 reaction 同构的**独立事件消息**——每条回复有自己的
+    // reply_id，接收端按 todo_id 折叠成平铺列表。Silent：不进聊天时间线、不计未读；
+    // 对关联人（创建人 + 被指派人）的通知在 frontend maybeNotify 单独放行（同 todo_update 终态那条例外）。
+    // 不塞进 TodoPayload 的数组：任务是整份 LWW，并发回复会互相丢更新（见 ReactionPayload 注释）。
+    ("todo_reply", KindClass::Silent),
     ("poll", KindClass::Card),
     ("poll_vote", KindClass::Silent),
     // 合并转发的聊天记录（微信式）：一张卡片，但它是**一条聊天内容** ——
@@ -1035,6 +1040,7 @@ pub fn preview_text(kind: &str, content: &str) -> String {
         "code" => "[代码]".to_string(),
         "merge" => merge_summary(content),
         "todo" | "todo_update" => todo_preview(content),
+        "todo_reply" => "[回复]".to_string(),
         "poll" | "poll_vote" => poll_preview(content),
         "announcement" => announcement_preview(content),
         "announcement_delete" => "[公告]".to_string(),
@@ -1322,6 +1328,60 @@ pub struct TodoPayload {
     /// [`normalize_todo_tags`]，数据库另有 `(todo_id, tag)` 唯一约束兜底。
     #[serde(default)]
     pub tags: Vec<String>,
+    /// 关联来源任务（可选，用户 2026-11-13）：基于另一条任务新建时记下那条的 `todo_id`。
+    ///
+    /// 两条任务**各自独立管理**（状态/指派/归档互不影响），这一格只是"它是从哪条来的"溯源指针，
+    /// 详情里据此画出"来源任务 / 被关联任务"。单值 ⇒ 走任务本身的 LWW 即可，无并发追加问题。
+    /// `#[serde(default)]` ⇒ 旧载荷 / 旧版本对端读出来是 `None`（不报错、不当关联）。
+    /// 只在**创建**时由命令层校验"来源确是本群任务"后写入；更新一律沿用原值。
+    #[serde(default)]
+    pub linked_from: Option<String>,
+}
+
+/// 任务详情回复的单条长度上限（字符）。回复是轻量讨论，不是第二份描述。
+pub const MAX_TODO_REPLY_LEN: usize = 2000;
+
+/// 任务详情回复载荷（`kind = "todo_reply"`，用户 2026-11-13）。
+///
+/// 与 [`ReactionPayload`] 同构：**一串独立事件消息**，不是给任务加可变数组。
+/// 任务是整份 payload 的 LWW 寄存器，若把回复塞成数组，两个成员离线各回一条、
+/// 上线后各自带全量数组重放 ⇒ 互相丢更新。每条回复有自己的 `reply_id`（UUID），
+/// 接收端按 `todo_id` 折叠成平铺列表，任意到达顺序收敛（去重靠 msg_id 的 INSERT OR IGNORE）。
+///
+/// `parent_reply_id`：回复某条回复时填那条的 `reply_id`，界面据此画"A 回复 B"，
+/// **只引用一层、不嵌套渲染**（用户明确要求不要无限递归回复界面）。
+/// 作者与时间不在载荷里：作者 = 消息 `sender_id`（签名不可伪造），时间 = 消息 ts。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TodoReplyPayload {
+    /// 被回复的任务 todo_id
+    pub todo_id: String,
+    /// 这条回复自己的 id（UUID，创建时生成）
+    pub reply_id: String,
+    /// 回复的目标回复（可选）：None = 直接回复任务；Some = 回复某条回复（平铺引用，不嵌套）
+    #[serde(default)]
+    pub parent_reply_id: Option<String>,
+    /// 回复正文
+    pub text: String,
+}
+
+/// 校验一条任务回复载荷（发送侧挡畸形：缺任务/缺 id/空文本/超长都发不出去要当场说清楚）。
+pub fn parse_todo_reply_payload(content: &str) -> Result<TodoReplyPayload, String> {
+    let p: TodoReplyPayload =
+        serde_json::from_str(content).map_err(|e| format!("任务回复载荷解析失败：{e}"))?;
+    if p.todo_id.trim().is_empty() {
+        return Err("回复缺少目标任务".to_string());
+    }
+    if p.reply_id.trim().is_empty() {
+        return Err("回复缺少标识".to_string());
+    }
+    let text = p.text.trim();
+    if text.is_empty() {
+        return Err("回复内容不能为空".to_string());
+    }
+    if text.chars().count() > MAX_TODO_REPLY_LEN {
+        return Err(format!("回复不能超过 {MAX_TODO_REPLY_LEN} 字"));
+    }
+    Ok(p)
 }
 
 /// 任务状态的**唯一取值表**（用户 2026-09-16 定的四态）。

@@ -18,6 +18,7 @@ import {
   type TodoHistoryEntry,
   type TodoItem,
   type TodoPriority,
+  type TodoReply,
   type TodoStatus,
 } from "@/utils/todos";
 import type { TodoTagCandidate } from "@/api";
@@ -76,6 +77,12 @@ const props = defineProps<{
    * 默认空数组：没有操作记录时整段不渲染。
    */
   history?: TodoHistoryEntry[];
+  /** 任务回复 / 关联任务（用户 2026-11-13）：由看板注入，透传给共用字段区。 */
+  replies?: TodoReply[];
+  canReply?: boolean;
+  selfId?: string;
+  linkedFromTodo?: TodoItem | null;
+  linkedToTodos?: TodoItem[];
 }>();
 
 const emit = defineEmits<{
@@ -96,6 +103,10 @@ const emit = defineEmits<{
   (e: "restore"): void;
   (e: "edit"): void;
   (e: "remove"): void;
+  /** 任务回复 / 关联任务（用户 2026-11-13）：透传给共用字段区。 */
+  (e: "reply", text: string, parentReplyId?: string): void;
+  (e: "open-linked", todoId: string): void;
+  (e: "create-linked"): void;
 }>();
 
 const preview = useImagePreviewStore();
@@ -160,6 +171,11 @@ const fullCode = computed(() =>
       :self-mention="selfMention"
       :history="history"
       :source-key="sourceKey"
+      :replies="replies"
+      :can-reply="canReply"
+      :self-id="selfId"
+      :linked-from-todo="linkedFromTodo"
+      :linked-to-todos="linkedToTodos"
       @status="(s: TodoStatus) => emit('status', s)"
       @priority="(p: TodoPriority) => emit('priority', p)"
       @category="(c: TodoCategory, name?: string) => emit('category', c, name)"
@@ -167,6 +183,9 @@ const fullCode = computed(() =>
       @related-on="(v: string) => emit('relatedOn', v)"
       @tags="(tags: string[]) => emit('tags', tags)"
       @claim="emit('claim')"
+      @reply="(text: string, parentReplyId?: string) => emit('reply', text, parentReplyId)"
+      @open-linked="(id: string) => emit('open-linked', id)"
+      @create-linked="emit('create-linked')"
     />
 
     <!-- 操作条走 footer 插槽 ⇒ 它在滚动区**之外**，永不随内容滚走（2026-10-12 用户要求）。 -->

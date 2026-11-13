@@ -54,7 +54,7 @@ import CharCounter from "@/components/ui/CharCounter.vue";
 import type { TodoFocusRequest } from "@/types";
 import type { TodoTagCandidate } from "@/api";
 import {
-  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, autoArchiveDaysLeft, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
+  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, autoArchiveDaysLeft, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, foldTodoReplies, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import {
   isTodoRowsLoaded,
   todoRowsLoadState,
@@ -607,6 +607,43 @@ const detailArchived = computed(() => (detailItem.value ? isEffectivelyArchived(
  */
 const detailHistory = computed(() => historyFor(detailItem.value));
 
+// ---------------- 任务回复 + 关联任务（用户 2026-11-13） ----------------
+/** 详情任务的回复（平铺、旧→新）：与任务定义同一取数口 groupTodoRows，折叠只一份。 */
+const detailReplies = computed(() =>
+  detailItem.value
+    ? foldTodoReplies(chat.groupTodoRows[convId.value] ?? [], detailItem.value.todoId)
+    : [],
+);
+/** 来源任务（linked_from 指向的那条）；查不到（被删/未加载）⇒ null。 */
+const detailLinkedFrom = computed(() => {
+  const src = detailItem.value?.linkedFrom;
+  return src ? (todos.value.find((x) => x.todoId === src) ?? null) : null;
+});
+/** 以本任务为来源新建的任务（被关联任务）。 */
+const detailLinkedTo = computed(() =>
+  detailItem.value ? todos.value.filter((x) => x.linkedFrom === detailItem.value!.todoId) : [],
+);
+/** 任意群成员可回复。 */
+const canReplyDetail = computed(() => myMembership.value);
+
+async function sendDetailReply(text: string, parentReplyId?: string) {
+  if (!detailItem.value || !props.groupId) return;
+  try {
+    await chat.sendTodoReply(props.groupId, detailItem.value.todoId, text, parentReplyId);
+  } catch (e) {
+    app.toastError(e, t("todo.replyFail"));
+  }
+}
+/** 跳到关联任务详情（来源或被关联）：复用 focusTodo 的筛选切换 + 定位。 */
+function openLinkedTodo(todoId: string) {
+  focusTodo(todoId, "detail");
+}
+/** 基于当前任务新建一条关联任务：打开新建草稿并带上来源。 */
+function createLinkedFromDetail() {
+  if (!detailItem.value) return;
+  startCreate(detailItem.value.todoId);
+}
+
 function openDetail(x: TodoItem) {
   // 两栏形态里右栏常驻：换选另一条时，把上一条按来源打开的相册收掉，
   // 否则右栏已经换了任务、大图还停在旧任务那几张。
@@ -864,6 +901,8 @@ const draft = ref<{
   /** 本次编辑新选中的图片本地路径，按 sha256 索引（仅需随字节管线投递，不进定义元数据）。
    *  用 sha256 而不是下标：删掉一张**已有**图片时，下标会与新图错位（把新图的待投递路径误删）。 */
   imagePaths: Record<string, string>;
+  /** 关联来源任务（用户 2026-11-13）：基于某条任务新建时记其 todo_id；编辑沿用原值。 */
+  linkedFrom: string | null;
 } | null>(null);
 const saving = ref(false);
 
@@ -905,7 +944,7 @@ const draftCanEditTitle = computed(() => {
   return cur ? canEditStructure(cur) : false;
 });
 
-function startCreate() {
+function startCreate(linkedFrom?: string) {
   draft.value = {
     todoId: null,
     title: "",
@@ -920,6 +959,7 @@ function startCreate() {
     description: "",
     images: [],
     imagePaths: {},
+    linkedFrom: linkedFrom ?? null,
   };
 }
 function startEdit(x: TodoItem) {
@@ -938,6 +978,7 @@ function startEdit(x: TodoItem) {
     description: x.description,
     images: [...x.images],
     imagePaths: {},
+    linkedFrom: x.linkedFrom,
   };
 }
 /**
@@ -1325,6 +1366,8 @@ async function saveDraft() {
         // 新建时空串 = 不填（后端 Option 收到 null/undefined 就是没填）
         d.relatedOn || undefined,
         d.tags,
+        // 关联来源（基于某条任务新建时带上；普通新建为 null）。
+        d.linkedFrom ?? undefined,
       );
       const parsed = parseTodo(rec);
       todoId = parsed?.todoId ?? "";
@@ -1572,7 +1615,7 @@ watch(
       <button
         v-if="!draft"
         class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
-        @click="startCreate"
+        @click="startCreate()"
       >
         <Icon name="plus" class="h-4 w-4" />
         {{ t("todo.create") }}
@@ -1969,6 +2012,11 @@ watch(
             :self-mention="selfMention"
             :history="detailHistory"
             :source-key="`task:${detailItem.todoId}`"
+            :replies="detailReplies"
+            :can-reply="canReplyDetail"
+            :self-id="myId"
+            :linked-from-todo="detailLinkedFrom"
+            :linked-to-todos="detailLinkedTo"
             @status="(s: TodoStatus) => detailItem && setStatus(detailItem, s)"
             @priority="(p: TodoPriority) => detailItem && setPriority(detailItem, p)"
             @category="(c: TodoCategory, name?: string) => detailItem && setCategory(detailItem, c, name)"
@@ -1976,6 +2024,9 @@ watch(
             @related-on="(v: string) => detailItem && setRelatedOn(detailItem, v)"
             @tags="(tags: string[]) => detailItem && setTagsFor(detailItem, tags)"
             @claim="detailItem && claim(detailItem)"
+            @reply="(text: string, parentReplyId?: string) => sendDetailReply(text, parentReplyId)"
+            @open-linked="openLinkedTodo"
+            @create-linked="createLinkedFromDetail"
           />
         </div>
         <div class="shrink-0 border-t border-[var(--gosslan-divider)] px-[var(--gosslan-scroll-inset)] py-2.5">
@@ -2016,6 +2067,11 @@ watch(
     :name-of="(id: string) => memberProfile(id).name"
     :mention-names="mentionNames"
     :self-mention="selfMention"
+    :replies="detailReplies"
+    :can-reply="canReplyDetail"
+    :self-id="myId"
+    :linked-from-todo="detailLinkedFrom"
+    :linked-to-todos="detailLinkedTo"
     @close="closeDetail"
     @status="(s: TodoStatus) => detailItem && setStatus(detailItem, s)"
     @priority="(p: TodoPriority) => detailItem && setPriority(detailItem, p)"
@@ -2024,6 +2080,9 @@ watch(
     @related-on="(v: string) => detailItem && setRelatedOn(detailItem, v)"
     @tags="(tags: string[]) => detailItem && setTagsFor(detailItem, tags)"
     @claim="detailItem && claim(detailItem)"
+    @reply="(text: string, parentReplyId?: string) => sendDetailReply(text, parentReplyId)"
+    @open-linked="openLinkedTodo"
+    @create-linked="createLinkedFromDetail"
     @archive="detailItem && archiveTodo(detailItem)"
     @restore="detailItem && restoreTodo(detailItem)"
     @edit="detailItem && editFromDetail(detailItem)"

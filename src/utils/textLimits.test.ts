@@ -10,7 +10,7 @@ import {
   MAX_SEARCH_KEYWORD_CHARS,
 } from "./validation.ts";
 import { MAX_LOG_FILTER_CHARS } from "./logFilter.ts";
-import { MAX_TODO_DESC_CHARS, MAX_TODO_TITLE_CHARS, TODO_CUSTOM_CATEGORY_MAX_LEN } from "./todos.ts";
+import { MAX_TODO_DESC_CHARS, MAX_TODO_REPLY_CHARS, MAX_TODO_TITLE_CHARS, TODO_CUSTOM_CATEGORY_MAX_LEN } from "./todos.ts";
 import { MAX_LINK_NAME_CHARS } from "./externalLinks.ts";
 
 /**
@@ -52,6 +52,7 @@ test("前端长度常量与 Rust 侧主人数值相等（七条，现读两边�
     ],
     ["MAX_TODO_TITLE_CHARS", MAX_TODO_TITLE_CHARS, "src/commands/group_files.rs", "MAX_TODO_TITLE_LEN"],
     ["MAX_TODO_DESC_CHARS", MAX_TODO_DESC_CHARS, "src/commands/group_files.rs", "MAX_TODO_DESC_LEN"],
+    ["MAX_TODO_REPLY_CHARS", MAX_TODO_REPLY_CHARS, "src/protocol.rs", "MAX_TODO_REPLY_LEN"],
     [
       "TODO_CUSTOM_CATEGORY_MAX_LEN",
       TODO_CUSTOM_CATEGORY_MAX_LEN,
@@ -103,6 +104,7 @@ test("生产模板里不许再有手抄的 maxlength 数字（分母现扫，白
     "MAX_LOG_FILTER_CHARS",
     "MAX_TODO_TITLE_CHARS",
     "MAX_TODO_DESC_CHARS",
+    "MAX_TODO_REPLY_CHARS",
     "TODO_CUSTOM_CATEGORY_MAX_LEN",
     // 任务标签单条上限（2026-11-05）：与 Rust `protocol::TODO_TAG_MAX_LEN` 同一份口径，
     // 由 `utils/todos::normalizeTodoTags` 与命令层校验共同兑现。

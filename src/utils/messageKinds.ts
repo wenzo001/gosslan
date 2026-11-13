@@ -38,6 +38,9 @@ export const SILENT_KINDS: readonly string[] = [
   // 任务的**改动**（改状态/改标题/删除）是状态微调：不记未读、不弹通知。
   // 任务的**创建**（`todo`）反过来是 Card —— 被指派的人得知道自己被派了活。
   "todo_update",
+  // 任务详情回复（用户 2026-11-13）：独立事件消息，不进时间线、不计未读；
+  // 对关联人的通知在 maybeNotify 单独放行（同 todo_update 终态那条例外）。
+  "todo_reply",
   "poll_vote",
   // 强提醒发起 / 回执：强提醒的高优先级通知单独走通道（第 3 阶段），不进普通通知。
   "remind",

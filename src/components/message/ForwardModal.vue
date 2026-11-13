@@ -87,6 +87,8 @@ const KIND_LABELS: Record<MsgKind, string> = {
   announcement_delete: t("group.announce"),
   todo: t("todo.title"),
   todo_update: t("todo.title"),
+  // 静默事件：任务详情回复不进时间线、没有转发入口，中性文案兜底。
+  todo_reply: t("todo.repliesTitle"),
   poll: t("poll.title"),
   poll_vote: t("poll.title"),
   merge: t("merge.title"),

@@ -305,6 +305,7 @@ pub async fn send_group_todo(
     custom_icon: Option<String>,
     related_on: Option<String>,
     tags: Option<Vec<String>>,
+    linked_from: Option<String>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     // 类型只在**给了值**时校验；没给就是缺省那一档（旧前端不传这一格也要能建任务）。
@@ -360,6 +361,29 @@ pub async fn send_group_todo(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::next_todo_number(&dbc, &group_id).map_err(|e| e.to_string())?
     };
+    // 关联来源（可选，用户 2026-11-13）：给了就必须是本群已存在的任务，防止指向不存在/群外任务。
+    // 空串按"没关联"处理；两条任务各自独立管理，这一格只是溯源指针。
+    let linked_from = match linked_from {
+        Some(src) => {
+            let src = src.trim().to_string();
+            if src.is_empty() {
+                None
+            } else {
+                let exists = {
+                    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                    latest_todo_def(&dbc, &format!("group:{group_id}"), &src).is_some()
+                };
+                if !exists {
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::GROUP_TODO_LINKED_FROM_NOT_FOUND,
+                        "关联的来源任务不存在",
+                    ));
+                }
+                Some(src)
+            }
+        }
+        None => None,
+    };
     let payload = crate::protocol::TodoPayload {
         todo_id: format!("todo-{}", Uuid::new_v4()),
         number,
@@ -378,6 +402,7 @@ pub async fn send_group_todo(
         done_at: None,
         related_on,
         tags,
+        linked_from,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let todo_id = payload.todo_id.clone();
@@ -390,6 +415,98 @@ pub async fn send_group_todo(
         format!("群任务已建 task={todo_id} group={group_id} msg={}", rec.msg_id),
     );
     Ok(rec)
+}
+
+/// 任务详情回复（用户 2026-11-13）：任意群成员可回，独立事件消息（kind=todo_reply，Silent）。
+///
+/// 与 `send_group_reaction` 同构：不改进程任何任务定义，只追加一条回复事件；接收端按 todo_id
+/// 折叠成平铺列表。对关联人（创建人 + 被指派人）的通知由前端 maybeNotify 单独放行。
+/// `parent_reply_id` 给了就必须是本任务的一条真实回复（防悬空引用，界面"谁回复谁"才准）。
+#[tauri::command(async)]
+pub async fn send_group_todo_reply(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    todo_id: String,
+    text: String,
+    parent_reply_id: Option<String>,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    let conv_id = format!("group:{group_id}");
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_REPLY_EMPTY,
+            "回复内容不能为空",
+        ));
+    }
+    if text.chars().count() > crate::protocol::MAX_TODO_REPLY_LEN {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_REPLY_TOO_LONG,
+            format!("回复不能超过 {} 字", crate::protocol::MAX_TODO_REPLY_LEN),
+        ));
+    }
+    // 目标任务必须存在；父回复（若给）必须是本任务的一条真实回复。两者都在锁内一次查清。
+    // DB 校验丢进 spawn_blocking：SQLite 可能等锁数秒，不许占着 tokio worker（INV-P34）。
+    let s_db = s.clone();
+    let conv_db = conv_id.clone();
+    let todo_db = todo_id.clone();
+    let parent_db = parent_reply_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string);
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        if latest_todo_def(&dbc, &conv_db, &todo_db).is_none() {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_TODO_REPLY_TARGET_MISSING,
+                "回复的任务不存在",
+            ));
+        }
+        if let Some(parent) = parent_db {
+            if !todo_reply_exists(&dbc, &conv_db, &todo_db, &parent) {
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::GROUP_TODO_REPLY_PARENT_MISSING,
+                    "被回复的那条回复不存在",
+                ));
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("回复校验被线程池中断: {e}"))??;
+    let payload = crate::protocol::TodoReplyPayload {
+        todo_id,
+        reply_id: format!("reply-{}", Uuid::new_v4()),
+        parent_reply_id: parent_reply_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string),
+        text,
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    send_group_payload(s, &group_id, "todo_reply", content, None, None, None).await
+}
+
+/// 某条回复是否真实存在（本任务下）：扫 `todo_reply` 事件按 reply_id 匹配。
+/// 回复是低频轻量讨论，全量扫这一群的回复可接受；与前端 foldTodoReplies 同一口径。
+fn todo_reply_exists(conn: &rusqlite::Connection, conv_id: &str, todo_id: &str, reply_id: &str) -> bool {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT content FROM messages WHERE conv_id = ?1 AND kind = 'todo_reply'",
+    ) else {
+        return false;
+    };
+    let rows = stmt.query_map(rusqlite::params![conv_id], |r| r.get::<_, String>(0));
+    let Ok(rows) = rows else { return false };
+    for content in rows.flatten() {
+        if let Ok(p) = serde_json::from_str::<crate::protocol::TodoReplyPayload>(&content) {
+            if p.todo_id == todo_id && p.reply_id == reply_id {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// 被指派人必须**至少一个且都是群成员**（用户 2026-09-16：「每个任务可以给一个或多个人」）。
@@ -477,6 +594,9 @@ fn latest_todo_def(
     let mut carry_related_on: Option<Option<String>> = None;
     // 标签同理（2026-11-05）：`Some(vec![])` = 明确清空；键不存在 = 没说（老对端重建的载荷不认识这一格）。
     let mut carry_tags: Option<Vec<String>> = None;
+    // 关联来源（2026-11-13）：创建时定死、更新沿用。老对端不认识这一格 ⇒ 重建的载荷不带键，
+    // 不沿用就会把"它是从哪条任务来的"抹成无关联。三态同 related_on：没带=沿用，null/空=无关联。
+    let mut carry_linked_from: Option<Option<String>> = None;
     // 创建那一条说过的号：绝对坐标，压过任何一份更新里的号。DESC 扫到最后一刻 = 最旧那条创建。
     let mut created_number: Option<i64> = None;
     for row in rows.flatten() {
@@ -540,6 +660,16 @@ fn latest_todo_def(
             }
             _ => None,
         };
+        // 关联来源三态同 related_on：没带键=沿用；null/空串=无关联；非空串=说过来源。
+        let stated_linked_from: Option<Option<String>> = match v.get("linked_from") {
+            None => None,
+            Some(serde_json::Value::Null) => Some(None),
+            Some(serde_json::Value::String(s)) => {
+                let s = s.trim();
+                if s.is_empty() { Some(None) } else { Some(Some(s.to_string())) }
+            }
+            _ => None,
+        };
         let Ok(p) = serde_json::from_value::<crate::protocol::TodoPayload>(v) else {
             continue;
         };
@@ -570,6 +700,9 @@ fn latest_todo_def(
         if carry_tags.is_none() {
             carry_tags = stated_tags;
         }
+        if carry_linked_from.is_none() {
+            carry_linked_from = stated_linked_from;
+        }
         if kind == "todo" && stated_number.is_some() {
             created_number = stated_number;
         }
@@ -589,6 +722,8 @@ fn latest_todo_def(
     p.related_on = carry_related_on.flatten();
     // 标签：最新一份说了（含空数组）就用它；"没说"则沿用更早那份说过的；都没说过 = 空。
     p.tags = carry_tags.unwrap_or_default();
+    // 关联来源：创建时定死、更新沿用；老对端不带这一格时沿用更早那份说过的来源。
+    p.linked_from = carry_linked_from.flatten();
     // 只有最新那份的类型仍是 custom 时才补名字：非 custom 档的载荷里带不带文本都无意义
     //（保存时服务端会清空），这里也不该把旧名字复活。
     if p.custom_category.is_empty() && p.category == "custom" {
@@ -1161,6 +1296,8 @@ pub async fn update_group_todo(
         custom_icon,
         related_on,
         tags,
+        // 关联来源创建时定死、编辑不改：从原定义带过来（与 creator/number 同一口径）。
+        linked_from: def.linked_from,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let (todo_id, status) = (payload.todo_id.clone(), payload.status.clone());

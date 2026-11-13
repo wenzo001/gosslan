@@ -25,6 +25,9 @@ import {
   todoTerminalForCreator,
   todoMentionsMe,
   todoCardConcernsMe,
+  parseTodoReply,
+  foldTodoReplies,
+  todoReplyConcernsMe,
   openTodosForMe,
   putTodoRows,
   MAX_TODO_ROWS_PER_CONV,
@@ -1006,6 +1009,44 @@ test("乐观更新落在同一份源上：只刷已加载的会话，未加载�
   assert.equal(created["group:g1"].length, 2, "新任务落在已加载的会话里要立刻看得见");
   const cold = mergeIncomingTodoRows({}, [def("t8", 1)]);
   assert.equal(isTodoRowsLoaded(cold, "group:g1"), false, "未加载的会话建了键就等于拿局部快照冒充全量");
+});
+
+// ---------------- 任务详情回复（用户 2026-11-13） ----------------
+
+const reply = (todoId: string, replyId: string, seq: number, extra: Record<string, unknown> = {}) =>
+  rec("todo_reply", `m-${replyId}-${seq}`, "b", { todo_id: todoId, reply_id: replyId, parent_reply_id: null, text: "收到", ...extra }, seq);
+
+test("parseTodoReply：畸形/缺格返回 null，作者取 sender_id（不信载荷自报）", () => {
+  assert.equal(parseTodoReply(rec("todo_reply", "m1", "b", { todo_id: "t1", reply_id: "r1", text: "hi" }, 1))?.author, "b");
+  assert.equal(parseTodoReply(rec("todo_reply", "m2", "b", { todo_id: "t1", reply_id: "r1", text: "   " }, 1)), null, "空正文不是一条回复");
+  assert.equal(parseTodoReply(rec("todo_reply", "m3", "b", { todo_id: "t1", text: "hi" }, 1)), null, "缺 reply_id");
+  assert.equal(parseTodoReply(rec("todo", "m4", "b", { todo_id: "t1", reply_id: "r1", text: "hi" }, 1)), null, "非回复 kind");
+});
+
+test("foldTodoReplies：按 reply_id 去重、(seq,msg_id) 正序，只收本任务", () => {
+  const recs = [reply("t1", "r2", 5), reply("t1", "r1", 2), reply("t1", "r1", 2), reply("t2", "r9", 3)];
+  assert.deepEqual(foldTodoReplies(recs, "t1").map((r) => r.replyId), ["r1", "r2"], "去重 + 旧→新 + 不串任务");
+});
+
+test("todoReplyConcernsMe：只通知创建人 + 被指派人；查不到任务/非回复放行", () => {
+  const task = foldTodos([def("t1", 1, { creator: "a", assignees: ["a", "c"] })])[0];
+  const find = (id: string) => (id === "t1" ? task : undefined);
+  const r = reply("t1", "r1", 2);
+  assert.equal(todoReplyConcernsMe(r, "a", find), true, "创建人");
+  assert.equal(todoReplyConcernsMe(r, "c", find), true, "被指派人");
+  assert.equal(todoReplyConcernsMe(r, "b", find), false, "无关成员不通知");
+  assert.equal(todoReplyConcernsMe(r, "z", () => undefined), true, "查不到任务 ⇒ 放行（宁可多打扰一条）");
+  assert.equal(todoReplyConcernsMe(def("t1", 1), "a", find), true, "非回复 kind 不受这条闸管辖");
+});
+
+test("mergeIncomingTodoRows：实时回复也落同一份源（否则详情要等整表重读才看得见）", () => {
+  const loaded = putTodoRows({}, ["group:g1"], [def("t1", 1)]);
+  const merged = mergeIncomingTodoRows(loaded, [reply("t1", "r1", 2)]);
+  assert.equal(merged["group:g1"].length, 2, "回复追加进已加载会话");
+  assert.equal(foldTodoReplies(merged["group:g1"], "t1").length, 1, "详情立刻折得出这条回复");
+  assert.equal(foldTodos(merged["group:g1"]).length, 1, "回复不被当成任务定义折进看板");
+  const cold = mergeIncomingTodoRows({}, [reply("t1", "r1", 2)]);
+  assert.equal(isTodoRowsLoaded(cold, "group:g1"), false, "未加载会话不因回复建键");
 });
 
 test("两份源不再等价：消息缓存里已经没有这个会话时，全表那份仍折得出任务（这就是本轮修的形状）", () => {
