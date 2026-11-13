@@ -45,6 +45,7 @@ import type { TodoTagCandidate } from "@/api";
 import { fmtTodoTime } from "@/utils/time";
 import { t } from "@/i18n";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
+import { useCopyToast } from "@/composables/useCopyToast";
 
 const props = defineProps<{
   item: TodoItem;
@@ -184,6 +185,8 @@ function openAt(i: number) {
 const replyDraft = ref("");
 // 回车发送必须让路给输入法（与任务描述编辑器同一个守卫，判据 53）。
 const ime = useImeEnterGuard();
+// 双击描述整段复制（与详情标题同口径，见 useCopyToast）。
+const copyWithToast = useCopyToast();
 /** 正在回复的那条回复的 reply_id；null = 直接回复任务。 */
 const replyTarget = ref<string | null>(null);
 const repliesList = computed(() => props.replies ?? []);
@@ -355,6 +358,7 @@ function submitReply() {
       <p
         v-if="item.description"
         class="gosslan-selectable whitespace-pre-wrap break-words text-meta leading-relaxed text-[var(--gosslan-text)]"
+        @dblclick="copyWithToast(item.description)"
       >
         <!-- 与聊天里的同一条 @ 走同一份渲染件（§9）：判定单源在 utils/linkify。 -->
         <MentionText
