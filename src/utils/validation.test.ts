@@ -11,7 +11,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   assertIpcInput,
-  charCount,
   chatSearchGroupSchema,
   groupFileEntrySchema,
   groupNameSchema,
@@ -25,6 +24,7 @@ import {
   shareEntrySchema,
   shareTreeSchema,
 } from "./validation.ts";
+import { charCount } from "./text.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -176,20 +176,35 @@ test("有 schema 常量做后盾的输入框不许再手抄数字：两处 :maxl
   }
 });
 
-test("计数器那把尺与 schema 同一把：charCount 数码点，且全仓只此一处写法", () => {
+test("计数器那把尺与 schema 同一把：charCount 数码点，且全仓生产码只此一处写法", () => {
   // `maxlength` 已经在那里**静默**截断（粘 60 字只剩 40 字，无半句说明）。要把它说给用户，
   // 读数就必须与判据同一把尺 —— 否则「计数器说 40、提交被拒」或反过来（两把尺各数一遍）。
   assert.equal(charCount("团队"), 2);
   assert.equal(charCount("🐱".repeat(40)), 40, "40 个 emoji 就是 40 个字符");
   assert.notEqual(charCount("🐱".repeat(40)), "🐱".repeat(40).length, ".length 会给 80 ⇒ 不许拿它当尺");
-  // 码点口径只许住在 charCount 里（别处再手写一遍就是第二个家）。
+  // 码点口径只许住在 text.ts 的 charCount 里（别处再手写一遍就是第二个家）。
   // 剥注释再数：这个口径的**说明**本来就该出现在文档里，把它算成"第二处实现"是假红。
-  const src = fs
-    .readFileSync(path.join(ROOT, "utils/validation.ts"), "utf8")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^\s*\/\/.*$/gm, "");
-  const handRolled = src.match(/\[\s*\.\.\.\w+\s*\]\s*\.length/g) ?? [];
-  assert.equal(handRolled.length, 1, `码点数法有 ${handRolled.length} 处，应只剩 charCount 那一处`);
+  // ⚠️ 这条以前只扫 validation.ts，于是 externalLinks.ts 手写的第二份 `[...s].length`
+  // 一直看不见（2026-11-13 组件复审 P2 点名）。改成扫全仓生产码：再在任何地方手写一遍即红。
+  const stripComments = (s: string) =>
+    s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const RE = /\[\s*\.\.\.\w+\s*\]\s*\.length/g;
+  const files = fs
+    .readdirSync(ROOT, { recursive: true })
+    .filter(
+      (f): f is string => typeof f === "string" && /\.(ts|vue)$/.test(f) && !f.endsWith(".test.ts"),
+    );
+  const homes: string[] = [];
+  for (const rel of files) {
+    const src = stripComments(fs.readFileSync(path.join(ROOT, rel), "utf8"));
+    const n = (src.match(RE) ?? []).length;
+    for (let i = 0; i < n; i++) homes.push(rel);
+  }
+  assert.deepEqual(
+    homes,
+    ["utils/text.ts"],
+    `码点数法应只剩 text.ts 那一处，实得 ${JSON.stringify(homes)}`,
+  );
 });
 
 test("绑了长度上限的输入框必须给出可见读数，且读数只有 CharCounter 一个家", () => {

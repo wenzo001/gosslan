@@ -11,6 +11,7 @@
 
 import * as z from "zod/mini";
 import { errorCode, rawErrorMessage } from "./errors.ts";
+import { charCount } from "./text.ts";
 
 /** 数量上限（与后端 `MAX_EXTERNAL_LINKS` 一致）。 */
 export const MAX_EXTERNAL_LINKS = 20;
@@ -42,7 +43,7 @@ const linkInputSchema = z.object({
   name: z.string().check(
     z.trim(),
     z.minLength(1, "name"),
-    z.refine((s) => [...s].length <= MAX_LINK_NAME_CHARS, "nameTooLong"),
+    z.refine((s) => charCount(s) <= MAX_LINK_NAME_CHARS, "nameTooLong"),
   ),
   url: z.string().check(z.refine(isValidExternalUrl, "url")),
 });
