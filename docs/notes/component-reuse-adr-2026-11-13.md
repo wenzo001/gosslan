@@ -7,6 +7,11 @@
 - 日期：2026-11-13
 - 边界：**charCount 收敛本轮已实施并通过前端快速门禁**；日历 / 超时 / 防抖 / 日期格式
   四项是**评估结论，本轮不改业务代码**，也未为它们运行行为测试或真机验证。
+- **后续落地（同日，用户确认后）**：决策 2 的短期键盘 a11y 与决策 3 的 `waitPreviousExit`
+  计时器清理这两项代码已实施——分别由 `src/utils/calendarGrid.ts`（+ 组件接线）与
+  `src/utils/raceWithFallback.ts`（+ store 接线）承载，各配纯函数单测与接线守卫，
+  反例自证（改坏即红、恢复即绿）闭环，`npm run verify` 快速层 26 步 `EXIT=0`。
+  其余评估项（Reka Calendar 迁移、timeout 共享原语、debounce、日期格式策略）仍维持不改。
 - 成熟度信息来自 Reka 官方组件文档（见文末链接），引用时以官方当前标注为准。
 
 ---
@@ -94,9 +99,9 @@ Reka Calendar / DatePicker 评估：
   dispose 清理、迟到结果策略都是**业务决策**，不能为减少重复行而抹平。
 - 若未来抽共享原语，应显式参数化 `{ onTimeout: "resolve"|"reject", message?, registerTimer? }`，
   并保留各调用点的业务守卫；当前消费者契约差异大，**抽取收益不足以抵消耦合风险**，暂不动。
-- **真实小缺口**（值得单独一轮修）：`waitPreviousExit` 的 race 计时器在 `p` 先胜时不被清除，
+- **真实小缺口（后续已修）**：`waitPreviousExit` 的 race 计时器在 `p` 先胜时不被清除，
   会在 `ms` 后空触发一次（resolve 进已 settle 的 race，无副作用，但计时器未清）。属清理卫生问题，
-  非功能缺陷；本轮记录，不顺手改（半径控制）。
+  非功能缺陷。同日后续已用 `raceWithFallback`（先胜即清）收口，store 接线守卫钉住它。
 
 ---
 

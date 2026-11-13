@@ -10,9 +10,10 @@ import Icon from "@/components/ui/Icon.vue";
  *
  * 值口径不变：`YYYY-MM-DD`，空串 = 没填；「清除」发空串（后端按"明确清空"处理）。
  */
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import TodoAttrField from "@/components/TodoAttrField.vue";
 import { currentLocale, t } from "@/i18n";
+import { CALENDAR_COLS, calendarGridNext } from "@/utils/calendarGrid";
 
 const props = defineProps<{
   label: string;
@@ -56,6 +57,11 @@ function cursorOf(value: string): { y: number; m: number } {
 const cursor = ref(cursorOf(props.modelValue));
 function syncCursor() {
   cursor.value = cursorOf(props.modelValue);
+  // 打开时把焦点落到已选日（没有则今天，再没有则第一格），键盘用户不必从第一格 Tab 起。
+  nextTick(() => {
+    const idx = cells.value.findIndex((c) => c.iso === (props.modelValue || today));
+    focusDay(idx >= 0 ? idx : 0);
+  });
 }
 
 /** 月标题按当前界面语言格式化（中文「2026年11月」/ 英文「November 2026」）。 */
@@ -93,6 +99,46 @@ const cells = computed<DayCell[]>(() => {
 function pick(value: string, close: () => void) {
   emit("update:modelValue", value);
   close();
+}
+
+// ---- 键盘可访问性（2026-11-13 组件复审 P1 跟进，ADR 决策 2 短期方案）----
+// 42 格按周分成 6 行（role=row + display:contents，CSS grid 仍按 7 列排布），
+// 日期格 role=gridcell + roving tabindex（只有一格可 Tab 到），方向键走纯函数 calendarGridNext。
+const gridRef = ref<HTMLElement | null>(null);
+const focusedIndex = ref(0);
+const weeks = computed(() => {
+  const out: DayCell[][] = [];
+  for (let i = 0; i < cells.value.length; i += CALENDAR_COLS) {
+    out.push(cells.value.slice(i, i + CALENDAR_COLS));
+  }
+  return out;
+});
+
+function dayButtons(): HTMLButtonElement[] {
+  return Array.from(gridRef.value?.querySelectorAll<HTMLButtonElement>('[role="gridcell"]') ?? []);
+}
+function focusDay(idx: number) {
+  const list = dayButtons();
+  const at = Math.max(0, Math.min(list.length - 1, idx));
+  focusedIndex.value = at;
+  list[at]?.focus();
+}
+function onGridKey(e: KeyboardEvent) {
+  const list = dayButtons();
+  if (!list.length) return;
+  const cur = list.indexOf(document.activeElement as HTMLButtonElement);
+  if (cur < 0) return; // 焦点不在格子上 ⇒ 不抢方向键
+  // PageUp/PageDown 跨月：换月后保持同一格位落焦。
+  if (e.key === "PageUp" || e.key === "PageDown") {
+    e.preventDefault();
+    shiftMonth(e.key === "PageUp" ? -1 : 1);
+    nextTick(() => focusDay(cur));
+    return;
+  }
+  const next = calendarGridNext(cur, e.key, list.length, CALENDAR_COLS);
+  if (next === null) return; // Enter/Space 等不拦，交给按钮原生 click
+  e.preventDefault(); // 不拦的话上下键会滚整页
+  focusDay(next);
 }
 </script>
 
@@ -145,26 +191,39 @@ function pick(value: string, close: () => void) {
         <div class="grid grid-cols-7 gap-0.5 pb-1 text-center text-caption text-[var(--gosslan-text-2)]">
           <span v-for="w in weekdays" :key="w">{{ w }}</span>
         </div>
-        <div class="grid grid-cols-7 gap-0.5">
-          <button
-            v-for="c in cells"
-            :key="c.iso"
-            type="button"
-            class="tap-safe flex h-7 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-caption tabular-nums transition"
-            :class="
-              c.iso === modelValue
-                ? 'bg-[var(--gosslan-primary-active)] font-medium text-[var(--gosslan-on-primary)]'
-                : c.iso === today
-                  ? 'font-medium text-[var(--gosslan-primary)] hover:bg-[var(--gosslan-hover)]'
-                  : c.inMonth
-                    ? 'text-[var(--gosslan-text)] hover:bg-[var(--gosslan-hover)]'
-                    : 'text-[var(--gosslan-text-2)] opacity-50 hover:bg-[var(--gosslan-hover)]'
-            "
-            :aria-current="c.iso === modelValue ? 'date' : undefined"
-            @click="pick(c.iso, close)"
-          >
-            {{ c.day }}
-          </button>
+        <div
+          ref="gridRef"
+          role="grid"
+          :aria-label="monthLabel"
+          class="grid grid-cols-7 gap-0.5"
+          @keydown="onGridKey"
+        >
+          <!-- 周行用 display:contents：role=row 给出网格行结构，按钮仍按父级 7 列 grid 排布。 -->
+          <div v-for="(week, wi) in weeks" :key="wi" role="row" class="contents">
+            <button
+              v-for="(c, ci) in week"
+              :key="c.iso"
+              type="button"
+              role="gridcell"
+              :tabindex="wi * CALENDAR_COLS + ci === focusedIndex ? 0 : -1"
+              :aria-selected="c.iso === modelValue"
+              class="tap-safe flex h-7 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-caption tabular-nums transition"
+              :class="
+                c.iso === modelValue
+                  ? 'bg-[var(--gosslan-primary-active)] font-medium text-[var(--gosslan-on-primary)]'
+                  : c.iso === today
+                    ? 'font-medium text-[var(--gosslan-primary)] hover:bg-[var(--gosslan-hover)]'
+                    : c.inMonth
+                      ? 'text-[var(--gosslan-text)] hover:bg-[var(--gosslan-hover)]'
+                      : 'text-[var(--gosslan-text-2)] opacity-50 hover:bg-[var(--gosslan-hover)]'
+              "
+              :aria-current="c.iso === modelValue ? 'date' : undefined"
+              @click="pick(c.iso, close)"
+              @focus="focusedIndex = wi * CALENDAR_COLS + ci"
+            >
+              {{ c.day }}
+            </button>
+          </div>
         </div>
         <div class="mt-1 flex items-center justify-between border-t border-[var(--gosslan-divider)] px-1 pt-1">
           <button

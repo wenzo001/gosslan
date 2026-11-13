@@ -14,6 +14,18 @@
 
 ## [Unreleased]
 
+## [5.24.0] - 2026-11-13
+
+### 新增
+- **Todo 日历键盘可访问性**：关联时间自绘月历补 `role=grid/row/gridcell` 网格语义与
+  roving tabindex，方向键逐格/整周移动、Home/End 跳周首/周末、PageUp/PageDown 跨月，
+  打开自动落焦已选日（无则今天）。导航数学收口到 `utils/calendarGrid.ts` 纯函数，
+  值契约（`YYYY-MM-DD`、本地日历日、今天/清除）不变。
+
+### 修复
+- **waitPreviousExit 计时器清理**：等上一轮报告的 race 计时器在先胜时即清（此前裸
+  `Promise.race` 会空触发一次），收口到 `utils/raceWithFallback.ts`。属清理卫生，非功能缺陷。
+
 ## [5.23.1] - 2026-11-13
 
 ### 优化
