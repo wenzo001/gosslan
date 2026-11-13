@@ -7,6 +7,7 @@ import {
   androidPlatformFor,
   basenameFromUrl,
   buildGiteeManifest,
+  checkAnonymous,
   compareVersions,
   giteeDownloadUrl,
   prunePlan,
@@ -167,4 +168,41 @@ test("令牌打码：错误信息里不能出现 token 原文", () => {
   assert.equal(redact("bad secret-token-123 in url"), "bad *** in url");
   setToken("");
   assert.equal(redact("nothing"), "nothing");
+});
+
+// 匿名校验的瞬时失败重试（2026-11-13 v5.22.1 finalize 两次死在跨洋 fetch failed）。
+// delay 注入成即时 ⇒ 不真等 2s/5s/10s；fetch 打桩模拟跨洋抖动与确定性 404。
+test("checkAnonymous：瞬时 fetch failed 重试后成功（与已认证 api() 同口径）", async () => {
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    if (calls < 3) throw new Error("fetch failed");
+    return { status: 200, headers: new Map([["content-type", "application/gzip"], ["content-length", "100"]]) };
+  }) as unknown as typeof fetch;
+  try {
+    const out = await checkAnonymous("https://gitee.com/x/y", { minBytes: 1 }, async () => {});
+    assert.equal(out.status, 200);
+    assert.equal(calls, 3, "前两次瞬时失败、第三次成功 ⇒ 重试真的接住了（删掉重试这条会红）");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("checkAnonymous：404 不重试（文件真不在，重试只是把失败拖长）", async () => {
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return { status: 404, headers: new Map([["content-type", "text/html"]]) };
+  }) as unknown as typeof fetch;
+  try {
+    await assert.rejects(
+      () => checkAnonymous("https://gitee.com/x/y", { minBytes: 1 }, async () => {}),
+      /HTTP 404/,
+    );
+    assert.equal(calls, 1, "404 是确定性失败，不许重试");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

@@ -368,32 +368,51 @@ async function commitManifest(repo, branch, content, message) {
   console.log(`已提交 ${MANIFEST_PATH}（${branch}）`);
 }
 
-async function checkAnonymous(url, want = {}) {
-  let res;
-  try {
-    res = await fetch(url, { method: "HEAD", redirect: "follow", cache: "no-store" });
-    if (res.status === 405 || res.status === 501) {
-      res = await fetch(url, {
-        method: "GET",
-        redirect: "follow",
-        headers: { Range: "bytes=0-0", "Cache-Control": "no-cache" },
-      });
+export async function checkAnonymous(url, want = {}, delay = sleep) {
+  // 跨洋链路偶发 TLS/连接中断（`fetch failed`）与 5xx：与已认证 api() 同口径重试 3 次
+  // （2s/5s/10s）。2026-11-13 v5.22.1 finalize 两次都死在这一格的瞬时 fetch failed ——
+  // 发布本身已成功，只是匿名校验没重试就把整条流水线判红。404/HTML 是"文件真不在"的
+  // 信号，不重试（重试只是把失败拖长）。
+  const backoff = [2000, 5000, 10000];
+  let lastError = "";
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    let res;
+    try {
+      res = await fetch(url, { method: "HEAD", redirect: "follow", cache: "no-store" });
+      if (res.status === 405 || res.status === 501) {
+        res = await fetch(url, {
+          method: "GET",
+          redirect: "follow",
+          headers: { Range: "bytes=0-0", "Cache-Control": "no-cache" },
+        });
+      }
+    } catch (e) {
+      lastError = `fetch failed：${e.message}`;
+      if (attempt < 3) {
+        await delay(backoff[attempt] ?? 10000);
+        continue;
+      }
+      throw new Error(`匿名访问失败 ${url}：${lastError}`);
     }
-  } catch (e) {
-    throw new Error(`匿名访问失败 ${url}：${e.message}`);
+    if ([502, 503, 504].includes(res.status) && attempt < 3) {
+      lastError = `HTTP ${res.status}`;
+      await delay(backoff[attempt] ?? 10000);
+      continue;
+    }
+    const type = res.headers.get("content-type") || "";
+    if (res.status !== 200 && res.status !== 206) {
+      throw new Error(`匿名访问 ${url} 返回 HTTP ${res.status}`);
+    }
+    if (/text\/html/i.test(type)) {
+      throw new Error(`匿名访问 ${url} 返回 HTML（多半是 404 页面），不是文件`);
+    }
+    const len = Number(res.headers.get("content-length") || 0);
+    if (want.minBytes && len < want.minBytes) {
+      throw new Error(`匿名访问 ${url} 的 content-length=${len}，小于 ${want.minBytes}`);
+    }
+    return { status: res.status, type, length: len };
   }
-  const type = res.headers.get("content-type") || "";
-  if (res.status !== 200 && res.status !== 206) {
-    throw new Error(`匿名访问 ${url} 返回 HTTP ${res.status}`);
-  }
-  if (/text\/html/i.test(type)) {
-    throw new Error(`匿名访问 ${url} 返回 HTML（多半是 404 页面），不是文件`);
-  }
-  const len = Number(res.headers.get("content-length") || 0);
-  if (want.minBytes && len < want.minBytes) {
-    throw new Error(`匿名访问 ${url} 的 content-length=${len}，小于 ${want.minBytes}`);
-  }
-  return { status: res.status, type, length: len };
+  throw new Error(`匿名访问失败 ${url}：${lastError}`);
 }
 
 async function verifyPublic({ repo, tag, manifest, assetsDir }) {
