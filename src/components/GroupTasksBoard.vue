@@ -1953,7 +1953,7 @@ watch(
             :title="codeTip(detailItem)"
           >{{ paneCode }}</span>
           <h3
-            class="min-w-0 flex-1 truncate text-body font-medium text-[var(--gosslan-text)]"
+            class="gosslan-selectable min-w-0 flex-1 truncate text-body font-medium text-[var(--gosslan-text)]"
             :title="detailItem.title"
           >{{ detailItem.title }}</h3>
         </div>
