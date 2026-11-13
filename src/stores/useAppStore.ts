@@ -4,6 +4,7 @@ import { api, type SettingsChanged } from "@/api";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { applyTheme } from "@/utils/color";
 import { sleep } from "@/utils/defer";
+import { raceWithFallback } from "@/utils/raceWithFallback";
 import { toastErrorText } from "@/composables/useErrorText";
 import { useDebounceFn } from "@vueuse/core";
 import { createInitScope, type InitScope } from "@/utils/initScope";
@@ -542,10 +543,8 @@ export const useAppStore = defineStore("app", () => {
     if (previousExit.value) return previousExit.value;
     const p = previousReportPromise;
     if (!p) return null;
-    return await Promise.race([
-      p,
-      new Promise<null>((resolve) => window.setTimeout(() => resolve(null), ms)),
-    ]);
+    // 先胜即清计时器：旧裸 Promise.race 在 p 先胜时不清 setTimeout，会空触发一次。
+    return await raceWithFallback(p, ms, null);
   }
 
   /**
