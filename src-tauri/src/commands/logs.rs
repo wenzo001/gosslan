@@ -1103,7 +1103,9 @@ fn ensure_tasks_window(
             .visible(false)
             .decorations(false)
             .resizable(true)
-            .maximizable(false)
+            // 群任务窗与预览窗同档：标题栏双击最大化/还原（用户 2026-11-11），
+            // 与 MAXIMIZABLE_WINDOWS 含 WINDOW_TASKS 由 window_maximizable_matches_builder 交叉核对。
+            .maximizable(true)
             .minimizable(true)
             .closable(true)
             // 同 open_log_window：非活动窗口第一击也要落到 webview。

@@ -78,6 +78,7 @@ import {
   type SettleState,
 } from "@/utils/optimistic";
 import { t } from "@/i18n";
+import { storageGet, storageSet } from "@/utils/safeStorage";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
@@ -656,6 +657,70 @@ useResizeObserver(boardRoot, (entries) => {
  * 避免右栏被挤到不可用。
  */
 const twoPaneMode = computed(() => !!props.twoPane && rootWidth.value >= 700);
+
+// ---------------- 两栏左列宽度：可拖拽 + 持久化（用户 2026-11-11：左栏太窄） ----------------
+// 默认 480（旧固定 410 偏窄）；拖动范围 [340, 容器宽−340]，保证右栏详情始终 ≥340 可用。
+// 偏好存 localStorage（独立窗口是常驻单例，宽度该跟着用户走）；窗口拖窄时渲染宽度自动夹回
+// 可用范围，但**不改持久化值**——下次拉宽仍恢复用户偏好。
+const PANE_MIN_LEFT = 340;
+const PANE_MIN_RIGHT = 340;
+const PANE_DEFAULT_LEFT = 480;
+const PANE_DIVIDER_W = 7;
+const PANE_STORAGE_KEY = "gosslan.tasksPane.leftWidth";
+const paneLeftWidth = ref(PANE_DEFAULT_LEFT);
+const paneDragging = ref(false);
+const paneMaxLeft = computed(() => Math.max(PANE_MIN_LEFT, rootWidth.value - PANE_MIN_RIGHT - PANE_DIVIDER_W));
+function clampPaneWidth(w: number): number {
+  return Math.min(Math.max(Math.round(w), PANE_MIN_LEFT), paneMaxLeft.value);
+}
+/** 实际渲染宽度：恒夹在可用范围内（窗口拖窄右栏不被挤死）。 */
+const paneLeftPx = computed(() => clampPaneWidth(paneLeftWidth.value));
+const saved = Number(storageGet(PANE_STORAGE_KEY));
+if (Number.isFinite(saved) && saved > 0) paneLeftWidth.value = saved;
+function persistPaneWidth() {
+  // safeStorage 永不抛（隐私模式/配额写满都吞掉）：写不到只影响"下次恢复偏好"，本次拖动照常。
+  storageSet(PANE_STORAGE_KEY, String(paneLeftWidth.value));
+}
+let paneDragStartX = 0;
+let paneDragStartW = 0;
+function onPanePointerDown(e: PointerEvent) {
+  if (e.button !== 0) return;
+  paneDragging.value = true;
+  paneDragStartX = e.clientX;
+  paneDragStartW = paneLeftPx.value;
+  // 指针捕获：拖出分隔条外（甚至快过渲染）事件仍回到这条，跟手不丢。
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+}
+function onPanePointerMove(e: PointerEvent) {
+  if (!paneDragging.value) return;
+  paneLeftWidth.value = clampPaneWidth(paneDragStartW + (e.clientX - paneDragStartX));
+}
+function onPanePointerUp(e: PointerEvent) {
+  if (!paneDragging.value) return;
+  paneDragging.value = false;
+  try {
+    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+  } catch {
+    /* 已自动释放 */
+  }
+  persistPaneWidth();
+}
+/** 双击分隔条复位默认宽（与图片窗"双击还原"同一直觉）。 */
+function resetPaneWidth() {
+  paneLeftWidth.value = PANE_DEFAULT_LEFT;
+  persistPaneWidth();
+}
+/** 键盘可达：聚焦分隔条后左右箭头微调（Shift 大步），Home/End 到两端。 */
+function onPaneKeydown(e: KeyboardEvent) {
+  const step = e.shiftKey ? 64 : 16;
+  if (e.key === "ArrowLeft") paneLeftWidth.value = clampPaneWidth(paneLeftWidth.value - step);
+  else if (e.key === "ArrowRight") paneLeftWidth.value = clampPaneWidth(paneLeftWidth.value + step);
+  else if (e.key === "Home") paneLeftWidth.value = PANE_MIN_LEFT;
+  else if (e.key === "End") paneLeftWidth.value = paneMaxLeft.value;
+  else return;
+  e.preventDefault();
+  persistPaneWidth();
+}
 const paneCode = computed(() =>
   detailItem.value ? todoCode(detailItem.value.category, detailItem.value.number)?.full ?? "" : "",
 );
@@ -1488,11 +1553,12 @@ watch(
     class="flex"
     :class="[standalone || fill ? 'h-full min-h-0' : '', twoPaneMode ? 'flex-row' : 'flex-col']"
   >
-    <!-- 两栏：左列固定 410px（窄窗回退单栏）。单栏形态用 `contents` 让下面的
-         头部/工具行/列表继续直接参与外层 flex，不新增一层布局。 -->
+    <!-- 两栏：左列宽度可拖拽（默认 480，范围 [340, 容器宽−340]，见 paneLeftPx）。
+         单栏形态用 `contents` 让下面的头部/工具行/列表继续直接参与外层 flex，不新增一层布局。 -->
     <div
       class="flex min-h-0 flex-col"
-      :class="twoPaneMode ? 'w-[410px] shrink-0 border-r border-[var(--gosslan-divider)]' : 'contents'"
+      :class="twoPaneMode ? 'shrink-0' : 'contents'"
+      :style="twoPaneMode ? { width: paneLeftPx + 'px' } : undefined"
     >
     <!-- 头部：统计 + 新建。
          横向内距**常驻**：下面内容区是 `.gosslan-scroll`（自带 16px 基线），头部若只在
@@ -1845,6 +1911,35 @@ watch(
       </template>
       </div>
     </div>
+    </div>
+
+    <!-- 两栏分隔条：拖拽改左列宽（用户 2026-11-11）。指针捕获保证拖出条外仍跟手；
+         双击复位默认宽；聚焦后左右箭头微调（Shift 大步）、Home/End 到两端。仅两栏形态出现。
+         竖线落在条中央，hover/拖动借主色，与左列原 border-r 同一条视觉分割。 -->
+    <div
+      v-if="twoPaneMode"
+      data-pane-divider
+      role="separator"
+      aria-orientation="vertical"
+      tabindex="0"
+      :aria-valuenow="paneLeftPx"
+      :aria-valuemin="PANE_MIN_LEFT"
+      :aria-valuemax="paneMaxLeft"
+      :aria-label="t('todo.paneResize')"
+      :title="t('todo.paneResize')"
+      class="group relative z-[1] w-[7px] shrink-0 cursor-col-resize touch-none select-none outline-none focus-visible:bg-[var(--gosslan-primary-light)]"
+      :class="paneDragging ? 'bg-[var(--gosslan-primary-light)]' : 'hover:bg-[var(--gosslan-hover)]'"
+      @pointerdown="onPanePointerDown"
+      @pointermove="onPanePointerMove"
+      @pointerup="onPanePointerUp"
+      @pointercancel="onPanePointerUp"
+      @dblclick="resetPaneWidth"
+      @keydown="onPaneKeydown"
+    >
+      <span
+        class="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors"
+        :class="paneDragging ? 'bg-[var(--gosslan-primary)]' : 'bg-[var(--gosslan-divider)] group-hover:bg-[var(--gosslan-primary)]'"
+      ></span>
     </div>
 
     <!-- 右栏：详情常驻（仅两栏形态）。字段区/操作条与弹窗共用

@@ -28856,10 +28856,11 @@ async function runTasksRealtime(cdp, url) {
  *    有没有打断层链的祖先），不在这里另开第二份几何家。
  */
 /**
- * 群任务窗口「左列表 410px + 右详情常驻」两栏（`--only=taskpane`）。
+ * 群任务窗口「左列表（默认 480，可拖拽）+ 分隔条 + 右详情常驻」两栏（`--only=taskpane`）。
  *
- * 只钉结构契约，不钉画板文案：1000（群任务窗口初始宽度 = 主窗口 1000×680）与 780
- * 两种内容宽时左列 410±1、右栏还有 ≥280；680 时回退单栏（右栏消失、点行才开原弹窗）。
+ * 只钉结构契约，不钉画板文案：1000（群任务窗口初始宽度 = 主窗口 1000×680）时左列默认 480、
+ * 780 时默认 480 超上限夹到 hostW−347，两档右栏都 ≥340；分隔条可拖（指针捕获）、拖过头夹取、
+ * 宽度持久化、双击复位 480；680 时回退单栏（右栏消失、点行才开原弹窗）。
  * 筛选页签顺序按画板 我的/全部/我创建/已归档，默认「我的」——`--only=tasksrt` 继续管实时同步。
  */
 async function runTaskPane(cdp, url) {
@@ -28894,6 +28895,8 @@ async function runTaskPane(cdp, url) {
       window.__mk('C', 3, 'todo', { title: '他建的', number: 3, assignees: [window.OTHER] }, ${now + 2}),
     ]`);
     await cdp.eval("window.__probe.todoRows(window.__TASKS)");
+    // 清掉分栏宽持久化键：本段要量**默认宽**与夹取，不能让上一次跑留下的偏好串进来。
+    await cdp.eval("try { localStorage.removeItem('gosslan.tasksPane.leftWidth'); } catch (e) {}");
     await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({
       groupId: "g1", open: true, fill: true, twoPane: true, hostHeight: 620,
     }))})`);
@@ -28902,13 +28905,14 @@ async function runTaskPane(cdp, url) {
     // `GroupTodosWindow` 的 `loadGroupTodos` 置位；探针直连组件时没有这条入口。
     // 两栏的高度契约由 `fill` 同样满足（都是 `h-full min-h-0`），宽度与回退规则不受影响。
     await cdp.eval("document.querySelector('#probe-host').style.width = '780px'");
-    // 结构读数：两栏时根节点正好两个孩子（左列 / 右栏）；单栏时孩子是 display:contents 的包装。
+    // 结构读数：两栏时根节点三个孩子（左列 / 分隔条 / 右栏）；单栏时孩子是 display:contents 的包装。
     const read = () => cdp.eval(`(() => {
       const host = document.querySelector('#probe-host');
       const root = host && host.firstElementChild;
       const kids = root ? Array.from(root.children) : [];
       const list = kids[0] || null;
-      const detail = kids.length > 1 ? kids[1] : null;
+      const divider = root ? root.querySelector(':scope > [data-pane-divider]') : null;
+      const detail = divider ? kids[kids.length - 1] : (kids.length > 1 ? kids[1] : null);
       const tabs = root ? Array.from(root.querySelectorAll('[role="tab"]')) : [];
       const active = tabs.find((b) => b.getAttribute('aria-selected') === 'true');
       // 选中态判据要读**计算后的底色**：主色淡底由 color-mix 现算，
@@ -28929,6 +28933,8 @@ async function runTaskPane(cdp, url) {
         listW: list ? Math.round(list.getBoundingClientRect().width) : 0,
         detailW: detail ? Math.round(detail.getBoundingClientRect().width) : 0,
         hasDetail: !!detail,
+        hasDivider: !!divider,
+        dividerW: divider ? Math.round(divider.getBoundingClientRect().width) : 0,
         tabs: tabs.map((b) => (b.textContent || '').trim()),
         active: active ? (active.textContent || '').trim() : '',
         detailText: detail ? (detail.textContent || '') : '',
@@ -28962,8 +28968,11 @@ async function runTaskPane(cdp, url) {
       return r.listW > 0 && r.hasDetail && r.titles.includes("写周报");
     }, 5_000);
     const wide = await read();
-    check("两栏（780）：左列就是 410px", Math.abs(wide.listW - 410) <= 1, "410±1", String(wide.listW));
-    check("两栏（780）：右栏仍可用（≥280px）", wide.detailW >= 280, ">=280", String(wide.detailW));
+    check("两栏（780）：有可拖拽分隔条（左/分隔条/右三孩子）",
+      wide.hasDivider && wide.dividerW >= 5, "hasDivider 且宽≥5", JSON.stringify({ d: wide.hasDivider, w: wide.dividerW }));
+    check("两栏（780）：默认480超上限⇒左列夹到 hostW−347、右栏仍≥340",
+      Math.abs(wide.listW - (wide.hostW - 347)) <= 2 && wide.detailW >= 340,
+      "listW≈hostW−347 且 detailW≥340", JSON.stringify({ hostW: wide.hostW, listW: wide.listW, detailW: wide.detailW }));
     check("两栏（780）：页签顺序 = 全部/我的/我创建/已归档",
       wide.tabs.length === 4 && wide.tabs[0].startsWith("全部") && wide.tabs[1].startsWith("我的")
         && wide.tabs[2].startsWith("我创建") && wide.tabs[3].startsWith("已归档"),
@@ -28986,15 +28995,57 @@ async function runTaskPane(cdp, url) {
     await cdp.eval("document.querySelector('#probe-host').style.width = '1000px'");
     await sleep(400);
     const wide1000 = await read();
-    check("两栏（1000，初始尺寸）：左列仍是 410px",
-      Math.abs(wide1000.listW - 410) <= 1, "410±1", String(wide1000.listW));
-    check("两栏（1000，初始尺寸）：右栏仍可用（≥280px）",
-      wide1000.detailW >= 280, ">=280", String(wide1000.detailW));
+    check("两栏（1000，初始尺寸）：左列默认 480px（比旧 410 宽）",
+      Math.abs(wide1000.listW - 480) <= 1, "480±1", String(wide1000.listW));
+    check("两栏（1000，初始尺寸）：右栏仍≥340px",
+      wide1000.detailW >= 340, ">=340", String(wide1000.detailW));
     check("两栏（1000，初始尺寸）：详情仍常驻右栏、不弹窗",
       wide1000.dialogs === 0 && !!wide1000.titles[0] && wide1000.detailText.includes(wide1000.titles[0]),
       "右栏 = 列表首条 + 0 dialog",
       JSON.stringify({ d: wide1000.dialogs, first: wide1000.titles[0] }));
     await shot("taskpane-1000");
+
+    // ---------------- 分栏拖拽（2026-11-11：左列宽可拖 + 夹取 + 持久化 + 双击复位） ----------------
+    const paneCenter = () => cdp.eval(`(() => {
+      const d = document.querySelector('#probe-host [data-pane-divider]');
+      if (!d) return null;
+      const r = d.getBoundingClientRect();
+      return { cx: Math.round(r.left + r.width / 2), cy: Math.round(r.top + r.height / 2) };
+    })()`);
+    const dragPane = async (dx) => {
+      const c = await paneCenter();
+      if (!c) return false;
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: c.cx, y: c.cy, button: "left", clickCount: 1 });
+      // 分两步移动，确保 pointermove 真的派发（一步到位有的引擎会合并）。
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: c.cx + Math.round(dx / 2), y: c.cy, button: "left", buttons: 1 });
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: c.cx + dx, y: c.cy, button: "left", buttons: 1 });
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: c.cx + dx, y: c.cy, button: "left", clickCount: 1 });
+      await sleep(200);
+      return true;
+    };
+    const beforeDrag = await read();
+    await dragPane(80);
+    const afterDrag = await read();
+    check("分栏拖拽：向右拖 80px 左列变宽≈80、右栏仍≥340",
+      Math.abs((afterDrag.listW - beforeDrag.listW) - 80) <= 3 && afterDrag.detailW >= 340,
+      "ΔlistW≈80 且 detailW≥340", JSON.stringify({ before: beforeDrag.listW, after: afterDrag.listW, detailW: afterDrag.detailW }));
+    const storedW = await cdp.eval("localStorage.getItem('gosslan.tasksPane.leftWidth')");
+    check("分栏拖拽：宽度写进 localStorage（常驻窗口下次恢复偏好）",
+      String(afterDrag.listW) === String(storedW), "stored=listW", JSON.stringify({ listW: afterDrag.listW, storedW }));
+    // 拖过头：左列夹到上限（hostW−347），右栏不被挤死。
+    await dragPane(3000);
+    const clamped = await read();
+    check("分栏拖拽：拖过头左列夹到上限、右栏仍≥340",
+      clamped.detailW >= 340 && clamped.listW <= clamped.hostW - 347 + 2,
+      "detailW≥340 且 listW≤hostW−347", JSON.stringify({ hostW: clamped.hostW, listW: clamped.listW, detailW: clamped.detailW }));
+    // 双击分隔条复位默认 480。
+    const rc = await paneCenter();
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: rc.cx, y: rc.cy, button: "left", clickCount: 2 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: rc.cx, y: rc.cy, button: "left", clickCount: 2 });
+    await sleep(200);
+    const reset = await read();
+    check("分栏双击复位：左列回到默认 480px", Math.abs(reset.listW - 480) <= 1, "480±1", String(reset.listW));
+    await shot("taskpane-drag");
 
     // ---------------- 横排容器不许吃纵向滚动（2026-11-08 用户截图：页签挂着一条竖滚动条） ----------------
     // 量法全部读**运行时**：竖滚动条宽度 = offsetWidth − clientWidth − 左右边框（本仓全局

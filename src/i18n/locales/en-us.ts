@@ -1069,6 +1069,7 @@ export const enUS: MessageDict = {
   "todo.create": "New task",
   "todo.empty": "No tasks yet",
   "todo.paneEmpty": "Select a task on the left",
+  "todo.paneResize": "Drag to resize the list (double-click to reset, arrow keys to nudge)",
   "todo.loading": "Loading tasks…",
   "todo.loadFail": "Couldn't load tasks",
   "todo.doneCount": "{n}/{total} done",

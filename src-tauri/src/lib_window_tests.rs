@@ -166,8 +166,8 @@
                 );
             }
             // 双向绑定：builder 里显式禁掉的窗数 == 白名单之外的已登记窗数。
-            // 左侧 3 = settings/logs/tasks（见 `commands/logs.rs` 三扇辅助窗）；
-            // 右侧 = WINDOW_LABELS − MAXIMIZABLE_WINDOWS = 5 − 2 = 3（预览窗 2026-11-09 起可最大化）。
+            // 左侧 2 = settings/logs（见 `commands/logs.rs` 辅助窗）；
+            // 右侧 = WINDOW_LABELS − MAXIMIZABLE_WINDOWS = 5 − 3 = 2（预览窗与群任务窗可最大化）。
             let disabled = logs_src.matches(".maximizable(false)").count();
             let allowed = crate::WINDOW_LABELS
                 .iter()

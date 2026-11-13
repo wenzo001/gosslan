@@ -347,7 +347,7 @@ test("预览窗标题栏双击：与主窗口同一条路（前端接线 + 后�
 
   const lib = readFileSync(join(root, "src-tauri", "src", "lib.rs"), "utf8");
   assert.ok(
-    /MAXIMIZABLE_WINDOWS: &\[&str\] = &\[WINDOW_MAIN, WINDOW_PREVIEW\]/.test(lib),
+    /MAXIMIZABLE_WINDOWS: &\[&str\] = &\[WINDOW_MAIN, WINDOW_PREVIEW, WINDOW_TASKS\]/.test(lib),
     "MAXIMIZABLE_WINDOWS 不含 WINDOW_PREVIEW ⇒ 后端直接把预览窗的双击挡成 no-op",
   );
   assert.ok(
