@@ -6,10 +6,12 @@
  * 表单侧也复用同一套长度口径，避免"输入框 maxlength / 前端 trim / 后端 chars() 三份规则"。
  *
  * 字符数口径：后端用 `chars().count()`（Unicode 码点），JS 的 `.length` 数的是 UTF-16 单元，
- * 所以长度判据统一走 `[...s].length`，emoji 不会被算成两个字符。
+ * 所以长度判据统一走 `text.ts` 的 `charCount`（`[...s].length`），emoji 不会被算成两个字符。
  */
 // `zod/mini` 是同一套 schema 的摇树版：API 用 `.check(...)` 组合，打包体积只有完整版的一小部分。
 import * as z from "zod/mini";
+// 码点计数的唯一家在 `text.ts`（无业务依赖的叶子）；本模块的 schema 判长与外链校验共用它。
+import { charCount } from "./text.ts";
 
 export const MAX_GROUP_NAME_CHARS = 40;
 export const MAX_NICKNAME_CHARS = 40;
@@ -28,17 +30,8 @@ export const MAX_SEARCH_KEYWORD_CHARS = 100;
 /** 列表内本地过滤的关键词（转发弹窗 / 收藏面板；后端无对应规则，纯输入护栏）。 */
 export const MAX_LIST_FILTER_KEYWORD_CHARS = 50;
 
-/**
- * 长度口径的唯一实现：**Unicode 码点**（与 Rust 侧 `chars().count()` 同尺）。
- *
- * ⚠️ 不许在别处改写这一维：`.length` 数的是 UTF-16 单元，一个 emoji 算 2 ⇒
- * 与后端不同尺（同一串两边各数一次，报错的永远是"看起来更短"的那个）。
- * 输入框的计数器、schema 的判长、提示里的数字必须都走这里 —— 否则"上限 40"
- * 在三处分别是 40 / 20 / 40，而用户只看得见一个数字。
- */
-export function charCount(s: string): number {
-  return [...s].length;
-}
+// 长度口径（Unicode 码点，与 Rust `chars().count()` 同尺）的唯一实现住在 `text.ts`，
+// 本模块顶部已 import；计数器 / schema 判长 / 外链校验都走那一把尺，不许在这里再写一遍。
 
 /**
  * 长度规则的唯一家：`max` 是判据，两个 `*Key` 是**词典键**（不是文案）。

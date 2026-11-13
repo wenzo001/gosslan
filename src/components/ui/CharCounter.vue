@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { charCount } from "@/utils/validation";
+import { charCount } from "@/utils/text";
 
 /**
  * 输入框长度读数（通用展示件）：`maxlength` 到顶时是**静默**截断的（粘 60 字只剩 40 字，

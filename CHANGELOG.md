@@ -14,6 +14,17 @@
 
 ## [Unreleased]
 
+## [5.23.1] - 2026-11-13
+
+### 优化
+- **码点计数收敛到单一事实源**：长度口径（Unicode 码点，与 Rust `chars().count()` 同尺）
+  从 `validation.ts` 抽到无业务依赖的 `utils/text.ts`，`validation` / `externalLinks` /
+  `CharCounter` 共用一把尺（此前 `externalLinks` 手写第二份 `[...s].length`，旧守卫只扫
+  `validation.ts` 看不见）。守卫扩到扫全仓生产码，断言只剩 `text.ts` 一处，再手写即红。
+- **组件复用与共享原语 ADR**：记录 Todo 日历 vs Reka Calendar（Alpha）评估、超时包装 /
+  防抖 / 日期格式的行为对照与决策（仅评估，不改业务码），见
+  `docs/notes/component-reuse-adr-2026-11-13.md`。
+
 ## [5.23.0] - 2026-11-13
 
 ### 新增
