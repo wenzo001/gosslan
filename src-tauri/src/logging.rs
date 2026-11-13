@@ -158,6 +158,19 @@ const PREV_CRASH_MAX_LINES: usize = 40;
 /// 原生行合成一条记录的字符上界。
 const PREV_CRASH_MAX_CHARS: usize = 4_000;
 
+/// 分配器 abort 写侧的三种"什么"前缀（`lib.rs` 的 `NotingAlloc` 在 alloc / realloc /
+/// alloc_zeroed 三个调用点传给 `note_alloc_failure`）。读判与写侧共用这一份清单，
+/// **不许手抄字面量**：2026-11-13 真机里读判只认 `重分配`，于是明明写着
+/// `>>> 分配失败：请求 152483 字节 … avail_commit=0MiB` 的那一轮被判成 `silent_kill`
+/// （有现场的内存耗尽被说成"可能被强杀/断电"）。接线判据见
+/// `alloc_failure_prefixes_have_one_home_and_the_classifier_uses_it`。
+pub const ALLOC_FAIL_ALLOC: &str = "分配";
+pub const ALLOC_FAIL_REALLOC: &str = "重分配";
+pub const ALLOC_FAIL_ZEROED: &str = "分配(清零)";
+/// 前缀全集：分类器遍历它判 `>>> {kind}失败`。写侧新增分配路径必须同步进这张清单，
+/// 否则读判又会漏（清单与写侧漂移正是这次缺陷的根因）。
+pub const ALLOC_FAIL_KINDS: &[&str] = &[ALLOC_FAIL_ALLOC, ALLOC_FAIL_REALLOC, ALLOC_FAIL_ZEROED];
+
 /// 日志级别。按严重度递增：Info < Warn < Error。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Level {
@@ -790,7 +803,8 @@ pub enum PreviousExit {
     /// 只有"启动"、没有退出、也没有崩溃块 ⇒ **按异常终止处理**
     /// （强杀 / OOM / 原生代码 abort / 掉电 —— 这一类无法再细分，也不许假装能细分）
     SilentKill,
-    /// 分配器自己的 abort：`>>> 重分配失败：… 分配器即将 abort`。
+    /// 分配器自己的 abort：`>>> {分配|重分配|分配(清零)}失败：… 分配器即将 abort`
+    /// （前缀清单见 [`ALLOC_FAIL_KINDS`]，写侧读侧共用）。
     /// 与 `SilentKill` 分开：这一条**有现场**（请求字节数写在行里），只是
     /// panic 钩子跑不到（abort 不走 unwind）⇒ 没有 `===== 崩溃现场` 块。
     Abort,
@@ -1045,7 +1059,63 @@ fn last_run_slice(lines: &[String]) -> &[String] {
             }
         }
     };
-    &lines[start..current]
+    // 仅当"有上一轮"时：剥掉切片尾部连续的 bootstrap 期行。`启动尝试` 与
+    // `BOOT_WINDOW_BUILD_START` 由**本轮**在 `Logger::new` 之前写，落在上一轮切片尾部
+    // （2026-11-13 真机形状：BUILD_START 在 启动尝试 **之后**，且带双层 `>>> >>>`）。
+    // 不剥就会把本轮的 08:41:51 读成"上一轮最后活着"，把"死了约 4 分钟"说成"同一秒重启"。
+    // 前缀判定一律走 `strip_note_prefix`：裸 `starts_with` 在双层前缀上永远不命中。
+    // `prev.is_none()` 那条腿（全新安装 / 单实例交接）一个字都不剥 —— 剥了会把
+    // `single_instance` 打成 `no_history`，等于关掉"死在 logger 之前"的检测能力。
+    let mut end = current;
+    if prev.is_some() {
+        while end > start {
+            let l = strip_note_prefix(&lines[end - 1]);
+            if l.starts_with("启动尝试") || l.starts_with("code=BOOT_WINDOW_BUILD_START") {
+                end -= 1;
+            } else {
+                break;
+            }
+        }
+    }
+    &lines[start..end]
+}
+
+/// 上一轮的原生行窗口：报告侧与日志侧**唯一**的切片入口。
+///
+/// `build_previous_run_report_with` 与 `seed_previous_run` 都调它，再把结果交给
+/// `effective_previous_exit` —— 分类器是纯函数，同输入必同输出，两侧才不会说反话
+/// （2026-11-13 真机：报告侧切到上一轮、日志侧喂跨轮尾窗，同一轮判出两个相反结论）。
+/// 必须从 `raw` 切，不能先 pop 掉本轮启动行再切：`last_run_slice` 靠"最后一条启动行"
+/// 定位本轮，先 pop 会整体错一轮（切出上上轮）。
+fn previous_run_native(raw: &[String]) -> Vec<String> {
+    let sliced: Vec<String> = last_run_slice(raw)
+        .iter()
+        .filter(|l| is_crash_native_line(l))
+        .cloned()
+        .collect();
+    if !sliced.is_empty() {
+        return sliced;
+    }
+    // 切片为空只发生在"现场里连上一轮的启动行都没有"（日志轮转切掉 / 崩在 `Logger::new`
+    // 之前）。此时整份尾窗里**至多一轮**的证据（没有第二个启动行 ⇒ 不可能跨轮污染），
+    // 照旧取上一轮的原生行，但剔掉本轮刚写的启动行与本轮自己的 bootstrap —— 否则
+    // "只有崩溃块、没有启动路标"的早期崩溃会被漏报成 NoHistory（真崩溃一条都不能漏，
+    // 既有夹具 `previous_run_log_and_crash_scene_are_seeded_before_this_runs_lines` 钉着这一格）。
+    let own = format!("pid={}", std::process::id());
+    let mut native: Vec<String> = raw
+        .iter()
+        .filter(|l| is_crash_native_line(l))
+        .filter(|l| !(l.starts_with(">>> 启动尝试") && l.contains(&own)))
+        .cloned()
+        .collect();
+    if native
+        .last()
+        .map(|l| l.starts_with("----- 启动 "))
+        .unwrap_or(false)
+    {
+        native.pop();
+    }
+    native
 }
 
 /// 把上一轮现场算成结构化报告。纯函数（路径只拼字符串），可单测。
@@ -1074,11 +1144,7 @@ pub fn build_previous_run_report_with(
     now_ms: i64,
 ) -> PreviousRunReport {
     let run = last_run_slice(raw);
-    let run_native: Vec<String> = run
-        .iter()
-        .filter(|l| is_crash_native_line(l))
-        .cloned()
-        .collect();
+    let run_native = previous_run_native(raw);
     let kind = effective_previous_exit(&run_native, installer, now_ms);
     let (kind_s, code) = match kind {
         PreviousExit::Panic => ("panic", "BOOT_PREV_PANIC"),
@@ -1259,10 +1325,17 @@ pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
     if native_lines.iter().any(|l| l.starts_with("===== 崩溃现场")) {
         return PreviousExit::Panic;
     }
-    // 分配器 abort：`>>> 重分配失败：请求 N 字节 ⇒ 分配器即将 abort（不是 panic，钩子不会跑）`。
+    // 分配器 abort：`>>> {分配|重分配|分配(清零)}失败：请求 N 字节 ⇒ 分配器即将 abort（不是 panic，钩子不会跑）`。
     // 它是独立通道写的、没有崩溃块 ⇒ 旧分类落到 NoHistory、横幅不弹（10-21 真机现场里
-    // 那次 326350 字节的重分配失败就是这一形）。
-    if native_lines.iter().any(|l| l.starts_with(">>> 重分配失败")) {
+    // 那次 326350 字节的重分配失败就是这一形）。三种前缀共用 [`ALLOC_FAIL_KINDS`]
+    // （写侧 `lib.rs` 也用同一组常量）：2026-11-13 真机证明只认 `重分配` 会把
+    // `分配失败` 漏判成 silent_kill。前缀剥任意层 `>>> ` 再判，与现场行的双层前缀兼容。
+    if native_lines.iter().any(|l| {
+        let rest = strip_note_prefix(l);
+        ALLOC_FAIL_KINDS
+            .iter()
+            .any(|k| rest.strip_prefix(*k).is_some_and(|r| r.starts_with("失败")))
+    }) {
         return PreviousExit::Abort;
     }
     // **没有 logger 的 panic** 走的是独立通道，形状是 `>>> panic @ file:line:col：…`，
@@ -2024,6 +2097,8 @@ impl Logger {
             installer.as_ref(),
             boot_now,
         ));
+        // 跨轮尾窗：**只用于展示**（标题如实写"可能跨多轮"）。判定/级别走下面的
+        // `previous_run_native`（上一轮自己的窗口），两者不许混用。
         let mut native: Vec<String> = raw
             .iter()
             .filter(|l| is_crash_native_line(l))
@@ -2050,9 +2125,9 @@ impl Logger {
                 let cut = native.len() - PREV_CRASH_MAX_LINES;
                 native.drain(0..cut);
             }
-            let mut body = String::from("—— 上一轮崩溃现场/路标（截自 ");
+            let mut body = format!("—— 最近 {} 条现场路标（截自 ", native.len());
             body.push_str(&self.crash_path().display().to_string());
-            body.push_str(" 尾部）——\n");
+            body.push_str(" 尾部，可能跨多轮）——\n");
             for line in &native {
                 if body.len() + line.len() > PREV_CRASH_MAX_CHARS {
                     body.push_str("…（超出字符上界，后面的行在盘上）");
@@ -2061,12 +2136,14 @@ impl Logger {
                 body.push_str(line);
                 body.push('\n');
             }
-            let has_block = native.iter().any(|l| l.starts_with("===== 崩溃现场"));
+            // 判定与级别只认**上一轮自己的窗口** —— 与报告侧同一个 helper、同输入同输出。
+            // 上面那份跨轮 `native` 只用于展示（取证正是靠它看到更早一轮的 abort）；
+            // 更早一轮的 panic/abort 不许按到本轮头上（2026-11-13 真机：两侧说反话）。
+            let prev_native = previous_run_native(&raw);
+            let has_block = prev_native.iter().any(|l| l.starts_with("===== 崩溃现场"));
             // 上次收尾判定：把"在场/缺席"两个信号合成一句结论写进同一块文本里。
             // 级别沿用旧规则（有崩溃块 ⇒ error），新信息只加文本，不动既有判据的形状。
-            // 这里必须用同一个 `effective_previous_exit`：报告与日志两处若各判一遍，
-            // 安装器证据只会影响其中一处 ⇒ 同一轮出现两种相反结论（比不说话更难查）。
-            let verdict_kind = effective_previous_exit(&native, installer.as_ref(), boot_now);
+            let verdict_kind = effective_previous_exit(&prev_native, installer.as_ref(), boot_now);
             let prev_last_seen = self
                 .previous_report
                 .get()
@@ -2084,7 +2161,7 @@ impl Logger {
                 )
                 .to_string(),
                 PreviousExit::Abort => {
-                    "上次收尾判定：分配器 abort（见上面的「重分配失败」行；请求字节数就写在里面）"
+                    "上次收尾判定：分配器 abort（见上面的「分配失败/重分配失败」行；请求字节数就写在里面）"
                         .to_string()
                 }
                 PreviousExit::Sigterm => concat!(
@@ -3224,6 +3301,224 @@ mod tests {
         let r = build_previous_run_report(&raw, &crash, &dir);
         assert_eq!(r.kind, "abort");
         assert_eq!(r.code, "BOOT_PREV_ABORT");
+    }
+
+    /// 2026-11-13 真机（5.22.0）：同一轮在弹窗里是 `silent_kill`、日志里却是 `abort`。
+    /// 根因是两条判定路径喂了**不同的行窗口**：报告侧切到上一轮，日志侧把尾部 40 条
+    /// 跨轮原生行整段喂进同一个分类器 ⇒ 更早一轮（08:19）的分配失败被按到上一轮头上。
+    /// 这条钉住"两侧必须用同一个窗口、判出同一个结论"。把日志侧换回跨轮 `&native` 必须红。
+    #[test]
+    fn log_verdict_and_report_share_one_window_for_the_previous_run() {
+        let dir =
+            std::env::temp_dir().join(format!("gosslan-verdict-window-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A 轮死于分配器 abort；B 轮正常起来过；C 轮（被判的上一轮）自己没有任何收尾证据。
+        std::fs::write(
+            crash_file_for(&dir, "w"),
+            concat!(
+                "----- 启动 2026-11-13 08:19:00 版本 1.0.0\n",
+                ">>> 重分配失败：请求 1048576 字节（对齐 1）⇒ 分配器即将 abort（不是 panic，钩子不会跑）  @2026-11-13 08:19:20\n",
+                "----- 启动 2026-11-13 08:27:14 版本 1.0.0\n",
+                ">>> code=BOOT_WINDOW_READY 主窗口与 WebView2 已创建  @2026-11-13 08:27:15\n",
+                "----- 启动 2026-11-13 08:41:52 版本 1.0.0\n",
+            ),
+        )
+        .unwrap();
+        let lg = Logger::new(dir.clone(), "w", "[dev:w]".to_string());
+        lg.seed_previous_run();
+        let report = lg.previous_report.get().expect("seed 必须写下报告");
+        assert_eq!(
+            report.code, "BOOT_PREV_SILENT_KILL",
+            "C 轮自己没有任何 abort 证据；A 轮的分配失败不许按到它头上"
+        );
+        let disk = std::fs::read_to_string(lg.current_path()).unwrap_or_default();
+        let verdict_line = disk
+            .lines()
+            .find(|l| l.contains("上次收尾判定"))
+            .expect("判定必须落到日志文件");
+        let log_code = verdict_line
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix("code="))
+            .expect("判定行必须带 code=");
+        assert_eq!(
+            log_code, report.code,
+            "日志侧与弹窗侧必须是同一个窗口判出来的同一个结论（真机里它们说反话）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 同一污染面的第二处：`has_block` 也扫跨轮窗口 ⇒ 更早一轮的崩溃块会把本轮
+        // 内存环条目抬成 Error。改成扫同一切片后，C 轮干净 ⇒ 条目必须是 info。
+        let dir2 =
+            std::env::temp_dir().join(format!("gosslan-verdict-block-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir2);
+        std::fs::create_dir_all(&dir2).unwrap();
+        std::fs::write(
+            crash_file_for(&dir2, "w"),
+            concat!(
+                "----- 启动 2026-11-13 08:00:00 版本 1.0.0\n",
+                "===== 崩溃现场：panic at src/x.rs:12:3  @2026-11-13 08:00:05\n",
+                "----- 启动 2026-11-13 08:10:00 版本 1.0.0\n",
+                ">>> code=BOOT_WINDOW_READY 主窗口与 WebView2 已创建  @2026-11-13 08:10:01\n",
+                "----- 启动 2026-11-13 08:20:00 版本 1.0.0\n",
+            ),
+        )
+        .unwrap();
+        let lg2 = Logger::new(dir2.clone(), "w", "[dev:w]".to_string());
+        lg2.seed_previous_run();
+        let report2 = lg2.previous_report.get().expect("seed 必须写下报告");
+        assert_eq!(report2.code, "BOOT_PREV_SILENT_KILL");
+        let crash_entry = lg2
+            .snapshot(None)
+            .into_iter()
+            .find(|e| e.target == "crash")
+            .expect("seed 必须灌入现场条目");
+        assert_eq!(
+            crash_entry.level, "info",
+            "更早一轮的崩溃块不许把本轮条目抬成 Error（has_block 必须扫同一切片）"
+        );
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    /// 2026-11-13 真机：写侧有三种前缀（`分配` / `重分配` / `分配(清零)`），读判只认
+    /// `重分配` ⇒ `cf59df` 那一轮明明写着 `>>> 分配失败：请求 152483 字节 … avail_commit=0MiB`
+    /// 却被判成 `silent_kill`（有现场的内存耗尽被说成"可能被强杀/断电"）。
+    /// 这里把真机那一行**带读数后缀**逐字喂进去（不是简化形），三种前缀都必须判 Abort。
+    /// 把清单缩回只剩 `重分配` 时，第一、三条必须红。
+    #[test]
+    fn allocator_abort_reads_every_prefix_the_writer_can_emit() {
+        let mk = |s: &[&str]| -> Vec<String> { s.iter().map(|x| x.to_string()).collect() };
+        // 真机 08:26:42 那一行（`分配` 前缀 + 当时读数后缀）。
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> 分配失败：请求 152483 字节（对齐 1）ws=72MiB peak_ws=80MiB commit=26MiB avail_commit=0MiB total_commit=40711MiB load=91% gdi=120 peak_gdi=130 user=90 peak_user=95 tree_procs=7 tree_commit=889MiB ⇒ 分配器即将 abort（不是 panic，钩子不会跑）  @2026-11-13 08:26:42",
+            ])),
+            PreviousExit::Abort,
+            "`分配失败` 也是分配器 abort，不许漏判成 silent_kill"
+        );
+        // `分配(清零)` 前缀（alloc_zeroed 路径）。
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> 分配(清零)失败：请求 4096 字节（对齐 8）avail_commit=0MiB ⇒ 分配器即将 abort（不是 panic，钩子不会跑）  @2026-11-13 08:26:42",
+            ])),
+            PreviousExit::Abort,
+            "`分配(清零)失败` 同样必须判 Abort"
+        );
+        // 落盘那一侧（报告）也要能说出这一格：kind / code 两条映射都不能回落。
+        let dir = std::env::temp_dir().join(format!("gosslan-abort-prefix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let crash = dir.join("c-crash.log");
+        std::fs::write(
+            &crash,
+            "----- 启动 a 版本 1.0.0\n>>> 分配失败：请求 152483 字节（对齐 1）avail_commit=0MiB ⇒ 分配器即将 abort\n----- 启动 b 版本 1.0.0\n",
+        )
+        .unwrap();
+        let raw = read_tail_lines(&crash, PREV_CRASH_TAIL_BYTES);
+        let r = build_previous_run_report(&raw, &crash, &dir);
+        assert_eq!(r.kind, "abort");
+        assert_eq!(r.code, "BOOT_PREV_ABORT");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 接线判据（源码扫描，照 `lib_source_view_tests.rs` 的形状）：前缀清单必须只有一个家，
+    /// 写侧三个调用点真的用常量、分类器真的遍历清单。按**出现次数**判，不是"存在即通过"。
+    /// 手抄字面量回潮、或清单没被分类器用上，都会红。
+    #[test]
+    fn alloc_failure_prefixes_have_one_home_and_the_classifier_uses_it() {
+        let lib_src = include_str!("lib.rs");
+        assert_eq!(
+            lib_src.matches("note_alloc_failure(\"").count(),
+            0,
+            "lib.rs 的 note_alloc_failure 调用必须用 logging::ALLOC_FAIL_* 常量，不许手抄前缀字面量"
+        );
+        let logging_src = include_str!("logging.rs");
+        for name in [
+            "ALLOC_FAIL_ALLOC",
+            "ALLOC_FAIL_REALLOC",
+            "ALLOC_FAIL_ZEROED",
+        ] {
+            assert!(
+                logging_src.contains(name),
+                "logging.rs 缺少具名常量 {name}（清单与写侧会漂成两份）"
+            );
+            assert!(lib_src.contains(name), "lib.rs 必须真的用上常量 {name}");
+        }
+        assert!(
+            logging_src.contains("ALLOC_FAIL_KINDS"),
+            "logging.rs 缺少清单 ALLOC_FAIL_KINDS"
+        );
+        let body = fn_body(logging_src, "pub fn classify_previous_exit");
+        assert!(
+            body.contains("ALLOC_FAIL_KINDS"),
+            "classify_previous_exit 必须遍历 ALLOC_FAIL_KINDS 判前缀，否则写侧改了读侧不知道"
+        );
+    }
+
+    /// 2026-11-13 真机：`last_seen` 读到了**本轮** bootstrap 写的 `BOOT_WINDOW_BUILD_START`
+    /// （08:41:51），把"死了约 4 分钟才被重启"说成"同一秒无缝重启"。真机形状里
+    /// `BUILD_START` 在 `启动尝试` **之后**、且带**双层** `>>> >>>`（既有夹具是单层、且在之前，
+    /// 所以只跑夹具发现不了）。剥尾部 bootstrap 行必须用 `strip_note_prefix`，裸 `starts_with`
+    /// 在双层前缀上永远不命中 ⇒ 这条会红。`prev.is_none()` 那条腿（全新安装/单实例）不许动。
+    #[test]
+    fn last_seen_ignores_this_runs_bootstrap_written_after_the_try_line() {
+        let dir =
+            std::env::temp_dir().join(format!("gosslan-last-seen-boot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let crash = dir.join("c-crash.log");
+        std::fs::write(
+            &crash,
+            concat!(
+                "----- 启动 2026-11-13 08:27:14 版本 5.22.0 · windows-x86_64 · release\n",
+                ">>> >>> code=BOOT_WINDOW_READY 主窗口与 WebView2 已创建  @2026-11-13 08:27:14 版本 5.22.0\n",
+                ">>> >>> code=RUNTIME_MEM ws=72MiB commit=26MiB avail_commit=1165MiB  @2026-11-13 08:32:14 版本 5.22.0\n",
+                ">>> >>> code=RUNTIME_MEM ws=72MiB commit=26MiB avail_commit=1165MiB  @2026-11-13 08:37:14 版本 5.22.0\n",
+                ">>> 启动尝试：进程已起，logger 尚未建立 pid=37464  @2026-11-13 08:41:51 版本 5.22.0\n",
+                ">>> >>> code=BOOT_WINDOW_BUILD_START 事件循环启动（WebView2 创建在此步）  @2026-11-13 08:41:51 版本 5.22.0\n",
+                "----- 启动 2026-11-13 08:41:52 版本 5.22.0 · windows-x86_64 · release\n",
+            ),
+        )
+        .unwrap();
+        let raw = read_tail_lines(&crash, PREV_CRASH_TAIL_BYTES);
+        let r = build_previous_run_report(&raw, &crash, &dir);
+        assert_eq!(r.at.as_deref(), Some("2026-11-13 08:27:14"), "起点");
+        assert_eq!(
+            r.last_seen_at.as_deref(),
+            Some("2026-11-13 08:37:14"),
+            "最后一条属于上一轮的自有记录；本轮 bootstrap（08:41:51）不许冒充"
+        );
+        assert_eq!(
+            r.kind, "silent_kill",
+            "剥 bootstrap 行不许改变结束方式的判定"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 按花括号配平取一个函数体（从签名后第一个开括号到配平的闭括号），供源码扫描判据用。
+    ///
+    /// ⚠️ 本函数里的开/闭花括号**字符字面量必须成对**（含 panic 文案里的占位符）：
+    /// `check-domain-deps.mjs` 用朴素花括号计数剥离内联 `mod tests`（只去注释、不去
+    /// 字符串/字符字面量），字面量净多一个开括号就会让整个测试模块配平失败、被当成生产码，
+    /// 把测试里的 `crate::storage` 误计成新的跨域对而判红。改这里时务必保持配平。
+    fn fn_body(src: &str, signature: &str) -> String {
+        let start = src.find(signature).expect("签名必须存在");
+        let mut depth = 0i32;
+        let mut began = false;
+        for (i, c) in src[start..].char_indices() {
+            if c == '{' {
+                depth += 1;
+                began = true;
+            } else if c == '}' {
+                depth -= 1;
+                if began && depth == 0 {
+                    return src[start..start + i + 1].to_string();
+                }
+            }
+        }
+        panic!("花括号不配平：{signature}");
     }
 
     #[test]

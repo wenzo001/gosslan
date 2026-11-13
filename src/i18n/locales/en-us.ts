@@ -359,7 +359,7 @@ export const enUS: MessageDict = {
   "crash.startupFailed":
     "The last startup was safely aborted (database/identity check failed). The database was not modified.",
   "crash.abort":
-    "The last run died in the memory allocator (the system could not hand it the block it asked for), so the process was aborted before it could record a location. The requested size is in the reallocation-failure line of the log.",
+    "The last run died in the memory allocator (the system could not hand it the block it asked for), so the process was aborted before it could record a location. The requested size is in the allocation-failure line of the log.",
   "crash.hang": "The UI was unresponsive for {seconds}s last time; the last step was {op}.",
   "crash.copy": "Copy details",
   "crash.openLogs": "View logs",
