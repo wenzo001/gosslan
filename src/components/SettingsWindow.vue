@@ -31,6 +31,7 @@ import FilesSection from "@/components/settings/FilesSection.vue";
 import NetworkSection from "@/components/settings/NetworkSection.vue";
 import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
+import AuthorizedAppsSection from "@/components/settings/AuthorizedAppsSection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import Icon from "@/components/ui/Icon.vue";
@@ -333,6 +334,7 @@ useEventListener(window, "keydown", onKeydown);
             <div v-else-if="section === 'about'" class="space-y-5">
               <!-- 安全并入关于（用户 2026-10-25：桌面不再单独一组）。 -->
               <SecuritySection />
+              <AuthorizedAppsSection />
               <AboutSection @dev-open="devDiagOpen = true" />
             </div>
             <div v-else-if="section === 'reset'" class="space-y-5">

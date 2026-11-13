@@ -288,8 +288,8 @@ pub fn guard_case_fixture_db(
         "两种都在编译期看不出来",
         file=TAURI / "src" / "lib.rs",
         injections=[(
-            "    if !allow_second_instance_launch(\n        std::env::var(\"GOSSLAN_INSTANCE\").ok().as_deref(),\n        std::env::var(\"GOSSLAN_AUTOSTART\").ok().as_deref(),\n    ) {\n",
-            "    if false {\n",
+            "        if !allow_second_instance_launch(\n            std::env::var(\"GOSSLAN_INSTANCE\").ok().as_deref(),\n            std::env::var(\"GOSSLAN_AUTOSTART\").ok().as_deref(),\n        ) {\n",
+            "        if false {\n",
         )],
         cmd=cargo("test", "--lib", "second_launch_focuses_the_running_app"),
         cwd=TAURI,

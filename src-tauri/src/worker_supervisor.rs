@@ -110,6 +110,10 @@ pub static ONE_SHOT_SPAWNS: &[(&str, &str)] = &[
         "spawn_catch_up_after_hello",
         "Hello 之后补拉一轮，跑完即结束",
     ),
+    (
+        "spawn_device_auth_link",
+        "处理一条外部应用授权深链（拉取/校验/弹确认页），跑完即结束",
+    ),
 ];
 
 /// 对一个 worker 这一拍该做什么。单独拎出来是因为这是**整条监督逻辑的全部判据**，

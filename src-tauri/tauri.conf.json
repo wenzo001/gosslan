@@ -16,6 +16,11 @@
         "https://gitee.com/fwdq/gosslan-releases/raw/master/updates/latest.json",
         "https://github.com/wenzo001/gosslan/releases/latest/download/latest.json"
       ]
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["gosslan"]
+      }
     }
   },
   "app": {
