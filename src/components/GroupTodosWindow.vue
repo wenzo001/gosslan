@@ -181,7 +181,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <AuxWindowShell :title="windowTitle">
+  <AuxWindowShell :title="windowTitle" dblclick-maximize>
     <div v-if="!groupId" class="p-6 text-sm text-[var(--gosslan-text-2)]">
       {{ t("todo.windowNoGroup") }}
     </div>

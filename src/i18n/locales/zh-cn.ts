@@ -1107,6 +1107,7 @@ export const zhCN: MessageDict = {
   "todo.create": "新建任务",
   "todo.empty": "还没有任务",
   "todo.paneEmpty": "从左侧选择一条任务",
+  "todo.paneResize": "拖动调整列表宽度（双击复位，方向键微调）",
   "todo.loading": "正在加载任务…",
   "todo.loadFail": "任务读取失败",
   "todo.doneCount": "{n}/{total} 已完成",

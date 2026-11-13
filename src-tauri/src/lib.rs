@@ -158,7 +158,7 @@ pub const WINDOW_LABELS: &[&str] = &[
 ///
 /// ⚠️ 只在桌面有意义；移动端没有窗口概念，`window_toggle_maximize` 走另一个桩。
 #[cfg(desktop)]
-pub const MAXIMIZABLE_WINDOWS: &[&str] = &[WINDOW_MAIN, WINDOW_PREVIEW];
+pub const MAXIMIZABLE_WINDOWS: &[&str] = &[WINDOW_MAIN, WINDOW_PREVIEW, WINDOW_TASKS];
 
 /// 安装 panic hook：把 panic（位置 + 消息）写进应用日志文件，并打到 stderr。
 ///
