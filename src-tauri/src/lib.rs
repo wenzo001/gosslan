@@ -203,7 +203,11 @@ unsafe impl std::alloc::GlobalAlloc for NotingAlloc {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         let p = std::alloc::System.alloc(layout);
         if p.is_null() {
-            note_alloc_failure("分配", layout.size(), layout.align());
+            note_alloc_failure(
+                crate::logging::ALLOC_FAIL_ALLOC,
+                layout.size(),
+                layout.align(),
+            );
         }
         p
     }
@@ -213,14 +217,18 @@ unsafe impl std::alloc::GlobalAlloc for NotingAlloc {
     unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
         let p = std::alloc::System.realloc(ptr, layout, new_size);
         if p.is_null() {
-            note_alloc_failure("重分配", new_size, layout.align());
+            note_alloc_failure(crate::logging::ALLOC_FAIL_REALLOC, new_size, layout.align());
         }
         p
     }
     unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
         let p = std::alloc::System.alloc_zeroed(layout);
         if p.is_null() {
-            note_alloc_failure("分配(清零)", layout.size(), layout.align());
+            note_alloc_failure(
+                crate::logging::ALLOC_FAIL_ZEROED,
+                layout.size(),
+                layout.align(),
+            );
         }
         p
     }
