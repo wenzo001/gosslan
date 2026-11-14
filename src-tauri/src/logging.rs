@@ -1102,10 +1102,20 @@ fn previous_run_native(raw: &[String]) -> Vec<String> {
     // "只有崩溃块、没有启动路标"的早期崩溃会被漏报成 NoHistory（真崩溃一条都不能漏，
     // 既有夹具 `previous_run_log_and_crash_scene_are_seeded_before_this_runs_lines` 钉着这一格）。
     let own = format!("pid={}", std::process::id());
+    // 兜底只在 `last_run_slice` 判"无外来 bootstrap"时到达 ⇒ 窗口里若有启动尝试必是本轮自己的。
+    // 那时本轮的 `BOOT_WINDOW_BUILD_START` 也在窗口里（bootstrap 先写启动尝试再写 BUILD_START），
+    // 必须一并剥掉，否则首启被误判 early_exit 弹横幅（2026-11-13 代码审查 #5）。
+    // 没有 own 启动尝试时不剥 BUILD_START：那可能是崩在 logger 之前的上一轮证据（保留检测能力）。
+    let has_own_try = raw
+        .iter()
+        .any(|l| l.starts_with(">>> 启动尝试") && l.contains(&own));
     let mut native: Vec<String> = raw
         .iter()
         .filter(|l| is_crash_native_line(l))
         .filter(|l| !(l.starts_with(">>> 启动尝试") && l.contains(&own)))
+        .filter(|l| {
+            !(has_own_try && strip_note_prefix(l).starts_with("code=BOOT_WINDOW_BUILD_START"))
+        })
         .cloned()
         .collect();
     if native
@@ -3233,6 +3243,31 @@ mod tests {
             build_previous_run_report(&legacy, crash, dir).kind,
             "single_instance",
             "读不到 pid 时不许猜成『本轮自己』"
+        );
+    }
+
+    /// 代码审查 #5 反例自证：首启文件里本轮 bootstrap 既有 `启动尝试` 也有 `BUILD_START`
+    /// （双层 `>>>`）。兜底若只剥启动尝试、留下 BUILD_START，会把首启误判 early_exit 弹横幅。
+    /// 把兜底里的 BUILD_START 过滤删掉，这条会红。
+    #[test]
+    fn first_run_with_own_build_start_is_no_history_not_early_exit() {
+        let own = format!("pid={}", std::process::id());
+        let crash = std::path::Path::new("crash.log");
+        let dir = std::path::Path::new(".");
+        let raw = vec![
+            format!(">>> 启动尝试：进程已起，logger 尚未建立 {own}"),
+            ">>> >>> code=BOOT_WINDOW_BUILD_START 事件循环启动  @2026-11-13 08:00:01".to_string(),
+            "----- 启动 2026-11-13 08:00:02 版本 1.0.0".to_string(),
+        ];
+        assert!(
+            previous_run_native(&raw).is_empty(),
+            "首启的本轮 bootstrap（启动尝试 + BUILD_START）必须全剥，实得 {:?}",
+            previous_run_native(&raw)
+        );
+        assert_eq!(
+            build_previous_run_report(&raw, crash, dir).kind,
+            "no_history",
+            "首启不许误报 early_exit（审查 #5）"
         );
     }
 
