@@ -188,6 +188,12 @@ export const useChatStore = defineStore("chat", () => {
   const messageOpsError = ref<string | null>(null);
   /** 群任务徽标 / 群已读名单（按群）同一类"读不到"的登记。 */
   const groupReadsErrors = ref<Record<string, string>>({});
+  /**
+   * 群投递台账摘要的读失败登记（convId → 原因，审计 2026-11-13 P2 #33）。
+   * 与 groupReadsErrors 同一范式：失败保留旧摘要但记下原因 ⇒ ChatWindow 画错误档 + 重试，
+   * 角标上的旧计数从此是「可能过期」而不是「最新事实」。
+   */
+  const groupDeliveryErrors = ref<Record<string, string>>({});
   // 这些错误串最终都上屏（会话/任务/好友/已读的「加载失败」块或顶部重试条）⇒ 一律只给
   // 分类后的说明，原始异常（IO / HRESULT / 英文库错误）进 console。
   const asReadError = (e: unknown) => detailText(e, { log: true });
@@ -220,6 +226,12 @@ export const useChatStore = defineStore("chat", () => {
    * 于是界面不会留下一条永远挂着、但其实已经不会再变的"同步中"（那种残留比没有提示更坏）。
    */
   const groupHistorySync = ref<Record<string, GroupHistoryProgress>>({});
+  /**
+   * 群历史同步「启动中」登记（group_id → true，审计 2026-11-13 P3 #35）。
+   * 只装「IPC 在飞、首条进度事件还没接管」的那几个群：按钮 busy 与同群去重都读它，
+   * 任何相位的进度事件 / 非 started 裁决 / 清库都会撤销（见 conversations.ts）。
+   */
+  const groupHistoryStarting = ref<Record<string, true>>({});
   const activeConv = ref<string | null>(null);
   // 群聊里有人 @ 我且未读的会话 id 集合 → 列表摘要前显示 [有人@我]。
   // 纯前端运行时标志（不落库）：打开会话即清除，重启后随未读一起消失。
@@ -344,8 +356,8 @@ export const useChatStore = defineStore("chat", () => {
     peers, friends, initialized, friendsLoaded, friendsError, conversationsLoaded, groupsLoaded,
     memberNames, rawPendingRequests, keyRotations, pendingRequests, rawOutgoingRequests,
     outgoingRequests, conversations, groups, transfers, contentTransfers, messageOps,
-    transfersError, contentTransfersError, messageOpsError, groupReadsErrors, updaterStatus,
-    messages, renderLangs, groupDeliveries, messageLoadErrors, groupReads, groupHistorySync, activeConv,
+    transfersError, contentTransfersError, messageOpsError, groupReadsErrors, groupDeliveryErrors, updaterStatus,
+    messages, renderLangs, groupDeliveries, messageLoadErrors, groupReads, groupHistorySync, groupHistoryStarting, activeConv,
     mentionedConvs, activeConversation, totalUnread, operations, liveOperationCount,
     resendingIds, groupTodoRows, eventBridgeOk,
   };
@@ -809,6 +821,7 @@ export const useChatStore = defineStore("chat", () => {
     contentTransfersError,
     messageOpsError,
     groupReadsErrors,
+    groupDeliveryErrors,
     conversationsLoaded,
     groupsLoaded,
     pendingRequests,
@@ -828,6 +841,7 @@ export const useChatStore = defineStore("chat", () => {
     refreshGroupDeliveries,
     groupReads,
     groupHistorySync,
+    groupHistoryStarting,
     groupReaderIds,
     activeConv,
     mentionedConvs,

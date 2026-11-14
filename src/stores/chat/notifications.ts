@@ -231,8 +231,8 @@ export function createNotificationsModule(ctx: ChatContext) {
 
     // 任务详情回复只打扰**任务关联人**（创建人 + 被指派人，用户 2026-11-13）。
     // todo_reply 是 Silent（不计未读、不进时间线），但"我派/我建的任务有人回复"是该知道的变化，
-    // 与 todo_update 终态给创建人那条例外同族。查不到目标任务定义时放行（宁可多打扰一条，
-    // 与 todoCardConcernsMe 的兜底同向）；判据本体在 utils/todos::todoReplyConcernsMe。
+    // 与 todo_update 终态给创建人那条例外同族。**fail-closed**（用户 2026-11-14 拍板，bug #7）：
+    // 任务行未加载/迟到 ⇒ 查不到定义 ⇒ 抑制，宁可不发也不误发全群；判据本体在 utils/todos::todoReplyConcernsMe。
     if (
       !todoReplyConcernsMe(rec, myId, (id) =>
         foldTodos(groupTodoRows.value[rec.conv_id] ?? []).find((x) => x.todoId === id),

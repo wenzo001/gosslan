@@ -11,7 +11,7 @@
  */
 import Icon from "@/components/ui/Icon.vue";
 import CharCounter from "@/components/ui/CharCounter.vue";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
@@ -82,8 +82,9 @@ const emit = defineEmits<{
   (e: "category", category: TodoCategory, customName?: string): void;
   (e: "icon", icon: TodoCustomIcon): void;
   (e: "claim"): void;
-  /** 发一条回复；parentReplyId 给了 = 回复某条回复（平铺引用，不嵌套）。 */
-  (e: "reply", text: string, parentReplyId?: string): void;
+  /** 发一条回复；parentReplyId 给了 = 回复某条回复（平铺引用，不嵌套）。
+   *  ack 由宿主在发送落定后回调：true=成功（此时才清草稿），false=失败（草稿保留，bug #6）。 */
+  (e: "reply", text: string, parentReplyId: string | undefined, ack: (ok: boolean) => void): void;
   /** 跳到某条关联任务（来源或被关联）。 */
   (e: "open-linked", todoId: string): void;
   /** 基于本任务新建一条关联任务。 */
@@ -189,6 +190,15 @@ const ime = useImeEnterGuard();
 const copyWithToast = useCopyToast();
 /** 正在回复的那条回复的 reply_id；null = 直接回复任务。 */
 const replyTarget = ref<string | null>(null);
+// 切任务必须重置草稿与回复目标（bug #6）：右栏/弹窗复用同一个组件实例，
+// 不重置的话，A 任务写了一半的回复会带进 B 任务，目标还可能指向 B 里不存在的回复。
+watch(
+  () => props.item.todoId,
+  () => {
+    replyDraft.value = "";
+    replyTarget.value = null;
+  },
+);
 const repliesList = computed(() => props.replies ?? []);
 function replyAuthor(id: string): string {
   return props.nameOf(id);
@@ -210,12 +220,25 @@ function startReplyTo(replyId: string) {
 function cancelReplyTo() {
   replyTarget.value = null;
 }
+/** 在途回复：ack 回来前不许第二次提交（双击 / 回车重入只放行一次）。 */
+const replySending = ref(false);
 function submitReply() {
-  const text = replyDraft.value.trim();
+  if (replySending.value) return;
+  const raw = replyDraft.value;
+  const text = raw.trim();
   if (!text) return;
-  emit("reply", text, replyTarget.value ?? undefined);
-  replyDraft.value = "";
-  replyTarget.value = null;
+  const target = replyTarget.value;
+  const todoId = props.item.todoId;
+  replySending.value = true;
+  // 发送成功才清草稿（bug #6）：旧的"emit 后立刻清"会在失败时丢稿。
+  // ack(false) 草稿原样保留；期间切了任务或用户继续输入，也不动当前草稿。
+  emit("reply", text, target ?? undefined, (ok) => {
+    replySending.value = false;
+    if (ok && props.item.todoId === todoId && replyDraft.value === raw) {
+      replyDraft.value = "";
+      replyTarget.value = null;
+    }
+  });
 }
 </script>
 
@@ -439,7 +462,7 @@ function submitReply() {
           <button
             type="button"
             class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3 py-2 text-sm text-[var(--gosslan-on-primary)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="!replyDraft.trim()"
+            :disabled="!replyDraft.trim() || replySending"
             @click="submitReply"
           >
             {{ t("todo.replySend") }}

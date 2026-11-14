@@ -1114,18 +1114,23 @@ export function foldTodoReplies(records: MessageRecord[], todoId: string): TodoR
 /**
  * 这条回复是否「跟我有关」—— 只用于回复的通知闸门：通知**任务关联人**（创建人 + 被指派人）。
  * 需要目标任务定义来判断关联人，由调用方注入 findTodo（避免这里再依赖成员/任务数据源）。
- * 兜底方向与 todoCardConcernsMe 一致：myId 未就绪 / 非回复 / 读不出 / 查不到任务 ⇒ 放行（宁可多打扰一条）。
+ *
+ * **fail-closed**（用户 2026-11-14 拍板，bug #7）：回复的目标任务定义未知 / 未加载 /
+ * 载荷读不出 / myId 未就绪时一律**抑制** —— 宁可不发，也不误发全群。
+ * 旧的"查不到就放行"兜底会把"任务行还没加载 / 迟到"变成全群广播。
+ * 只有非回复 kind 放行（本闸只管回复，其它 kind 的行为一字不变）。
  */
 export function todoReplyConcernsMe(
   rec: MessageRecord,
   myId: string,
   findTodo: (todoId: string) => TodoItem | undefined,
 ): boolean {
-  if (!myId || rec.kind !== "todo_reply") return true;
+  if (rec.kind !== "todo_reply") return true;
+  if (!myId) return false;
   const r = parseTodoReply(rec);
-  if (!r) return true;
+  if (!r) return false;
   const todo = findTodo(r.todoId);
-  if (!todo) return true;
+  if (!todo) return false; // 定义未知 / 未加载 ⇒ 抑制，不发全群
   return todo.creator === myId || todo.assignees.includes(myId);
 }
 
@@ -1261,12 +1266,17 @@ export function buildTodoHistory(todoId: string, records: MessageRecord[]): Todo
 export type TodoRowsByConv = Record<string, MessageRecord[]>;
 
 /**
- * 每个会话最多保留多少条任务消息行（决策 5，拍板 5A(500)）。
+ * 每个会话的任务消息行**定义 / 回复两池各自**最多保留多少条（决策 5，拍板 5A(500)；
+ * bug #2 起由"定义+回复共用一顶"改为**分池各封顶**）。
  *
  * 后端只限会话数、不限行数（`get_todo_messages_for_conns` 的 `ORDER BY seq ASC`），
  * 而看板/徽标折的是这份全表读 ⇒ 不封顶会随任务事件单调增长；`foldTodos` 还会
- * 在每个新事件上把整份重解析一遍。取最末尾的 N 条（后端升序返回、增量事件追加在尾部）
+ * 在每个新事件上把整份重解析一遍。每池各取最末尾的 N 条（后端升序返回、增量事件追加在尾部）
  * ⇒ 最近的任务状态优先保留。
+ *
+ * 为什么分池：定义与回复共用一道尾裁时，一条任务的大量回复会把定义挤出窗口
+ * ⇒ 徽标有数、看板却空。分池后看板（折定义）与详情（折回复）各有自己的窗口，
+ * 互不挤掉；总上界 = 2 × 本值，仍然有界。
  *
  * ⚠️ **只裁前端运行态缓存，不碰数据库**：被裁掉的老任务仍在 `messages` 表里，
  * 需要时仍可从库里取回（拍板明确禁止为了省内存永久删除任务历史）。
@@ -1274,8 +1284,19 @@ export type TodoRowsByConv = Record<string, MessageRecord[]>;
 export const MAX_TODO_ROWS_PER_CONV = 500;
 
 function capTodoRows(rows: MessageRecord[]): MessageRecord[] {
-  // `bounded.ts::trimOldest` 只接受 Map/Set；这里是按插入序的数组，等价地保留末尾 N 条。
-  return rows.length > MAX_TODO_ROWS_PER_CONV ? rows.slice(-MAX_TODO_ROWS_PER_CONV) : rows;
+  if (rows.length <= MAX_TODO_ROWS_PER_CONV) return rows;
+  // 分池取尾（bug #2）：定义与回复各留自己的末尾 N 条，回复挤不掉定义。
+  // `bounded.ts::trimOldest` 只接受 Map/Set；这里是按插入序的数组，等价地按池保留末尾。
+  const defs: MessageRecord[] = [];
+  const replies: MessageRecord[] = [];
+  for (const r of rows) (parseTodoReply(r) !== null ? replies : defs).push(r);
+  const keepDefs = defs.length > MAX_TODO_ROWS_PER_CONV ? defs.slice(-MAX_TODO_ROWS_PER_CONV) : defs;
+  const keepReplies =
+    replies.length > MAX_TODO_ROWS_PER_CONV ? replies.slice(-MAX_TODO_ROWS_PER_CONV) : replies;
+  const kept = new Set<MessageRecord>([...keepDefs, ...keepReplies]);
+  if (kept.size === rows.length) return rows; // 两池都没超 ⇒ 不动原数组
+  // 保持原有相对顺序合并（后端升序返回、增量事件追加在尾部）。
+  return rows.filter((r) => kept.has(r));
 }
 
 /** 整表读的结果落进那份源：`convIds` 是这次读**点到**的全部会话（后端只回有任务的会话）。 */

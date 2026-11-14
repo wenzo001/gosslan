@@ -6724,6 +6724,7 @@ test("A 档读失败的界面错误档必须接上（后端不许折回空 + 前
     "contentTransfersError",
     "messageOpsError",
     "groupReadsErrors",
+    "groupDeliveryErrors",
   ]) {
     assert.ok(store.includes(`    ${k},`), `store 没导出 ${k} ⇒ 组件读不到失败原因，只能画空态`);
     assert.ok(
@@ -6744,6 +6745,15 @@ test("A 档读失败的界面错误档必须接上（后端不许折回空 + 前
   assert.ok(
     /groupReadsLoadFailed[\s\S]{0,1200}common\.retry/.test(chatWin),
     "群已读名单的错误提示没有重试入口",
+  );
+  // 投递台账摘要同一范式（审计 2026-11-13 P2 #33）：失败保留旧角标，但错误档 + 重试必须在。
+  assert.ok(
+    /groupDeliveryLoadFailed[\s\S]{0,600}role="alert"/.test(chatWin),
+    "群投递台账读失败没有界面出口（角标静默保留旧计数 ⇒ 把过期台账当成最新事实）",
+  );
+  assert.ok(
+    /groupDeliveryLoadFailed[\s\S]{0,1200}common\.retry/.test(chatWin),
+    "群投递台账的错误提示没有重试入口",
   );
   // 2026-11-06 第 6 段：错误档从"各写一段 role=alert 的 div"收敛到 `StateBlock`。
   // 判据跟着搬家：不再盯组件里的 role 字面量，而是盯"这个面板确实挂了错误档 StateBlock"；

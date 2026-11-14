@@ -147,10 +147,10 @@ export function createContactsModule(ctx: ChatContext) {
     }
   }
 
-  /** 乐观交互：立即从联系人移除，失败回滚。保留聊天记录（后端行为）。 */
+  /** 乐观交互：立即从联系人移除，失败按项加回（不整份覆盖，保留并发新增的好友）。保留聊天记录（后端行为）。 */
   async function removeFriend(peerId: string) {
-    const prev = friends.value;
-    friends.value = prev.filter((f) => f.device_id !== peerId);
+    const removed = friends.value.find((f) => f.device_id === peerId);
+    friends.value = friends.value.filter((f) => f.device_id !== peerId);
     // 后端 remove_friend 会同步删掉密钥轮换候选；乐观一并清，否则聊天顶部的
     // 换钥横幅要等 friend-removed 事件往返后才消失。
     const prevRotation = keyRotations.value[peerId];
@@ -162,7 +162,11 @@ export function createContactsModule(ctx: ChatContext) {
     try {
       await api.removeFriend(peerId);
     } catch (e) {
-      friends.value = prev; // 回滚
+      // 按项逆操作（审计 P2）：把移除的**那一条**好友加回当前态，不整份恢复快照——
+      // 并发期间新增/变更的其他好友不被盖掉。keyRotations 本就按键恢复。
+      if (removed && !friends.value.some((f) => f.device_id === peerId)) {
+        friends.value = [...friends.value, removed];
+      }
       if (prevRotation) {
         keyRotations.value = { ...keyRotations.value, [peerId]: prevRotation };
       }

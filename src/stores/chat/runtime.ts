@@ -64,6 +64,8 @@ export interface ChatState {
   contentTransfersError: Ref<string | null>;
   messageOpsError: Ref<string | null>;
   groupReadsErrors: Ref<Record<string, string>>;
+  /** 群投递台账摘要读失败（convId → 原因）：旧角标是「可能过期」，UI 据此画错误档 + 重试。 */
+  groupDeliveryErrors: Ref<Record<string, string>>;
   updaterStatus: Ref<UpdaterStatus | null>;
 
   messages: Ref<Record<string, MessageRecord[]>>;
@@ -77,6 +79,8 @@ export interface ChatState {
   messageLoadErrors: Ref<Record<string, string>>;
   groupReads: Ref<Record<string, Record<string, number>>>;
   groupHistorySync: Ref<Record<string, GroupHistoryProgress>>;
+  /** 群历史同步「启动中」（group_id → true）：IPC 在飞、首条进度事件未接管的空窗登记。 */
+  groupHistoryStarting: Ref<Record<string, true>>;
   activeConv: Ref<string | null>;
   mentionedConvs: Ref<Set<string>>;
   activeConversation: ComputedRef<Conversation | null>;

@@ -1028,15 +1028,30 @@ test("foldTodoReplies：按 reply_id 去重、(seq,msg_id) 正序，只收本任
   assert.deepEqual(foldTodoReplies(recs, "t1").map((r) => r.replyId), ["r1", "r2"], "去重 + 旧→新 + 不串任务");
 });
 
-test("todoReplyConcernsMe：只通知创建人 + 被指派人；查不到任务/非回复放行", () => {
+test("todoReplyConcernsMe：只通知创建人 + 被指派人；未知/读不出/未就绪 ⇒ 抑制（fail-closed，bug #7）", () => {
   const task = foldTodos([def("t1", 1, { creator: "a", assignees: ["a", "c"] })])[0];
   const find = (id: string) => (id === "t1" ? task : undefined);
   const r = reply("t1", "r1", 2);
   assert.equal(todoReplyConcernsMe(r, "a", find), true, "创建人");
   assert.equal(todoReplyConcernsMe(r, "c", find), true, "被指派人");
   assert.equal(todoReplyConcernsMe(r, "b", find), false, "无关成员不通知");
-  assert.equal(todoReplyConcernsMe(r, "z", () => undefined), true, "查不到任务 ⇒ 放行（宁可多打扰一条）");
+  // fail-closed（用户 2026-11-14 拍板）：查不到定义 ⇒ 抑制，宁可不发也不误发全群。
+  // 反例锚点：改回旧的"查不到放行"这一条就红。
+  assert.equal(todoReplyConcernsMe(r, "z", () => undefined), false, "查不到任务 ⇒ 抑制（任务行未加载/迟到）");
+  assert.equal(todoReplyConcernsMe(r, "", find), false, "myId 未就绪 ⇒ 抑制");
+  assert.equal(todoReplyConcernsMe({ ...r, content: "{broken" }, "a", find), false, "载荷读不出 ⇒ 抑制");
   assert.equal(todoReplyConcernsMe(def("t1", 1), "a", find), true, "非回复 kind 不受这条闸管辖");
+});
+
+test("回复通知 × 全表源：未加载的会话 ⇒ 抑制；已加载且相关 ⇒ 正常通知（bug #7 端到端口径）", () => {
+  const rows = putTodoRows({}, ["group:g1"], [def("t1", 1, { creator: "a", assignees: ["a"] })]);
+  // 与 stores/chat/notifications.ts 的注入同形：从 groupTodoRows 折定义再查
+  const findIn = (convId: string) => (id: string) =>
+    foldTodos(rows[convId] ?? []).find((x) => x.todoId === id);
+  const r = reply("t1", "r1", 2);
+  assert.equal(todoReplyConcernsMe(r, "a", findIn("group:other")), false, "任务行未加载 ⇒ 抑制，不发全群");
+  assert.equal(todoReplyConcernsMe(r, "a", findIn("group:g1")), true, "已加载且我是创建人 ⇒ 正常通知");
+  assert.equal(todoReplyConcernsMe(r, "b", findIn("group:g1")), false, "已加载但无关 ⇒ 不通知");
 });
 
 test("mergeIncomingTodoRows：实时回复也落同一份源（否则详情要等整表重读才看得见）", () => {
@@ -1047,6 +1062,53 @@ test("mergeIncomingTodoRows：实时回复也落同一份源（否则详情要�
   assert.equal(foldTodos(merged["group:g1"]).length, 1, "回复不被当成任务定义折进看板");
   const cold = mergeIncomingTodoRows({}, [reply("t1", "r1", 2)]);
   assert.equal(isTodoRowsLoaded(cold, "group:g1"), false, "未加载会话不因回复建键");
+});
+
+// ---------------- 分池尾裁：回复挤不掉定义（bug #2） ----------------
+//
+// 修掉的形状：定义与回复共用一道 500 行尾裁，一条任务的大量回复把定义挤出窗口
+// ⇒ 徽标有数、看板却空。分池后两池各封顶，互不挤掉。
+
+test("putTodoRows：大量回复挤不掉任务定义（分池，bug #2）", () => {
+  const definition = def("t1", 1);
+  const n = MAX_TODO_ROWS_PER_CONV + 50;
+  const replies = Array.from({ length: n }, (_, i) => reply("t1", `r${i}`, i + 2));
+  const input = [definition, ...replies];
+  const rows = putTodoRows({}, ["group:g1"], input)["group:g1"];
+  // 定义仍在：看板折得出（这正是本轮修的形状）
+  assert.equal(foldTodos(rows).length, 1, "定义不能被回复挤出窗口");
+  assert.equal(foldTodos(rows)[0].todoId, "t1");
+  // 回复池独立封顶：保留最新一段
+  const folded = foldTodoReplies(rows, "t1");
+  assert.equal(folded.length, MAX_TODO_ROWS_PER_CONV, "回复池独立封顶");
+  assert.equal(folded[folded.length - 1].replyId, `r${n - 1}`, "保留最新的回复");
+  // 相对顺序保持：裁剪结果是输入的子序列（后端升序返回、增量追加在尾部）
+  let at = 0;
+  for (const r of rows) {
+    while (at < input.length && input[at] !== r) at += 1;
+    assert.ok(at < input.length, "裁剪结果必须是输入的子序列（保序）");
+    at += 1;
+  }
+  // 反例自证：旧的"共用尾裁"在同一夹具上确实丢定义 ⇒ 夹具不空转；
+  // 把 capTodoRows 改回 rows.slice(-MAX_TODO_ROWS_PER_CONV)，上面"定义仍在"即红。
+  const sharedTrim = input.slice(-MAX_TODO_ROWS_PER_CONV);
+  assert.equal(foldTodos(sharedTrim).length, 0, "反例前提：共用尾裁会把定义挤掉");
+});
+
+test("mergeIncomingTodoRows：增量回复洪水同样挤不掉定义（bug #2 增量路径）", () => {
+  const loaded = putTodoRows({}, ["group:g1"], [def("t1", 1)]);
+  const batch = Array.from({ length: MAX_TODO_ROWS_PER_CONV + 10 }, (_, i) => reply("t1", `r${i}`, i + 2));
+  const rows = mergeIncomingTodoRows(loaded, batch)["group:g1"];
+  assert.equal(foldTodos(rows).length, 1, "增量回复超量后定义仍在");
+  assert.equal(foldTodoReplies(rows, "t1").length, MAX_TODO_ROWS_PER_CONV, "回复池封顶");
+});
+
+test("putTodoRows：定义池超量裁定义、回复池不受牵连（分池的对称口径，bug #2）", () => {
+  const defs = Array.from({ length: MAX_TODO_ROWS_PER_CONV + 5 }, (_, i) => def(`t${i}`, i + 1));
+  const replies = [reply("t0", "r1", MAX_TODO_ROWS_PER_CONV + 10)];
+  const rows = putTodoRows({}, ["group:g1"], [...defs, ...replies])["group:g1"];
+  assert.equal(foldTodos(rows).length, MAX_TODO_ROWS_PER_CONV, "定义池保留最新 500 条");
+  assert.equal(foldTodoReplies(rows, "t0").length, 1, "回复不被定义挤掉");
 });
 
 test("两份源不再等价：消息缓存里已经没有这个会话时，全表那份仍折得出任务（这就是本轮修的形状）", () => {
