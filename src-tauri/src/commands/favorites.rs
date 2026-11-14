@@ -691,6 +691,9 @@ pub async fn clear_all_data(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
+    // 外部应用设备认证的待确认事务一并清（#8）：上面已删 rp_device_bindings 表，内存里的
+    // 待确认事务与排队批准若留着，清完数据后旧确认页仍能复活已清事务。代际 +1 让在途批准对账失败。
+    crate::commands::clear_device_auth_pending(&s.device_auth_pending, &s.device_auth_generation);
     // 群文件/文件投递运行态与待发群密钥同属聊天数据运行态（不清会残留
     // 已删群的 file_key，且 pending 群密钥可能在重连时复活已删群记录）
     s.group_file_receivers

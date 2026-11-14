@@ -34,6 +34,12 @@
  *   （`state.rs`）调用。ECDH 的唯一出口是 `Identity::dh()`，签名是 `Identity::signer()`
  *   交出的 `IdentitySigner::sign()`（5.15.45 起）。
  *
+ * ⚠️ 2026-11-14（#3）起判据 C 也覆盖 **RP 专属登录密钥**（外部应用设备认证）：私钥的生成/编码/
+ * 签名收进 `crypto.rs` 的 `RpKey` 能力封装；RP 协议层（`device_auth.rs`）与命令层
+ * （`commands/device_auth.rs`）不许出现原始 `SigningKey` 或 `.to_bytes()` 密钥字节编码；
+ * RP secret 导出器 `rp_secret_b64` 只许 `crypto.rs`（定义）与持久化那一家 `db/device_auth.rs` 调。
+ * 反例自证：把 RP secret 挪回命令层（`signing.to_bytes()` 或第二家调导出器）即红。
+ *
  * ⚠️ 5.15.45 起这条覆盖两半：`ed25519_signing` 也私有化了（对外只剩 `Identity::signer()` 交出的
  * `IdentitySigner`）。历史注记（保留是为了说明当初为什么分两批）：私有化之前它**仍是公开字段** —— 中继拨号要把 owned
  * `SigningKey` 跨 `spawn` 传进 `relay_negotiate`/`build_wrap_offer`（含 10 处用裸 SigningKey 的
@@ -240,6 +246,27 @@ function scanFieldBoundary(rel, src) {
       bad.push(`${rel} 调用密钥导出器 ${m[1]}()（只许 state.rs 持久化用）`);
     }
   }
+  // ---- RP 专属密钥（INV-P18 延伸，外部应用设备认证 #3，2026-11-14）----
+  // RP 私钥的生成/编码/签名收进 crypto.rs 的 `RpKey` 能力封装；协议层（device_auth.rs）与
+  // 命令层（commands/device_auth.rs）只拿公钥面与能力，落库导出只许持久化那一家 db/device_auth.rs。
+  // 抹掉注释/字符串再判：doc 注释里提到 `SigningKey` 这个词不算违规（判的是代码，不是散文）。
+  const rpSrc = src.split(/\n/).map(scrub).join("\n");
+  // (a) 原始 SigningKey 类型 / 私钥字节编码 `.to_bytes()` 不许出现在 RP 协议层/命令层。
+  //     这正是 #3 的原始缺陷形状：`da::generate_rp_key()` 返回 SigningKey、命令层 `signing.to_bytes()`。
+  if (rel === "device_auth.rs" || rel === "commands/device_auth.rs") {
+    if (/\bSigningKey\b/.test(rpSrc)) {
+      bad.push(`${rel} 出现原始 SigningKey —— RP 私钥只许在 crypto.rs 的 RpKey 能力封装内生成/编码/签名（#3）`);
+    }
+    if (/\.to_bytes\s*\(/.test(rpSrc)) {
+      bad.push(`${rel} 出现 .to_bytes() 密钥字节编码 —— RP 私钥编码只许在 crypto.rs 能力封装内（#3）`);
+    }
+  }
+  // (b) RP secret 导出器只许 crypto.rs（定义）与持久化那一家 db/device_auth.rs 调。
+  if (rel !== "crypto.rs" && rel !== "db/device_auth.rs") {
+    for (const m of rpSrc.matchAll(/\brp_secret_b64\s*\(/g)) {
+      bad.push(`${rel} 调用 RP 密钥导出器 rp_secret_b64()（只许 crypto.rs / db/device_auth.rs 持久化用，#3）`);
+    }
+  }
   return bad;
 }
 
@@ -324,6 +351,62 @@ let b = id.ed25519_secret_b64();
     rel: "crypto.rs",
     src: `pub fn dh(&self, their_public_b64: &str) -> Option<[u8; 32]> {
     shared_secret(&self.x25519_secret, their_public_b64)
+}
+` },
+  // ---- RP 专属密钥（INV-P18 延伸，#3）：把 RP secret 挪回命令层/协议层即红 ----
+  { name: "C-RP：RP 协议层重新出现原始 SigningKey（私钥离开 crypto 能力封装）", probe: "C",
+    rel: "device_auth.rs",
+    src: `pub fn generate_rp_key() -> (SigningKey, String) {
+    let signing = SigningKey::generate(&mut OsRng);
+    (signing, String::new())
+}
+` },
+  { name: "C-RP′：命令层把 RP 私钥编码写库（#3 原始缺陷：signing.to_bytes()）", probe: "C",
+    rel: "commands/device_auth.rs",
+    src: `fn prepare() {
+    let (signing, _pub) = da::generate_rp_key();
+    let secret_b64 = STANDARD.encode(signing.to_bytes());
+}
+` },
+  { name: "C-RP″：持久化之外第二家调 RP 导出器", probe: "C",
+    rel: "commands/export.rs",
+    src: `pub fn dump(key: &crypto::RpKey) -> String {
+    key.rp_secret_b64()
+}
+` },
+  { name: "A-RP：给可序列化 DTO 加 RP secret 字段", probe: "A",
+    src: `#[derive(Serialize)]
+pub struct RpBindingDto {
+    pub kid: String,
+    pub secret_key: String,
+}
+` },
+  { name: "B-RP：命令把 RP secret 放在交出值位置", probe: "B",
+    src: `#[tauri::command]
+pub async fn dump_rp(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let row = state.db.lock();
+    Ok(row.secret_key)
+}
+` },
+  { name: "反例：db/device_auth.rs 持久化调 RP 导出器（授权落点）", probe: "none",
+    rel: "db/device_auth.rs",
+    src: `pub fn insert_rp_binding(key: &crypto::RpKey) -> String {
+    key.rp_secret_b64()
+}
+` },
+  { name: "反例：crypto.rs 内部定义 RpKey 与导出器", probe: "none",
+    rel: "crypto.rs",
+    src: `pub struct RpKey { signing: SigningKey }
+impl RpKey {
+    pub fn rp_secret_b64(&self) -> String { STANDARD.encode(self.signing.to_bytes()) }
+}
+` },
+  { name: "反例：RP 协议层只用能力封装与公钥面（不碰原始 SigningKey / to_bytes）", probe: "none",
+    rel: "device_auth.rs",
+    src: `pub fn generate_rp_key() -> (crypto::RpKey, String) {
+    let key = crypto::RpKey::generate();
+    let pub_b64 = URL_SAFE_NO_PAD.encode(key.public_key_bytes());
+    (key, pub_b64)
 }
 ` },
 ];
@@ -426,4 +509,5 @@ if (problems.length) {
 
 console.log(`✓ 私钥边界：${a.seenTypes} 个可序列化类型无密钥字段（判据 A）`
   + ` · ${b.found.size} 条命令体无密钥触碰且与注册表逐条对上（判据 B）`
-  + ` · X25519/Ed25519 私钥字段、两个导出器与「签名能力」的落点在 crypto.rs（判据 C）`);
+  + ` · X25519/Ed25519 私钥字段、两个导出器与「签名能力」的落点在 crypto.rs（判据 C）`
+  + ` · RP 专属密钥（RpKey）的生成/编码/签名与导出器落点也在 crypto.rs / db/device_auth.rs（判据 C，#3）`);

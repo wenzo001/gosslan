@@ -12,7 +12,7 @@ import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import { api } from "@/api";
 import { useDeviceAuthStore } from "@/stores/useDeviceAuthStore";
 import { useAppStore } from "@/stores/useAppStore";
-import { deviceAuthClaimKey, deviceAuthSecondsLeft } from "@/utils/deviceAuth";
+import { deviceAuthClaimKey, deviceAuthSecondsLeft, disclosedClaims } from "@/utils/deviceAuth";
 import { createInitScope } from "@/utils/initScope";
 import { t } from "@/i18n";
 
@@ -28,6 +28,9 @@ onMounted(() => {
     allowNickname.value = false;
     store.setPending(p);
   }).then((un) => scope.onDispose(un));
+  // 清数据（clearAllData / resetAfterDataCleared 经后端广播 data-cleared）一并清掉确认页（#8）：
+  // 后端已清待确认事务与绑定，前端若留着旧确认页，用户会以为还能批准一个已不存在的事务。
+  void api.onDataCleared(() => store.clear()).then((un) => scope.onDispose(un));
   const timer = window.setInterval(() => {
     now.value = Date.now();
   }, 1000);
@@ -39,11 +42,16 @@ onUnmounted(() => scope.dispose());
 watch(
   () => store.pending?.request_id,
   (id) => {
-    if (id) void store.refreshPending(id);
+    if (id) void store.refreshPending();
   },
 );
 
 const prompt = computed(() => store.pending);
+// 恒发披露（#4）：device_subject/device_public_key 是绑定必需，即便 RP 只请求 nickname 也恒发，
+// 确认页必须始终列出这两项，杜绝「只请求 nickname 却未披露恒发项」。
+const disclosed = computed(() =>
+  prompt.value ? disclosedClaims(prompt.value.requested_claims) : [],
+);
 const secondsLeft = computed(() =>
   prompt.value ? deviceAuthSecondsLeft(prompt.value.expires_at_ms, now.value) : 0,
 );
@@ -98,7 +106,7 @@ function onClose() {
         <div class="mb-1 text-caption text-[var(--gosslan-text-2)]">{{ t("deviceAuth.claimsLabel") }}</div>
         <ul class="space-y-1">
           <li
-            v-for="c in prompt.requested_claims"
+            v-for="c in disclosed"
             :key="c"
             class="flex items-center gap-2 text-meta text-[var(--gosslan-text)]"
           >
@@ -106,6 +114,8 @@ function onClose() {
             {{ claimLabel(c) }}
           </li>
         </ul>
+        <!-- 恒发披露（#4）：设备标识与公钥为绑定必需，批准即提供，与 RP 请求了哪些 claim 无关。 -->
+        <p class="mt-1.5 text-meta leading-relaxed text-[var(--gosslan-text-2)]">{{ t("deviceAuth.identityDisclosure") }}</p>
         <div
           v-if="prompt.requested_claims.includes('nickname')"
           class="mt-2 flex items-center gap-2"

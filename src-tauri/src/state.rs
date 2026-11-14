@@ -1207,10 +1207,17 @@ pub struct AppState {
     /// LAN announce 触发的 ensure_link）会同时看到"还没连上" ⇒ 同一目标被拨两次，
     /// `links[peer]` 出现两条完全相同的端点。有了在途标记，第二个拨号直接返回。
     pub dialing: Mutex<std::collections::HashSet<String>>,
-    /// 外部应用设备认证的**待确认事务**（request_id → pending）。内存态、cap 4、过期清除；
-    /// 拒绝/批准即消费移除（一次性，防重放）。不含密钥材料（设计文档 §5）。
+    /// 外部应用设备认证的**待确认事务**（复合键 rp_origin+client_id+request_id → pending）。
+    /// 内存态、cap 4、过期清除；批准**RP 回写 2xx 后**才消费移除（可重试，#1），拒绝即消费。
+    /// 不含密钥材料（设计文档 §5）。键与代际见 `device_auth::pending_key` / `PendingDeviceAuth::generation`。
     pub device_auth_pending:
         Mutex<std::collections::HashMap<String, crate::device_auth::PendingDeviceAuth>>,
+    /// 设备认证待确认事务的**全局代际计数器**（#8）：每插入一条事务 +1，清数据时再 +1。
+    /// 排队中的批准凭「键 + 代际」对账：事务被消费/清数据/同键重插后，旧在途批准必须放弃。
+    pub device_auth_generation: AtomicU64,
+    /// 同一 RP 的授权**排队锁**（rp_queue_key → 异步互斥，#1）：同 RP 的多个批准依次处理
+    /// （不是单飞拒绝），不同 RP 并行。只在用户批准时按 RP 建锁，数量受已授权应用数约束。
+    pub device_auth_rp_locks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// 并发拨号上限信号量（**不是**在途去重，是资源上限）。
     ///
     /// 为什么还要它：在途集合只挡"同一目标"，挡不住"一万个不同目标"——伪造 announce
@@ -2547,6 +2554,8 @@ impl AppState {
             ble_dial_failures: Mutex::new(std::collections::HashMap::new()),
             dialing: Mutex::new(std::collections::HashSet::new()),
             device_auth_pending: Mutex::new(std::collections::HashMap::new()),
+            device_auth_generation: AtomicU64::new(0),
+            device_auth_rp_locks: Mutex::new(std::collections::HashMap::new()),
             todo_focus_request: Mutex::new(std::collections::HashMap::new()),
             task_window_group: Mutex::new(None),
             preview_gallery: Mutex::new(None),

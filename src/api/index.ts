@@ -879,11 +879,13 @@ export const api = {
   // ---------------- 外部应用设备认证（Phase 2，本地设备确认器） ----------------
   /** 处理授权深链：拉 metadata/请求 → 校验 → 存待确认 → 唤起主窗并 emit 确认页。 */
   deviceAuthHandleLink: (url: string) => invoke<DeviceAuthPrompt>("device_auth_handle_link", { url }),
-  deviceAuthGetPending: (requestId: string) =>
-    invoke<DeviceAuthPrompt>("device_auth_get_pending", { requestId }),
-  deviceAuthApprove: (requestId: string, allowNickname: boolean) =>
-    invoke<DeviceAuthOutcome>("device_auth_approve", { requestId, allowNickname }),
-  deviceAuthDeny: (requestId: string) => invoke<DeviceAuthOutcome>("device_auth_deny", { requestId }),
+  // 复合键定位（#8）：rp_origin + client_id + request_id，防跨 RP 的 request_id 撞键。
+  deviceAuthGetPending: (rpOrigin: string, clientId: string, requestId: string) =>
+    invoke<DeviceAuthPrompt>("device_auth_get_pending", { rpOrigin, clientId, requestId }),
+  deviceAuthApprove: (rpOrigin: string, clientId: string, requestId: string, allowNickname: boolean) =>
+    invoke<DeviceAuthOutcome>("device_auth_approve", { rpOrigin, clientId, requestId, allowNickname }),
+  deviceAuthDeny: (rpOrigin: string, clientId: string, requestId: string) =>
+    invoke<DeviceAuthOutcome>("device_auth_deny", { rpOrigin, clientId, requestId }),
   deviceAuthListBindings: () => invoke<RpBindingInfo[]>("device_auth_list_bindings"),
   deviceAuthRevoke: (rpOrigin: string, clientId: string) =>
     invoke<boolean>("device_auth_revoke", { rpOrigin, clientId }),

@@ -152,7 +152,7 @@ export default {
       invariants: [],
       activeHome: "src-tauri/src/device_auth.rs", // 单家：协议核心；命令在装配层、绑定表在 persistence、UI 在 presentation
       enforce: false,
-      consumes: ["observability"], // 协议核心用 error_codes（在册错误码，归 observability）；其余仅外部 crate
+      consumes: ["observability", "identity"], // observability: error_codes（在册错误码）；identity: RP 私钥的生成/编码/签名收进 crypto::RpKey 能力封装（#3，INV-P18 延伸），协议层 use crate::crypto
       notes:
         "外部应用（RP）把本安装绑定为可信设备：RP 专属 Ed25519 密钥（**不复用 P2P 身份钥**，避免跨站关联）+ pairwise subject + 强制确认 UI。与核心 P2P 身份隔离，不触好友/传输/身份锚点。Phase 2 客户端最小绑定；RP 后端在外部，契约 mock 驱动。私钥不过 UI 边界（INV-P18 延伸）。真机深链唤起与系统协议注册 NOT RUN。",
     },
@@ -451,6 +451,9 @@ export default {
         // 领域方向守门只认 `use` 口径 ⇒ 这里写成 `use crate::mem_diag;`，不许退回全限定调用
         // （那会把它变成判据看不见的内联耦合，棘轮当场红 —— 本次就是被它拦下后才改的）。
         "observability",
+        // 2026-11-14（#3）：db/device_auth.rs 首绑落库调 crypto::RpKey::rp_secret_b64() 导出 RP 私钥。
+        // 这是 RP 密钥持久化的**唯一授权落点**（与身份密钥导出器只许 state.rs 调同一口径，INV-P18 判据 C）。
+        "identity",
       ], // 2026-09-28 #122 第二段起这是**真生产依赖**：db/messages.rs 的 mention_targets 列存的就是 protocol::MentionTarget，解码走 protocol::parse_mention_targets_column（三态规则只此一家，不在 db 里另写一份）。
       notes:
         "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、file_relay、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。",
