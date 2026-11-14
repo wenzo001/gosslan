@@ -172,8 +172,8 @@ fn rp_keys_are_distinct_and_kid_is_sha256_of_public() {
     let raw = URL_SAFE_NO_PAD.decode(&pub1).unwrap();
     assert_eq!(kid1, kid_from_public(&raw));
     assert_ne!(kid1, kid2);
-    // 公钥能由私钥推出（一致性）。
-    assert_eq!(pub1, URL_SAFE_NO_PAD.encode(sk1.verifying_key().to_bytes()));
+    // 公钥能由私钥推出（一致性）；公钥面经能力封装暴露，不触碰原始 SigningKey。
+    assert_eq!(pub1, URL_SAFE_NO_PAD.encode(sk1.public_key_bytes()));
 }
 
 #[test]
@@ -209,7 +209,7 @@ fn assertion_jws_roundtrip_verifies_and_fields_consistent() {
         .unwrap_or(false));
 
     // 用 RP 专属公钥验签：签名主体 = header.payload。
-    let vk = VerifyingKey::from_bytes(&signing.verifying_key().to_bytes()).unwrap();
+    let vk = VerifyingKey::from_bytes(&signing.public_key_bytes()).unwrap();
     let sig = Signature::from_slice(&sig_bytes).unwrap();
     let signing_input = format!("{}.{}", parts[0], parts[1]);
     assert!(vk.verify(signing_input.as_bytes(), &sig).is_ok());
@@ -232,5 +232,39 @@ fn assertion_audience_derives_from_issuer() {
     assert_eq!(
         assertion_audience("https://app.example.com/"),
         "https://app.example.com/api/device-auth"
+    );
+}
+
+/// 损坏的绑定密钥（非法 base64 / 非 32 字节）必须明确报错，绝不静默用新密钥覆盖（#3）。
+/// 解码与签名都在 crypto::RpKey 能力内完成，协议层只透传不透明 seed 串。
+#[test]
+fn sign_with_binding_rejects_corrupt_secret() {
+    let meta = good_metadata();
+    let req = good_request();
+    let err =
+        sign_with_binding("not-base64!!", "kid", "sub", &meta, &req, 1_700_000_000).unwrap_err();
+    assert!(err.contains("DEVICE_AUTH_BAD_REQUEST"));
+    let short = base64::engine::general_purpose::STANDARD.encode([1u8; 16]);
+    assert!(
+        sign_with_binding(&short, "kid", "sub", &meta, &req, 1_700_000_000).is_err(),
+        "非 32 字节 seed 也拒"
+    );
+}
+
+/// 复合键（#8）：不同 RP 复用同一 request_id 不会撞键；同 RP 同事务键稳定。
+#[test]
+fn pending_key_is_composite_and_queue_key_groups_by_rp() {
+    let a = pending_key("https://a.example", "client", "req-1");
+    let b = pending_key("https://b.example", "client", "req-1");
+    assert_ne!(a, b, "跨 RP 同 request_id 不许撞键");
+    assert_eq!(a, pending_key("https://a.example", "client", "req-1"));
+    // 排队键按 RP 聚合：同 RP 不同事务共用一把锁，不同 client_id 分开。
+    assert_eq!(
+        rp_queue_key("https://a.example", "c"),
+        rp_queue_key("https://a.example", "c")
+    );
+    assert_ne!(
+        rp_queue_key("https://a.example", "c1"),
+        rp_queue_key("https://a.example", "c2")
     );
 }

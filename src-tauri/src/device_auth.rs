@@ -11,16 +11,12 @@
 //! - 短时、一次性、防重放；未知 version/action/claim 整笔拒（fail closed）。
 //! - 本流程**不**加好友、不接受好友申请、不改 P2P 身份锚点。
 
-use base64::{
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-    Engine as _,
-};
-use ed25519_dalek::{Signer, SigningKey};
-use rand_core::OsRng;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
 
+use crate::crypto;
 use crate::error_codes;
 
 /// 协议版本（metadata/request 都必须等于它，未知版本整笔拒）。
@@ -120,11 +116,29 @@ pub struct DeviceAuthOutcome {
 
 /// 待确认事务（命令层**内存态**，不落库；拒绝/过期/退出即清除，设计文档 §5）。
 /// 不含密钥材料；确认页数据由它派生（`DeviceAuthPrompt`）。
+///
+/// `generation`（#8）：本事务的代际号，插入时由全局计数器分配。批准排队期间若事务被
+/// 消费/清数据/同键重插，代际对不上 ⇒ 旧的在途批准必须放弃（不重复回写、不复活已清事务）。
+#[derive(Clone)]
 pub struct PendingDeviceAuth {
     pub meta: RpMetadata,
     pub request: RpRequest,
     pub rp_origin: String,
     pub expires_at_ms: i64,
+    pub generation: u64,
+}
+
+/// 待确认事务的**复合键**（rp_origin + client_id + request_id，#8）：
+/// 不同 RP 即便复用同一 request_id 也不会互相顶掉（单键 request_id 的撞键缺陷）。
+/// 分隔符用不可见单元分隔符 `\u{1f}`，避免与字段内容歧义。
+pub fn pending_key(rp_origin: &str, client_id: &str, request_id: &str) -> String {
+    format!("{rp_origin}\u{1f}{client_id}\u{1f}{request_id}")
+}
+
+/// 同一 RP 的授权**排队键**（rp_origin + client_id，#1）：同 RP 的多个批准依次处理，
+/// 不同 RP 并行。与复合键的区别：排队按 RP 聚合（一个 RP 一把锁），事务按复合键区分。
+pub fn rp_queue_key(rp_origin: &str, client_id: &str) -> String {
+    format!("{rp_origin}\u{1f}{client_id}")
 }
 
 impl PendingDeviceAuth {
@@ -410,15 +424,16 @@ pub fn kid_from_public(public_bytes: &[u8]) -> String {
 
 /// 生成 RP 专属登录密钥 + pairwise subject。**绝不**复用 `state.identity`（避免跨站关联）。
 ///
-/// 返回 (签名密钥, base64url 公钥, kid, pairwise subject)。签名密钥由命令层落库（内部行，
-/// 不序列化），公钥/kid/subject 进绑定记录与断言。
-pub fn generate_rp_key() -> (SigningKey, String, String, String) {
-    let signing = SigningKey::generate(&mut OsRng);
-    let public_bytes = signing.verifying_key().to_bytes();
+/// 返回 (签名能力, base64url 公钥, kid, pairwise subject)。私钥的生成/编码/签名都在
+/// `crypto::RpKey` 能力封装内（#3）：本函数与命令层只拿到**公钥面**与能力，不触碰原始
+/// `SigningKey`。能力由持久化那一家（`db/device_auth.rs`）落库，公钥/kid/subject 进绑定与断言。
+pub fn generate_rp_key() -> (crypto::RpKey, String, String, String) {
+    let key = crypto::RpKey::generate();
+    let public_bytes = key.public_key_bytes();
     let public_b64 = URL_SAFE_NO_PAD.encode(public_bytes);
     let kid = kid_from_public(&public_bytes);
     let subject = uuid::Uuid::new_v4().to_string();
-    (signing, public_b64, kid, subject)
+    (key, public_b64, kid, subject)
 }
 
 /// 断言 audience：issuer + `/api/device-auth`（与 RP 约定一致，mock RP 同口径校验）。
@@ -430,9 +445,10 @@ pub fn assertion_audience(issuer: &str) -> String {
 ///
 /// header `{alg:EdDSA, typ, kid}`；payload `{iss:subject, aud, client_id, transaction_id,
 /// challenge, action, iat, exp=iat+60, jti}`。签名主体 = b64url(header).b64url(payload)。
-/// `now_secs` 由调用方传入（便于测试）；jti 随机一次性。
+/// `now_secs` 由调用方传入（便于测试）；jti 随机一次性。签名经 `crypto::RpKey` 能力完成，
+/// 本函数不触碰原始私钥（#3）。
 pub fn sign_assertion(
-    signing: &SigningKey,
+    signer: &crypto::RpKey,
     kid: &str,
     subject: &str,
     meta: &RpMetadata,
@@ -454,14 +470,14 @@ pub fn sign_assertion(
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
     let signing_input = format!("{header_b64}.{payload_b64}");
-    let sig = signing.sign(signing_input.as_bytes());
-    let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes());
+    let sig_b64 = URL_SAFE_NO_PAD.encode(signer.sign(signing_input.as_bytes()));
     format!("{signing_input}.{sig_b64}")
 }
 
 /// 用绑定行里的 RP 私钥（base64 std 32B seed）签断言。
 ///
-/// 私钥只在此**本地解码使用**，绝不返回（INV-P18）；本函数不是命令，命令层只拿回断言串。
+/// 私钥的**解码与签名都在 `crypto::RpKey` 内**完成（#3）：本函数只把持久化的不透明 seed
+/// 串交给能力封装重建，绝不返回私钥（INV-P18）；命令层只拿回断言串。
 /// 密钥损坏（非法 base64 / 非 32 字节）⇒ 明确报错，不静默用新密钥覆盖。
 pub fn sign_with_binding(
     secret_b64: &str,
@@ -471,14 +487,9 @@ pub fn sign_with_binding(
     req: &RpRequest,
     now_secs: i64,
 ) -> Result<String, String> {
-    let seed = STANDARD
-        .decode(secret_b64)
-        .map_err(|_| error_codes::coded(error_codes::DEVICE_AUTH_BAD_REQUEST, "绑定密钥损坏"))?;
-    let seed: [u8; 32] = seed.try_into().map_err(|_| {
-        error_codes::coded(error_codes::DEVICE_AUTH_BAD_REQUEST, "绑定密钥长度不正确")
-    })?;
-    let signing = SigningKey::from_bytes(&seed);
-    Ok(sign_assertion(&signing, kid, subject, meta, req, now_secs))
+    let key = crypto::RpKey::from_secret_b64(secret_b64)
+        .ok_or_else(|| error_codes::coded(error_codes::DEVICE_AUTH_BAD_REQUEST, "绑定密钥损坏"))?;
+    Ok(sign_assertion(&key, kid, subject, meta, req, now_secs))
 }
 
 #[cfg(test)]

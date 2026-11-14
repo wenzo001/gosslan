@@ -2,6 +2,8 @@
 // - 外部应用设备认证 RP 绑定表（rp_device_bindings）CRUD
 // ---------------- 外部应用设备认证绑定（2026-11-13，Phase 2） ----------------
 
+use crate::crypto;
+
 /// RP 绑定的**内部行**：含 RP 专属登录私钥，**刻意不 derive Serialize**（INV-P18）。
 ///
 /// 私钥只在命令层签名时本地读取，绝不进命令返回值/事件载荷；前端「已授权应用」清单走
@@ -56,6 +58,40 @@ pub fn insert_binding(conn: &Connection, b: &RpBindingRow) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+
+/// 首绑落库（#3）：RP 私钥的**导出只在此持久化路径**发生 —— `key.rp_secret_b64()` 是
+/// INV-P18 判据 C 授权给本文件（与身份密钥导出器只许 state.rs 调同一口径）。命令层只交来
+/// 能力封装 `key` 与公钥面（public_key/kid/subject），绝不触碰 secret 字节或原始 SigningKey。
+#[allow(clippy::too_many_arguments)] // 绑定字段直传（与 insert_binding 的列同形）；不打包成含 secret 的结构体，免得私钥面扩散
+pub fn insert_rp_binding(
+    conn: &Connection,
+    rp_origin: &str,
+    client_id: &str,
+    display_name: &str,
+    key: &crypto::RpKey,
+    public_key: String,
+    kid: String,
+    pairwise_subject: String,
+    scopes: String,
+    now_ms: i64,
+) -> Result<RpBindingRow> {
+    let row = RpBindingRow {
+        rp_origin: rp_origin.to_string(),
+        client_id: client_id.to_string(),
+        display_name: display_name.to_string(),
+        kid,
+        public_key,
+        secret_key: key.rp_secret_b64(),
+        pairwise_subject,
+        scopes,
+        status: "active".to_string(),
+        created_at: now_ms,
+        last_used_at: Some(now_ms),
+        revoked_at: None,
+    };
+    insert_binding(conn, &row)?;
+    Ok(row)
 }
 
 /// 取一条绑定。**读库错误与「没有这条」分开**：`optional()` 只把 NoRows 折成 None，

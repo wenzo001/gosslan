@@ -117,6 +117,56 @@ impl Identity {
     }
 }
 
+/// RP 专属登录密钥的「能力封装」（INV-P18 延伸，外部应用设备认证 #3，2026-11-14）。
+///
+/// 与 [`IdentitySigner`] 同一立场：私钥字段**私有**，对外只有「生成 / 重建 / 签一段 /
+/// 读公钥 / 导出持久化 blob」这几个动作，拿不到私钥本身。RP 私钥的**生成、字节编码、
+/// 签名**全部收在本文件内 —— 协议层（`device_auth.rs`）与命令层只拿到公钥面与本能力，
+/// 绝不触碰原始 `SigningKey` 或 `.to_bytes()`（这正是 #3 修掉的「私钥材料离开 crypto.rs」）。
+///
+/// 落库导出器 [`RpKey::rp_secret_b64`] 只许**持久化那一家**（`db/device_auth.rs`）调用，
+/// 与身份密钥的两个导出器只许 `state.rs` 调同一条口径；边界由
+/// `scripts/check-key-boundary.mjs` 判据 C 守着（把 RP secret 挪回命令层即红）。
+///
+/// **不 derive Serialize / Debug**：私钥不许被序列化或 `{:?}` 带进日志/前端。
+pub struct RpKey {
+    signing: SigningKey,
+}
+
+impl RpKey {
+    /// 生成一把全新的 RP 专属密钥（**绝不**复用 P2P 身份密钥，避免跨站关联）。
+    pub fn generate() -> Self {
+        Self {
+            signing: SigningKey::generate(&mut OsRng),
+        }
+    }
+
+    /// 从持久化的 base64(std) 32B seed 重建；非法 base64 / 非 32 字节 ⇒ `None`
+    /// （密钥损坏由调用方明确报错，不静默用新密钥覆盖）。
+    pub fn from_secret_b64(secret_b64: &str) -> Option<Self> {
+        let seed = STANDARD.decode(secret_b64).ok()?;
+        let seed: [u8; 32] = seed.try_into().ok()?;
+        Some(Self {
+            signing: SigningKey::from_bytes(&seed),
+        })
+    }
+
+    /// 持久化导出器（**只许 `db/device_auth.rs` 落库时调**，判据 C）：base64(std) 32B seed。
+    pub fn rp_secret_b64(&self) -> String {
+        STANDARD.encode(self.signing.to_bytes())
+    }
+
+    /// 原始 32B **公钥**（公钥面，非密）：供协议层算 kid / 编码 public_key。
+    pub fn public_key_bytes(&self) -> [u8; 32] {
+        self.signing.verifying_key().to_bytes()
+    }
+
+    /// 对一段字节签名，返回 64B 签名。私钥只在此**本地使用**，绝不返回（INV-P18）。
+    pub fn sign(&self, msg: &[u8]) -> [u8; 64] {
+        self.signing.sign(msg).to_bytes()
+    }
+}
+
 /// ECDH：用对方 X25519 公钥（base64）+ 自己私钥派生共享密钥。
 pub fn shared_secret(my_secret: &StaticSecret, their_public_b64: &str) -> Option<[u8; 32]> {
     let bytes = STANDARD.decode(their_public_b64).ok()?;
@@ -424,6 +474,41 @@ mod tests {
             b"tampered",
             &sig
         ));
+    }
+
+    // ---------------- RP 专属密钥能力封装（INV-P18 延伸，#3） ----------------
+
+    /// 生成 → 持久化导出 → 重建 → 签名 全链路在 crypto 边界内自洽：
+    /// 重建出的密钥与原件签同一份消息得到**可被同一公钥验证**的签名。
+    #[test]
+    fn rp_key_secret_roundtrip_and_signature_verifies() {
+        let key = RpKey::generate();
+        let secret = key.rp_secret_b64();
+        // 导出的是 32B seed 的 base64(std)。
+        assert_eq!(STANDARD.decode(&secret).unwrap().len(), 32);
+        let restored = RpKey::from_secret_b64(&secret).expect("合法 seed 必须能重建");
+        let msg = b"gosslan-device-auth assertion";
+        let sig = restored.sign(msg);
+        let vk = VerifyingKey::from_bytes(&key.public_key_bytes()).unwrap();
+        assert!(vk.verify(msg, &Signature::from_bytes(&sig)).is_ok());
+        // 反例：篡改消息后验签必失败。
+        assert!(vk
+            .verify(b"tampered", &Signature::from_bytes(&sig))
+            .is_err());
+    }
+
+    /// 每次生成独立密钥（跨 RP 不关联）；损坏的 seed 明确拒绝，不静默兜底。
+    #[test]
+    fn rp_keys_are_distinct_and_corrupt_seed_rejected() {
+        let a = RpKey::generate();
+        let b = RpKey::generate();
+        assert_ne!(a.public_key_bytes(), b.public_key_bytes());
+        assert_ne!(a.rp_secret_b64(), b.rp_secret_b64());
+        assert!(RpKey::from_secret_b64("not-base64!!").is_none());
+        assert!(
+            RpKey::from_secret_b64(&STANDARD.encode([1u8; 16])).is_none(),
+            "非 32 字节拒"
+        );
     }
 
     // ---------------- 字节 → hex 只有一个家（审计 DUP-04） ----------------
