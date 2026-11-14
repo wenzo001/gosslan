@@ -532,6 +532,16 @@ export const zhCN: MessageDict = {
   "settings.updates.halfDownloaded": "上次已下载 {done} 但没完成，重试会从头开始。",
   "settings.updates.superseded": "刚刚发布了更新的版本 v{version}，之前下载的那份已作废，请重新下载。",
   "settings.updates.mobile": "移动端不支持应用内更新，请从 GitHub Releases 手动下载新版本。",
+  // 更新来源：清单与安装包必须同源；慢速只提示、连不上才自动切。
+  "settings.updates.source": "更新来源：{source}",
+  "settings.updates.sourceAuto": "自动（Gitee 优先）",
+  "settings.updates.sourceGitee": "Gitee",
+  "settings.updates.sourceGithub": "GitHub",
+  "settings.updates.switchTo": "切换到{source}",
+  "settings.updates.switchToGitee": "切换到 Gitee 重新下载",
+  "settings.updates.slowHint": "下载缓慢或连接失败，可切换到 Gitee 重新下载整包（不会续传）。",
+  "settings.updates.autoSwitched": "GitHub 连接失败，已自动切换到 Gitee。",
+  "settings.updates.autoSwitchFailed": "GitHub 与 Gitee 暂时都不可用，请稍后重试。",
   "settings.updates.error.timeout": "检查更新超时，请稍后重试",
   "settings.updates.error.network": "网络不可用或更新服务器暂不可达",
   "settings.updates.error.signature": "更新包签名校验未通过，已拒绝安装",
@@ -1290,7 +1300,13 @@ export const zhCN: MessageDict = {
   "deviceAuth.revokeFail": "撤销失败",
   "deviceAuth.statusActive": "已授权",
   "deviceAuth.statusRevoked": "已撤销",
+  // 首绑的中间态/失败态（pending_registration / registration_failed）与未知状态共用这一格：
+  // 宁可显示「未完成」也不能误标成「已授权」。
+  "deviceAuth.statusIncomplete": "授权未完成",
   "deviceAuth.lastUsed": "最近使用 {time}",
+  // 拒绝回写 RP 失败：本机已拒绝但对方没收到，必须区分并可重试。
+  "deviceAuth.denyNotNotified": "本机已拒绝，但对方未收到通知，请重试",
+  "deviceAuth.denyRetry": "重试拒绝",
   "todo.statusChange": "更改状态",
   "todo.doneAt": "完成于 {time}",
   "todo.impossibleAt": "标记为做不了于 {time}",
@@ -1891,6 +1907,11 @@ export const zhCN: MessageDict = {
   "task.state.syncing": "同步中 {pct}%",
   "task.state.resending": "重发中",
   "task.state.downloading": "下载中 {pct}%",
+  // #34：跨重启恢复出来的更新意图 —— 是待办，不是"卡住的下载"。
+  "task.state.updateRestart": "重启后需重新下载",
+  "task.detail.updateRestart": "应用已重启，上次的更新包不会续传，需要重新下载整包",
+  "task.redownloadUpdate": "重新下载",
+  "task.updateResumeFailed": "暂时拿不到这份更新，请稍后再试",
   "task.kind.fileSend": "发送文件",
   "task.kind.fileReceive": "接收文件",
   "task.kind.contentFetch": "获取内容",

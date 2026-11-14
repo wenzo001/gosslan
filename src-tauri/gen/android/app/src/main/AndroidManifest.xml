@@ -85,6 +85,29 @@
                 <!-- AndroidTV support -->
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+            <!-- ============ App Links / 外部认证深链（HTTPS）交接骨架 ============
+                 host 用占位常量 link.example.invalid：.invalid 是 RFC 2606 保留的
+                 顶级域，故意不可解析，避免把编造的域名写进构建产物。真实域名、
+                 assetlinks.json 部署、release 签名包与安装验证完成前，这一格
+                 一律标 NOT RUN。
+                 · android:autoVerify="true"：Android 6+ 安装时会去
+                   https://<host>/.well-known/assetlinks.json 校验签名指纹；
+                   校验不通过时系统不会把该域的链接自动交给本应用，而是回落到
+                   浏览器/选择器。这正是「域名未落地就不生效」的预期降级，
+                   不是需要绕过的错误。
+                 · DEFAULT + BROWSABLE：浏览器点击 HTTPS 链接能唤起活动的必要条件。
+                 · 与上面 MAIN/LAUNCHER 分成两个 intent-filter：启动器入口不该
+                   同时匹配 VIEW，避免桌面图标也被当成链接目标。
+                 · 只声明 https + host，不写 path 过滤：真实域名落地时再按
+                   /authorize 之类前缀收窄，避免过早把整域链接都吸进应用。
+                 站点关联文件模板见 docs/link-handoff/assetlinks.json.example。 -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="link.example.invalid" />
+            </intent-filter>
         </activity>
 
         <!-- 后台连接的前台服务（见 BackgroundService.kt 与 docs/adr/0022）：

@@ -737,6 +737,15 @@ export interface UpdaterStatus {
   total: number | null;
   version: string | null;
   error: string | null;
+  /**
+   * 这份状态来自**跨重启恢复的持久意图**（版本在册、字节已随上一进程消失）。
+   * 任务中心据此列「有可用更新，重新下载」；开始下载时后端把它清掉。
+   */
+  resumable: boolean;
+  /** 本次清单/安装包实际来源：`auto | gitee | github | unknown`；移动端为空串。 */
+  source: string;
+  /** 后端自动切源留下的短码（如 `auto_switched_to_gitee`），界面翻成人话。 */
+  sourceEvent: string | null;
 }
 
 export type UpdaterDownloadEvent =
@@ -1102,4 +1111,10 @@ export interface DeviceAuthOutcome {
   rp_origin: string;
   client_id: string;
   display_name: string;
+  /**
+   * 拒绝是否已被 RP 收到（后端恒回此字段）。`false` = 本机已拒绝、RP 未收到
+   * ⇒ 前端必须给「重试拒绝」入口，否则用户以为已拒绝而对方仍在等。
+   * 可选是为了兼容老后端 / 字段缺失：`undefined` 保持既有一次性语义，不弹重试。
+   */
+  rp_notified?: boolean;
 }

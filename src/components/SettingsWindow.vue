@@ -38,6 +38,7 @@ import Icon from "@/components/ui/Icon.vue";
 import type { IconName } from "@/components/ui/iconRegistry";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
+import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import { updater } from "@/updater/instance";
 import { storageGet, storageRemove } from "@/utils/safeStorage";
@@ -60,6 +61,19 @@ const DESKTOP_ICONS: Record<DesktopIconKey, IconName> = {
 const route = useRoute();
 const router = useRouter();
 const app = useAppStore();
+const chat = useChatStore();
+
+/**
+ * 后端每次状态跃迁都把「实际来源 / 自动切源短码」同步进本窗口的 UI 服务。
+ * `restore` 只在 idle 时改相位，来源两格不受相位门控（见 `updater/service.ts`）——
+ * 否则 GitHub 连不上自动落到 Gitee 之后，设置页的来源标签还写着 GitHub。
+ */
+watch(
+  () => chat.updaterStatus,
+  (st) => {
+    if (st) updater.restore(st);
+  },
+);
 
 /**
  * 当前分区 = 路由参数（可深链、可返回），不再是组件内 ref。

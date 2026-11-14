@@ -1,0 +1,41 @@
+// 站点关联文件模板：iOS Universal Links / apple-app-site-association
+// 本文件是 .example 模板，不是可直接部署的产物。部署前必须删掉本注释块，
+// 把全部 REPLACE_WITH_* 占位值换成真实值，并另存为**无后缀**的
+// apple-app-site-association（Apple 要求文件名不带 .json 等任何扩展名）。
+//
+// 部署要求（逐条都必须满足，iOS 才会把 https 链接交给应用）：
+//   · 托管在 https://<真实域名>/.well-known/apple-app-site-association，
+//     也可放在根路径 /apple-app-site-association；必须 HTTPS，不能有重定向。
+//   · 文件名无后缀；content-type 用 application/json。文件不可签名、
+//     不可压缩、不可加 BOM，必须能被 Apple 的 CDN 匿名取到。
+//     只有走 legacy 已签名格式时才用 application/pkcs7-mime，本模板不签名。
+//   · <真实域名> 必须与 entitlements.plist 里
+//     com.apple.developer.associated-domains 的 applinks: 值一致；
+//     当前是占位 link.example.invalid，不可部署。
+//   · appIDs 必须是真实的 <TEAMID>.<bundle identifier>。下面是不含真实值
+//     的占位串；同时 iOS 工程必须由带 Associated Domains capability 的
+//     provisioning profile 签名，否则 entitlement 不生效。
+//   · components 用 /authorize/* 只放行外部认证深链路径，避免把整域链接
+//     都吸进应用；真实域名落地时按实际路径复核，未来若开放分享要用不同路径。
+//   · 面向 iOS 12 及更早版本时，applinks.details 需改用旧式
+//     appID + paths 字段；components 是 iOS 13+ 的写法，二者不要混用。
+//
+// 状态：NOT RUN。真实域名、Team ID / bundle identifier、带 capability 的
+// 签名 profile 与真机冷启动/前台唤起验证都未具备，当前仓库内只有骨架与模板。
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appIDs": [
+          "REPLACE_WITH_TEAMID.REPLACE_WITH_BUNDLE_IDENTIFIER"
+        ],
+        "components": [
+          {
+            "/": "/authorize/*"
+          }
+        ]
+      }
+    ]
+  }
+}

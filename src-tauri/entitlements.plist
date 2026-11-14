@@ -23,5 +23,18 @@
 	<true/>
 	<key>com.apple.security.files.downloads.read-write</key>
 	<true/>
+	<!-- iOS Universal Links 关联域骨架。值 applinks:<占位域名> 必须与 AndroidManifest.xml
+	     的 android:host、站点关联文件模板里的域名三处一致。
+	     为什么放这里：iOS 只认签名包里 entitlements 的
+	     com.apple.developer.associated-domains 来决定是否允许接管该域的 HTTPS 链接；
+	     缺这条时即使 Info.plist 声明了 URL scheme，系统也不会把网页链接交给应用。
+	     link.example.invalid 用 RFC 2606 保留的 .invalid 顶级域，故意不可解析，
+	     不编造真实域名。真实域名、带 Associated Domains capability 的
+	     provisioning profile、站点文件部署与真机唤起验证完成前，这一格标 NOT RUN。
+	     站点关联文件模板见 docs/link-handoff/apple-app-site-association.example。 -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:link.example.invalid</string>
+	</array>
 </dict>
 </plist>

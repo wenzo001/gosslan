@@ -6092,6 +6092,59 @@ test("自动更新：端点/公钥/插件/命令/单飞/取消/发布链都真�
 });
 
 /**
+ * 更新来源的两份真源必须对账：配置文件是端点顺序的唯一权威，
+ * Rust 里为了「按源只挂一个端点」又需要两个常量。只改一边会让客户端检查的
+ * 清单与配置声明的平台对不上（同源校验会反过来把正常更新全挡下）。
+ */
+test("更新来源：Rust 端点常量与 tauri.conf.json 逐字一致（不许只改一边）", () => {
+  const root = join(import.meta.dirname, "..");
+  const repo = join(root, "..");
+  const conf = JSON.parse(readFileSync(join(repo, "src-tauri", "tauri.conf.json"), "utf8"));
+  const rust = readFileSync(join(repo, "src-tauri", "src", "commands", "updater.rs"), "utf8");
+  const endpoints: string[] = conf.plugins?.updater?.endpoints ?? [];
+  assert.equal(endpoints.length, 2, "配置里的端点形状变了 ⇒ 本判据要跟着改");
+  const constOf = (name: string): string => {
+    const hit = rust.match(new RegExp(`pub const ${name}: &str =\\s*\\n?\\s*"([^"]+)"`));
+    assert.ok(hit, `Rust 里找不到 ${name} ⇒ 来源常量搬家了`);
+    return hit[1];
+  };
+  assert.equal(constOf("UPDATE_ENDPOINT_GITEE"), endpoints[0], "Gitee 端点两边不一致");
+  assert.equal(constOf("UPDATE_ENDPOINT_GITHUB"), endpoints[1], "GitHub 端点两边不一致");
+  assert.notEqual(
+    constOf("UPDATE_ENDPOINT_GITEE"),
+    `${endpoints[0]}/broken`,
+    "正控：常量解析器必须能分辨被改坏的值",
+  );
+});
+
+/** 切源是一整条链路：按钮 → 事件 → 状态机 → 适配器 → 门面 → Rust 命令。断在中段界面就是死键。 */
+test("更新来源：切源命令从界面一路接到后端（链路不许断在中段）", () => {
+  const root = join(import.meta.dirname, "..");
+  const read = (p: string) => readFileSync(join(root, p), "utf8");
+  assert.match(
+    read("components/settings/UpdatePanel.vue"),
+    /emit\('switch-source', src\)/,
+    "设置页没有可点的换源入口",
+  );
+  assert.match(
+    read("components/settings/AboutSection.vue"),
+    /@switch-source="updater\.switchSource\(\$event\)"/,
+    "换源事件没接到 updater 状态机",
+  );
+  assert.match(read("updater/service.ts"), /async function switchSource\(/, "状态机缺换源动作");
+  assert.match(
+    read("updater/tauriAdapter.ts"),
+    /checkSource: \(source\) => api\.updaterCheckSource\(source\)/,
+    "适配器没接切源命令",
+  );
+  assert.match(
+    read("api/index.ts"),
+    /"updater_check_source", \{ source \}\)/,
+    "门面没真的 invoke 后端命令",
+  );
+});
+
+/**
  * 群任务指派（用户 2026-10-22）：新增/编辑时只显示当前群成员，保存时剔除已退群者。
  * 前端的“当前”来自 `chat.groups`，而 `group_members` 原本只增不减 ⇒ 离线漏收退群帧的
  * 客户端会永久保留旧成员。两条腿都要钉：

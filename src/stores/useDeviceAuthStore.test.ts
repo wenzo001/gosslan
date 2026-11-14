@@ -102,3 +102,23 @@ test("设备认证前端真实接线成立（#1/#8）", () => {
   const violations = deviceAuthWiringViolations(readFileSync(STORE, "utf8"), readFileSync(MODAL, "utf8"));
   assert.deepEqual(violations, [], `设备认证前端接线违规：\n${violations.join("\n")}`);
 });
+
+/**
+ * 拒绝可观察 / 首绑状态标签接线（P1）：钉住 store 真的依据 rp_notified 判重试、确认页真的
+ * 显示重试入口、设置页真的用 statusKey 区分新状态。纯逻辑本身在 utils/deviceAuth.test.ts 行为级单测，
+ * 这里只防「逻辑写了但没接上」。
+ */
+test("拒绝可观察与状态标签接线成立（P1）", () => {
+  const store = norm(readFileSync(STORE, "utf8"));
+  const modal = norm(readFileSync(MODAL, "utf8"));
+  const section = norm(
+    readFileSync(join(ROOT, "src", "components", "settings", "AuthorizedAppsSection.vue"), "utf8"),
+  );
+  assert.match(store, /deviceAuthDenyNeedsRetry\(/, "store 未接上重试判定纯函数");
+  assert.match(store, /denyNeedsRetry/, "store 缺少重试态");
+  assert.match(store, /rp_notified/, "store 未读后端 rp_notified 字段");
+  assert.match(modal, /store\.denyNeedsRetry/, "确认页未据重试态显示入口");
+  assert.match(modal, /deviceAuth\.denyNotNotified/, "确认页缺少「本机已拒绝」提示文案 key");
+  assert.match(modal, /deviceAuth\.denyRetry/, "确认页缺少重试按钮文案 key");
+  assert.match(section, /deviceAuthStatusKey\(b\.status\)/, "设置页未用 statusKey 区分新绑定状态");
+});

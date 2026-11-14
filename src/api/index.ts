@@ -894,6 +894,9 @@ export const api = {
     listen<DeviceAuthPrompt>("device-auth-request", (e) => cb(e.payload)),
 
   updaterCheck: () => invoke<UpdaterInfo | null>("updater_check"),
+  /** 指定来源重新查清单：后端只挂那一个端点，并校验安装包与清单同源。 */
+  updaterCheckSource: (source: string) =>
+    invoke<UpdaterInfo | null>("updater_check_source", { source }),
   updaterDownload: (onEvent: (event: UpdaterDownloadEvent) => void) => {
     const channel = new Channel<UpdaterDownloadEvent>();
     channel.onmessage = onEvent;

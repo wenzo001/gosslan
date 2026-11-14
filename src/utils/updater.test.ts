@@ -28,12 +28,20 @@ function deferred<T>() {
 }
 
 function fake(overrides: Partial<UpdaterAdapter> = {}) {
-  const calls = { check: 0, download: 0, cancel: 0, install: 0, close: 0, recheck: 0 };
+  const calls = { check: 0, checkSource: 0, download: 0, cancel: 0, install: 0, close: 0, recheck: 0 };
   const adapter: UpdaterAdapter = {
     check: async () => {
       calls.check += 1;
       return overrides.check ? overrides.check() : null;
     },
+    ...(overrides.checkSource
+      ? {
+          checkSource: async (source: string) => {
+            calls.checkSource += 1;
+            return overrides.checkSource!(source);
+          },
+        }
+      : {}),
     download: (onEvent) => {
       calls.download += 1;
       return overrides.download ? overrides.download(onEvent) : Promise.resolve();
@@ -64,8 +72,12 @@ function fake(overrides: Partial<UpdaterAdapter> = {}) {
   return { adapter, calls };
 }
 
-function service(adapter: UpdaterAdapter, checkTimeoutMs = 100) {
-  return createUpdaterService(adapter, { currentVersion: "5.4.1", checkTimeoutMs });
+function service(
+  adapter: UpdaterAdapter,
+  checkTimeoutMs = 100,
+  extra: { slowWindowMs?: number; slowMinBytes?: number } = {},
+) {
+  return createUpdaterService(adapter, { currentVersion: "5.4.1", checkTimeoutMs, ...extra });
 }
 
 test("发现新版本：进入 available，并保留版本/说明/时间", async () => {
@@ -328,6 +340,151 @@ test("恢复：下载中途失败（有已下载字节）⇒ error 态并带上�
   assert.equal(svc.state.total, 100);
   assert.equal(svc.state.error, "network", "后端原始错误要折成可展示的错误码");
   assert.equal(svc.state.info?.version, "5.5.0");
+});
+
+// ---------------- 跨重启的更新意图（#34） ----------------
+
+/**
+ * 后端把持久意图灌回 `UpdaterStatus.resumable` 后，重开的设置窗要直接显示下载卡片，
+ * 而不是只留一个"检查更新"按钮。进度归零：字节不会跟着进程活下来。
+ * A/B 对照只差这一格 —— 没有它时 idle 快照必须保持 idle。
+ */
+test("恢复：idle + resumable ⇒ 显示可用更新卡片，进度归零", () => {
+  const svc = service(fake().adapter);
+  svc.restore({ phase: "idle", downloaded: 0, total: null, version: "5.26.0", resumable: true });
+  assert.equal(svc.state.phase, "available");
+  assert.equal(svc.state.info?.version, "5.26.0");
+  assert.equal(svc.state.downloaded, 0);
+  assert.equal(svc.state.total, null);
+
+  const plain = service(fake().adapter);
+  plain.restore({ phase: "idle", downloaded: 0, total: null, version: "5.26.0", resumable: false });
+  assert.equal(plain.state.phase, "idle", "对照：没有恢复意图时不许凭空造一张卡片");
+});
+
+test("恢复：checking / cancelled / unsupported 相位不许被当成可用更新", () => {
+  for (const phase of ["checking", "cancelled", "unsupported"]) {
+    const svc = service(fake().adapter);
+    svc.restore({ phase, downloaded: 0, total: null, version: "5.26.0", resumable: true });
+    assert.equal(svc.state.phase, "idle", `${phase} 不该被恢复成 available`);
+    assert.equal(svc.state.info, null, `${phase} 不该挂出下载按钮`);
+  }
+});
+
+// ---------------- 更新来源：慢速只提示 / 手动切换 / 失败自动兜底 ----------------
+
+test("下载迟迟没有字节只亮换源入口，不擅自丢掉在飞的包", async () => {
+  const gate = deferred<void>();
+  const slow = fake({
+    check: async () => INFO,
+    checkSource: async () => INFO,
+    download: () => gate.promise,
+  });
+  const svc = service(slow.adapter, 100, { slowWindowMs: 10, slowMinBytes: 1000 });
+  await svc.check(true);
+  const flying = svc.download();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(svc.state.slow, true, "慢链路必须给出可点的换源入口");
+  assert.equal(slow.calls.checkSource, 0, "慢速只提示，不许自动切源");
+  gate.resolve();
+  await flying;
+  assert.equal(svc.state.phase, "ready");
+  assert.equal(svc.state.slow, false, "下载收尾后提示不该留着");
+
+  // 对照：同样时间内有足够字节 ⇒ 不该报慢。少了这一路，"永远置 true" 也能让上面绿。
+  const gate2 = deferred<void>();
+  const fast = fake({
+    check: async () => INFO,
+    download: (onEvent) => {
+      onEvent({ event: "Progress", data: { chunkLength: 2000 } });
+      return gate2.promise;
+    },
+  });
+  const svc2 = service(fast.adapter, 100, { slowWindowMs: 10, slowMinBytes: 1000 });
+  await svc2.check(true);
+  const flying2 = svc2.download();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(svc2.state.slow, false, "有字节就不该报慢");
+  gate2.resolve();
+  await flying2;
+});
+
+test("手动切源：只查那一个端点，来源落到可查询状态上", async () => {
+  const f = fake({ checkSource: async () => INFO });
+  const svc = service(f.adapter);
+  await svc.switchSource("gitee");
+  assert.equal(f.calls.checkSource, 1);
+  assert.equal(svc.state.source, "gitee");
+  assert.equal(svc.state.sourceEvent, null, "手动切换不该显示自动切源横幅");
+  assert.equal(svc.state.phase, "available");
+  assert.equal(svc.state.info?.version, INFO.version);
+  assert.equal(svc.state.slow, false);
+});
+
+test("恢复快照带来源与自动切源短码", () => {
+  const svc = service(fake().adapter);
+  svc.restore({
+    phase: "idle",
+    downloaded: 0,
+    total: null,
+    version: null,
+    source: "gitee",
+    sourceEvent: "auto_switched_to_gitee",
+  });
+  assert.equal(svc.state.source, "gitee");
+  assert.equal(svc.state.sourceEvent, "auto_switched_to_gitee");
+});
+
+test("GitHub 下载失败自动切到 Gitee 整包重下，只试一次", async () => {
+  let downloads = 0;
+  const f = fake({
+    check: async () => INFO,
+    checkSource: async () => INFO,
+    download: async (onEvent) => {
+      downloads += 1;
+      if (downloads === 1) throw new Error("network unreachable");
+      onEvent({ event: "Finished" });
+    },
+  });
+  const svc = service(f.adapter);
+  svc.restore({
+    phase: "idle",
+    downloaded: 0,
+    total: null,
+    version: null,
+    source: "github",
+    sourceEvent: null,
+  });
+  await svc.check(true);
+  assert.equal(svc.state.phase, "available");
+  await svc.download();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(f.calls.checkSource, 1, "GitHub 下载失败要自动改查 Gitee");
+  assert.equal(downloads, 2, "换源后必须整包重下");
+  assert.equal(svc.state.source, "gitee");
+  assert.equal(svc.state.phase, "ready");
+
+  // 对照：本来就在 Gitee 还失败 ⇒ 不许再切一次打转。
+  const f2 = fake({
+    check: async () => INFO,
+    checkSource: async () => INFO,
+    download: async () => {
+      throw new Error("network unreachable");
+    },
+  });
+  const svc2 = service(f2.adapter);
+  svc2.restore({
+    phase: "idle",
+    downloaded: 0,
+    total: null,
+    version: null,
+    source: "gitee",
+    sourceEvent: null,
+  });
+  await svc2.check(true);
+  await svc2.download();
+  assert.equal(f2.calls.checkSource, 0, "非 GitHub 来源不触发自动切源");
+  assert.equal(svc2.state.phase, "error");
 });
 
 /**

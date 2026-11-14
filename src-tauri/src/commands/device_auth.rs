@@ -5,8 +5,9 @@
 //
 // Gosslan 是本地设备确认器，不是中心账号方。安全边界（设计文档 §6）：
 // - 来源/端点只信 HTTPS 同源 metadata；reqwest 用 Policy::none() **不跟随任何重定向**。
-// - 待确认事务内存态、cap 4、过期清除、复合键 + 代际（#8）；批准**RP 回写 2xx 后**才消费
-//   （可重试，#1），同一 RP 的多个批准排队依次处理；拒绝即消费（一次性，防重放）。
+// - 待确认事务内存态、cap 4、过期清除 + 本地 TTL 兜底、复合键 + 代际（#8）；批准与拒绝都
+//   **RP 回写 2xx 后**才消费（失败可重试，#1），同一 RP 的多个批准排队依次处理；满载拒新事务
+//   不淘汰；拒绝以 `rp_notified` 区分本机已拒绝 / RP 已收到拒绝。
 // - RP 私钥的生成/编码/签名都收在 `crypto::RpKey` 能力封装内（#3，INV-P18 延伸）：命令层与
 //   协议层只拿公钥面与能力，落库导出只许持久化那一家（db/device_auth.rs）；命令返回值/事件
 //   只含公钥面与断言结果，绝不带私钥。
@@ -23,6 +24,13 @@ const MAX_PENDING_DEVICE_AUTH: usize = 4;
 const MAX_RP_JSON_BYTES: usize = 64 * 1024;
 /// RP 网络请求超时。
 const RP_TIMEOUT_SECS: u64 = 10;
+
+// 本任务新增的错误码：按硬性边界，**定义在命令层内部**，不改全局 `error_codes.rs`
+// （那张表由 `errors.test.ts` 与前端 `CODE_RULES` 双向对账，本任务无权改动）。需主任务登记。
+/// 待确认队列已满：拒绝新事务、明确「暂不能处理」，不静默淘汰、不顶掉已有确认页。
+const CODE_DEVICE_AUTH_BUSY: &str = "DEVICE_AUTH_BUSY";
+/// 拒绝回写 RP 失败：本机已拒绝、RP 未收到（进日志，结果由 `rp_notified=false` 上报前端）。
+const CODE_DENY_NOTIFY_FAILED: &str = "DEVICE_AUTH_DENY_NOTIFY_FAILED";
 
 /// RP 专用 HTTPS 客户端：**不跟随重定向**（防跨域凭据转发 / open redirect / SSRF）。
 fn rp_client() -> Result<reqwest::Client, String> {
@@ -53,13 +61,38 @@ async fn fetch_rp_json<T: serde::de::DeserializeOwned>(client: &reqwest::Client,
         .map_err(|_| error_codes::coded(error_codes::DEVICE_AUTH_BAD_METADATA, "RP 响应不是合法 JSON"))
 }
 
-/// 回写 decision（approve/deny）到 RP。非 2xx 视为失败（幂等由 RP 保证）。
-async fn post_decision(client: &reqwest::Client, url: &str, body: &serde_json::Value) -> Result<(), String> {
+/// 构造 decision 回写请求（**纯函数，不发送**），便于单测校验 `Idempotency-Key` 头。
+/// 生产回写与测试校验共用这一处构造，避免「测试构造一套、实际发另一套」。
+fn decision_request(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    idempotency_key: &str,
+) -> Result<reqwest::Request, String> {
     // reqwest 未开 json feature：手动序列化 + 显式 Content-Type（不引入新依赖特性）。
-    let resp = client.post(url)
+    client.post(url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header("Idempotency-Key", idempotency_key)
         .body(body.to_string())
-        .send().await
+        .build()
+        .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("构造回写请求失败：{e}")))
+}
+
+/// 回写 decision（approve/deny）到 RP。非 2xx 视为失败。
+///
+/// `idempotency_key` 作为 `Idempotency-Key` 请求头随每次回写发送，且跨重试**恒定不变**：
+/// RP 据此把同一决策的网络重试合并成一次（不重复登记公钥 / 建会话），不再只靠 RP 自己
+/// 猜幂等（就绪度审计 §4 idempotency key）。值就是该事务断言里的 `jti`。
+/// `client.execute` 与 `RequestBuilder::send` 走同一条 `execute_request`，仍套用
+/// `Policy::none()` 的不跟随重定向与超时配置。
+async fn post_decision(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    idempotency_key: &str,
+) -> Result<(), String> {
+    let req = decision_request(client, url, body, idempotency_key)?;
+    let resp = client.execute(req).await
         .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("回写失败：{e}")))?;
     if !resp.status().is_success() {
         return Err(error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("RP 回写返回 HTTP {}", resp.status())));
@@ -105,7 +138,10 @@ fn prepare_assertion(
         ("link", Some(b)) if b.status == "revoked" => {
             return Err(error_codes::coded(error_codes::DEVICE_AUTH_BINDING_EXISTS, "该应用已有撤销态绑定，须先在其账号页解绑再重新绑定"));
         }
-        ("link", Some(b)) => b, // 已有 active 绑定：幂等复用，不静默轮换密钥
+        // 已有绑定（active / pending_registration / registration_failed）一律复用同一密钥，
+        // 不重复 insert。首绑分叉修复后：回写失败落 registration_failed 的重试、以及幂等
+        // 重绑都走这里，签名后由回写结果再决定激活（见 activate_binding）。
+        ("link", Some(b)) => b,
         ("link", None) => {
             // 私钥的生成/编码/落库都在 crypto 能力封装 + 持久化路径内（#3）：
             // 命令层只拿公钥面（public_b64/kid/subject）与能力 `key`，绝不触碰 secret 字节。
@@ -122,6 +158,13 @@ fn prepare_assertion(
                 .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("更新绑定失败：{e}")))?;
             b
         }
+        // 待登记 / 登记失败的绑定**不是 active**：绝不能拿它直接签名发断言（就绪度审计 §3.3
+        // 要求 get_binding 的中间态分支正确处理）。给出明确「未完成登记」错误，复用既有码。
+        ("authenticate", Some(b))
+            if b.status == "pending_registration" || b.status == "registration_failed" =>
+        {
+            return Err(error_codes::coded(error_codes::DEVICE_AUTH_NO_BINDING, "绑定尚未完成 RP 登记，请重新绑定或重试"));
+        }
         ("authenticate", Some(_)) => {
             return Err(error_codes::coded(error_codes::DEVICE_AUTH_BINDING_REVOKED, "绑定已撤销，请重新绑定"));
         }
@@ -131,8 +174,10 @@ fn prepare_assertion(
         _ => return Err(error_codes::coded(error_codes::DEVICE_AUTH_UNSUPPORTED, "不支持的动作")),
     };
 
+    // jti = 事务幂等键：重试复用同一个值，不每次换新（见 sign_assertion / post_decision）。
     let assertion = da::sign_with_binding(
         &row.secret_key, &row.kid, &row.pairwise_subject, meta, req, now_ms / 1000,
+        &pending.idempotency_key,
     )?;
 
     // 批准 claims：subject/公钥恒在断言里；昵称仅用户主动允许且 RP 请求时才共享。
@@ -155,6 +200,11 @@ pub async fn device_auth_handle_link(
 }
 
 /// 深链回调 / 冷启动用：spawn 处理，失败留痕（不阻断启动/前台）。
+///
+/// 唯一的调用点都在 `lib.rs` 的 `#[cfg(desktop)]` 里（单实例转发 / `on_open_url` / 冷启动
+/// argv）⇒ 移动端暂时没人调。**保留入口而不是 cfg 掉**：移动端链接交接是下一阶段要接的
+/// 骨架（契约文档 §6/§10），到那天由插件的 mobile 回调调它，而不是重新写一份。
+#[cfg_attr(not(desktop), allow(dead_code))]
 pub fn spawn_device_auth_link(app: tauri::AppHandle, url: String) {
     tauri::async_runtime::spawn(async move {
         if let Err(e) = handle_device_auth_link(&app, url).await {
@@ -165,6 +215,7 @@ pub fn spawn_device_auth_link(app: tauri::AppHandle, url: String) {
 
 /// 从启动参数里挑出授权深链（冷启动唤起）；只认 gosslan:// 与 https app link 形态。
 /// 解析合法性留给 `handle_device_auth_link`（这里只做粗筛，避免把普通启动参数当深链）。
+#[cfg_attr(not(desktop), allow(dead_code))]
 pub fn authorize_link_from_args(args: &[String]) -> Option<String> {
     args.iter().skip(1).find(|a| {
         a.starts_with("gosslan://authorize/") || (a.starts_with("https://") && a.contains("/authorize/"))
@@ -187,21 +238,25 @@ pub async fn handle_device_auth_link(app: &tauri::AppHandle, url: String) -> Res
         return Err(error_codes::coded(error_codes::DEVICE_AUTH_BAD_REQUEST, "request_id 与链接引用不一致"));
     }
     let now_ms = crate::db::now_ms();
-    let expires_at_ms = da::validate_request(&req, &meta, now_ms)?;
+    // 本地 TTL 兜底：取 RP expires_at 与「插入后固定上限」的较早者。
+    let expires_at_ms = da::clamp_pending_expiry(da::validate_request(&req, &meta, now_ms)?, now_ms);
 
     let generation = s.device_auth_generation.fetch_add(1, Ordering::Relaxed) + 1;
     let key = da::pending_key(&link.rp_origin, &meta.client_id, &req.request_id);
-    let pending = da::PendingDeviceAuth { meta, request: req, rp_origin: link.rp_origin, expires_at_ms, generation };
+    let pending = da::PendingDeviceAuth {
+        meta,
+        request: req,
+        rp_origin: link.rp_origin,
+        expires_at_ms,
+        generation,
+        // 每个事务生成一次，随内存态持久化：prepare 的 jti 与 post 的 Idempotency-Key 都读它。
+        idempotency_key: uuid::Uuid::new_v4().to_string(),
+    };
     let prompt = pending.prompt();
     {
         let mut map = s.device_auth_pending.lock().unwrap_or_else(|e| e.into_inner());
-        map.retain(|_, p| p.expires_at_ms > now_ms);
-        if map.len() >= MAX_PENDING_DEVICE_AUTH {
-            if let Some(oldest) = map.iter().min_by_key(|(_, p)| p.expires_at_ms).map(|(k, _)| k.clone()) {
-                map.remove(&oldest);
-            }
-        }
-        map.insert(key, pending);
+        // 满载返回明确错误（不淘汰、不顶掉已有确认页）；返回 Err 时下面的 emit 不会执行。
+        admit_pending(&mut map, key, pending, now_ms, MAX_PENDING_DEVICE_AUTH)?;
     }
     if let Some(w) = s.app.get_webview_window(crate::WINDOW_MAIN) {
         let _ = w.show();
@@ -222,6 +277,78 @@ fn rp_queue_lock(
         .entry(queue_key.to_string())
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone()
+}
+
+/// 待确认队列**准入**（纯逻辑，便于单测）：先惰性清理过期项，再判断能否接纳新事务。
+///
+/// 满载时**拒绝新事务并留 `code=` 日志**，绝不静默淘汰最老一条 —— 旧写法会把用户正在看的
+/// 确认页顶掉，且没有任何反馈（就绪度审计 §3.3 队列边界）。同键重插（同一事务重新发起）
+/// 不占新槽位，始终允许：它只替换，不把别的事务挤出去。
+fn admit_pending(
+    map: &mut std::collections::HashMap<String, da::PendingDeviceAuth>,
+    key: String,
+    pending: da::PendingDeviceAuth,
+    now_ms: i64,
+    max: usize,
+) -> Result<(), String> {
+    map.retain(|_, p| p.expires_at_ms > now_ms);
+    if !map.contains_key(&key) && map.len() >= max {
+        let err = error_codes::coded(CODE_DEVICE_AUTH_BUSY, "暂不能处理，请稍后重试（待确认事务已达上限）");
+        eprintln!("[device-auth] {err}");
+        return Err(err);
+    }
+    map.insert(key, pending);
+    Ok(())
+}
+
+/// 读取待确认事务并**在读取时清理到明确终态**：过期项直接移除（不再无限期挂内存），
+/// 返回该键当前有效的事务克隆，不消费。缺失/过期分别给明确错误码（就绪度审计 §4 最大 TTL）。
+///
+/// `missing_code` 由调用方给：批准/拒绝路径沿用 `DEVICE_AUTH_REPLAYED`，确认页拉取沿用
+/// `DEVICE_AUTH_NOT_FOUND`，保持既有语义。
+fn read_live_pending(
+    map: &std::sync::Mutex<std::collections::HashMap<String, da::PendingDeviceAuth>>,
+    key: &str,
+    now_ms: i64,
+    missing_code: &'static str,
+    missing_msg: &str,
+) -> Result<da::PendingDeviceAuth, String> {
+    let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
+    if map.get(key).is_some_and(|p| p.expires_at_ms <= now_ms) {
+        map.remove(key);
+        return Err(error_codes::coded(error_codes::DEVICE_AUTH_EXPIRED, "事务已过期"));
+    }
+    map.get(key)
+        .cloned()
+        .ok_or_else(|| error_codes::coded(missing_code, missing_msg))
+}
+
+/// 批准编排收尾：按 RP 回写结果迁移首绑状态。整笔成功（内含 post 2xx）才把「待登记」推进到
+/// active；任何失败/超时落 registration_failed（保留同一密钥、可重试、不重复 insert）。
+///
+/// 为什么单独一步：DB 写要 `spawn_blocking`，且必须在 `run_approval` 给出最终结局之后，
+/// 才能把「post 成功」和「active」严格绑定（就绪度审计 §3.2 目标不变式）。
+async fn settle_binding_after_post(
+    s: Arc<crate::state::AppState>,
+    rp_origin: String,
+    client_id: String,
+    post_ok: bool,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let r = if post_ok {
+            crate::db::activate_binding(&dbc, &rp_origin, &client_id)
+        } else {
+            crate::db::mark_registration_failed(&dbc, &rp_origin, &client_id)
+        };
+        r.map(|_| ()).map_err(|e| {
+            error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("绑定状态迁移失败：{e}"))
+        })
+    })
+    .await
+    .map_err(|e| {
+        error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("绑定状态迁移任务中断：{e}"))
+    })?
 }
 
 /// 排队拿到锁后**复核**事务仍在且代际一致（#1/#8）：被消费/清数据/同键重插 ⇒ 放弃旧批准。
@@ -310,12 +437,13 @@ pub async fn device_auth_get_pending(
     let s = state.inner().clone();
     let key = da::pending_key(&rp_origin, &client_id, &request_id);
     tokio::task::spawn_blocking(move || {
-        let map = s.device_auth_pending.lock().unwrap_or_else(|e| e.into_inner());
-        let pending = map.get(&key)
-            .ok_or_else(|| error_codes::coded(error_codes::DEVICE_AUTH_NOT_FOUND, "待确认事务不存在或已清除"))?;
-        if pending.expires_at_ms <= crate::db::now_ms() {
-            return Err(error_codes::coded(error_codes::DEVICE_AUTH_EXPIRED, "事务已过期"));
-        }
+        let pending = read_live_pending(
+            &s.device_auth_pending,
+            &key,
+            crate::db::now_ms(),
+            error_codes::DEVICE_AUTH_NOT_FOUND,
+            "待确认事务不存在或已清除",
+        )?;
         Ok(pending.prompt())
     })
     .await
@@ -324,6 +452,7 @@ pub async fn device_auth_get_pending(
 
 /// 用户批准（可重试，#1）：排队 → 复核 → 读/建绑定并签名 → 回写 RP → **2xx 后才消费**事务。
 /// 同一 RP 的多个批准排队依次处理（不是单飞拒绝）；POST 失败保留可重试态（不丢事务、不假授权）。
+/// 首绑在 prepare 只落 `pending_registration`，整笔成功（含 RP 2xx）后才 `active`（见下方收尾）。
 #[tauri::command(async)]
 pub async fn device_auth_approve(
     state: State<'_, Arc<crate::state::AppState>>,
@@ -335,20 +464,18 @@ pub async fn device_auth_approve(
     let s = state.inner().clone();
     let key = da::pending_key(&rp_origin, &client_id, &request_id);
     let queue_key = da::rp_queue_key(&rp_origin, &client_id);
-    // 先取一次（不消费）：拿代际与 meta；不存在/过期直接拒。真正的消费在 RP 2xx 之后。
-    let (generation, meta) = {
-        let map = s.device_auth_pending.lock().unwrap_or_else(|e| e.into_inner());
-        let p = map.get(&key)
-            .ok_or_else(|| error_codes::coded(error_codes::DEVICE_AUTH_REPLAYED, "事务已消费或不存在"))?;
-        if p.expires_at_ms <= crate::db::now_ms() {
-            return Err(error_codes::coded(error_codes::DEVICE_AUTH_EXPIRED, "事务已过期"));
-        }
-        (p.generation, p.meta.clone())
+    // 先读一次（不消费，顺带清理过期）：拿代际 / meta / 幂等键。真正的消费在 RP 2xx 之后。
+    let (generation, meta, idempotency_key) = {
+        let p = read_live_pending(
+            &s.device_auth_pending, &key, crate::db::now_ms(),
+            error_codes::DEVICE_AUTH_REPLAYED, "事务已消费或不存在",
+        )?;
+        (p.generation, p.meta.clone(), p.idempotency_key.clone())
     };
 
     let s_db = s.clone();
     let decision_url = meta.decision_endpoint.replace("{request_id}", &request_id);
-    run_approval(
+    let approval = run_approval(
         &s.device_auth_pending,
         &s.device_auth_rp_locks,
         &key,
@@ -374,20 +501,56 @@ pub async fn device_auth_approve(
         },
         move |body| async move {
             let client = rp_client()?;
-            post_decision(&client, &decision_url, &body).await
+            // Idempotency-Key 与断言 jti 同源：重试发同一个值，RP 可合并重复回写。
+            post_decision(&client, &decision_url, &body, &idempotency_key).await
         },
     )
-    .await?;
+    .await;
+
+    // 严格绑定「post 2xx」与「active」：整笔成功才激活首绑，失败/超时落 registration_failed。
+    // run_approval 为 Ok 即代表回写 2xx 且已消费；为 Err 则事务保留可重试态。
+    let post_ok = approval.is_ok();
+    if let Err(e) = settle_binding_after_post(
+        s.clone(), rp_origin.clone(), meta.client_id.clone(), post_ok,
+    ).await {
+        eprintln!("[device-auth] {e}");
+    }
+    approval?;
 
     Ok(da::DeviceAuthOutcome {
         decision: "approved".into(),
         rp_origin,
         client_id: meta.client_id.clone(),
         display_name: meta.display_name.clone(),
+        rp_notified: true,
     })
 }
 
-/// 用户拒绝：消费事务 → 回写 deny（不带断言）→ 返回结果。复合键定位（#8）。
+/// 拒绝回写的 **settlement**（纯函数，便于单测）：返回「是否消费事务」与上报给前端的结果。
+///
+/// 只有 RP 2xx 确认收到拒绝（`rp_notified=true`）才消费事务；失败保留可重试态，前端据
+/// `rp_notified=false` 显示重试入口。`decision` 恒为 `denied`（保持既有兼容语义）。
+/// 把「消费决策」抽成纯函数，是为了让「失败可重试」这条语义能被单测直接钉住，而不依赖 AppState。
+fn settle_deny(
+    pending: &da::PendingDeviceAuth,
+    rp_origin: String,
+    rp_notified: bool,
+) -> (bool, da::DeviceAuthOutcome) {
+    let outcome = da::DeviceAuthOutcome {
+        decision: "denied".into(),
+        rp_origin,
+        client_id: pending.meta.client_id.clone(),
+        display_name: pending.meta.display_name.clone(),
+        rp_notified,
+    };
+    (rp_notified, outcome)
+}
+
+/// 用户拒绝：读事务（不消费）→ 回写 deny → **仅 RP 2xx 后才消费**，并上报回写结果。复合键定位（#8）。
+///
+/// 旧实现先 remove 再丢弃回写结果，恒回 `decision: "denied"`：本机已拒绝 / RP 已收到拒绝
+/// 不可区分、失败无重试。现在 `rp_notified=false` 表示「本机已拒绝、RP 未收到」，事务保留可重试，
+/// 前端据此显示重试入口；`decision` 保持 `denied` 兼容语义不变（就绪度审计 §4 拒绝可观察）。
 #[tauri::command(async)]
 pub async fn device_auth_deny(
     state: State<'_, Arc<crate::state::AppState>>,
@@ -397,22 +560,46 @@ pub async fn device_auth_deny(
 ) -> Result<da::DeviceAuthOutcome, String> {
     let s = state.inner().clone();
     let key = da::pending_key(&rp_origin, &client_id, &request_id);
-    let pending = {
-        let mut map = s.device_auth_pending.lock().unwrap_or_else(|e| e.into_inner());
-        map.remove(&key)
-            .ok_or_else(|| error_codes::coded(error_codes::DEVICE_AUTH_REPLAYED, "事务已消费或不存在"))?
-    };
-    let meta = pending.meta.clone();
-    let client = rp_client()?;
-    let decision_url = meta.decision_endpoint.replace("{request_id}", &request_id);
-    // 拒绝回写失败不阻断本地拒绝（用户意图已明确）；尽力通知 RP。
-    let _ = post_decision(&client, &decision_url, &json!({"decision": "deny"})).await;
-    Ok(da::DeviceAuthOutcome {
-        decision: "denied".into(),
-        rp_origin,
-        client_id: meta.client_id.clone(),
-        display_name: meta.display_name.clone(),
+    // 队列读 + 时钟读数本身是内存操作（不碰 SQLite），但命令体里出现 `db::` 这个时钟别名
+    // 会让 R-18「重活留在 tokio worker 上的命令只许降」把它算成重活命令。该判据指定的补救
+    // 是进阻塞池，不是调大上限；与同文件 `device_auth_list_bindings` / `settle_binding_after_post`
+    // 保持同一形状。真实收益：`read_live_pending` 要抢的 std Mutex 可能正被并发的确认页操作持有。
+    let read_s = s.clone();
+    let read_key = key.clone();
+    let pending = tokio::task::spawn_blocking(move || {
+        read_live_pending(
+            &read_s.device_auth_pending,
+            &read_key,
+            crate::db::now_ms(),
+            error_codes::DEVICE_AUTH_REPLAYED,
+            "事务已消费或不存在",
+        )
     })
+    .await
+    .map_err(|e| {
+        error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("读取待确认事务任务中断：{e}"))
+    })??;
+    let generation = pending.generation;
+    let idempotency_key = pending.idempotency_key.clone();
+    let decision_url = pending.meta.decision_endpoint.replace("{request_id}", &request_id);
+
+    // 保留并上报回写结果，不再 `let _ =` 丢弃。网络初始化失败也归到「未收到」，不阻断本地拒绝。
+    let post_result = match rp_client() {
+        Ok(client) => {
+            post_decision(&client, &decision_url, &json!({"decision": "deny"}), &idempotency_key).await
+        }
+        Err(e) => Err(e),
+    };
+    let notified = post_result.is_ok();
+    if let Err(e) = &post_result {
+        eprintln!("[device-auth] code={CODE_DENY_NOTIFY_FAILED} 拒绝回写失败，本机已拒绝、RP 未收到：{e}");
+    }
+    let (should_consume, outcome) = settle_deny(&pending, rp_origin, notified);
+    // 只有 RP 确认收到拒绝才消费；失败保留可重试态（前端显示重试入口，重试复用同一幂等键）。
+    if should_consume {
+        consume_pending_if(&s.device_auth_pending, &key, generation);
+    }
+    Ok(outcome)
 }
 
 /// 已授权应用清单（含撤销态，前端可管理）。
@@ -499,19 +686,29 @@ mod device_auth_cmd_tests {
             challenge: URL_SAFE_NO_PAD.encode([7u8; 32]),
             expires_at: "2099-01-01T00:00:00Z".into(),
         };
-        da::PendingDeviceAuth { meta, request, rp_origin: ORIGIN.into(), expires_at_ms: 4_000_000_000_000, generation: 1 }
+        da::PendingDeviceAuth {
+            meta, request, rp_origin: ORIGIN.into(),
+            expires_at_ms: 4_000_000_000_000, generation: 1,
+            idempotency_key: "idempotency-key-for-test".into(),
+        }
     }
 
+    /// 首绑分叉判据（P1，名字沿用基线不许改）：prepare 后**只能**是 `pending_registration`，
+    /// 只有模拟 RP 回写 2xx 成功（activate_binding）之后才是 `active`。
     #[test]
     fn link_creates_active_binding_and_signs() {
         let conn = test_db();
         let p = pending("link", vec!["device_subject".into(), "device_public_key".into()]);
         let (assertion, info, _claims) = prepare_assertion(&conn, &p, false, 1_000).unwrap();
-        assert_eq!(info.status, "active");
+        assert_eq!(info.status, "pending_registration", "回调前绝不提前写 active");
         assert!(!info.public_key.is_empty());
         assert_eq!(assertion.split('.').count(), 3, "JWS 三段");
         let b = crate::db::get_binding(&conn, ORIGIN, CLIENT).unwrap().unwrap();
-        assert_eq!(b.status, "active");
+        assert_eq!(b.status, "pending_registration", "DB 行回调前也必须是待登记");
+        // 模拟 RP 回写 2xx 成功后才激活。
+        assert!(crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap());
+        let b = crate::db::get_binding(&conn, ORIGIN, CLIENT).unwrap().unwrap();
+        assert_eq!(b.status, "active", "回写成功后才 active");
     }
 
     #[test]
@@ -536,6 +733,8 @@ mod device_auth_cmd_tests {
     fn authenticate_after_link_succeeds() {
         let conn = test_db();
         prepare_assertion(&conn, &pending("link", vec!["device_subject".into()]), false, 1_000).unwrap();
+        // 首绑要 RP 回写 2xx 后才 active；authenticate 必须有 active 绑定。
+        assert!(crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap());
         let (assertion, info, _) =
             prepare_assertion(&conn, &pending("authenticate", vec!["device_subject".into()]), false, 2_000).unwrap();
         assert_eq!(info.status, "active");
@@ -547,6 +746,8 @@ mod device_auth_cmd_tests {
         let conn = test_db();
         let link = pending("link", vec!["device_subject".into()]);
         prepare_assertion(&conn, &link, false, 1_000).unwrap();
+        // 撤销只允许 active：先把待登记绑定激活（模拟回写 2xx），再撤销。
+        assert!(crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap());
         crate::db::revoke_binding(&conn, ORIGIN, CLIENT, 2_000).unwrap();
         let err = prepare_assertion(&conn, &link, false, 3_000).unwrap_err();
         assert!(err.contains("DEVICE_AUTH_BINDING_EXISTS"), "撤销态不许静默覆盖");
@@ -563,6 +764,217 @@ mod device_auth_cmd_tests {
         assert!(claims_off.get("nickname").is_none(), "默认不共享昵称");
         let (_, _, claims_on) = prepare_assertion(&conn, &p, true, 2_000).unwrap();
         assert_eq!(claims_on.get("nickname").unwrap().as_str().unwrap(), "小院");
+    }
+
+    // ---------------- P1 首绑状态机：pending_registration → active，失败落 registration_failed ----------------
+
+    /// 回写失败落 registration_failed 后重试：复用同一密钥、不重复 insert，回写成功才 active。
+    #[test]
+    fn registration_failed_retry_reuses_key_and_can_activate() {
+        let conn = test_db();
+        let p = pending("link", vec!["device_subject".into()]);
+        let (_, first, _) = prepare_assertion(&conn, &p, false, 1_000).unwrap();
+        assert_eq!(first.status, "pending_registration");
+        assert!(crate::db::mark_registration_failed(&conn, ORIGIN, CLIENT).unwrap());
+        assert_eq!(
+            crate::db::get_binding(&conn, ORIGIN, CLIENT).unwrap().unwrap().status,
+            "registration_failed"
+        );
+        // 重试：复用同一密钥，仍能签名（不会因中间态被当成新首绑重复 insert）。
+        let (_, retry, _) = prepare_assertion(&conn, &p, false, 2_000).unwrap();
+        assert_eq!(retry.kid, first.kid, "重试复用同一密钥");
+        assert_eq!(retry.pairwise_subject, first.pairwise_subject);
+        // 这次回写成功才激活。
+        assert!(crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap());
+        assert_eq!(crate::db::get_binding(&conn, ORIGIN, CLIENT).unwrap().unwrap().status, "active");
+        assert_eq!(crate::db::list_bindings(&conn).unwrap().len(), 1, "重试不重复 insert");
+    }
+
+    /// 只有中间态能推进到 active；已 active 幂等、已撤销不许被复活。
+    #[test]
+    fn activate_binding_only_promotes_intermediate_states() {
+        let conn = test_db();
+        prepare_assertion(&conn, &pending("link", vec![]), false, 1_000).unwrap();
+        assert!(crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap());
+        assert!(!crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap(), "已 active 幂等");
+        crate::db::revoke_binding(&conn, ORIGIN, CLIENT, 3_000).unwrap();
+        assert!(!crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap(), "撤销态不许复活");
+        assert_eq!(crate::db::get_binding(&conn, ORIGIN, CLIENT).unwrap().unwrap().status, "revoked");
+    }
+
+    /// 失败态只从 pending_registration 落，不许把 active 回退。
+    #[test]
+    fn mark_registration_failed_only_affects_pending() {
+        let conn = test_db();
+        prepare_assertion(&conn, &pending("link", vec![]), false, 1_000).unwrap();
+        assert!(crate::db::mark_registration_failed(&conn, ORIGIN, CLIENT).unwrap());
+        assert!(!crate::db::mark_registration_failed(&conn, ORIGIN, CLIENT).unwrap(), "已是失败态幂等");
+        crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap();
+        assert!(!crate::db::mark_registration_failed(&conn, ORIGIN, CLIENT).unwrap(), "active 不许回退");
+        assert_eq!(crate::db::get_binding(&conn, ORIGIN, CLIENT).unwrap().unwrap().status, "active");
+    }
+
+    /// 撤销只允许 active：待登记 / 登记失败的绑定不许被撤销。
+    #[test]
+    fn revoke_binding_only_allows_active() {
+        let conn = test_db();
+        prepare_assertion(&conn, &pending("link", vec![]), false, 1_000).unwrap();
+        assert!(!crate::db::revoke_binding(&conn, ORIGIN, CLIENT, 2_000).unwrap(), "待登记不许撤销");
+        assert_eq!(
+            crate::db::get_binding(&conn, ORIGIN, CLIENT).unwrap().unwrap().status,
+            "pending_registration"
+        );
+        crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap();
+        assert!(crate::db::revoke_binding(&conn, ORIGIN, CLIENT, 3_000).unwrap(), "active 才允许撤销");
+        assert_eq!(crate::db::get_binding(&conn, ORIGIN, CLIENT).unwrap().unwrap().status, "revoked");
+    }
+
+    /// get_binding 中间态不许被当成 active 直接签名发断言（就绪度审计 §3.3）。
+    #[test]
+    fn authenticate_rejects_pending_registration_binding() {
+        let conn = test_db();
+        prepare_assertion(&conn, &pending("link", vec![]), false, 1_000).unwrap();
+        let err = prepare_assertion(
+            &conn, &pending("authenticate", vec!["device_subject".into()]), false, 2_000,
+        ).unwrap_err();
+        assert!(err.contains("DEVICE_AUTH_NO_BINDING"), "未完成登记的绑定绝不能签名发断言");
+        assert!(err.contains("登记"), "错误信息要点明「尚未完成 RP 登记」");
+    }
+
+    // ---------------- P2 队列满载：拒新事务、不淘汰、不顶掉已有确认页 ----------------
+
+    #[test]
+    fn admit_pending_rejects_when_full_without_evicting() {
+        let mut map: HashMap<String, da::PendingDeviceAuth> = HashMap::new();
+        for i in 0..2 {
+            let mut p = pending("link", vec![]);
+            p.request.request_id = format!("req-{i}");
+            map.insert(da::pending_key(ORIGIN, CLIENT, &format!("req-{i}")), p);
+        }
+        let oldest_key = da::pending_key(ORIGIN, CLIENT, "req-0");
+        let new_key = da::pending_key(ORIGIN, CLIENT, "req-new");
+        let mut new_p = pending("link", vec![]);
+        new_p.request.request_id = "req-new".into();
+        let err = admit_pending(&mut map, new_key.clone(), new_p, 1_000, 2).unwrap_err();
+        assert!(err.contains("DEVICE_AUTH_BUSY"), "满载必须返回明确错误码");
+        assert!(err.contains("暂不能处理"), "须含「暂不能处理，请稍后」语义");
+        assert_eq!(map.len(), 2, "满载不淘汰、不插入新事务");
+        assert!(map.contains_key(&oldest_key), "最老一条不许被静默淘汰（用户已有确认页不被顶掉）");
+        assert!(!map.contains_key(&new_key), "被拒绝的新事务不许入库");
+    }
+
+    #[test]
+    fn admit_pending_allows_same_key_reinsertion_when_full() {
+        let mut map: HashMap<String, da::PendingDeviceAuth> = HashMap::new();
+        for i in 0..2 {
+            let mut p = pending("link", vec![]);
+            p.request.request_id = format!("req-{i}");
+            map.insert(da::pending_key(ORIGIN, CLIENT, &format!("req-{i}")), p);
+        }
+        let key = da::pending_key(ORIGIN, CLIENT, "req-0");
+        let mut reissue = pending("link", vec![]);
+        reissue.request.request_id = "req-0".into();
+        reissue.generation = 9;
+        admit_pending(&mut map, key.clone(), reissue, 1_000, 2).unwrap();
+        assert_eq!(map.len(), 2, "同键重插只替换、不占新槽位");
+        assert_eq!(map.get(&key).unwrap().generation, 9, "重插以新事务替换旧值");
+    }
+
+    #[test]
+    fn admit_pending_cleans_expired_before_cap_check() {
+        let mut map: HashMap<String, da::PendingDeviceAuth> = HashMap::new();
+        for i in 0..2 {
+            let mut p = pending("link", vec![]);
+            p.request.request_id = format!("req-{i}");
+            if i == 0 {
+                p.expires_at_ms = 500; // 早于 now_ms=1_000 ⇒ 已过期
+            }
+            map.insert(da::pending_key(ORIGIN, CLIENT, &format!("req-{i}")), p);
+        }
+        let new_key = da::pending_key(ORIGIN, CLIENT, "req-new");
+        let mut new_p = pending("link", vec![]);
+        new_p.request.request_id = "req-new".into();
+        admit_pending(&mut map, new_key.clone(), new_p, 1_000, 2).unwrap();
+        assert!(!map.contains_key(&da::pending_key(ORIGIN, CLIENT, "req-0")), "过期项被惰性清理");
+        assert!(map.contains_key(&new_key), "腾出槽位后新事务可接纳");
+        assert_eq!(map.len(), 2);
+    }
+
+    // ---------------- P2 本地 TTL 兜底：读取时清理到明确终态 ----------------
+
+    #[test]
+    fn read_live_pending_reaps_expired_and_keeps_live() {
+        let map = Mutex::new(HashMap::new());
+        let live_key = da::pending_key(ORIGIN, CLIENT, "req-live");
+        let dead_key = da::pending_key(ORIGIN, CLIENT, "req-dead");
+        {
+            let mut m = map.lock().unwrap();
+            let mut live = pending("link", vec![]);
+            live.request.request_id = "req-live".into();
+            m.insert(live_key.clone(), live);
+            let mut dead = pending("link", vec![]);
+            dead.request.request_id = "req-dead".into();
+            dead.expires_at_ms = 500; // 已过期
+            m.insert(dead_key.clone(), dead);
+        }
+        let err = read_live_pending(&map, &dead_key, 1_000, error_codes::DEVICE_AUTH_NOT_FOUND, "不存在").err().unwrap();
+        assert!(err.contains("DEVICE_AUTH_EXPIRED"));
+        assert!(!map.lock().unwrap().contains_key(&dead_key), "过期项读取时清理到明确终态，不再无限期挂着");
+        let p = read_live_pending(&map, &live_key, 1_000, error_codes::DEVICE_AUTH_NOT_FOUND, "不存在").unwrap();
+        assert_eq!(p.request.request_id, "req-live");
+        assert!(map.lock().unwrap().contains_key(&live_key), "读取不消费事务");
+        let err = read_live_pending(&map, "missing", 1_000, error_codes::DEVICE_AUTH_NOT_FOUND, "不存在").err().unwrap();
+        assert!(err.contains("DEVICE_AUTH_NOT_FOUND"), "缺失按调用方给的码");
+    }
+
+    // ---------------- P2 幂等键 + P1 拒绝可观察 ----------------
+
+    /// 回写请求真的带 `Idempotency-Key` 头，且同一幂等键重试时该头恒定（行为级，非源码判据）。
+    #[test]
+    fn decision_request_carries_idempotency_key_header() {
+        let client = reqwest::Client::builder().build().unwrap();
+        let body = json!({"decision": "deny"});
+        let url = "https://app.example.com/api/device-auth/requests/req-1/decision";
+        let req = decision_request(&client, url, &body, "idem-abc-123").unwrap();
+        assert_eq!(
+            req.headers().get("Idempotency-Key").unwrap().to_str().unwrap(),
+            "idem-abc-123",
+            "回写必须带 Idempotency-Key 头（P2 幂等键）"
+        );
+        assert_eq!(req.headers().get(reqwest::header::CONTENT_TYPE).unwrap(), "application/json");
+        // 同一幂等键重试 ⇒ 头一致，RP 可据以合并重复回写。
+        let req2 = decision_request(&client, url, &body, "idem-abc-123").unwrap();
+        assert_eq!(req.headers().get("Idempotency-Key"), req2.headers().get("Idempotency-Key"));
+    }
+
+    /// 拒绝 settlement（P1）：本机已拒绝 / RP 已收到拒绝可区分，且失败保留可重试态。
+    #[test]
+    fn settle_deny_distinguishes_local_denial_from_rp_ack() {
+        let map = Mutex::new(HashMap::new());
+        let key = da::pending_key(ORIGIN, CLIENT, "req-1");
+        map.lock().unwrap().insert(key.clone(), pending("link", vec![]));
+
+        // RP 未收到拒绝：本机已拒绝、不消费事务（可重试），前端据 rp_notified=false 显示重试入口。
+        let (consume_fail, out_fail) = settle_deny(&pending("link", vec![]), ORIGIN.into(), false);
+        if consume_fail {
+            consume_pending_if(&map, &key, 1);
+        }
+        assert!(!consume_fail, "RP 未收到 ⇒ 不消费");
+        assert!(map.lock().unwrap().contains_key(&key), "失败必须保留可重试态");
+        assert_eq!(out_fail.decision, "denied", "保持既有 decision 兼容语义");
+        assert!(!out_fail.rp_notified, "前端据此显示重试入口");
+
+        // RP 2xx 确认收到拒绝：消费事务（一次性），rp_notified=true。
+        let (consume_ok, out_ok) = settle_deny(&pending("link", vec![]), ORIGIN.into(), true);
+        if consume_ok {
+            consume_pending_if(&map, &key, 1);
+        }
+        assert!(consume_ok, "RP 已收到 ⇒ 消费");
+        assert!(!map.lock().unwrap().contains_key(&key), "成功后一次性消费");
+        assert_eq!(out_ok.decision, "denied");
+        assert!(out_ok.rp_notified);
+        assert_eq!(out_ok.client_id, CLIENT);
+        assert_eq!(out_ok.rp_origin, ORIGIN);
     }
 
     // ---------------- #1 可重试批准 + 同 RP 排队 ----------------

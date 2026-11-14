@@ -79,14 +79,15 @@
 - **验收证据**：`taskCenter.test.ts` + 文件头 kinds 计数判据。
 
 ### 8. 桌面 / Android 更新器
-- **状态机**：显式阶段（check/download/install）+ downloaded/total + error。
-- **真值源**：`UpdaterStatusView`（**内存态，无持久化**）。
-- **用户反馈**：下载进度条 + 状态文案 + 错误。
-- **反向动作**：下载可取消/失败重试；**安装开始后不可取消**（安全边界）。
-- **恢复能力**：失败重试；**进程重启后重查重下**（持久化更新意图：版本/阶段；重启后任务中心重新显示「有可用更新，重新下载」，重下整包）。官方 tauri 更新器整块内存下载、签名校验后返回，**不支持字节续传**——故"重启恢复"语义是重新发起而非续传（用户 2026-11-14 拍板）。
-- **边界资源**：不可取消阶段需告知；退出恢复预期需清楚。
-- **验收证据**：updater 命令判据。
-- **本轮改进**：跨重启重查重下 + 持久化更新意图（P2，#34）。
+- **状态机**：显式阶段（check/download/install）+ downloaded/total + error；另有 `resumable` 标记，表示「状态来自跨重启恢复的意图」，它不是相位（自动检查会把 phase 翻回 idle，标记不跟着丢）。
+- **真值源**：`UpdaterStatus`（全局内存会话，可查询 + 单一广播出口）与 settings 表的 `update_intent`（版本/阶段，**非密、不含字节**）。
+- **用户反馈**：下载进度条 + 状态文案 + 错误；重启恢复时任务中心列「有可用更新，重新下载」（待办档，无进度、只给重新下载动作），设置页的 `restore` 直接显示下载卡片。
+- **反向动作**：下载可取消（`updater_cancel`，同时清意图）；恢复出来的待办由设置页「稍后处理」/ `updater_close` 放弃；**安装开始后不可取消**（安全边界，跨层常量不变）。
+- **恢复能力**：失败重试；**进程重启后重查重下** —— 启动时 `restore_update_intent` 读意图并灌回 `resumable`，**不恢复字节、不恢复 installing 相位**；前端自动检查重新查清单，用户点「重新下载」走已有的 `updater_check` + `updater_download` 整包重下。官方更新器整块内存下载、验签后一次返回，**没有续传 API**（用户 2026-11-14 拍板）。
+- **边界资源**：离线/清单读失败**不清意图**（那条待办不能因一次抖动消失）；装完、取消、稍后处理、清单说已是最新均清意图；坏意图解析失败关闭并留 `code=UPDATE_INTENT_*` 痕迹；意图写失败不阻断下载。
+- **验收证据**：`src-tauri/src/commands/updater.rs` 的 `intent_tests`（编解码与坏值反例、启动接线顺序、不造假的 installing、写/清覆盖全部相位、来源 host 与同源校验、两命令共用实现、自动回落不绕过安全裁决）、`src/utils/taskCenter.test.ts` 与 `src/utils/updater.test.ts` 的 A/B 对照用例、`src/utils/designGuards.test.ts` 的端点常量对账与切源链路判据。
+- **来源契约**：清单从哪个平台取，安装包就只能从哪个平台下。指定源时 `check_once` 只挂那一个端点，并按 `download_url` 的 host 复核（不一致即 `code=UPDATE_SOURCE_MISMATCH` 拒绝）；GitHub 连不上自动回落 Gitee，下载缓慢只提示不自动切，下载失败自动切 Gitee 整包重下。Rust 端点常量与 `src-tauri/tauri.conf.json` 的配置由判据逐字对账。
+- **本轮改进**：#34 与更新源同源/切换已落地。此前这一节写的是**决策**而不是已实现，现补齐实现与证据。
 
 ### 9. 搜索 / 设置 / 只读面板
 - **状态机**：loading/error/retry（Query 状态）；不做写入式 optimistic。
@@ -99,14 +100,14 @@
 - **本轮改进**：保留旧值的 Query 补 stale/error 标记 + 重试（P2，#33）。
 
 ### 10. Todo 图片 / 共享目录下载
-- **状态机**：当前无统一台账（不在任务中心）。
-- **真值源**：各自下载路径（Todo 图片走 `group_todo_media`，共享目录走文件链路）。
-- **用户反馈**：原页面状态。
-- **反向动作**：按各自路径。
-- **恢复能力**：未纳入统一恢复。
-- **边界资源**：—
-- **验收证据**：—
-- **本轮改进**：纳入统一任务台账（新增 OperationKind + 真值源 + 动作），跨重启策略与更新器一致（重查重下/重新开始，用户 2026-11-14 拍板，P2，#34）。
+- **状态机**：**早已在册** —— 分别复用 `content_transfers`（Todo 图片按 cid 拉取）与 `file_transfers`（共享目录文件由对端推流）的既有状态机，在任务中心以 `content_fetch` / `file_receive` 出现。此前「无统一台账」是误读。
+- **真值源**：`src-tauri/src/network/transport/handle_file.rs` 的 FileOffer 臂写内容台账、`src-tauri/src/network/file/receive.rs` 写文件台账；前端来源映射收在 `src/utils/taskCenter.ts` 的 `OPERATION_ORIGIN_MAP`。
+- **用户反馈**：任务中心进度 + 失败原因；Todo 图片另有 `src/components/TodoImageThumb.vue` 的「同步中/已放弃」本地态，共享目录下载后 `src/components/ShareDirectory.vue` 刷新台账。
+- **反向动作**：`cancel_content_fetch` / `request_content_by_cid` / `cancel_file_transfer`，都是现有真命令（见 `OperationAction`，不新增）。
+- **恢复能力**：随持久台账走（传输链路自己的断点/重启恢复），不套用更新器「重下整包」那一套。
+- **边界资源**：来源标记是**契约级映射**，不是新增数据列 —— 后端两张台账没有稳定的「来自 Todo / 共享目录」字段，所以不逐行标来源，也不为了标它去动表结构。
+- **验收证据**：`src/utils/taskCenter.test.ts` 的「来源映射不另立 kind」形状判据（带正控）+ `src/utils/taskCenter.ts` 文件头对账注释。
+- **本轮改进**：**不新增 OperationKind**（用户 2026-11-14 裁决）。新增会让同一个 transfer_id 出两行，而新 kind 并不带来更多真值或可执行动作；改为登记来源映射、更正文件头与本节的假现状。
 
 ## 并发回滚策略（P2，#32，本轮实施）
 
@@ -121,6 +122,6 @@
 
 ## 本轮验证边界
 
-- 已实施并单测绿：P1 `cancel_content_fetch` 不短路（`files_tests.rs`）。
-- 进行中：#33 stale 标记、#35 群历史 pending、#32 并发回滚、#34 跨重启扩展。
+- 已实施并单测绿：P1 取消内容拉取台账不短路、#33 stale 标记、#35 群历史 pending、#32 并发回滚、#34 跨重启重查重下（见 §8/§10）。
+- #34 的验收证据见 §8；跑法见 `package.json` 的 `scripts.test` / `scripts.verify:full` 与对应测试文件头，读数以实跑为准，不在此抄数字。
 - 台账行为结论以源码为准；运行时完整性需对应测试/真机佐证，不据此宣称"所有边界已兜底"。

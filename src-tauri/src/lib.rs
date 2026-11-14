@@ -417,6 +417,12 @@ fn finish_boot(app: &tauri::AppHandle, state: std::sync::Arc<state::AppState>) {
     // 不要在这里再直接 `spawn_*`，否则同一个 worker 会跑两份。
     worker_supervisor::start(&state, worker_supervisor::RESIDENT_WORKERS);
     app.manage(state.clone());
+    // #34：跨重启的更新意图（可用版本 + 是否发起过下载）在这里灌回全局更新状态。
+    // 必须在 `manage(state)` 之后：恢复要读 settings 表，也要拿得到 UpdaterSession。
+    // 只灌状态、不发网络请求 ⇒ 离线启动时「重新下载」那一行依然在；
+    // 自动检查负责重新查清单。移动端没有应用内更新器，不接这一段。
+    #[cfg(desktop)]
+    commands::restore_update_intent(app, state.as_ref());
     // 待处理的好友申请从库里回到内存（审计 A4）。放在 `manage` 之后、联网那一块之前：
     // 库已经打开、而补发还没开始 ⇒ 对端每 30s 的那一份重发会被
     // `pending_requests` 认成"这条我早就握着了"⇒ 只刷新列表、不再弹通知。
@@ -1028,6 +1034,7 @@ pub fn run() {
             commands::device_auth_list_bindings,
             commands::device_auth_revoke,
             commands::updater_check,
+            commands::updater_check_source,
             commands::updater_download,
             commands::updater_cancel,
             commands::updater_status,
