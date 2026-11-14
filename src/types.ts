@@ -1088,6 +1088,33 @@ export interface DeviceAuthPrompt {
   nickname_default: boolean;
 }
 
+/**
+ * 外部分享进来的一条内容（对应后端 `share::SharePayload`，camelCase 过 FFI）。
+ *
+ * 三个正文字段都可缺，但后端保证**至少有一个非空**（空内容在解析时就被拒了）。
+ */
+export interface SharePayload {
+  /** 被分享的链接；后端只放行 http/https（`javascript:` / `data:` / `file:` 已拒）。 */
+  url: string | null;
+  title: string | null;
+  /** 调用方给的原文 / 选中的文字。 */
+  text: string | null;
+  /**
+   * 调用方**自称**的来源（https origin）。只用于面板上给用户一个线索，
+   * **不参与任何信任判断** —— 任何安全结论都不许建立在这个字段上。
+   */
+  claimedOrigin: string | null;
+}
+
+/** 排队中的一条外部分享（后端 `share::SharePrompt`）。 */
+export interface SharePrompt {
+  shareId: string;
+  payload: SharePayload;
+  receivedAtMs: number;
+  /** 过期后后端不再返回，面板也就不会为一个已失效的分享留入口。 */
+  expiresAtMs: number;
+}
+
 /** 已授权应用清单条目（只公钥面）。 */
 export interface RpBindingInfo {
   rp_origin: string;

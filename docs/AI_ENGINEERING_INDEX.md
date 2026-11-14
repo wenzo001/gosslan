@@ -28,6 +28,7 @@
 | `docs/notes/reka-ui-adoption-audit-2026-11-13.md` | Reka UI 采用现状复核、尚需评估的控件、与 Gosslan 设计目标的匹配度、最佳实践与分阶段计划（只读源码审计，未改业务代码） |
 | `docs/notes/external-auth-share-readiness-audit-2026-11-14.md` | 外部快捷认证、内置外链浏览器与网页分享闭环的就绪度审计、风险分级、产品边界和分阶段接入计划（只读源码审阅，未运行测试/真机验收）。⚠️ **带日期的快照**：其中多项此后已按 `external-auth-integration-contract` 调整，判现状一律读那一份 |
 | `docs/notes/external-auth-integration-contract-2026-11-14.md` | 外部 RP 集成的**活契约**：术语口径、三层状态机及当前差距、双边撤销、密钥保护、外链/深链边界、RP mock 的限制、错误码口径、版本化约定、可勾选的发布准入清单（未验收项一律 `NOT RUN`） |
+| `docs/notes/external-integration-guide-2026-11-14.md` | **给外部接入方看的**接入指南：设备快捷认证（元数据/事务/决策回写字段表、JWS 断言校验步骤、幂等与撤销）与分享到会话（`gosslan://share?…` 参数与限额、用户确认语义、不支持清单）、接入自测清单、NOT RUN 边界 |
 | `docs/notes/reuse-and-component-audit-2026-11-13.md` | 组件库与公共能力复审：Todo 日历组件化评估、超时/码点计数等重复项、合理自研边界、最佳实践与分阶段方案（只读审计，未改业务代码） |
 | `docs/notes/feature-closure-async-audit-2026-11-13.md` | 功能状态闭环与异步任务审计：乐观更新、进度可视化、取消/撤回/恢复边界、已证实风险及分阶段改进计划（只读源码审阅，未运行测试） |
 | `docs/notes/send-cancelled-rca-2026-11-01.md` | 发送端台账假「已取消」根因分析（E2E 判据⑩ `A=cancelled`）：七次同形复现的日志证据链、两个发送家并发 + 取消槽位被顶替的机制、墓碑把真 `done` 静默挡死的锁死层、排除清单、最小修复方案与影响面 —— **只分析，未改码** |

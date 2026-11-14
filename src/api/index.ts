@@ -2,7 +2,7 @@
 
 import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, RpBindingInfo, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, RpBindingInfo, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, SharePrompt, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -892,6 +892,17 @@ export const api = {
   /** 深链到达时后端 emit 的确认页数据（主窗订阅，弹出强制确认 UI）。 */
   onDeviceAuthRequest: (cb: (p: DeviceAuthPrompt) => void) =>
     listen<DeviceAuthPrompt>("device-auth-request", (e) => cb(e.payload)),
+
+  /** 冷启动补拉：进程起来**之前**到达的分享，`share-request` 那一刻的事件已经发过了。 */
+  shareGetPending: () => invoke<SharePrompt | null>("share_get_pending"),
+  /** 处理完（已发送 / 用户关掉）就把这一条移出队列；返回是否真的删掉了。 */
+  shareDismiss: (shareId: string) => invoke<boolean>("share_dismiss", { shareId }),
+  /** 外部内容到达（深链 / 冷启动 argv / 单实例转发）。 */
+  onShareRequest: (cb: (p: SharePrompt) => void) =>
+    listen<SharePrompt>("share-request", (e) => cb(e.payload)),
+  /** 分享入口处理失败（链接不合法 / 队列满 / 受控引用未支持）。payload 是带码的原因串。 */
+  onShareError: (cb: (err: string) => void) =>
+    listen<string>("share-error", (e) => cb(e.payload)),
 
   updaterCheck: () => invoke<UpdaterInfo | null>("updater_check"),
   /** 指定来源重新查清单：后端只挂那一个端点，并校验安装包与清单同源。 */

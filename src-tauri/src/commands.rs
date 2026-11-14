@@ -150,6 +150,9 @@ include!("commands/external_links.rs");
 // ---- device_auth.rs（外部应用设备认证 Phase 2） ----
 include!("commands/device_auth.rs");
 
+// ---- external_share.rs（外部分享到会话；与下面的 share.rs 不是一件事） ----
+include!("commands/external_share.rs");
+
 // ---- logs.rs ----
 include!("commands/logs.rs");
 

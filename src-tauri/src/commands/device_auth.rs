@@ -25,12 +25,8 @@ const MAX_RP_JSON_BYTES: usize = 64 * 1024;
 /// RP 网络请求超时。
 const RP_TIMEOUT_SECS: u64 = 10;
 
-// 本任务新增的错误码：按硬性边界，**定义在命令层内部**，不改全局 `error_codes.rs`
-// （那张表由 `errors.test.ts` 与前端 `CODE_RULES` 双向对账，本任务无权改动）。需主任务登记。
-/// 待确认队列已满：拒绝新事务、明确「暂不能处理」，不静默淘汰、不顶掉已有确认页。
-const CODE_DEVICE_AUTH_BUSY: &str = "DEVICE_AUTH_BUSY";
-/// 拒绝回写 RP 失败：本机已拒绝、RP 未收到（进日志，结果由 `rp_notified=false` 上报前端）。
-const CODE_DENY_NOTIFY_FAILED: &str = "DEVICE_AUTH_DENY_NOTIFY_FAILED";
+// 错误码统一登记在 `error_codes.rs`：那张表由 `src/utils/errors.test.ts` 与前端
+// `CODE_RULES` 双向对账，写在本地的私有常量对那条判据不可见，前端也就无法翻成人话。
 
 /// RP 专用 HTTPS 客户端：**不跟随重定向**（防跨域凭据转发 / open redirect / SSRF）。
 fn rp_client() -> Result<reqwest::Client, String> {
@@ -293,7 +289,7 @@ fn admit_pending(
 ) -> Result<(), String> {
     map.retain(|_, p| p.expires_at_ms > now_ms);
     if !map.contains_key(&key) && map.len() >= max {
-        let err = error_codes::coded(CODE_DEVICE_AUTH_BUSY, "暂不能处理，请稍后重试（待确认事务已达上限）");
+        let err = error_codes::coded(error_codes::DEVICE_AUTH_BUSY, "暂不能处理，请稍后重试（待确认事务已达上限）");
         eprintln!("[device-auth] {err}");
         return Err(err);
     }
@@ -592,7 +588,7 @@ pub async fn device_auth_deny(
     };
     let notified = post_result.is_ok();
     if let Err(e) = &post_result {
-        eprintln!("[device-auth] code={CODE_DENY_NOTIFY_FAILED} 拒绝回写失败，本机已拒绝、RP 未收到：{e}");
+        eprintln!("[device-auth] code={} 拒绝回写失败，本机已拒绝、RP 未收到：{e}", error_codes::DEVICE_AUTH_DENY_NOTIFY_FAILED);
     }
     let (should_consume, outcome) = settle_deny(&pending, rp_origin, notified);
     // 只有 RP 确认收到拒绝才消费；失败保留可重试态（前端显示重试入口，重试复用同一幂等键）。

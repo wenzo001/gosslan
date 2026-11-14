@@ -79,6 +79,9 @@ mod tests {
             // 安卓应用内升级：`commands.rs` 用 `include!` 装进来的第五册。
             // 漏登记不会报错，只会让"全部命令面"的守卫看不见它（假绿）。
             include_str!("commands/android_updater.rs"),
+            // 外部分享到会话：两条命令（取/清待处理分享）。与 `commands/share.rs`
+            // （P2P 共享目录）不是一件事，两个分册都要在册。
+            include_str!("commands/external_share.rs"),
         )
     }
 

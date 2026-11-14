@@ -385,6 +385,26 @@ pub const DEVICE_AUTH_BINDING_REVOKED: &str = "DEVICE_AUTH_BINDING_REVOKED";
 pub const DEVICE_AUTH_BINDING_EXISTS: &str = "DEVICE_AUTH_BINDING_EXISTS";
 /// authenticate 但本机尚无 active 绑定（须先 link）。
 pub const DEVICE_AUTH_NO_BINDING: &str = "DEVICE_AUTH_NO_BINDING";
+/// 待确认队列已满：拒新事务并明确「暂不能处理」，不静默淘汰、不顶掉已有确认页。
+pub const DEVICE_AUTH_BUSY: &str = "DEVICE_AUTH_BUSY";
+/// 拒绝回写 RP 失败：本机已拒绝、RP 未收到（结果由 `rp_notified=false` 上报前端）。
+pub const DEVICE_AUTH_DENY_NOTIFY_FAILED: &str = "DEVICE_AUTH_DENY_NOTIFY_FAILED";
+
+// ── 外部分享到会话（2026-11-14，share-to-conversation）────────────────────────
+//
+// ⚠️ 前缀刻意**不是** `SHARE_`：`SHARE_DIR_*` / `SHARE_NOT_FRIEND` 那一族是「P2P 共享目录 /
+// 共享请求」，与「外部网页/应用把一条链接分享进来」是两件事，混用前缀会让日志与排障读错对象。
+// 这一族的语义：外部内容入口的**解析与排队**失败（尚未进入消息发送，故与 SEND_* 也分开）。
+/// 分享入口链接不是可识别形态（scheme/host/必需参数不对）。
+pub const EXTERNAL_SHARE_INVALID_LINK: &str = "EXTERNAL_SHARE_INVALID_LINK";
+/// 分享内容为空，或其中的 URL 不是 http(s)（拒 javascript:/data:/file: 等）。
+pub const EXTERNAL_SHARE_BAD_CONTENT: &str = "EXTERNAL_SHARE_BAD_CONTENT";
+/// 分享内容超出长度上限（标题/正文/URL 各自有界，防一次塞爆内存与输入框）。
+pub const EXTERNAL_SHARE_TOO_LARGE: &str = "EXTERNAL_SHARE_TOO_LARGE";
+/// 待处理分享队列已满：拒新的一笔并明确告知，不淘汰用户还没处理的那几笔。
+pub const EXTERNAL_SHARE_BUSY: &str = "EXTERNAL_SHARE_BUSY";
+/// 受控 share request（`/share/<不透明引用>`）需要 RP 侧的解析端点，本期未实现。
+pub const EXTERNAL_SHARE_REFERENCE_UNSUPPORTED: &str = "EXTERNAL_SHARE_REFERENCE_UNSUPPORTED";
 /// 共享目录：路径不存在 / 不是目录。
 pub const SHARE_DIR_MISSING: &str = "SHARE_DIR_MISSING";
 /// 共享目录：打开接收目录的阻塞任务失败（human 带底层原因）。

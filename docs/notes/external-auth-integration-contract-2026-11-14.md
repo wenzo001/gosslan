@@ -89,8 +89,21 @@
 
 - `link` 窗口隔离：`src-tauri/capabilities/default.json` 的 windows 集合刻意不含 label `link`。远端页面因此拿不到 Tauri command capability。`src-tauri/src/commands/logs.rs` 的 `open_link_window` 先用 `validate_external_url` 校验（只放行 http/https、host 非空），再以 `.on_navigation` 只放行 http/https；不向远端页面注入通用 JS / invoke bridge。
 - 为什么：这是本仓唯一一处渲染第三方网页的窗口，任何 capability 或通用桥都会把本机命令面暴露给远端内容。
-- 深链现状：`src-tauri/tauri.conf.json` 只注册 desktop `gosslan` scheme。`src-tauri/src/device_auth.rs` 的 `parse_authorize_link` 只认 `/authorize/<ref>` 与 `gosslan://authorize/...?origin=...`；本轮新增 `parse_share_link` 纯函数（HTTPS `/share/<ref>` 与自定义 scheme 回退），但**尚未注册为命令、未接系统 URL 事件**，也没有 HTTPS App Link 域名关联。
-- 网页分享到聊天：`share_request`、系统分享目标、会话选择 / 草稿 / 显式发送面板全仓未实现。`src/components/ShareDirectory.vue` 与 `src-tauri/src/commands/share.rs` 是 P2P 共享目录，不是网页分享。
+- 深链现状：`src-tauri/tauri.conf.json` 注册 desktop `gosslan` scheme。`src-tauri/src/device_auth.rs`
+  的 `parse_authorize_link` 只认 `/authorize/<ref>` 与 `gosslan://authorize/...?origin=...`；
+  分享侧已接线：`src-tauri/src/share.rs::parse_share_intent` 认**内联**（`gosslan://share?url=…`、
+  `https://<站点>/share?url=…`）与**受控引用**（`/share/<ref>`，本期只解析不解析内容）两种形态，
+  并由 `commands/external_share.rs::route_deep_link` 在**一个地方**把深链分派给分享或授权
+  （三处调用点：单实例转发 / `on_open_url` / 冷启动 argv）。HTTPS App Link 的域名关联仍只有
+  骨架文件（`docs/link-handoff/`），真机关联 `NOT RUN`。
+- 网页分享到聊天：**内联闭环已落地** —— 入口解析 + 限额 + 去重 + 内存排队（cap 8 / TTL 10 分钟）
+  + `share-request` / `share-error` 事件 + `share_get_pending` / `share_dismiss` 两条命令；
+  前端 `SharePanel.vue` 做「来源线索 + 可编辑正文 + 会话搜索/单选 + 显式发送」，发送复用既有
+  `send` 通道。**未做**：受控 `share_request`（需 RP 端点）、文件分享、系统分享面板、
+  第三方分享 SDK、网页预览。
+  注意区分：`src/components/ShareDirectory.vue` 与 `src-tauri/src/commands/share.rs` 是
+  **P2P 共享目录**，与这里的「外部分享到会话」是两件事（错误码也分族：`SHARE_DIR_*` vs
+  `EXTERNAL_SHARE_*`）。
 - 分享若未来开放，只走窄边界：
   - 只暴露窄操作（例如「创建待审分享请求」），不提供任意 Tauri command bridge。
   - 绑定来源（已验证的 RP HTTPS 同源 issuer）、一次性 nonce、过期时间、用户手势、原生确认页，缺一不可。
@@ -110,7 +123,7 @@
 - 事务 TTL 写死为短时值（以该脚本内的 TTL 常量现读为准），没有可配置的生产级过期与清理策略。
 - 验签已要求 `jti` 存在；决策路径按 `jti` 全局去重，重复断言返回明确的重放冲突。这只是 mock 内的进程级去重，不是生产级持久化重放库。
 - 已提供 RP 侧撤销端点（按 `kid` 或 `subject`），撤销后 authenticate 拒绝；但绑定仍在内存里，重启即恢复。
-- 无分享端点，metadata 不含分享字段。
+- 无分享端点，metadata 不含分享字段；外部分享走的是**内联内容**（不经 RP），因此 mock 不参与分享链路。
 - `account_hint` 硬编码为固定掩码串，不来自真实 RP 账号。
 - **不能作为生产接入依据。** 生产接入必须以 §9 交付的版本化文档与服务端参考实现为准。
 
@@ -152,8 +165,8 @@
 - [ ] 签名断言仅含协议约定字段，不泄露全局设备 ID、P2P 私钥、Cookie 或长期 token。 — `部分：源码可见，未运行时验收`（源码可见 claim allowlist 与只公钥面输出，未跑最小披露验收）
 - [ ] 桌面签名安装包真实唤起通过；Android / iOS App Links / Universal Links 分平台通过。 — `NOT RUN`
 - [ ] 外链窗口不能调用任意本机命令；所有远端回调严格限制 HTTPS 同源与重定向。 — `部分：源码可见，未运行时验收`（源码可见 `link` 窗口隔离、不跟随重定向、端点同源校验，未跑反例验收）
-- [ ] 分享流程经用户选择接收人并显式发送；取消不会发消息，失败保留可恢复草稿。 — `NOT RUN`（分享闭环未实现，无可运行体验收）
-- [ ] 外部 RP 文档、示例、错误码和生产注意事项与实际客户端版本一致。 — `NOT RUN`
+- [ ] 分享流程经用户选择接收人并显式发送；取消不会发消息，失败保留可恢复草稿。 — `部分：源码可见，未运行时验收`（面板 + 会话选择 + 显式发送 + 失败保留草稿已落地；真机唤起与真实体验收仍 `NOT RUN`）
+- [ ] 外部 RP 文档、示例、错误码和生产注意事项与实际客户端版本一致。 — `部分：文档已交付`（[`external-integration-guide-2026-11-14.md`](external-integration-guide-2026-11-14.md) 覆盖两端点字段表、断言校验步骤、错误码与接入自测清单；「与实际版本一致」仍需真实 RP 联调后复核）
 
 **只有全部有可复现证据，才可把「外部直接接入」标为可用。** 部分项有源码可见的实现，不等于已有准入证据；`NOT RUN` 项不得以「代码路径存在」代替。
 
@@ -168,7 +181,19 @@
 
 本轮已落地（代码层）：设备认证事务与绑定状态机、拒绝可观察状态与重试、队列满载反馈、幂等键与本地 TTL 兜底；`/share` 深链的解析纯函数与反例单测；Android App Links / iOS Universal Links 的配置骨架；RP mock 的重放去重、撤销端点与 `consumed` 终态。逐项验收证据见对应单测与 CHANGELOG；真机与运行时证据仍按 §10 标 `NOT RUN`。
 
-本轮仍不做：不实现 `/share` 的**分享面板与发送闭环**。理由：仓库里已有解析函数，但没有 RP 分享端点、没有系统分享目标注册，桌面 `gosslan` scheme 目前也只接 `/authorize` 路径；会话选择 UI 与分享草稿的产品定义尚未拍板。本仓不允许摆一个点了没反应的入口，因此宁可只交契约层，也不把半成品说成「已支持一键分享」。不接入分享 SDK，不新增中心账号或用户资料服务，不把现状包装成硬件保护。
+本轮已落地（2026-11-14 第二批，分享闭环）：`gosslan://share?url=…&title=…&text=…` 与
+`https://<站点>/share?url=…` 两种**内联**入口（解析、限额、去重、内存排队、`share-request` /
+`share-error` 事件、`share_get_pending` / `share_dismiss` 两条命令）；面板做「来源线索 + 可编辑
+正文 + 会话搜索/单选 + 显式发送」，发送复用既有 `send`。深链分派收口到 `route_deep_link`
+（分享 / 授权靠 host 区分，避免三处各判一次）。
+
+本轮仍不做（有明确理由，不是遗漏）：
+- **受控 share request**（`/share/<不透明引用>`）：需要 RP 侧「用 ref 换内容」的端点，本仓没有；
+  链接形状已能解析，命令层明确回 `EXTERNAL_SHARE_REFERENCE_UNSUPPORTED`，不静默失败。
+- **文件分享 / 系统分享面板 / 第三方分享 SDK**：需要平台工程改造（Share Extension、ACTION_SEND、
+  shell 扩展）或平台资质与审核，且分享目标缺失/取消/失败的产品退路未定。
+- **网页预览**：抓取任意 URL 等于把 SSRF / 内网探测 / 跟踪像素引进来，本期只显示调用方自报内容。
+- 不新增中心账号或用户资料服务，不把现状包装成硬件保护。
 
 ## 12. 复跑与维护
 

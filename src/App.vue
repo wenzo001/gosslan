@@ -25,6 +25,7 @@ import VersionMismatchNotice from "@/components/VersionMismatchNotice.vue";
 import ResponsiveLayout from "@/layouts/ResponsiveLayout.vue";
 import TaskCenter from "@/components/TaskCenter.vue";
 import DeviceAuthConfirmModal from "@/components/DeviceAuthConfirmModal.vue";
+import SharePanel from "@/components/SharePanel.vue";
 import { version } from "../package.json";
 import { detectVersionMismatch, type VersionMismatch } from "@/utils/versionGuard";
 
@@ -386,4 +387,10 @@ onUnmounted(stopWatchdogTimers);
   <TaskCenter />
   <!-- 外部应用设备认证强制确认页：深链到达时弹出，关闭=拒绝（fail closed）。 -->
   <DeviceAuthConfirmModal />
+  <!--
+    外部分享到会话：外部网页/应用经 `gosslan://share?…` 递进一条内容，这里让用户
+    **确认内容 + 选会话 + 显式发送**。挂在主窗壳上而不是某个会话里 —— 分享到达时
+    用户可能停在任何页面，弹在会话内会看不见。
+  -->
+  <SharePanel />
 </template>
