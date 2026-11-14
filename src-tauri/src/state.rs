@@ -1218,6 +1218,11 @@ pub struct AppState {
     /// 同一 RP 的授权**排队锁**（rp_queue_key → 异步互斥，#1）：同 RP 的多个批准依次处理
     /// （不是单飞拒绝），不同 RP 并行。只在用户批准时按 RP 建锁，数量受已授权应用数约束。
     pub device_auth_rp_locks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// **外部分享到会话**的待处理队列（share_id → prompt）：内存态、cap 8、TTL 10 分钟。
+    ///
+    /// 为什么不落库：分享是一次性动作，进程重启后用户不会指望昨天点的链接还挂在界面上；
+    /// 落库反而要新增表与清理策略（Frozen Core 的 schema 红线）。
+    pub external_share_pending: Mutex<std::collections::HashMap<String, crate::share::SharePrompt>>,
     /// 并发拨号上限信号量（**不是**在途去重，是资源上限）。
     ///
     /// 为什么还要它：在途集合只挡"同一目标"，挡不住"一万个不同目标"——伪造 announce
@@ -2556,6 +2561,7 @@ impl AppState {
             device_auth_pending: Mutex::new(std::collections::HashMap::new()),
             device_auth_generation: AtomicU64::new(0),
             device_auth_rp_locks: Mutex::new(std::collections::HashMap::new()),
+            external_share_pending: Mutex::new(std::collections::HashMap::new()),
             todo_focus_request: Mutex::new(std::collections::HashMap::new()),
             task_window_group: Mutex::new(None),
             preview_gallery: Mutex::new(None),

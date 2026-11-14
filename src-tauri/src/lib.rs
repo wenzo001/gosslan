@@ -78,6 +78,16 @@ mod open_path;
 mod private_fs;
 pub mod protocol;
 mod restart;
+/// 外部分享到会话的协议核心（入口解析 + 内存排队；**不发送消息**），见该文件注释。
+/// ⚠️ 与 `commands/share.rs`（P2P 共享目录/共享请求）不是一件事。
+///
+/// 移动端允许 dead_code：深链接收目前只在桌面接线（`tauri_plugin_deep_link` 的注册与
+/// `on_open_url` 都在桌面 cfg 里），所以「谁来把一条链接变成待处理分享」这一段在移动端
+/// 没有调用点；而 `share_get_pending` / `share_dismiss` 两条命令是跨平台的（`SharePrompt`
+/// 仍被用到）。这不是死代码，是**下一阶段接移动端插件回调**的入口，理由写在
+/// `docs/notes/external-integration-guide-2026-11-14.md` 的验收状态表里。
+#[cfg_attr(not(desktop), allow(dead_code))]
+mod share;
 mod signals;
 mod startup_error;
 mod state;
@@ -768,9 +778,12 @@ pub fn run() {
         ) {
             builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
                 crate::tray::show_main_window(app);
-                // 第二个进程由授权深链唤起时 argv 里带着 gosslan://…（Windows/Linux 协议
-                // 唤起走单实例转发）；转给设备认证处理，仍只弹强制确认页、不静默批准。
-                if let Some(url) = commands::authorize_link_from_args(&argv) {
+                // 第二个进程被深链唤起时 argv 里带着 gosslan://…（Windows/Linux 协议唤起走
+                // 单实例转发）。**先判分享再判授权**：两者都是 `gosslan://` 前缀，靠 host 分派
+                // （`route_deep_link` 一个地方判，别在调用点各判一次）。
+                if let Some(url) = crate::share::share_link_from_args(&argv) {
+                    commands::route_deep_link(app, url);
+                } else if let Some(url) = commands::authorize_link_from_args(&argv) {
                     commands::spawn_device_auth_link(app.clone(), url);
                 }
             }));
@@ -830,7 +843,7 @@ pub fn run() {
             #[cfg(unix)]
             crate::signals::register_sigterm(app.handle().clone());
             finish_boot(app.handle(), state);
-            // 外部应用设备认证深链：运行时 URL event 回调 + 冷启动取当前深链。
+            // 外部入口深链：运行时 URL event 回调 + 冷启动取当前深链。
             // 真机唤起/系统协议注册语义待实机验收（NOT RUN）；契约 mock 驱动客户端逻辑。
             #[cfg(desktop)]
             {
@@ -838,22 +851,24 @@ pub fn run() {
                 let handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
                     for url in event.urls() {
-                        commands::spawn_device_auth_link(handle.clone(), url.to_string());
+                        // 一条深链只交给一个处理者（分享 / 授权），见 `route_deep_link`。
+                        commands::route_deep_link(&handle, url.to_string());
                     }
                 });
                 // 冷启动：插件取当前深链（macOS 缓存的 launch URL）+ argv 兜底（Windows/Linux）。
-                // 同一 request_id 重复到达由待确认 map 幂等覆盖，不会弹两份确认页。
+                // 同一 request_id 重复到达由待确认 map 幂等覆盖，不会弹两份确认页；
+                // 同一份分享内容重复到达由 dedupe_key 复用，不会弹两个面板。
+                let args: Vec<String> = std::env::args().collect();
                 let cold = app
                     .deep_link()
                     .get_current()
                     .ok()
                     .flatten()
                     .and_then(|urls| urls.into_iter().next().map(|u| u.to_string()))
-                    .or_else(|| {
-                        commands::authorize_link_from_args(&std::env::args().collect::<Vec<_>>())
-                    });
+                    .or_else(|| crate::share::share_link_from_args(&args))
+                    .or_else(|| commands::authorize_link_from_args(&args));
                 if let Some(url) = cold {
-                    commands::spawn_device_auth_link(app.handle().clone(), url);
+                    commands::route_deep_link(app.handle(), url);
                 }
             }
             Ok(())
@@ -1033,6 +1048,8 @@ pub fn run() {
             commands::device_auth_deny,
             commands::device_auth_list_bindings,
             commands::device_auth_revoke,
+            commands::share_get_pending,
+            commands::share_dismiss,
             commands::updater_check,
             commands::updater_check_source,
             commands::updater_download,

@@ -438,10 +438,12 @@ pub fn parse_authorize_link(raw: &str) -> Result<AuthorizeLink, String> {
     })
 }
 
-/// `/share` 深链解析结果（**骨架**）：规范化 HTTPS 来源 + 不透明分享引用。
+/// `/share` 深链解析结果：规范化 HTTPS 来源 + 不透明分享引用。
 /// 与授权深链分开建模，避免分享借 `authenticate` 的通道（活契约 §6：认证与分享不得混成网页桥）。
-// 本任务只交付解析骨架，按要求**不注册命令 / 不发网络 / 不实现分享发送**，故当下只有单测引用。
-#[allow(dead_code)]
+///
+/// 消费者是 `crate::share::parse_share_intent` 的**受控引用**分支（`ShareIntent::Reference`）：
+/// 形状校验在这里，语义解释（拿 ref 去 RP 换内容）在 `commands/external_share.rs` 明确回
+/// 「本期不支持」，而不是静默失败。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShareLinkRef {
     /// 规范化 HTTPS 来源（来自链接主机或 `origin` 参数，经 `normalize_rp_origin` 收紧）。
@@ -450,7 +452,7 @@ pub struct ShareLinkRef {
     pub share_ref: String,
 }
 
-/// 解析 `/share` 深链的**纯函数骨架**：只校验形状与来源，不注册命令、不发网络、不实现分享发送。
+/// 解析 `/share` 深链的**形状**：只校验来源与路径，不注册命令、不发网络、不实现分享发送。
 ///
 /// 只接受两种形态，其余一律 `None`（fail closed）：
 /// - HTTPS App Link：`https://<host>/share/<opaque-ref>`，来源即链接主机。
@@ -458,9 +460,8 @@ pub struct ShareLinkRef {
 ///
 /// 来源复用 `normalize_rp_origin` 的 HTTPS 同源收紧口径：拒 http 降级、userinfo、query/fragment、
 /// 缺主机。为什么放在协议核心而不是命令层：这是纯解析/校验，和 `parse_authorize_link` 同一类，
-/// 也便于在真正接入分享前先用单测把边界钉死（`device_auth_tests.rs`）。
-// 骨架暂不接线（见 ShareLinkRef 的说明），当下仅由单测引用。
-#[allow(dead_code)]
+/// 也便于用单测把边界钉死（`device_auth_tests.rs`）。内联形态（`?url=…`）不归这里，
+/// 由 `crate::share::parse_share_intent` 处理。
 pub fn parse_share_link(raw: &str) -> Option<ShareLinkRef> {
     let parsed = Url::parse(raw.trim()).ok()?;
     // 收集非空路径段：尾斜杠折出的空段忽略，但多出来的非空段一律拒（ref 是不透明单段）。

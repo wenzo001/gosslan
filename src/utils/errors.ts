@@ -243,6 +243,14 @@ const CODE_RULES: Record<string, string> = {
   DEVICE_AUTH_BINDING_REVOKED: "errors.rule.deviceAuthBindingRevoked",
   DEVICE_AUTH_BINDING_EXISTS: "errors.rule.deviceAuthBindingExists",
   DEVICE_AUTH_NO_BINDING: "errors.rule.deviceAuthNoBinding",
+  DEVICE_AUTH_BUSY: "errors.rule.deviceAuthBusy",
+  DEVICE_AUTH_DENY_NOTIFY_FAILED: "errors.rule.deviceAuthDenyNotifyFailed",
+  // 外部分享到会话：与 P2P「共享目录」的 SHARE_DIR_* 一族分开（前缀不同，别混）。
+  EXTERNAL_SHARE_INVALID_LINK: "errors.rule.externalShareInvalidLink",
+  EXTERNAL_SHARE_BAD_CONTENT: "errors.rule.externalShareBadContent",
+  EXTERNAL_SHARE_TOO_LARGE: "errors.rule.externalShareTooLarge",
+  EXTERNAL_SHARE_BUSY: "errors.rule.externalShareBusy",
+  EXTERNAL_SHARE_REFERENCE_UNSUPPORTED: "errors.rule.externalShareReferenceUnsupported",
   FAVORITE_DELETE_BATCH_TOO_LARGE: "errors.rule.favoriteDeleteBatchTooLarge",
   // B6 第十三批：群管理 reject 族。
   GROUP_TODO_ASSIGNEE_NOT_MEMBER: "errors.rule.groupTodoAssigneeNotMember",
