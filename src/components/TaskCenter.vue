@@ -138,6 +138,7 @@ const actionLabel: Record<OperationAction, string> = {
   cancel: "task.cancel",
   cancel_message: "task.cancel",
   cancel_update: "task.cancel",
+  redownload_update: "task.redownloadUpdate",
   cancel_content: "task.cancel",
   retry_content: "task.retryNow",
   resend_message: "task.resendMessage",
@@ -153,6 +154,7 @@ async function runAction(row: OperationRow, action: OperationAction) {
     if (action === "cancel") await cancelFile(row);
     else if (action === "cancel_message") await cancelMessage(row);
     else if (action === "cancel_update") await cancelUpdate();
+    else if (action === "redownload_update") await redownloadUpdate();
     else if (action === "cancel_content") await cancelContent(row);
     else if (action === "retry_content") await retryContent(row);
     else if (action === "resend_message") await resendMessage(row);
@@ -261,6 +263,29 @@ async function cancelUpdate() {
   await api.updaterCancel();
   await chat.refreshUpdaterStatus();
   app.toast(t("task.cancelDone"), "success");
+}
+
+/**
+ * 跨重启恢复出来的更新意图（#34）：重新查清单 → 整包重下。
+ *
+ * 两步都只调**已经存在**的命令：`check()` 走 `updater_check`（后端重新拿官方 `Update`
+ * 并放进全局会话），`download()` 走 `updater_download`。不做字节续传 —— 官方更新器
+ * 整块内存下载、验签后一次返回，没有续传 API；后端在开始下载时把 `resumable` 清掉，
+ * 这一行当场从「待重新下载」变成「下载中」。
+ *
+ * ⚠️ 这里刻意用动态 import：`main.ts` 为防止模块求值期异常绕过首屏错误处理，
+ * 不静态 import updater。任务中心也不能把它拖进启动模块图 —— 只在用户点按钮时取同一份单例。
+ */
+async function redownloadUpdate() {
+  const { updater } = await import("@/updater/instance");
+  await updater.check(true);
+  if (!updater.state.info) {
+    // 离线 / 清单损坏 / 这一版已经不在清单上：不假装开始下载，也不清掉持久意图。
+    app.toast(t("task.updateResumeFailed"), "error");
+    return;
+  }
+  await updater.download();
+  await chat.refreshUpdaterStatus();
 }
 
 /**

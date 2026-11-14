@@ -23,6 +23,7 @@ import {
   deriveOperations,
   FALLBACK_TITLE_KEYS,
   isLiveTransferStatus,
+  OPERATION_ORIGIN_MAP,
   operationDetailText,
   operationStatusText,
   sortOperations,
@@ -411,6 +412,98 @@ test("更新下载 100% 时任务行消失（没有后台工作，不再显示�
     updater: { phase: "downloading", downloaded: 100, total: 100, version: "5.9.0" },
   });
   assert.deepEqual(rows, [], "字节已下满 ⇒ 下载任务从任务中心移除");
+});
+
+// ---------------- 跨重启的更新意图（#34） ----------------
+
+/**
+ * A/B 对照只差 `resumable` 这一格：没有意图时 idle 恒不成行，有意图时列一条待办。
+ * 少了对照路，"恢复后有一行"会被"任何快照都有一行"这种实现蒙混过去。
+ */
+test("重启恢复的更新意图列成待办：不画进度、不给取消、只给重新下载", () => {
+  const base = { phase: "idle", downloaded: 0, total: null, version: "5.26.0" };
+  const plain = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    updater: { ...base, resumable: false },
+  });
+  assert.deepEqual(plain, [], "对照：没有恢复意图时 idle 不该凭空造一行");
+
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    updater: { ...base, resumable: true },
+  });
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.equal(row.kind, "update_download");
+  assert.equal(row.id, "updater");
+  assert.equal(row.state, "blocked", "它是要人动手的待办，不是 running 的假进度");
+  assert.equal(row.progress, null, "字节没跟着进程活下来，不许画 0%");
+  assert.equal(row.title, "v5.26.0");
+  assert.deepEqual(row.actions, ["redownload_update"], "动作只引用真实命令");
+  assert.equal(row.updateResumable, true);
+});
+
+test("恢复行说清「重启后需重新下载」，普通下载行仍说百分比", () => {
+  const tr = (key: string, params?: Record<string, string | number>) =>
+    params?.pct !== undefined ? `${key}:${params.pct}` : key;
+  const resumed = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    updater: { phase: "idle", downloaded: 0, total: null, version: "5.26.0", resumable: true },
+  })[0];
+  assert.equal(operationStatusText(resumed, tr), "task.state.updateRestart");
+  assert.equal(operationDetailText(resumed, tr), "task.detail.updateRestart");
+  // 对照：恢复分支不许抢走正在下载那一行的百分比措辞。
+  const downloading = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    updater: { phase: "downloading", downloaded: 40, total: 100, version: "5.26.0" },
+  })[0];
+  assert.equal(operationStatusText(downloading, tr), "task.state.downloading:40");
+});
+
+test("恢复行与正在下载互斥：后端漏清 resumable 也只出一行", () => {
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    updater: {
+      phase: "downloading",
+      downloaded: 40,
+      total: 100,
+      version: "5.26.0",
+      resumable: true,
+    },
+  });
+  assert.equal(rows.length, 1, "同一份更新不许同时出现「待重下」与「下载中」两行");
+  assert.deepEqual(rows[0].actions, ["cancel_update"]);
+});
+
+test("安装中与移动端 unsupported 不列恢复行", () => {
+  for (const phase of ["installing", "unsupported"]) {
+    const rows = deriveOperations({
+      transfers: [],
+      contentTransfers: [],
+      updater: { phase, downloaded: 0, total: null, version: "5.26.0", resumable: true },
+    });
+    assert.deepEqual(rows, [], `${phase} 不许造一条不可取消/不支持的假任务`);
+  }
+});
+
+/** #34 契约登记：两类下载早已在册，新增 kind 会让同一个 transfer_id 出两行。 */
+test("来源映射不另立 kind：Todo 图片与共享目录下载仍指向已在册的台账", () => {
+  const src = readFileSync(join(ROOT, "src/utils/taskCenter.ts"), "utf8");
+  for (const [origin, entry] of Object.entries(OPERATION_ORIGIN_MAP)) {
+    assert.ok(FALLBACK_TITLE_KEYS[entry.kind], `${origin} 映射到了没有文案的 kind`);
+    assert.ok(src.includes(entry.ledger), `${origin} 的台账名没在文件头对账里出现`);
+  }
+  const banned = /\|\s*"(todo_image|shared_dir_download)"/;
+  assert.equal(banned.test(src), false, "新增这两个 OperationKind 会让同一 transfer_id 出两行");
+  assert.ok(
+    banned.test('type K = | "file_send" | "todo_image";'),
+    "正控：检测器认得出被禁的字面量（否则上面那条恒绿）",
+  );
 });
 
 test("消息行/1:1 文件行带定位消息 id（去会话后尽量定位到原消息）", () => {

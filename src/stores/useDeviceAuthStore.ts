@@ -15,11 +15,15 @@ import { api } from "@/api";
 import type { DeviceAuthOutcome, DeviceAuthPrompt, RpBindingInfo } from "@/types";
 import {
   createPendingGuard,
+  deviceAuthDenyNeedsRetry,
   guardClear,
   guardConsume,
   guardRefresh,
   guardSetPending,
 } from "@/utils/deviceAuth";
+
+/** 后端 DeviceAuthOutcome 已带 rp_notified（见 types.ts），这里直接用官方类型。 */
+type DenyResult = DeviceAuthOutcome;
 
 export const useDeviceAuthStore = defineStore("deviceAuth", () => {
   /** 待确认事务 + 代际（深链到达时由事件注入）；pending 为 null = 无确认页。 */
@@ -27,11 +31,15 @@ export const useDeviceAuthStore = defineStore("deviceAuth", () => {
   const pending = computed(() => guard.pending);
   const busy = ref(false);
   const bindings = ref<RpBindingInfo[]>([]);
+  /** 「本机已拒绝、RP 未收到」⇒ 显示重试入口且不清确认页（P1 拒绝可观察 / 失败可重试）。 */
+  const denyNeedsRetry = ref(false);
 
   function setPending(p: DeviceAuthPrompt) {
+    denyNeedsRetry.value = false;
     guardSetPending(guard, p);
   }
   function clear() {
+    denyNeedsRetry.value = false;
     guardClear(guard);
   }
 
@@ -77,7 +85,14 @@ export const useDeviceAuthStore = defineStore("deviceAuth", () => {
     const captured = guard.generation;
     busy.value = true;
     try {
-      const out = await api.deviceAuthDeny(cur.rp_origin, cur.client_id, cur.request_id);
+      const out = (await api.deviceAuthDeny(cur.rp_origin, cur.client_id, cur.request_id)) as DenyResult;
+      // RP 未收到拒绝：本机已拒绝但回写失败，保留 pending 并显示重试入口（失败可重试，#1）。
+      // 此处绝不 guardConsume —— 消费了就没法用同一事务、同一幂等键重试通知 RP。
+      if (deviceAuthDenyNeedsRetry(out?.rp_notified)) {
+        denyNeedsRetry.value = true;
+        return out;
+      }
+      denyNeedsRetry.value = false;
       guardConsume(guard, captured);
       return out;
     } finally {
@@ -94,5 +109,8 @@ export const useDeviceAuthStore = defineStore("deviceAuth", () => {
     await loadBindings();
   }
 
-  return { pending, busy, bindings, setPending, clear, handleLink, refreshPending, approve, deny, loadBindings, revoke };
+  return {
+    pending, busy, bindings, denyNeedsRetry,
+    setPending, clear, handleLink, refreshPending, approve, deny, loadBindings, revoke,
+  };
 });

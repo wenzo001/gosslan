@@ -14,12 +14,32 @@
  * reqwest 走系统信任根 ⇒ 需把 mock-cert.pem 加入系统/钥匙串信任后才能联调（真机信任
  * 配置 NOT RUN）。本 mock 只验证契约形状与签名，不代表生产 RP 的安全实现。
  *
+ * 限制（这不是生产后端，不能作为生产接入依据）：
+ *   · 事务、绑定、已消费 jti、限流窗口全部存在进程内 Map/Set，进程重启即丢失，
+ *     没有持久化、没有数据库、没有跨进程一致性。
+ *   · 自签 localhost 证书，需手动加入系统信任；真机信任配置 NOT RUN。
+ *   · 创建事务免 RP 登录会话、免 CSRF 检查；下面只做最小来源校验与窗口限流占位，
+ *     不校验账号身份，也没有真实账号体系。生产 RP 必须换成会话绑定、CSRF token、
+ *     幂等键、持久化事务与公钥登记、并发控制与分布式限流，不能照抄这里。
+ *   · 限流是按进程内存计数的最小占位，不防分布式滥用。
+ *   · account_hint 硬编码为固定掩码串，不来自真实 RP 账号。
+ *   · 无分享端点，metadata 不含分享字段。
+ *
  * 端点：
- *   GET  /.well-known/gosslan-device-auth        元数据
- *   POST /api/device-auth/requests               创建事务（mock 免 session/CSRF）
- *   GET  /api/device-auth/requests/:id           取待确认请求
- *   POST /api/device-auth/requests/:id/decision  批准/拒绝（验签 + 登记公钥）
- *   GET  /api/device-auth/requests/:id/status    浏览器轮询状态
+ *   GET    /.well-known/gosslan-device-auth            元数据
+ *   POST   /api/device-auth/requests                   创建事务（mock 免 session/CSRF）
+ *   GET    /api/device-auth/requests/:id               取待确认请求
+ *   POST   /api/device-auth/requests/:id/decision      批准/拒绝（验签 + 登记公钥）
+ *   GET    /api/device-auth/requests/:id/status        浏览器轮询状态
+ *   DELETE /api/device-auth/bindings/:kid              RP 侧撤销设备凭证（按 key_id）
+ *   POST   /api/device-auth/revoke                     RP 侧撤销设备凭证（按 key_id 或 subject）
+ *
+ * 事务状态机：pending → expired | consumed。决策落地后置 consumed 终态，已消费事务
+ * 不可再次决策，冲突码 DEVICE_AUTH_ALREADY_CONSUMED 保持不变。对外结果由 decision
+ * 字段承载（approved / denied），/status 仍返回原有取值，端点契约不变。
+ * 断言一次性消费：verifyAssertion 校验 jti 存在，已消费 jti 在 consumedJtis 全局去重，
+ * 同一 jti 第二次出现一律 409 DEVICE_AUTH_JTI_REPLAY。jti 只在验签通过后才入集，
+ * 未验签的断言不能污染去重集合。
  */
 import https from "node:https";
 import crypto from "node:crypto";
@@ -34,6 +54,9 @@ const ORIGIN = process.env.ORIGIN || `https://localhost:${PORT}`;
 const CLIENT_ID = "com.example.gosslan-mock";
 const DISPLAY_NAME = "Gosslan 契约 Mock";
 const TTL_MS = 2 * 60 * 1000;
+// 创建事务的最小限流占位：按来源在内存里开一个窗口计数，不引入依赖也不跨进程。
+const RATE_WINDOW_MS = 60 * 1000;
+const RATE_MAX_PER_WINDOW = 30;
 
 // ---- 自签证书（仅 mock；生产 RP 用受信 CA 证书）----
 const certPath = path.join(HERE, "mock-cert.pem");
@@ -50,9 +73,12 @@ if (!fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
   }
 }
 
-// ---- 内存态：事务 + 已登记公钥 ----
-const transactions = new Map(); // request_id -> {action, claims, challenge, state, expires, subject?, kid?, publicKey?}
-const bindings = new Map();     // `${subject}` -> {kid, publicKey, subject}
+// ---- 内存态：事务 + 已登记公钥 + 已消费 jti + 创建事务窗口计数 ----
+// 进程重启即全部丢失，这是 mock 的显式限制（见文件头），不是遗漏。
+const transactions = new Map(); // request_id -> {action, claims, challenge, state, decision, expires, subject?, kid?, publicKey?, jti?}
+const bindings = new Map();     // `${subject}` -> {kid, publicKey, subject, revoked}
+const consumedJtis = new Set(); // 已消费断言的 jti；重放判据与事务状态无关
+const requestWindows = new Map(); // 来源 -> {start, count}；创建事务限流占位
 
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -71,7 +97,7 @@ function metadata() {
   };
 }
 
-/** 验 JWS EdDSA 断言：header.payload 签名 + 字段一致性 + 时效 + 一次性。 */
+/** 验 JWS EdDSA 断言：header.payload 签名 + 字段一致性 + 时效 + jti 存在。 */
 function verifyAssertion(assertion, tx, publicKeyB64url) {
   const parts = assertion.split(".");
   if (parts.length !== 3) throw new Error("assertion 不是三段 JWS");
@@ -89,6 +115,10 @@ function verifyAssertion(assertion, tx, publicKeyB64url) {
   if (payload.aud !== `${ORIGIN}/api/device-auth`) throw new Error("aud 不符");
   if (typeof payload.exp !== "number" || payload.exp < nowSec()) throw new Error("断言过期");
   if (typeof payload.iat !== "number" || payload.exp - payload.iat > 60) throw new Error("断言有效期超过 60s");
+  // jti 是断言的一次性标识。RP 必须在验签通过后才信任它，并另行做全局去重
+  // （见 decision 里的 consumedJtis）；这里只保证它存在，缺 jti 一律拒，
+  // 否则旧签名可以无限重放而 RP 无从区分两次请求。
+  if (typeof payload.jti !== "string" || payload.jti.length === 0) throw new Error("断言缺 jti");
   return payload;
 }
 
@@ -104,6 +134,49 @@ async function readBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString() || "{}");
 }
 
+/**
+ * 创建事务的最小来源校验与限流占位，不引入任何依赖。
+ * 为什么只是占位：mock 免 session/CSRF，没有登录态可绑定，只能用 Origin（若带）
+ * 做同源形状校验，再按来源做一个内存窗口计数，挡住最粗的滥用；它既不校验账号
+ * 身份也不防分布式滥用，生产 RP 必须用会话绑定、CSRF token、幂等键与分布式限流替掉。
+ * 返回 null 表示放行，否则返回 {status, code, message}。
+ */
+function checkCreateSource(req) {
+  const origin = req.headers.origin;
+  if (origin && origin !== ORIGIN) {
+    return { status: 400, code: "DEVICE_AUTH_INVALID_REQUEST", message: "Origin 与 RP 不同源" };
+  }
+  const key = origin || req.socket.remoteAddress || "unknown";
+  const now = Date.now();
+  const w = requestWindows.get(key);
+  if (!w || now - w.start > RATE_WINDOW_MS) {
+    requestWindows.set(key, { start: now, count: 1 });
+  } else {
+    w.count += 1;
+    if (w.count > RATE_MAX_PER_WINDOW) {
+      return { status: 429, code: "DEVICE_AUTH_RATE_LIMITED", message: "创建事务过于频繁" };
+    }
+  }
+  return null;
+}
+
+/**
+ * RP 侧撤销设备凭证：按 key_id 或 subject 找到绑定并置 revoked。
+ * 为什么保留记录而不是直接 delete：authenticate 需要能区分「从未绑定」与
+ * 「绑定已撤销」，分别给 UNAUTHORIZED 与 BINDING_REVOKED，撤销语义才可观察；
+ * 同时允许同一 subject 在撤销后重新 link（见 decision 里的重复绑定判断）。
+ * 这是 mock 的单边撤销，不代表生产 RP 的撤销持久化与最终一致性实现。
+ */
+function revokeBinding({ kid, subject }) {
+  for (const b of bindings.values()) {
+    if ((kid && b.kid === kid) || (subject && b.subject === subject)) {
+      b.revoked = true;
+      return { kid: b.kid, subject: b.subject };
+    }
+  }
+  return null;
+}
+
 const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) }, async (req, res) => {
   const url = new URL(req.url, ORIGIN);
   try {
@@ -111,6 +184,9 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
       return send(res, 200, metadata());
     }
     if (req.method === "POST" && url.pathname === "/api/device-auth/requests") {
+      // 创建事务先过最小来源校验/限流占位，再读请求体；被拒的请求不必消费 body。
+      const denied = checkCreateSource(req);
+      if (denied) return send(res, denied.status, { code: denied.code, message: denied.message });
       const body = await readBody(req);
       const action = body.action === "authenticate" ? "authenticate" : "link";
       const id = b64url(crypto.randomBytes(32));
@@ -118,7 +194,7 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
         id, action,
         claims: Array.isArray(body.requested_claims) ? body.requested_claims : ["device_subject", "device_public_key"],
         challenge: b64url(crypto.randomBytes(32)),
-        state: "pending", expires: Date.now() + TTL_MS,
+        state: "pending", decision: null, expires: Date.now() + TTL_MS,
       };
       transactions.set(id, tx);
       return send(res, 201, {
@@ -127,6 +203,21 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
         expires_at: new Date(tx.expires).toISOString(),
         poll_after_ms: 1500,
       });
+    }
+    // RP 侧撤销：把已登记设备凭证标为撤销，之后 authenticate 一律拒绝。
+    // 两种形状都放行（REST 路径与表单式 POST），共用同一个 revokeBinding，
+    // 避免两处各写一份撤销语义而漂移。
+    const revokeByKid = url.pathname.match(/^\/api\/device-auth\/bindings\/([^/]+)$/);
+    if (req.method === "DELETE" && revokeByKid) {
+      const hit = revokeBinding({ kid: decodeURIComponent(revokeByKid[1]) });
+      if (!hit) return send(res, 404, { code: "DEVICE_AUTH_BINDING_NOT_FOUND" });
+      return send(res, 200, { status: "revoked", key_id: hit.kid });
+    }
+    if (req.method === "POST" && url.pathname === "/api/device-auth/revoke") {
+      const body = await readBody(req);
+      const hit = revokeBinding({ kid: body.key_id, subject: body.subject });
+      if (!hit) return send(res, 404, { code: "DEVICE_AUTH_BINDING_NOT_FOUND" });
+      return send(res, 200, { status: "revoked", key_id: hit.kid });
     }
     const m = url.pathname.match(/^\/api\/device-auth\/requests\/([^/]+)(\/decision|\/status)?$/);
     if (!m) return send(res, 404, { code: "DEVICE_AUTH_REQUEST_NOT_FOUND" });
@@ -142,29 +233,53 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
       });
     }
     if (req.method === "GET" && m[2] === "/status") {
-      return send(res, 200, { status: tx.state });
+      // 对外仍返回原有取值（pending / approved / denied / expired）。consumed 是
+      // 内部终态，由 decision 字段承载结果，避免把新状态字符串暴露给轮询方。
+      return send(res, 200, { status: tx.decision ?? tx.state });
     }
     if (req.method === "POST" && m[2] === "/decision") {
       const body = await readBody(req);
-      if (tx.state !== "pending") return send(res, 409, { code: "DEVICE_AUTH_ALREADY_CONSUMED" });
+      // 拒绝不带断言，也就没有 jti 可消费；先判终态，沿用原有冲突码。
       if (body.decision === "deny") {
-        tx.state = "denied";
+        if (tx.state !== "pending") return send(res, 409, { code: "DEVICE_AUTH_ALREADY_CONSUMED" });
+        tx.decision = "denied";
+        tx.state = "consumed";
         return send(res, 202, { status: "denied" });
       }
       if (body.decision !== "approve") return send(res, 400, { code: "DEVICE_AUTH_INVALID_REQUEST" });
       try {
+        let publicKey = body.public_key;
+        let known = null;
+        if (tx.action === "authenticate") {
+          known = [...bindings.values()].find((b) => b.kid === body.key_id);
+          // 撤销后旧 key 立即不能登录：区分「绑定已撤销」与「从未绑定」两种拒绝，
+          // 让撤销语义在响应里可观察，而不是笼统的未授权。
+          if (known?.revoked) return send(res, 401, { code: "DEVICE_AUTH_BINDING_REVOKED" });
+          if (!known) return send(res, 401, { code: "DEVICE_AUTH_UNAUTHORIZED" });
+          publicKey = known.publicKey;
+        }
+        const payload = verifyAssertion(body.assertion, tx, publicKey);
+        // jti 全局去重放在事务状态判断之前：同一个旧断言重放时给出明确的重放冲突，
+        // 而不是被笼统的「事务已消费」盖过去。jti 只在验签通过后才入集，
+        // 未验签的断言不能污染去重集合。
+        if (consumedJtis.has(payload.jti)) return send(res, 409, { code: "DEVICE_AUTH_JTI_REPLAY" });
+        if (tx.state !== "pending") return send(res, 409, { code: "DEVICE_AUTH_ALREADY_CONSUMED" });
         if (tx.action === "link") {
-          const payload = verifyAssertion(body.assertion, tx, body.public_key);
-          if (bindings.has(payload.iss)) return send(res, 409, { code: "DEVICE_AUTH_ALREADY_CONSUMED" });
-          bindings.set(payload.iss, { kid: body.key_id, publicKey: body.public_key, subject: payload.iss });
+          const existing = bindings.get(payload.iss);
+          // 撤销过的绑定允许重新登记，否则撤销后这个 subject 在这个 mock 里
+          // 永远无法再绑；未撤销的重复绑定仍按原契约判冲突。
+          if (existing && !existing.revoked) return send(res, 409, { code: "DEVICE_AUTH_ALREADY_CONSUMED" });
+          bindings.set(payload.iss, { kid: body.key_id, publicKey: body.public_key, subject: payload.iss, revoked: false });
           tx.subject = payload.iss; tx.kid = body.key_id; tx.publicKey = body.public_key;
         } else {
-          const known = [...bindings.values()].find((b) => b.kid === body.key_id);
-          if (!known) return send(res, 401, { code: "DEVICE_AUTH_UNAUTHORIZED" });
-          verifyAssertion(body.assertion, tx, known.publicKey);
           tx.subject = known.subject;
         }
-        tx.state = "approved";
+        consumedJtis.add(payload.jti);
+        tx.jti = payload.jti;
+        tx.decision = "approved";
+        // consumed 是显式终态：已消费事务不可再次决策。对外结果由 decision 承载，
+        // /status 仍返回 approved / denied，端点契约不变。
+        tx.state = "consumed";
         return send(res, 202, { status: "approved" });
       } catch (e) {
         return send(res, 401, { code: "DEVICE_AUTH_UNAUTHORIZED", message: String(e.message) });
@@ -181,4 +296,5 @@ server.listen(PORT, () => {
   console.log(`把 ${certPath} 加入系统信任后，用 Gosslan 打开下方链接联调：`);
   console.log(`  curl -sk -X POST ${ORIGIN}/api/device-auth/requests -H 'Content-Type: application/json' -d '{"action":"link","requested_claims":["device_subject","device_public_key"]}'`);
   console.log("返回的 app_link 即 gosslan://authorize/… 深链。");
+  console.log(`撤销设备凭证：curl -sk -X DELETE ${ORIGIN}/api/device-auth/bindings/<key_id>`);
 });

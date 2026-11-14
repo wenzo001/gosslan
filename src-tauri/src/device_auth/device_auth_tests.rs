@@ -182,7 +182,15 @@ fn assertion_jws_roundtrip_verifies_and_fields_consistent() {
     let meta = good_metadata();
     let req = good_request();
     let now = 1_700_000_000i64;
-    let jws = sign_assertion(&signing, &kid, &subject, &meta, &req, now);
+    let jws = sign_assertion(
+        &signing,
+        &kid,
+        &subject,
+        &meta,
+        &req,
+        now,
+        "jti-roundtrip-1",
+    );
 
     let parts: Vec<&str> = jws.split('.').collect();
     assert_eq!(parts.len(), 3, "JWS 三段");
@@ -203,10 +211,11 @@ fn assertion_jws_roundtrip_verifies_and_fields_consistent() {
     assert_eq!(payload["action"], "link");
     assert_eq!(payload["iat"], now);
     assert_eq!(payload["exp"], now + ASSERTION_TTL_SECS);
-    assert!(payload["jti"]
-        .as_str()
-        .map(|s| !s.is_empty())
-        .unwrap_or(false));
+    assert_eq!(
+        payload["jti"].as_str().unwrap(),
+        "jti-roundtrip-1",
+        "jti 由调用方传入（幂等键），不再随机"
+    );
 
     // 用 RP 专属公钥验签：签名主体 = header.payload。
     let vk = VerifyingKey::from_bytes(&signing.public_key_bytes()).unwrap();
@@ -241,12 +250,20 @@ fn assertion_audience_derives_from_issuer() {
 fn sign_with_binding_rejects_corrupt_secret() {
     let meta = good_metadata();
     let req = good_request();
-    let err =
-        sign_with_binding("not-base64!!", "kid", "sub", &meta, &req, 1_700_000_000).unwrap_err();
+    let err = sign_with_binding(
+        "not-base64!!",
+        "kid",
+        "sub",
+        &meta,
+        &req,
+        1_700_000_000,
+        "jti",
+    )
+    .unwrap_err();
     assert!(err.contains("DEVICE_AUTH_BAD_REQUEST"));
     let short = base64::engine::general_purpose::STANDARD.encode([1u8; 16]);
     assert!(
-        sign_with_binding(&short, "kid", "sub", &meta, &req, 1_700_000_000).is_err(),
+        sign_with_binding(&short, "kid", "sub", &meta, &req, 1_700_000_000, "jti").is_err(),
         "非 32 字节 seed 也拒"
     );
 }
@@ -267,4 +284,121 @@ fn pending_key_is_composite_and_queue_key_groups_by_rp() {
         rp_queue_key("https://a.example", "c1"),
         rp_queue_key("https://a.example", "c2")
     );
+}
+
+// ---------------- P2 幂等键：jti 跨重试稳定 ----------------
+
+/// 断言 jti 由调用方传入并等于幂等键：同一 key 重试产生完全相同的断言（Ed25519 确定性签名），
+/// 不再每次 Uuid::new_v4() 换新（就绪度审计 §4 挑战一次性消费 / idempotency key）。
+#[test]
+fn assertion_jti_is_supplied_and_stable_for_retry() {
+    let (signing, _pub, kid, subject) = generate_rp_key();
+    let meta = good_metadata();
+    let req = good_request();
+    let now = 1_700_000_000i64;
+    let a = sign_assertion(&signing, &kid, &subject, &meta, &req, now, "idem-key-1");
+    let b = sign_assertion(&signing, &kid, &subject, &meta, &req, now, "idem-key-1");
+    let c = sign_assertion(&signing, &kid, &subject, &meta, &req, now, "idem-key-2");
+    assert_eq!(a, b, "同一幂等键重试必须产生完全相同的断言（jti 不换新）");
+    assert_ne!(a, c, "不同幂等键 ⇒ 断言不同");
+    let payload: serde_json::Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(a.split('.').nth(1).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(payload["jti"].as_str().unwrap(), "idem-key-1");
+}
+
+// ---------------- P1 拒绝可观察：DeviceAuthOutcome 新增字段 ----------------
+
+/// `decision` 保持兼容语义，新增 `rp_notified` 可观察字段且真的序列化过 FFI。
+#[test]
+fn device_auth_outcome_serializes_rp_notified_and_keeps_decision() {
+    let out = DeviceAuthOutcome {
+        decision: "denied".into(),
+        rp_origin: ORIGIN.into(),
+        client_id: "com.example.product".into(),
+        display_name: "示例".into(),
+        rp_notified: false,
+    };
+    let v: serde_json::Value = serde_json::to_value(&out).unwrap();
+    assert_eq!(
+        v["decision"].as_str().unwrap(),
+        "denied",
+        "既有字段语义不变"
+    );
+    assert_eq!(
+        v["rp_notified"], false,
+        "新增可观察字段（本机已拒绝、RP 未收到）"
+    );
+    let acked: serde_json::Value = serde_json::to_value(&DeviceAuthOutcome {
+        rp_notified: true,
+        ..out
+    })
+    .unwrap();
+    assert_eq!(acked["decision"].as_str().unwrap(), "denied");
+    assert_eq!(acked["rp_notified"], true, "RP 已收到拒绝");
+}
+
+// ---------------- P2 本地 TTL 兜底 ----------------
+
+/// 事务有效期取 RP expires_at 与本地固定上限的较早者（就绪度审计 §4 最大 TTL）。
+#[test]
+fn clamp_pending_expiry_caps_by_local_ttl() {
+    let now = 1_700_000_000_000i64;
+    // RP 给了超长有效期 ⇒ 被本地上限截断。
+    assert_eq!(
+        clamp_pending_expiry(now + LOCAL_PENDING_TTL_MS * 10, now),
+        now + LOCAL_PENDING_TTL_MS
+    );
+    // RP 的短有效期优先（取较早者）。
+    assert_eq!(clamp_pending_expiry(now + 1_000, now), now + 1_000);
+    // RP 已过期 / 畸形值也不放大，取较早者。
+    assert_eq!(clamp_pending_expiry(now - 1, now), now - 1);
+}
+
+// ---------------- /share 深链解析骨架 ----------------
+
+/// 正例：HTTPS App Link 与自定义 scheme 都能解析出规范化来源 + 不透明 ref。
+#[test]
+fn parse_share_link_accepts_https_and_custom_scheme() {
+    let a = parse_share_link("https://app.example.com/share/opaque-ref-123").unwrap();
+    assert_eq!(a.rp_origin, ORIGIN);
+    assert_eq!(a.share_ref, "opaque-ref-123");
+
+    let b = parse_share_link("gosslan://share/opaque-ref-123?origin=https%3A%2F%2Fapp.example.com")
+        .unwrap();
+    assert_eq!(b.rp_origin, ORIGIN);
+    assert_eq!(b.share_ref, "opaque-ref-123");
+
+    // 规范化口径：带端口的 origin 保留端口。
+    let c = parse_share_link("https://app.example.com:8443/share/ref").unwrap();
+    assert_eq!(c.rp_origin, "https://app.example.com:8443");
+}
+
+/// 反例：http 降级 / userinfo / 缺 origin / origin 降级 / 错误路径段 / 空 ref / 多余段 / 坏 scheme。
+#[test]
+fn parse_share_link_rejects_downgrade_userinfo_missing_origin_bad_path_empty_ref() {
+    // http 降级（两种形态）。
+    assert!(parse_share_link("http://app.example.com/share/ref").is_none());
+    assert!(parse_share_link("gosslan://share/ref?origin=http%3A%2F%2Fapp.example.com").is_none());
+    // userinfo。
+    assert!(parse_share_link("https://user@app.example.com/share/ref").is_none());
+    // 自定义 scheme 缺 origin / origin 带 query（规范化拒）。
+    assert!(parse_share_link("gosslan://share/ref").is_none());
+    assert!(parse_share_link(
+        "gosslan://share/ref?origin=https%3A%2F%2Fapp.example.com%2F%3Fx%3D1"
+    )
+    .is_none());
+    // 错误路径段（/authorize/ 而非 /share/）、空 ref、多余路径段。
+    assert!(parse_share_link("https://app.example.com/authorize/ref").is_none());
+    assert!(parse_share_link("https://app.example.com/share/").is_none());
+    assert!(parse_share_link("https://app.example.com/share/ref/extra").is_none());
+    // 自定义 scheme 主机不是 share、坏 scheme、空串。
+    assert!(
+        parse_share_link("gosslan://authorize/ref?origin=https%3A%2F%2Fapp.example.com").is_none()
+    );
+    assert!(parse_share_link("javascript:alert(1)").is_none());
+    assert!(parse_share_link("").is_none());
 }

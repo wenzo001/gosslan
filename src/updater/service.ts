@@ -41,6 +41,11 @@ export type DownloadEvent =
 
 export interface UpdaterAdapter {
   check(): Promise<UpdateInfo | null>;
+  /**
+   * 指定来源重新查清单（可选，老适配器没有这个能力时退回 `check()`）。
+   * 后端会只把那一个端点交给官方插件 ⇒ 清单与安装包同源；换源只能整包重下。
+   */
+  checkSource?(source: string): Promise<UpdateInfo | null>;
   download(onEvent: (event: DownloadEvent) => void): Promise<void>;
   cancel(): Promise<void>;
   /**
@@ -66,10 +71,22 @@ export interface UpdaterState {
    * 目前只有 `superseded`：装之前复查发现更高版本，手里那份已被丢弃。
    */
   notice: "superseded" | null;
+  /** 清单/安装包实际来源：`auto | gitee | github | unknown`。界面据此说「正在从哪下」。 */
+  source: string;
+  /** 后端自动切源留下的短码（如 `auto_switched_to_gitee`），由界面翻成人话；null = 没有。 */
+  sourceEvent: string | null;
+  /**
+   * 下载慢到该给用户一个「换源」入口了。
+   * 刻意**只提示不自动切**：正在飞的几十 MB 说丢就丢，这个决定要用户自己点。
+   */
+  slow: boolean;
 }
 
 export const UPDATER_CANCELLED = "UPDATER_CANCELLED";
 const DEFAULT_CHECK_TIMEOUT_MS = 15_000;
+/** 开始下载后这么久还没到 `SLOW_MIN_BYTES` 就判定这条链路慢。 */
+const DEFAULT_SLOW_WINDOW_MS = 20_000;
+const DEFAULT_SLOW_MIN_BYTES = 512 * 1024;
 
 function errorCode(e: unknown): UpdaterErrorCode {
   const text = String((e as { message?: unknown })?.message ?? e);
@@ -87,7 +104,13 @@ function errorCode(e: unknown): UpdaterErrorCode {
 
 export function createUpdaterService(
   adapter: UpdaterAdapter,
-  options: { currentVersion?: string; checkTimeoutMs?: number } = {},
+  options: {
+    currentVersion?: string;
+    checkTimeoutMs?: number;
+    /** 测试可把「慢速窗口」压到毫秒级；线上用 20s / 512KB 这一档。 */
+    slowWindowMs?: number;
+    slowMinBytes?: number;
+  } = {},
 ) {
   const state = reactive<UpdaterState>({
     phase: "idle",
@@ -99,14 +122,39 @@ export function createUpdaterService(
     checkedAt: null,
     dismissedVersion: null,
     notice: null,
+    source: "auto",
+    sourceEvent: null,
+    slow: false,
   });
 
   const checkTimeoutMs = options.checkTimeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS;
+  const slowWindowMs = options.slowWindowMs ?? DEFAULT_SLOW_WINDOW_MS;
+  const slowMinBytes = options.slowMinBytes ?? DEFAULT_SLOW_MIN_BYTES;
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let attempt = 0;
   let checkInFlight: Promise<void> | null = null;
   let downloadInFlight: Promise<void> | null = null;
   let cancelRequested = false;
+  /** 下载失败后自动换源重下，只允许一次，避免两个源轮流失败时无限打转。 */
+  let pendingAutoSwitch = false;
+  let slowTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearSlowTimer() {
+    if (slowTimer) {
+      clearTimeout(slowTimer);
+      slowTimer = null;
+    }
+  }
+
+  /** 只在「下载已经开始但迟迟没有字节」时亮换源入口；进度正常就什么也不做。 */
+  function armSlowCheck(id: number) {
+    clearSlowTimer();
+    slowTimer = setTimeout(() => {
+      slowTimer = null;
+      if (id !== attempt || state.phase !== "downloading") return;
+      if (state.downloaded < slowMinBytes) state.slow = true;
+    }, slowWindowMs);
+  }
 
   function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -168,7 +216,7 @@ export function createUpdaterService(
     return runCheck(manual);
   }
 
-  function download(): Promise<void> {
+  function download(autoRetried = false): Promise<void> {
     if (downloadInFlight) return downloadInFlight;
     if (!state.info || state.phase === "downloading" || state.phase === "installing") {
       return Promise.resolve();
@@ -179,7 +227,9 @@ export function createUpdaterService(
     state.total = null;
     state.error = null;
     state.notice = null;
+    state.slow = false;
     cancelRequested = false;
+    armSlowCheck(id);
     downloadInFlight = (async () => {
       try {
         await adapter.download((event) => {
@@ -193,21 +243,86 @@ export function createUpdaterService(
         });
         if (id !== attempt) return;
         state.phase = cancelRequested ? "available" : "ready";
+        // 下完了就不需要换源入口；失败时**保留**，那一格正是 error 态要用的提示。
+        state.slow = false;
       } catch (e) {
         if (id !== attempt) return;
         if (cancelRequested || /UPDATER_CANCELLED/.test(String(e))) {
           state.phase = "available";
           state.error = null;
         } else {
+          const code = errorCode(e);
+          // 先落终态：`switchSource` 看到 error 就不会再对这份已结束的下载发一次 cancel。
           state.phase = "error";
-          state.error = errorCode(e);
+          state.error = code;
+          // GitHub 连不上/太慢导致下载失败 ⇒ 直接换 Gitee 整包重下，只试一次。
+          if (
+            !autoRetried &&
+            (code === "network" || code === "timeout") &&
+            state.source === "github" &&
+            adapter.checkSource
+          ) {
+            await switchSource("gitee");
+            if (state.info) pendingAutoSwitch = true;
+          }
         }
       } finally {
         downloadInFlight = null;
         cancelRequested = false;
+        clearSlowTimer();
+        if (pendingAutoSwitch) {
+          pendingAutoSwitch = false;
+          // 旧下载的 Promise 到这里才收口，此刻才允许发起整包重下。
+          void download(true);
+        }
       }
     })();
     return downloadInFlight;
+  }
+
+  /**
+   * 手动（或下载失败自动）换源：先停掉在飞的下载，再用那一个端点重新查清单。
+   * 官方更新器整块内存下载、验签后一次返回 ⇒ 换源没有续传，只能整包重下。
+   */
+  async function switchSource(source: string): Promise<void> {
+    if (state.phase === "downloading") {
+      cancelRequested = true;
+      try {
+        await adapter.cancel();
+      } catch {
+        // 取消失败也继续：下载 Promise 自己会有终态。
+      }
+      if (downloadInFlight) await withTimeout(downloadInFlight, 3_000).catch(() => {});
+    }
+    const id = ++attempt;
+    state.phase = "checking";
+    state.error = null;
+    state.notice = null;
+    state.slow = false;
+    state.downloaded = 0;
+    state.total = null;
+    state.source = source;
+    state.sourceEvent = null;
+    try {
+      const info = adapter.checkSource
+        ? await withTimeout(adapter.checkSource(source), checkTimeoutMs)
+        : await withTimeout(adapter.check(), checkTimeoutMs);
+      if (id !== attempt) return;
+      if (info && info.version !== state.currentVersion) {
+        state.info = info;
+        state.phase = "available";
+      } else {
+        state.info = null;
+        state.phase = "up-to-date";
+      }
+    } catch (e) {
+      if (id !== attempt) return;
+      state.info = null;
+      state.phase = "error";
+      state.error = errorCode(e);
+    } finally {
+      state.checkedAt = Date.now();
+    }
   }
 
   async function cancel(): Promise<void> {
@@ -264,6 +379,7 @@ export function createUpdaterService(
     state.phase = "idle";
     state.error = null;
     state.notice = null;
+    state.slow = false;
     ++attempt;
     void adapter.close().catch(() => {});
   }
@@ -272,6 +388,8 @@ export function createUpdaterService(
     ++attempt;
     for (const t of timers) clearTimeout(t);
     timers.clear();
+    clearSlowTimer();
+    pendingAutoSwitch = false;
     checkInFlight = null;
     downloadInFlight = null;
   }
@@ -290,7 +408,16 @@ export function createUpdaterService(
     total: number | null;
     version: string | null;
     error?: string | null;
+    /** #34：后端在启动时从 settings 表恢复出来的更新意图。 */
+    resumable?: boolean;
+    /** 后端实际命中的清单/安装包来源，以及自动切源留下的短码。 */
+    source?: string;
+    sourceEvent?: string | null;
   }) {
+    // 来源与自动切源短码是**事实**，不是相位投影：即便本窗口正在下载（下面会提前返回），
+    // 这两格也必须跟着后端走，否则自动回落到 Gitee 之后界面还写着 GitHub。
+    if (snapshot.source) state.source = snapshot.source;
+    state.sourceEvent = snapshot.sourceEvent ?? null;
     if (state.phase !== "idle") return;
     const info = snapshot.version
       ? { currentVersion: state.currentVersion, version: snapshot.version, notes: null, publishedAt: null }
@@ -325,13 +452,21 @@ export function createUpdaterService(
         }
         break;
       default:
-        // idle / checking / cancelled / unsupported：不值得"恢复"，保持 idle
-        // （用户点一下检查就知道了）。
+        // #34：`idle` + `resumable` = 重启后从持久意图恢复出来的「有可用更新」。
+        // 设置页要直接显示下载卡片，而不是只留一个"检查更新"按钮；任务中心那一行
+        // 由后端 `updater_status` 快照独立驱动，不依赖本窗口这份 UI 服务。
+        // 进度归零是刻意的：字节没跟着进程活下来，这里是"重新下载"不是"续传"。
+        if (snapshot.phase === "idle" && snapshot.resumable && snapshot.version) {
+          state.phase = "available";
+          state.info = info;
+          state.downloaded = 0;
+          state.total = null;
+        }
         break;
     }
   }
 
-  return { state, check, download, cancel, install, dismiss, dispose, restore };
+  return { state, check, download, cancel, install, dismiss, dispose, restore, switchSource };
 }
 
 export type UpdaterService = ReturnType<typeof createUpdaterService>;

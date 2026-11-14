@@ -9,6 +9,7 @@ import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { useDeviceAuthStore } from "@/stores/useDeviceAuthStore";
 import { useAppStore } from "@/stores/useAppStore";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
+import { deviceAuthStatusKey } from "@/utils/deviceAuth";
 import { t } from "@/i18n";
 
 const store = useDeviceAuthStore();
@@ -88,7 +89,7 @@ function fmtTime(ms: number | null): string {
           <div class="truncate font-mono text-caption text-[var(--gosslan-text-2)]" :title="b.rp_origin">{{ b.rp_origin }}</div>
           <div class="mt-0.5 flex flex-wrap items-center gap-x-2 text-caption text-[var(--gosslan-text-2)]">
             <span :class="b.status === 'active' ? 'text-[var(--gosslan-success-ink)]' : ''">
-              {{ b.status === "active" ? t("deviceAuth.statusActive") : t("deviceAuth.statusRevoked") }}
+              {{ t(deviceAuthStatusKey(b.status)) }}
             </span>
             <span v-if="b.last_used_at">{{ t("deviceAuth.lastUsed", { time: fmtTime(b.last_used_at) }) }}</span>
           </div>

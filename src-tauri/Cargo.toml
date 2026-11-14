@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "5.25.0"
+version = "5.26.0"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -33,6 +33,10 @@ futures = { version = "0.3", optional = true }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
+# semver：两个用处 —— 桌面端「禁止降级」判据（见下方桌面目标段的说明）与**跨平台**的
+# 更新意图解析。放在通用段是因为后者要在移动端也编译；它本来就是 tauri-utils 的间接依赖
+# （`cargo tree -i semver --target aarch64-linux-android` 现查），所以不新增编译产物。
+semver = "1"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-window-state = "2"
@@ -96,8 +100,13 @@ tauri-plugin-updater = "2.14"
 # 「禁止降级」的显式版本判据（2026-10-24 产品裁决，见审计 §13）。
 # 官方插件的 `check()` 自己也会比较版本，但那条判据住在上游、我们无法在本仓钉住；
 # 这里用自己的比较做第二道，并留下 `code=UPDATER_DOWNGRADE_BLOCKED` 的可检索痕迹。
-# semver 早就在依赖树里（tauri-utils 的间接依赖），这里只是让我们自己也能用它。
-semver = "1"
+#
+# ⚠️ 这一个留在**通用** `[dependencies]`（见下方同名条目），不跟 updater 插件一起挂到桌面
+# 目标段：跨重启的更新意图解析（`commands/updater.rs::parse_update_intent`）要在**所有平台**
+# 编译 —— 它是纯函数、跨平台单测直接跑。挂到桌面段会让 aarch64-linux-android 报
+# `E0433: cannot find module or crate semver`（2026-11-14 CI 实测），而 `cargo tree -i semver
+# --target aarch64-linux-android` 显示它早已是 tauri-utils → cargo_metadata 的间接依赖
+# ⇒ 放到通用段**不新增任何编译产物**。
 
 # Windows 剪贴板文件列表（CF_HDROP）：文件消息「复制」＝复制文件本体，
 # 可在资源管理器粘贴、也可直接粘贴回聊天框发送（微信式）。

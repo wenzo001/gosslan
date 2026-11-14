@@ -1,0 +1,33 @@
+// 站点关联文件模板：Android App Links / assetlinks.json
+// 本文件是 .example 模板，不是可直接部署的产物。部署前必须删掉本注释块，
+// 把全部 REPLACE_WITH_* 占位值换成真实值，并另存为无后缀的 assetlinks.json。
+//
+// 部署要求（逐条都必须满足，Android 才会把 https 链接自动交给应用）：
+//   · 托管在 https://<真实域名>/.well-known/assetlinks.json，必须 HTTPS、
+//     不能有重定向，也不能带 .example 之类的文件名后缀。
+//   · content-type 用 application/json（或 application/json; charset=utf-8）。
+//     文件不可签名、不可压缩，Android 直接按明文 JSON 解析。
+//   · <真实域名> 必须与 AndroidManifest.xml 里 VIEW intent-filter 的
+//     android:host 一致；当前清单里是占位 link.example.invalid，不可部署。
+//   · package_name 必须是 release 签名包的 applicationId。注意 debug 构建
+//     带 .debug 后缀，线上关联不能用它；如同时要支持 debug 包须另加一条 target。
+//   · sha256_cert_fingerprints 必须是 release 签名证书的 SHA-256 指纹，
+//     可用 keytool -list -v -keystore <keystore> 或 apksigner 现取。
+//     下面是明显的占位串，不含任何真实指纹，禁止原样部署。
+//   · 部署后用 adb shell pm verify-app-links / pm get-app-links <package>
+//     与真机点击验证，覆盖已安装、未安装、重复点击、链接无效、返回原页面。
+//
+// 状态：NOT RUN。真实域名、签名证书指纹、release 签名包与真机验证都未具备，
+// 当前仓库内只有骨架与模板，不能宣称移动端链接交接可用。
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "REPLACE_WITH_RELEASE_APPLICATION_ID",
+      "sha256_cert_fingerprints": [
+        "REPLACE_WITH_RELEASE_SIGNING_CERT_SHA256_FINGERPRINT"
+      ]
+    }
+  }
+]

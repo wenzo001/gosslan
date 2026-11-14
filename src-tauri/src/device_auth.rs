@@ -25,6 +25,10 @@ pub const PROTOCOL_VERSION: &str = "1";
 pub const ASSERTION_TYP: &str = "gosslan-device-auth+jwt";
 /// 断言有效期（秒）：签名后 60s 内有效，设计文档 §4.4 建议 ≤60s。
 pub const ASSERTION_TTL_SECS: i64 = 60;
+/// 待确认事务的**本地兜底 TTL**（毫秒）：有效期取 RP `expires_at` 与「插入后这段时长」的较早者。
+/// 为什么：TTL 完全来自 RP，RP 给了超长/畸形过期时间时事务会无限期挂在内存；本地封顶保证
+/// 事务必然有终点，重启即空之外也有一道可证明的上限（就绪度审计 §4 最大 TTL）。
+pub const LOCAL_PENDING_TTL_MS: i64 = 5 * 60 * 1000;
 /// 首期支持的 RP 动作。
 pub const ALLOWED_ACTIONS: [&str; 2] = ["link", "authenticate"];
 /// 首期 claim allowlist：pairwise subject + 设备公钥；昵称仅用户主动允许（默认不选）。
@@ -107,11 +111,16 @@ pub struct RpBindingInfo {
 /// 批准/拒绝的结果（**无断言/密钥**：断言只发给 RP，不回前端）。
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceAuthOutcome {
-    /// approved | denied。
+    /// approved | denied。保持既有语义不变（前端既按此字段分支）。
     pub decision: String,
     pub rp_origin: String,
     pub client_id: String,
     pub display_name: String,
+    /// 决策是否已被 RP 以 2xx 确认收到（**新增可观察字段**，不破坏 `decision` 兼容语义）。
+    /// 为什么：旧实现丢弃拒绝回写结果，恒回 `denied`，本机已拒绝 / RP 已收到拒绝不可区分。
+    /// `approve` 恒为 true（结果只在 RP 回写 2xx 后返回）；`deny` 回写失败为 false
+    /// ⇒ 前端据此显示重试入口，事务保留可重试态（就绪度审计 §4 拒绝可观察状态与重试）。
+    pub rp_notified: bool,
 }
 
 /// 待确认事务（命令层**内存态**，不落库；拒绝/过期/退出即清除，设计文档 §5）。
@@ -126,6 +135,11 @@ pub struct PendingDeviceAuth {
     pub rp_origin: String,
     pub expires_at_ms: i64,
     pub generation: u64,
+    /// 本事务的**幂等键**（插入时生成一次，随事务持久化在内存态，重试全程复用）。
+    /// 为什么：断言 `jti` 与回写 `Idempotency-Key` 都必须跨重试稳定，否则网络重试会被 RP
+    /// 当成两次不同决策（重复登记公钥 / 重复建会话）。放在 pending 上，prepare/sign/post
+    /// 各步都读同一个值（就绪度审计 §4 idempotency key / 挑战一次性消费）。
+    pub idempotency_key: String,
 }
 
 /// 待确认事务的**复合键**（rp_origin + client_id + request_id，#8）：
@@ -274,6 +288,13 @@ pub fn parse_expiry_ms(rfc3339: &str) -> Option<i64> {
     Some((dt.unix_timestamp_nanos() / 1_000_000) as i64)
 }
 
+/// 本地 TTL 兜底：待确认事务有效期取「RP expires_at」与「插入后固定上限」的较早者。
+/// 为什么：只信 RP 的过期时间没有上界，畸形或超长值会让事务永远留在内存；取较早者既不缩短
+/// RP 自己设的短 TTL，又给所有事务一个可证明的本地终点（就绪度审计 §4 最大 TTL）。
+pub fn clamp_pending_expiry(rp_expires_at_ms: i64, now_ms: i64) -> i64 {
+    rp_expires_at_ms.min(now_ms.saturating_add(LOCAL_PENDING_TTL_MS))
+}
+
 /// 校验请求：版本、与 metadata 一致、动作/claim 合法、challenge 形状、未过期。
 pub fn validate_request(req: &RpRequest, meta: &RpMetadata, now_ms: i64) -> Result<i64, String> {
     if req.protocol_version != PROTOCOL_VERSION {
@@ -417,6 +438,68 @@ pub fn parse_authorize_link(raw: &str) -> Result<AuthorizeLink, String> {
     })
 }
 
+/// `/share` 深链解析结果（**骨架**）：规范化 HTTPS 来源 + 不透明分享引用。
+/// 与授权深链分开建模，避免分享借 `authenticate` 的通道（活契约 §6：认证与分享不得混成网页桥）。
+// 本任务只交付解析骨架，按要求**不注册命令 / 不发网络 / 不实现分享发送**，故当下只有单测引用。
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareLinkRef {
+    /// 规范化 HTTPS 来源（来自链接主机或 `origin` 参数，经 `normalize_rp_origin` 收紧）。
+    pub rp_origin: String,
+    /// 不透明分享引用，本函数不做任何语义解释。
+    pub share_ref: String,
+}
+
+/// 解析 `/share` 深链的**纯函数骨架**：只校验形状与来源，不注册命令、不发网络、不实现分享发送。
+///
+/// 只接受两种形态，其余一律 `None`（fail closed）：
+/// - HTTPS App Link：`https://<host>/share/<opaque-ref>`，来源即链接主机。
+/// - 自定义 scheme：`gosslan://share/<ref>?origin=<https-origin>`，来源来自 `origin` 参数。
+///
+/// 来源复用 `normalize_rp_origin` 的 HTTPS 同源收紧口径：拒 http 降级、userinfo、query/fragment、
+/// 缺主机。为什么放在协议核心而不是命令层：这是纯解析/校验，和 `parse_authorize_link` 同一类，
+/// 也便于在真正接入分享前先用单测把边界钉死（`device_auth_tests.rs`）。
+// 骨架暂不接线（见 ShareLinkRef 的说明），当下仅由单测引用。
+#[allow(dead_code)]
+pub fn parse_share_link(raw: &str) -> Option<ShareLinkRef> {
+    let parsed = Url::parse(raw.trim()).ok()?;
+    // 收集非空路径段：尾斜杠折出的空段忽略，但多出来的非空段一律拒（ref 是不透明单段）。
+    let segments: Vec<String> = parsed
+        .path_segments()
+        .map(|s| s.filter(|x| !x.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default();
+    let (origin, share_ref) = match parsed.scheme() {
+        "https" => {
+            let origin = normalize_rp_origin(&parsed[..url::Position::AfterPort]).ok()?;
+            if segments.len() != 2 || segments[0] != "share" {
+                return None;
+            }
+            (origin, segments[1].clone())
+        }
+        "gosslan" => {
+            if parsed.host_str() != Some("share") || segments.len() != 1 {
+                return None;
+            }
+            let origin_param = parsed
+                .query_pairs()
+                .find(|(k, _)| k == "origin")
+                .map(|(_, v)| v.to_string())?;
+            (
+                normalize_rp_origin(&origin_param).ok()?,
+                segments[0].clone(),
+            )
+        }
+        _ => return None,
+    };
+    if share_ref.trim().is_empty() {
+        return None;
+    }
+    Some(ShareLinkRef {
+        rp_origin: origin,
+        share_ref,
+    })
+}
+
 /// 公钥指纹 kid = base64url(sha256(raw 32B 公钥))。
 pub fn kid_from_public(public_bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(public_bytes))
@@ -445,8 +528,9 @@ pub fn assertion_audience(issuer: &str) -> String {
 ///
 /// header `{alg:EdDSA, typ, kid}`；payload `{iss:subject, aud, client_id, transaction_id,
 /// challenge, action, iat, exp=iat+60, jti}`。签名主体 = b64url(header).b64url(payload)。
-/// `now_secs` 由调用方传入（便于测试）；jti 随机一次性。签名经 `crypto::RpKey` 能力完成，
-/// 本函数不触碰原始私钥（#3）。
+/// `now_secs` 由调用方传入（便于测试）；`jti` 由调用方传入并等于该事务的幂等键 —— 不再每次
+/// 随机生成，重试全程复用同一值（就绪度审计 §4：jti 每次重试换新、客户端不持久化）。
+/// 签名经 `crypto::RpKey` 能力完成，本函数不触碰原始私钥（#3）。
 pub fn sign_assertion(
     signer: &crypto::RpKey,
     kid: &str,
@@ -454,6 +538,7 @@ pub fn sign_assertion(
     meta: &RpMetadata,
     req: &RpRequest,
     now_secs: i64,
+    jti: &str,
 ) -> String {
     let header = serde_json::json!({ "alg": "EdDSA", "typ": ASSERTION_TYP, "kid": kid });
     let payload = serde_json::json!({
@@ -465,7 +550,7 @@ pub fn sign_assertion(
         "action": req.action,
         "iat": now_secs,
         "exp": now_secs + ASSERTION_TTL_SECS,
-        "jti": uuid::Uuid::new_v4().to_string(),
+        "jti": jti,
     });
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
@@ -486,10 +571,11 @@ pub fn sign_with_binding(
     meta: &RpMetadata,
     req: &RpRequest,
     now_secs: i64,
+    jti: &str,
 ) -> Result<String, String> {
     let key = crypto::RpKey::from_secret_b64(secret_b64)
         .ok_or_else(|| error_codes::coded(error_codes::DEVICE_AUTH_BAD_REQUEST, "绑定密钥损坏"))?;
-    Ok(sign_assertion(&key, kid, subject, meta, req, now_secs))
+    Ok(sign_assertion(&key, kid, subject, meta, req, now_secs, jti))
 }
 
 #[cfg(test)]

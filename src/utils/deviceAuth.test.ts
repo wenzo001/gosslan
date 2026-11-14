@@ -5,7 +5,9 @@ import {
   DEVICE_AUTH_CLAIM_KEYS,
   createPendingGuard,
   deviceAuthClaimKey,
+  deviceAuthDenyNeedsRetry,
   deviceAuthSecondsLeft,
+  deviceAuthStatusKey,
   disclosedClaims,
   guardClear,
   guardConsume,
@@ -36,6 +38,25 @@ test("deviceAuthClaimKey：allowlist 三项映射到文案 key，未知原样返
   assert.equal(deviceAuthClaimKey("phone_number"), "phone_number");
   // 映射表只覆盖首期 allowlist 三项（与后端 ALLOWED_CLAIMS 同口径）。
   assert.deepEqual(Object.keys(DEVICE_AUTH_CLAIM_KEYS).sort(), ["device_public_key", "device_subject", "nickname"]);
+});
+
+// ---------------- 首绑状态机：设置页状态标签（P1） ----------------
+
+test("deviceAuthStatusKey：active/revoked 映射到既有文案，中间态归「绑定未完成」", () => {
+  assert.equal(deviceAuthStatusKey("active"), "deviceAuth.statusActive");
+  assert.equal(deviceAuthStatusKey("revoked"), "deviceAuth.statusRevoked");
+  // 新扩展的状态绝不能被当成「已撤销」或 active（fail closed）。
+  assert.equal(deviceAuthStatusKey("pending_registration"), "deviceAuth.statusIncomplete");
+  assert.equal(deviceAuthStatusKey("registration_failed"), "deviceAuth.statusIncomplete");
+  assert.equal(deviceAuthStatusKey("unknown-state"), "deviceAuth.statusIncomplete");
+});
+
+// ---------------- 拒绝可观察：是否需要重试入口（P1） ----------------
+
+test("deviceAuthDenyNeedsRetry：仅 rp_notified===false 需要重试，undefined 保持老语义", () => {
+  assert.equal(deviceAuthDenyNeedsRetry(false), true, "本机已拒绝、RP 未收到 ⇒ 显示重试");
+  assert.equal(deviceAuthDenyNeedsRetry(true), false, "RP 已收到 ⇒ 一次性结束");
+  assert.equal(deviceAuthDenyNeedsRetry(undefined), false, "老后端/字段缺失 ⇒ 不弹重试入口");
 });
 
 test("deviceAuthSecondsLeft：向上取整、过期恒 0、不为负", () => {

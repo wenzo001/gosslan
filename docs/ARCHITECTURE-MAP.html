@@ -677,6 +677,7 @@ const CMDS = [
   ["device_auth_list_bindings", "device_auth", "", "RpBindingInfo[]|err"],
   ["device_auth_revoke", "device_auth", "rp_origin str; client_id str", "bool|err"],
   ["updater_check", "updater", "", "UpdaterInfo|null|err"],
+  ["updater_check_source", "updater", "source str (auto|gitee|github)", "UpdaterInfo|null|err"],
   ["updater_download", "updater", "onEvent channel", "()|err"],
   ["updater_cancel", "updater", "", "()|err"],
   ["updater_status", "updater", "", "UpdaterStatus"],
@@ -1275,6 +1276,7 @@ const DRIFT = [
    + "<br>· <b>测试专用路径</b>：协议级假 peer 与各轮 harness 都在生产二进制之外，复跑 <code>ls src-tauri/examples/*.rs</code> 与 <code>grep -oE 'ROUND === &quot;[a-z0-9-]+&quot;' scripts/e2e-multi-instance.mjs | sort -u</code>。"
    + "<br>· <b>计划中的扩展点</b>：复跑 <code>grep -l '^- Status: Proposed' docs/adr/*.md</code>（⚠️ 别去掉那个行首锚定 —— ADR 正文里也会出现 Proposed 这个词，宽着搜会把已 Accepted 的那几份也算进来）。本页现读到的第一条实例是 §四-A 点名的「用户自定义 3 位后缀」：全仓只命中 <code>device.rs</code> 里那句长度注释、<b>没有实现入口</b>（复跑 <code>grep -rn 自定义.*后缀 --include='*.rs' --include='*.ts' --include='*.vue' .</code>，只有一行）。"
    + "<br>· <b>已废弃但代码仍存在 / dead code</b>：本页上面那两条收口记录（门面 5 条、注册了但零引用的 5 条命令）就是这一类的样例；但「某个还在的旧实现是不是死的」今天<b>没有机器判据</b>，靠人回头改 —— 这句话本身就是这一格的登记处。<br>· 本轮新登记的实例：<code>protocol::kind_allowed_by_features</code> 自 4.31.23 起在<b>生产码里零调用点</b>（1:1 改用 <code>dm_allowed_by_features</code>，群侧走 <code>kind_audience</code>），只剩单元断言与那条「全仓只许一处」的守卫在钉它 ⇒ 属于「已废弃但代码仍存在」；删不删归到「门面下无调用点包装」那件待拍板的事，本轮不自行删。"
+   + "<br>· 同类第二例（<b>未接线</b>而非已废弃）：<code>device_auth::parse_share_link</code>（<code>src-tauri/src/device_auth.rs</code>）是 <code>/share</code> 深链的解析纯函数，<b>只有单测在调</b> —— 分享闭环（会话选择 + 显式发送）本轮未做，因此刻意不接线。它<b>不是</b>死代码而是预留入口：接线时机与判据见 <code>docs/notes/external-auth-integration-contract-2026-11-14.md</code> §10「分享流程」那一行（现为 <code>NOT RUN</code>）。接线后请把这条登记删掉 —— 留下来会让下一个人以为它永远不会被调。"
    + "<br>· <b>已实现 / 部分实现</b>：不在本页逐节点标，交给 <code>docs/acceptance/stability-smoke-matrix.md</code> 那两张表 —— 那里每一格点名「判据在哪个具名入口、哪一层、进不进远端 CI」，且条数由 <code>scripts/check-doc-numbers.mjs</code> 现算对账。"
    + "<br>⚠️ 诚实边界：于是七类状态在本页以<b>口径 + 出处</b>存在，而不是以七个标签存在。要把它升级成逐节点标签，前置问题是「哪一道门管得住一整张表的状态列不漂」—— 答不出来就先别贴。"],
   ];

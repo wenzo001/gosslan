@@ -80,8 +80,14 @@ async function onDeny() {
     store.clear();
   }
 }
-/** 关闭（遮罩/Esc）= 拒绝，fail closed。 */
+/** 关闭（遮罩/Esc）= 拒绝，fail closed。
+ * 重试态（本机已拒绝、RP 未收到）下关闭 = 放弃重试：本机拒绝已成立，事务交给 TTL 终态，
+ * 不再触发回写，也不把用户困在一个只会重试的弹窗里。 */
 function onClose() {
+  if (store.denyNeedsRetry) {
+    store.clear();
+    return;
+  }
   void onDeny();
 }
 </script>
@@ -133,12 +139,25 @@ function onClose() {
       >
         {{ expired ? t("deviceAuth.expired") : t("deviceAuth.expiresIn", { s: secondsLeft }) }}
       </div>
+
+      <!-- 拒绝可观察（P1）：本机已拒绝但 RP 未收到 ⇒ 明示并保留确认页供重试，不静默当成功。 -->
+      <p
+        v-if="store.denyNeedsRetry"
+        class="text-caption leading-relaxed text-[var(--gosslan-danger-ink)]"
+      >
+        {{ t("deviceAuth.denyNotNotified") }}
+      </p>
     </div>
 
     <template #footer>
       <div class="flex items-center justify-end gap-2">
-        <SecondaryBtn :disabled="store.busy" @click="onDeny">{{ t("deviceAuth.deny") }}</SecondaryBtn>
-        <PrimaryBtn :disabled="store.busy || expired" @click="onApprove">{{ t("deviceAuth.approve") }}</PrimaryBtn>
+        <SecondaryBtn :disabled="store.busy" @click="onDeny">
+          {{ store.denyNeedsRetry ? t("deviceAuth.denyRetry") : t("deviceAuth.deny") }}
+        </SecondaryBtn>
+        <!-- 重试态隐藏「批准」：用户意图已是拒绝，不允许被误点成批准一个自己要拒绝的事务。 -->
+        <PrimaryBtn v-if="!store.denyNeedsRetry" :disabled="store.busy || expired" @click="onApprove">
+          {{ t("deviceAuth.approve") }}
+        </PrimaryBtn>
       </div>
     </template>
   </BaseModal>

@@ -532,6 +532,16 @@ export const enUS: MessageDict = {
   "settings.updates.halfDownloaded": "The previous download reached {done} and did not finish; retrying starts over.",
   "settings.updates.superseded": "A newer version v{version} was just published, so the package you downloaded is obsolete — download it again.",
   "settings.updates.mobile": "In-app updates aren't available on mobile. Download the new version from GitHub Releases.",
+  // Update source: manifest and package must share the same host. Slow links only prompt; unreachable links switch automatically.
+  "settings.updates.source": "Update source: {source}",
+  "settings.updates.sourceAuto": "Auto (Gitee first)",
+  "settings.updates.sourceGitee": "Gitee",
+  "settings.updates.sourceGithub": "GitHub",
+  "settings.updates.switchTo": "Switch to {source}",
+  "settings.updates.switchToGitee": "Switch to Gitee and download again",
+  "settings.updates.slowHint": "This download is slow or failing. Switch to Gitee to download the package again (no resume).",
+  "settings.updates.autoSwitched": "Couldn't reach GitHub, so the update switched to Gitee automatically.",
+  "settings.updates.autoSwitchFailed": "Neither GitHub nor Gitee is reachable right now. Try again later.",
   "settings.updates.error.timeout": "Update check timed out. Try again later.",
   "settings.updates.error.network": "Network unavailable or update server unreachable",
   "settings.updates.error.signature": "Update signature verification failed; installation was refused",
@@ -1247,7 +1257,13 @@ export const enUS: MessageDict = {
   "deviceAuth.revokeFail": "Revoke failed",
   "deviceAuth.statusActive": "Active",
   "deviceAuth.statusRevoked": "Revoked",
+  // Shared by the first-bind intermediate/failed states and any unknown status:
+  // showing "incomplete" is always safer than a false "Active".
+  "deviceAuth.statusIncomplete": "Not completed",
   "deviceAuth.lastUsed": "Last used {time}",
+  // The denial callback failed: denied locally, but the RP was never notified.
+  "deviceAuth.denyNotNotified": "Denied on this device, but the app wasn't notified. Please retry.",
+  "deviceAuth.denyRetry": "Retry denial",
   "todo.statusChange": "Change status",
   "todo.doneAt": "Completed {time}",
   "todo.impossibleAt": "Marked can't-do {time}",
@@ -1848,6 +1864,11 @@ export const enUS: MessageDict = {
   "task.state.syncing": "Syncing {pct}%",
   "task.state.resending": "Resending",
   "task.state.downloading": "Downloading {pct}%",
+  // #34: a resumed update intent is a to-do, not a stalled download.
+  "task.state.updateRestart": "Download again after restart",
+  "task.detail.updateRestart": "The app restarted, so the previous package can't resume. Download it again in full.",
+  "task.redownloadUpdate": "Download again",
+  "task.updateResumeFailed": "Couldn't fetch that update. Try again later.",
   "task.kind.fileSend": "Sending file",
   "task.kind.fileReceive": "Receiving file",
   "task.kind.contentFetch": "Fetching content",

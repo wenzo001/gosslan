@@ -23,10 +23,16 @@
  * 2. **没有台账就不造任务**。今天在册的每一种（文件收发两向、按 cid 取内容、消息补发、
  *    群历史、更新下载 —— 以 `OperationKind` 为准，这里不另抄份数）各有"进度 + 终态"的真值源：
  *    `file_transfers` / `content_transfers` / outbox 行 / `group_history` 进度 /
- *    `UpdaterStatusView`（phase + downloaded）。
- *    ⚠️ 更新下载那份**只在内存里**（更新器状态无持久化）⇒ 重启后这一行就没了，也不做恢复 ——
- *    这正是它与其余种类的区别，下一个人要判断"要不要给更新任务做恢复"请从这一句读起。
- *    待办图片、共享目录下载还没有这样的台账 —— 等它们有了再进来，不在这里先画一个动不了的行。
+ *    `UpdaterStatusView`（phase + downloaded + resumable）。
+ *    更新下载那份的**意图**（可用版本 + 是否发起过下载）落在 settings 表，重启后由后端
+ *    `restore_update_intent` 灌回 `UpdaterStatus.resumable`；字节不续传（官方更新器整块内存
+ *    下载、验签后一次返回），所以恢复出来的是「有可用更新，重新下载」这一格要人动手的待办，
+ *    不是一条假的「正在下」。
+ *    Todo 图片与共享目录下载**早已在册**，只是容易被误读成"没有台账"：前者按 cid 拉取时写
+ *    `content_transfers`（`src-tauri/src/network/transport/handle_file.rs`），后者由对端推流写
+ *    `file_transfers`（`src-tauri/src/network/file/receive.rs`），分别以 `content_fetch` /
+ *    `file_receive` 出现在下面这张表里。再各立一个 `OperationKind` 只会让同一个 transfer_id
+ *    出两行 ⇒ 映射收在 `OPERATION_ORIGIN_MAP`，不在这里画动不了的第二种行。
  *    （**别在这里写"kinds 有几种"**：计数由 `OperationKind` 自己说话，手抄的计数一定会漂 ——
  *    这条注释就漏过一次 `update_download`，判据 `文件头不许再手抄 kinds 计数` 钉着这一句。）
  * 3. **动作只能是对已经存在的命令的引用**（见 `OperationAction` 那张表）。
@@ -54,6 +60,7 @@ export type OperationState = "queued" | "running" | "blocked";
  *  · `cancel`            → `cancel_file_transfer`（文件）
  *  · `cancel_message`    → `cancel_message`（还没送出去的补发队列行；群按成员台账取消剩余成员）
  *  · `cancel_update`     → `updater_cancel`（更新下载）
+ *  · `redownload_update` → `updater_check` + `updater_download`（跨重启恢复：重新查清单、整包重下）
  *  · `cancel_content`    → `cancel_content_fetch`（按 cid 拉取的内容：停接收器 + 台账落 Rejected）
  *  · `retry_content`     → `request_content_by_cid`（"点击重取"，已有；只给单聊接收行，理由见 `contentRow`）
  *  · `sync_history_now`  → `sync_group_history_now`（已有）
@@ -65,6 +72,7 @@ export type OperationAction =
   | "cancel"
   | "cancel_message"
   | "cancel_update"
+  | "redownload_update"
   | "cancel_content"
   | "retry_content"
   | "resend_message"
@@ -95,6 +103,11 @@ export interface OperationRow {
   /** 群消息：已有成员确认收到，但队列里还有人（状态要说「部分成员已收到」）。 */
   someDelivered?: boolean;
   actions: OperationAction[];
+  /**
+   * 更新下载：这一行是**跨重启恢复出来的意图**，不是正在下的字节。
+   * 状态槽据此说「重启后需重新下载」，不混进 running 档的百分比措辞。
+   */
+  updateResumable?: boolean;
   /** 会话身份：1:1 是对端 id、群是 `group:<id>`。拿不到就不给"打开会话"动作。 */
   convId?: string;
   /**
@@ -130,7 +143,23 @@ export interface UpdaterStatusView {
   downloaded: number;
   total: number | null;
   version: string | null;
+  /** 跨重启恢复出来的更新意图（后端 `resumable`）；旧快照没有这一格时按 false 处理。 */
+  resumable?: boolean;
 }
+
+/**
+ * 「来源」→ 现有台账与 kind 的**唯一映射**（#34 的契约登记）。
+ *
+ * 这两类下载常被读成"没有台账"：Todo 图片按 cid 拉取时写 `content_transfers`，
+ * 共享目录文件由对端推流时写 `file_transfers`，所以它们早就以 `content_fetch` /
+ * `file_receive` 出现在这张表里。再各立一个 `OperationKind` 只会让同一个 transfer_id
+ * 出两行，而新的 kind 并不会带来更多真值或可执行的动作。
+ * 映射写在这里而不是散进组件，是为了让"它们已在册"这件事能被判据对账。
+ */
+export const OPERATION_ORIGIN_MAP: Record<string, { ledger: string; kind: OperationKind }> = {
+  todoImage: { ledger: "content_transfers", kind: "content_fetch" },
+  sharedDirectoryDownload: { ledger: "file_transfers", kind: "file_receive" },
+};
 
 /** `db::PendingMessageOp` 的前端视图（Rust 侧不 `rename_all` ⇒ 线上就是 snake_case）。 */
 export interface PendingMessageOpView {
@@ -328,6 +357,27 @@ function updaterRow(u: UpdaterStatusView): OperationRow {
   };
 }
 
+/**
+ * 跨重启恢复出来的**更新意图**（#34）。
+ *
+ * 它是待办，不是进度：官方更新器整块内存下载，进程一走字节就没了 ⇒ 下载量归零、
+ * 不画百分比（"没有可信进度时是 null"这条边界照旧）。不给取消键：取消一条"待办"
+ * 与打断一个在飞的下载是两件事，放弃入口在设置页的「稍后处理」。
+ * 动作只引用真实命令：`updater_check` 重新查清单 + `updater_download` 整包重下。
+ */
+function resumableUpdateRow(u: UpdaterStatusView): OperationRow {
+  return {
+    id: "updater",
+    kind: "update_download",
+    title: u.version ? `v${u.version}` : "",
+    state: "blocked",
+    progress: null,
+    updateResumable: true,
+    actions: ["redownload_update"],
+    createdAt: 0,
+  };
+}
+
 function historyRow(h: GroupHistoryProgress): OperationRow {
   const blocked = h.phase === "failed";
   return {
@@ -374,6 +424,14 @@ export function deriveOperations(src: OperationSources): OperationRow[] {
     // 字节已下满 = 下载这件事没有后台工作了：任务中心不再保留“100% 收尾中”的行。
     // 安装入口在设置页；Rust 在 download future 完成后会把 phase 翻成 ready。
     if (!(total > 0 && src.updater.downloaded >= total)) rows.push(updaterRow(src.updater));
+  } else if (
+    src.updater?.resumable &&
+    src.updater.phase !== "installing" &&
+    src.updater.phase !== "unsupported"
+  ) {
+    // #34：意图在库里、字节不在内存里。与"正在下"互斥，所以两行不会同时出现。
+    // failed/cancelled 相位也保留这一行：自动检查失败（离线）不该把用户那条待办抹掉。
+    rows.push(resumableUpdateRow(src.updater));
   }
   return rows;
 }
@@ -440,6 +498,9 @@ export function operationStatusText(
   row: OperationRow,
   tr: (key: string, params?: Record<string, string | number>) => string,
 ): string {
+  // 跨重启恢复出来的更新意图：它不是"卡住的传输"，说「等待中」会让用户以为
+  // 还有后台在跑。直接说清这一格要人动手（重新下载）。
+  if (row.updateResumable) return tr("task.state.updateRestart");
   // 群消息：已有成员确认收下、其余人还在队列里。两句话都会让用户误判
   // （2026-10-25：「为什么还在排队却说已送达不能取消」）。
   if (row.someDelivered) return tr("task.state.partial");
@@ -485,6 +546,8 @@ export function operationDetailText(
   tr: (key: string, params?: Record<string, string | number>) => string,
 ): string {
   const parts: string[] = [];
+  // 恢复行没有 blockedReason（它不是"卡在哪一句"），原因写在这里换行说清。
+  if (row.updateResumable) parts.push(tr("task.detail.updateRestart"));
   const key = blockedReasonKey(row.blockedReason);
   if (key) {
     parts.push(tr(key));

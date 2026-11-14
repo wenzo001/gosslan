@@ -10,6 +10,19 @@
 // 下载的字节由官方 `Update::download` 校验签名后整块返回（官方实现就是内存缓冲），
 // 我们只把发布产物限制在较小的默认安装包（Windows 基础 NSIS / macOS .app.tar.gz）；
 // WebView2 内置包（近 200MB）不进入更新清单，避免这一次内存峰值。
+//
+// ## 为什么下面那些纯函数带 `#[cfg_attr(not(desktop), allow(dead_code))]`
+// 移动端没有应用内更新器：这个文件到 `aarch64-linux-android` 上只剩一组命令桩
+// （`updater_check` / `updater_download` / … 一律返回「仅支持桌面端」）。而顶层的**纯函数**
+// （来源判定 / 意图编解码）与那些常量**必须留在顶层**：① 它们是跨平台单测的被测对象；
+// ② `designGuards.test.ts` 按**源码文本**核对端点常量与 `tauri.conf.json` 一致
+// （cfg 掉等于把判据变成空转）；③ 真实调用方是 `mod desktop`。于是移动端它们没人调，
+// `dead_code` 是**预期形状**而不是缺陷。真正的死代码逃不掉：桌面
+// `cargo clippy --all-targets -D warnings` 会照常抓（它们只在桌面被用）。
+//
+// ⚠️ 这里是 `include!` 进来的（见 `commands.rs:157`），**不是**独立模块文件
+// ⇒ 文件级内层属性 `#![…]` 在这里非法（rustc: an inner attribute is not permitted
+// in this context），只能逐项标。别改成 `#![allow(dead_code)]`。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
@@ -41,6 +54,120 @@ pub struct UpdaterStatus {
     pub version: Option<String>,
     /// `failed` 时的人话原因。
     pub error: Option<String>,
+    /// 这一份状态来自**跨重启恢复的持久意图**：版本在册、但字节已经随上一个进程消失。
+    ///
+    /// 任务中心据此列「有可用更新，重新下载」；`updater_download` 一开始就必须清掉它，
+    /// 否则同一次下载会同时出现"待重新下载"和"正在下载"两行。
+    /// 它与 `phase` 分开是刻意的：自动检查会把 phase 翻回 `idle`，恢复标记不该被那一下抹掉。
+    pub resumable: bool,
+    /// 本次清单/安装包实际来自哪个平台：`gitee` / `github` / `unknown`（auto 且还没查到时）。
+    /// 界面据此显示「正在从哪个源下载」，也据此判断切换按钮该指向哪里。
+    pub source: String,
+    /// 一次**自动**切源的稳定短码（如 `auto_switched_to_gitee`），前端翻成人话提示。
+    /// 手动切源不写这一格 —— 那是用户自己做的，不用再解释一遍。
+    pub source_event: Option<String>,
+}
+
+// ---------------- 跨重启的更新意图（#34） ----------------
+//
+// 官方 `Update::download` 把整包放在内存里、验签后一次返回，**没有字节续传 API**。
+// 所以"重启恢复"在本仓的语义只能是：持久化「检查到过哪个版本 + 用户发起过下载」这个
+// **意图**，进程回来后重新查清单、重新整包下载。这里存的是意图，不是进度，也不存任何字节。
+/// settings 表里的键。非密：只有版本号与阶段，不含设备标识、密钥或下载内容。
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub const UPDATE_INTENT_KEY: &str = "update_intent";
+/// `available` = 查到更新；`downloading` = 用户点过下载。阶段只用于诊断，不驱动下载。
+#[cfg_attr(not(desktop), allow(dead_code))]
+const INTENT_STAGES: [&str; 2] = ["available", "downloading"];
+
+#[cfg_attr(not(desktop), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateIntent {
+    pub version: String,
+    pub stage: String,
+}
+
+/// 编码只有这一个家，落库的就是这一串 JSON。
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub fn encode_update_intent(intent: &UpdateIntent) -> String {
+    serde_json::to_string(intent).unwrap_or_default()
+}
+
+/// 解码必须**失败关闭**：坏掉的意图不许变成"有一个可用更新"，那会凭空造一条任务行。
+/// 版本号按 semver 校验（与 `is_not_an_upgrade` 同一把尺），阶段只认两个字面量。
+/// 这一层刻意不依赖任何平台 API，跨平台单测都能直接跑（这也是 `semver` 必须放在
+/// 通用 `[dependencies]` 的原因，见 `Cargo.toml`）。
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub fn parse_update_intent(raw: &str) -> Option<UpdateIntent> {
+    let intent: UpdateIntent = serde_json::from_str(raw).ok()?;
+    if semver::Version::parse(&intent.version).is_err()
+        || !INTENT_STAGES.contains(&intent.stage.as_str())
+    {
+        return None;
+    }
+    Some(intent)
+}
+
+// ---------------- 更新来源（#34 之后：清单与安装包必须同源） ----------------
+//
+// 发布链本来就各写各的 url：GitHub 清单里的包指向 GitHub Release，Gitee 清单
+// （`scripts/sync-gitee.mjs` 的 `buildGiteeManifest`）里的包指向 Gitee 附件。
+// 但官方 `check()` 会按配置顺序遍历端点，**客户端不知道自己命中了哪一个**，
+// 于是「从 Gitee 查到更新、却去 GitHub 下包」这种混源只能靠运气避免。
+// 这里把来源变成可查询、可指定、可校验的事实：
+//   · 指定源时只把那一个端点交给官方插件 ⇒ 拿到的清单与包天然同源；
+//   · `download_url` 的 host 再验一次，不一致就**失败关闭**（不静默换域下包）；
+//   · 指定源连不上时自动回落到 Gitee，并留下可见的短码。
+// ⚠️ 这两个 URL 必须与 `src-tauri/tauri.conf.json` 的 `plugins.updater.endpoints`
+// 逐字一致，由 `src/utils/designGuards.test.ts` 的整表对账判据钉住 —— 不许只改一边。
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub const UPDATE_ENDPOINT_GITEE: &str =
+    "https://gitee.com/fwdq/gosslan-releases/raw/master/updates/latest.json";
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub const UPDATE_ENDPOINT_GITHUB: &str =
+    "https://github.com/wenzo001/gosslan/releases/latest/download/latest.json";
+
+/// 允许的来源偏好。`auto` = 交给配置文件里的顺序（Gitee 优先、GitHub 兜底）。
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub fn is_valid_update_source(source: &str) -> bool {
+    matches!(source, "auto" | "gitee" | "github")
+}
+
+/// 来源 → 那**一个**端点。返回 None 表示不覆盖配置（auto / 非法值）。
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub fn endpoint_for_source(source: &str) -> Option<&'static str> {
+    match source {
+        "gitee" => Some(UPDATE_ENDPOINT_GITEE),
+        "github" => Some(UPDATE_ENDPOINT_GITHUB),
+        _ => None,
+    }
+}
+
+/// 只按 **host** 判来源：path / query 里出现 `github.com` 不算，避免被构造的 URL 骗过。
+/// 也只认 https —— 明文 URL 不该被当成任何一个可信源。
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub fn source_of_url(raw: &str) -> Option<&'static str> {
+    let rest = raw.strip_prefix("https://")?;
+    let host = rest.split('/').next()?.split(':').next()?.to_ascii_lowercase();
+    match host.as_str() {
+        "gitee.com" | "www.gitee.com" => Some("gitee"),
+        "github.com" | "www.github.com" => Some("github"),
+        _ => None,
+    }
+}
+
+/// 清单来源与安装包 URL 是否同源。发布事故把两份清单混着发时，这一条会挡下下载。
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub fn artifact_matches_source(manifest_source: &str, download_url: &str) -> bool {
+    matches!(source_of_url(download_url), Some(s) if s == manifest_source)
+}
+
+/// 只有「网络 / 清单读取」类失败才允许自动换源；降级拦截与同源校验是安全裁决，
+/// 换个源重试等于绕过它。纯函数放在顶层，跨平台单测都能直接钉。
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub fn is_safe_to_fallback(e: &str) -> bool {
+    !e.contains("UPDATER_DOWNGRADE_BLOCKED") && !e.contains("UPDATE_SOURCE_MISMATCH")
 }
 
 // 移动端只用它做命令参数类型，不会构造任何变体；桌面端由下载闭包构造。
@@ -64,13 +191,19 @@ pub enum DownloadEvent {
 
 #[cfg(desktop)]
 mod desktop {
-    use super::{DownloadEvent, UpdateInfo, UpdaterStatus};
+    use super::{
+        artifact_matches_source, encode_update_intent, endpoint_for_source,
+        is_safe_to_fallback, is_valid_update_source, parse_update_intent, source_of_url,
+        DownloadEvent, UpdateInfo,
+        UpdateIntent, UpdaterStatus, UPDATE_INTENT_KEY,
+    };
     use semver::Version;
+    use url::Url;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tauri::ipc::Channel;
-    use tauri::{AppHandle, Emitter, State};
+    use tauri::{AppHandle, Emitter, Manager, State};
     use tauri_plugin_updater::{Update, UpdaterExt};
     use tokio::sync::Notify;
 
@@ -97,6 +230,9 @@ mod desktop {
         cancel: Mutex<Option<Arc<Notify>>>,
         checking: AtomicBool,
         downloading: AtomicBool,
+        /// 来源偏好：`auto | gitee | github`。空串按 `auto`（`Default` 给不出非默认值）。
+        /// 用户手动切过之后，连自动检查也沿用这个选择，不会下一秒又飘回去。
+        source: Mutex<String>,
         /// 可查询状态（见 [`UpdaterStatus`] 的理由）。每次跃迁都写这里并 emit。
         ///
         /// `Arc<Mutex<…>>` 而不是裸 `Mutex<…>`：下载进度的回调是 `'static` 闭包，
@@ -151,6 +287,117 @@ mod desktop {
         emit_now(app, status);
     }
 
+    /// 意图读写的唯一家。拿不到 AppState（启动早期）时留痕并当"没有这一格"。
+    ///
+    /// 读必须用 `get_setting_checked`：`get_setting` 把 `SQLITE_BUSY` 折成 `None`
+    /// （`db/settings.rs` 里那条注释），一次读抖动就会被当成"用户从没要求过更新"。
+    fn with_intent_db<T>(
+        app: &AppHandle,
+        f: impl FnOnce(&rusqlite::Connection) -> T,
+    ) -> Option<T> {
+        let state = app.try_state::<Arc<crate::state::AppState>>()?;
+        let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
+        Some(f(&dbc))
+    }
+
+    fn log_intent_warn(app: &AppHandle, code: &str, detail: &str) {
+        match app.try_state::<Arc<crate::state::AppState>>() {
+            Some(s) => s
+                .inner()
+                .logger
+                .warn("updater", format!("code={code} {detail}")),
+            None => eprintln!("[gosslan-updater] code={code} {detail}"),
+        }
+    }
+
+    /// 写意图失败**不阻断更新**：它只是重启后的一个提示，不该让用户连下载都点不动。
+    fn save_update_intent(app: &AppHandle, version: &str, stage: &str) {
+        let raw = encode_update_intent(&UpdateIntent {
+            version: version.to_string(),
+            stage: stage.to_string(),
+        });
+        match with_intent_db(app, |dbc| crate::db::set_setting(dbc, UPDATE_INTENT_KEY, &raw)) {
+            Some(Ok(())) => {}
+            Some(Err(e)) => log_intent_warn(
+                app,
+                "UPDATE_INTENT_WRITE_FAILED",
+                &format!("key={UPDATE_INTENT_KEY}：{e}"),
+            ),
+            None => log_intent_warn(app, "UPDATE_INTENT_NO_STATE", "写意图时拿不到 AppState"),
+        }
+    }
+
+    fn clear_update_intent(app: &AppHandle) {
+        match with_intent_db(app, |dbc| crate::db::delete_setting(dbc, UPDATE_INTENT_KEY)) {
+            Some(Ok(_)) | None => {}
+            Some(Err(e)) => log_intent_warn(
+                app,
+                "UPDATE_INTENT_CLEAR_FAILED",
+                &format!("key={UPDATE_INTENT_KEY}：{e}"),
+            ),
+        }
+    }
+
+    /// 启动时把持久意图灌进全局更新状态（调用点在 `lib.rs::finish_boot`）。
+    ///
+    /// 三条刻意边界：
+    ///  · **不恢复字节，也不恢复 `installing` 相位** —— 官方整包在内存里，进程一走就没了；
+    ///    灌成 installing 会造一条「不可取消的假任务」（`updater_cancel` 会一直拒）。
+    ///  · **不在这里发网络请求**：前端首帧补拉 `updater_status` 就能看到这一行，
+    ///    自动检查负责「重新查清单」；离线时这一行也仍然在，不会被一次检查失败抹掉。
+    ///  · 只走 `UpdaterSession::set_status`（广播只有一个家，见 `status_tests`）。
+    pub fn restore_update_intent(app: &AppHandle, state: &crate::state::AppState) {
+        let raw = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            match crate::db::get_setting_checked(&dbc, UPDATE_INTENT_KEY) {
+                Ok(v) => v,
+                Err(e) => {
+                    log_intent_warn(
+                        app,
+                        "UPDATE_INTENT_READ_FAILED",
+                        &format!("key={UPDATE_INTENT_KEY}：{e}"),
+                    );
+                    return;
+                }
+            }
+        };
+        let Some(raw) = raw else { return };
+        let Some(intent) = parse_update_intent(&raw) else {
+            log_intent_warn(app, "UPDATE_INTENT_MALFORMED", "持久意图格式不合法，已丢弃");
+            clear_update_intent(app);
+            return;
+        };
+        // 装完没来得及清、或用户手工降过级 ⇒ 这个意图已经过期，不该再造一行。
+        let current = app.package_info().version.to_string();
+        if is_not_an_upgrade(&current, &intent.version) {
+            clear_update_intent(app);
+            return;
+        }
+        let Some(session) = app.try_state::<UpdaterSession>() else {
+            log_intent_warn(app, "UPDATE_INTENT_NO_SESSION", "恢复意图时拿不到 UpdaterSession");
+            return;
+        };
+        let v = intent.version.clone();
+        session.set_status(app, move |st| {
+            st.phase = "idle".to_string();
+            st.version = Some(v);
+            st.downloaded = 0;
+            st.total = None;
+            st.error = None;
+            st.resumable = true;
+            // 来源要等这一轮重新查清单才知道，先标 auto；不继承上次进程里的偏好。
+            st.source = "auto".to_string();
+            st.source_event = None;
+        });
+        log_updater_info(
+            app,
+            &format!(
+                "code=UPDATE_INTENT_RESTORED version={} stage={}（重查重下，不续传）",
+                intent.version, intent.stage
+            ),
+        );
+    }
+
     /// 当前更新状态（B5）。两个窗口都能读；刚打开的窗口用它在首帧就把进度/完成态画对，
     /// 不必等下一次事件。
     #[tauri::command]
@@ -173,11 +420,67 @@ mod desktop {
         }
     }
 
-    #[tauri::command]
-    pub async fn updater_check(
+    /// 按指定来源查**一次**清单。`auto` 不覆盖配置（Gitee 优先、GitHub 兜底），
+    /// 指定源则只把那一个端点交给官方插件 ⇒ 清单与安装包天然同源。
+    async fn check_once(
+        app: &AppHandle,
+        state: &UpdaterSession,
+        requested: &str,
+    ) -> Result<Option<(UpdateInfo, String)>, String> {
+        let mut builder = app.updater_builder().timeout(CHECK_TIMEOUT);
+        if let Some(endpoint) = endpoint_for_source(requested) {
+            let url = Url::parse(endpoint)
+                .map_err(|e| format!("code=UPDATE_ENDPOINT_INVALID：{e}"))?;
+            builder = builder
+                .endpoints(vec![url])
+                .map_err(|e| format!("code=UPDATE_ENDPOINT_INVALID：{e}"))?;
+        }
+        let updater = builder.build().map_err(|e| e.to_string())?;
+        let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        // 禁止降级：清单版本必须严格高于当前版本（见 `is_not_an_upgrade`）。
+        if is_not_an_upgrade(&update.current_version, &update.version) {
+            let msg = format!(
+                "code=UPDATER_DOWNGRADE_BLOCKED：清单版本 {} 不高于当前 {}，已拒绝（禁止降级）",
+                update.version, update.current_version
+            );
+            log_updater_error(app, &msg);
+            return Err(msg);
+        }
+        let actual = source_of_url(update.download_url.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        // 指定源却拿到别家的包 = 发布事故 / 清单污染。失败关闭，不许悄悄换域下包。
+        if requested != "auto" && !artifact_matches_source(requested, update.download_url.as_str()) {
+            let msg = format!(
+                "code=UPDATE_SOURCE_MISMATCH：从 {requested} 查到的清单却指向 {} 的安装包，已拒绝下载",
+                update.download_url.host_str().unwrap_or("未知主机")
+            );
+            log_updater_error(app, &msg);
+            return Err(msg);
+        }
+        let info = UpdateInfo {
+            current_version: update.current_version.clone(),
+            version: update.version.clone(),
+            notes: update.body.clone(),
+            published_at: update.date.map(|d| d.unix_timestamp()),
+        };
+        *state.update.lock().unwrap_or_else(|e| e.into_inner()) = Some(update);
+        Ok(Some((info, actual)))
+    }
+
+    /// 检查更新的**唯一实现**：默认检查与指定源检查都走这里，状态跃迁不分家。
+    async fn check_with_source(
         app: AppHandle,
-        state: State<'_, UpdaterSession>,
+        state: &UpdaterSession,
+        requested: String,
     ) -> Result<Option<UpdateInfo>, String> {
+        let requested = if is_valid_update_source(&requested) {
+            requested
+        } else {
+            "auto".to_string()
+        };
         if state.downloading.load(Ordering::SeqCst) {
             return Err(crate::error_codes::coded(
                 crate::error_codes::UPDATER_CHECK_WHILE_DOWNLOADING,
@@ -201,60 +504,100 @@ mod desktop {
             st.total = None;
             st.version = None;
             st.error = None;
+            st.source_event = None;
         });
-        // 显式标注错误类型：下面 `match &result` 里要把 `e` clone 成 String 交给状态，
-        // 不标的话推断会在这里断（`async` 块的 Err 类型只有一个 `?` 来源时才能自动定）。
-        let result: Result<Option<UpdateInfo>, String> = async {
-            let updater = app
-                .updater_builder()
-                .timeout(CHECK_TIMEOUT)
-                .build()
-                .map_err(|e| e.to_string())?;
-            match updater.check().await.map_err(|e| e.to_string())? {
-                Some(update) => {
-                    // 禁止降级：清单版本必须严格高于当前版本（见 `is_not_an_upgrade`）。
-                    if is_not_an_upgrade(&update.current_version, &update.version) {
-                        let msg = format!(
-                            "code=UPDATER_DOWNGRADE_BLOCKED：清单版本 {} 不高于当前 {}，已拒绝（禁止降级）",
-                            update.version, update.current_version
-                        );
-                        log_updater_error(&app, &msg);
-                        return Err(msg);
-                    }
-                    let info = UpdateInfo {
-                        current_version: update.current_version.clone(),
-                        version: update.version.clone(),
-                        notes: update.body.clone(),
-                        published_at: update.date.map(|d| d.unix_timestamp()),
-                    };
-                    *state.update.lock().unwrap_or_else(|e| e.into_inner()) = Some(update);
-                    Ok(Some(info))
+        // GitHub 连不上 / 清单读不到 ⇒ 直接改用 Gitee，不把一次网络抖动变成用户的故障单。
+        // 安全裁决（降级、同源）不参与回落，见 `is_safe_to_fallback`。
+        let (checked, effective, switched) = match check_once(&app, state, &requested).await {
+            Ok(v) => (Ok(v), requested.clone(), None),
+            Err(e) if requested == "github" && is_safe_to_fallback(&e) => {
+                log_updater_info(&app, "code=UPDATE_SOURCE_FALLBACK from=github to=gitee");
+                match check_once(&app, state, "gitee").await {
+                    Ok(v) => (
+                        Ok(v),
+                        "gitee".to_string(),
+                        Some("auto_switched_to_gitee".to_string()),
+                    ),
+                    Err(e2) => (
+                        Err(e2),
+                        "gitee".to_string(),
+                        Some("auto_switched_to_gitee_failed".to_string()),
+                    ),
                 }
-                None => Ok(None),
             }
-        }
-        .await;
+            Err(e) => (Err(e), requested.clone(), None),
+        };
         state.checking.store(false, Ordering::SeqCst);
-        match &result {
-            Ok(Some(info)) => {
+        let mut result: Result<Option<UpdateInfo>, String> = Ok(None);
+        match &checked {
+            Ok(Some((info, actual))) => {
                 let v = info.version.clone();
+                let src = actual.clone();
+                let ev = switched.clone();
+                // #34：查到更新就记下意图。重启后这一格还在，任务中心据此列「重新下载」。
+                save_update_intent(&app, &v, "available");
                 state.set_status(&app, move |st| {
                     st.phase = "idle".to_string();
                     st.version = Some(v);
+                    st.source = src;
+                    st.source_event = ev;
+                    // `resumable` 刻意不清：自动检查也会走到这里，用户还没重新发起下载，
+                    // 那一行不许被这次检查抹掉（离线时更是只剩这一份意图）。
+                });
+                result = Ok(Some(info.clone()));
+            }
+            Ok(None) => {
+                // 清单明确说"已是最新" ⇒ 旧意图已经过期（多半是装完没清掉）。
+                clear_update_intent(&app);
+                let src = effective.clone();
+                state.set_status(&app, move |st| {
+                    st.phase = "idle".to_string();
+                    st.resumable = false;
+                    st.source = src;
                 });
             }
-            Ok(None) => state.set_status(&app, |st| {
-                st.phase = "idle".to_string();
-            }),
+            // 检查失败（离线/清单坏）**不动意图**：一次读抖动不能把用户那条待办弄丢。
             Err(e) => {
                 let msg = e.clone();
+                let src = effective.clone();
+                let ev = switched.clone();
                 state.set_status(&app, move |st| {
                     st.phase = "failed".to_string();
                     st.error = Some(msg);
+                    st.source = src;
+                    st.source_event = ev;
                 });
+                result = Err(e.clone());
             }
         }
         result
+    }
+
+    #[tauri::command]
+    pub async fn updater_check(
+        app: AppHandle,
+        state: State<'_, UpdaterSession>,
+    ) -> Result<Option<UpdateInfo>, String> {
+        let preferred = state.source.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        check_with_source(app, state.inner(), preferred).await
+    }
+
+    /// 用户（或失败自动切换）指定来源后重新查清单。
+    ///
+    /// 切源会 `clear()` 掉手上那份 `Update` 与已下载字节 —— 官方更新器整块内存下载、
+    /// 验签后一次返回，换源只能整包重下；这与 #34「重下不续传」是同一条口径。
+    #[tauri::command]
+    pub async fn updater_check_source(
+        app: AppHandle,
+        state: State<'_, UpdaterSession>,
+        source: String,
+    ) -> Result<Option<UpdateInfo>, String> {
+        let source = source.trim().to_ascii_lowercase();
+        if !is_valid_update_source(&source) {
+            return Err("code=UPDATE_SOURCE_INVALID：只支持 auto / gitee / github".to_string());
+        }
+        *state.source.lock().unwrap_or_else(|e| e.into_inner()) = source.clone();
+        check_with_source(app, state.inner(), source).await
     }
 
     #[tauri::command]
@@ -288,6 +631,9 @@ mod desktop {
             let mut update = update;
             update.timeout = Some(DOWNLOAD_TIMEOUT);
             *state.bytes.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            // #34：用户真的发起了下载 —— 记下版本与阶段，同时把"待重新下载"行撤掉。
+            // 进度归零是刻意的：官方更新器整块内存下载，重启后只能整包重来。
+            save_update_intent(&app, &update.version, "downloading");
 
             let cancel = Arc::new(Notify::new());
             *state.cancel.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
@@ -296,6 +642,7 @@ mod desktop {
                 st.downloaded = 0;
                 st.total = None;
                 st.error = None;
+                st.resumable = false;
             });
             let progress = on_event.clone();
             let finished = on_event.clone();
@@ -393,9 +740,12 @@ mod desktop {
             false
         };
         *state.bytes.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        // #34：取消是用户明确放弃这一版 ⇒ 重启后不该再拿同一条待办来烦他。
+        clear_update_intent(&app);
         state.set_status(&app, |st| {
             st.phase = "cancelled".to_string();
             st.downloaded = 0;
+            st.resumable = false;
         });
         // `signalled=false` 表示当时没有在飞的下载（点了取消但没东西可停）—— 这一格
         // 与"真的打断了"在排障时是两件事。
@@ -470,6 +820,8 @@ mod desktop {
         // 过期了：丢掉旧字节，并把清单换成新的那份，用户点"下载"就能直接开始。
         state.clear();
         *state.update.lock().unwrap_or_else(|e| e.into_inner()) = Some(update);
+        // #34：手里那份被更高版本顶掉了，持久意图必须跟着换，否则重启会提示旧版本。
+        save_update_intent(&app, &info.version, "available");
         let v = info.version.clone();
         state.set_status(&app, move |st| {
             st.phase = "idle".to_string();
@@ -598,8 +950,12 @@ mod desktop {
         crate::logging::crash_note(
             ">>> code=UPDATER_INSTALL_DONE（本进程接下来由 restart 结束）",
         );
+        // 安装成功：这一版的意图已经兑现，清掉（Windows 走不到这里，但那一侧进程会
+        // 被安装器结束，下轮启动由 `restore_update_intent` 的版本比较把旧意图判为过期）。
+        clear_update_intent(&app);
         state.set_status(&app, |st| {
             st.phase = "idle".to_string();
+            st.resumable = false;
         });
         #[cfg(windows)]
         {
@@ -616,7 +972,6 @@ mod desktop {
 
     /// 更新器**结局**留痕（不是错误：取消被打断不该按 error 记）。
     fn log_updater_info(app: &AppHandle, msg: &str) {
-        use tauri::Manager;
         match app.try_state::<std::sync::Arc<crate::state::AppState>>() {
             Some(s) => s.inner().logger.info("updater", msg.to_string()),
             None => eprintln!("[gosslan-updater] {msg}"),
@@ -628,7 +983,6 @@ mod desktop {
     /// 一条日志写不出去不该连累返回值：`logger` 拿不到时退回 stderr，
     /// 反正这条错误的**可定位性**由返回给前端的同一个字符串兜底。
     fn log_updater_error(app: &AppHandle, msg: &str) {
-        use tauri::Manager;
         match app.try_state::<std::sync::Arc<crate::state::AppState>>() {
             Some(s) => s.inner().logger.error("updater", msg.to_string()),
             None => eprintln!("[gosslan-updater] {msg}"),
@@ -646,12 +1000,17 @@ mod desktop {
             cancel.notify_one();
         }
         state.clear();
+        // #34：「稍后处理」/关闭更新入口同样清掉持久意图，否则重启后又冒出来。
+        clear_update_intent(&app);
         state.set_status(&app, |st| {
             st.phase = "idle".to_string();
             st.downloaded = 0;
             st.total = None;
             st.version = None;
             st.error = None;
+            st.resumable = false;
+            // 偏好留着（用户选过就别重置），一次性提示清掉。
+            st.source_event = None;
         });
         Ok(())
     }
@@ -680,6 +1039,13 @@ pub fn updater_status() -> UpdaterStatus {
 #[cfg(not(desktop))]
 #[tauri::command]
 pub async fn updater_check() -> Result<Option<UpdateInfo>, String> {
+    Err("应用内更新仅支持桌面端".to_string())
+}
+
+/// 移动端没有应用内更新器，命令面仍与桌面同形（`generate_handler!` 不按平台拆）。
+#[cfg(not(desktop))]
+#[tauri::command]
+pub async fn updater_check_source(_source: String) -> Result<Option<UpdateInfo>, String> {
     Err("应用内更新仅支持桌面端".to_string())
 }
 
@@ -895,7 +1261,9 @@ mod status_tests {
     #[test]
     fn check_refuses_a_manifest_that_is_not_newer() {
         let src = include_str!("updater.rs");
-        let check = body_of(src, "pub async fn updater_check(");
+        // 锚点跟着实现搬家：检查逻辑现在住在 `check_once`（命令只是包装），
+        // 继续盯 `updater_check` 的函数体会读到一层空壳 ⇒ 判据空转。
+        let check = body_of(src, "async fn check_once(");
         assert!(
             check.contains("is_not_an_upgrade("),
             "检查路径必须调用降级判据"
@@ -908,5 +1276,229 @@ mod status_tests {
         let gate = check.find("is_not_an_upgrade(").unwrap();
         let insert = check.find("= Some(update)").unwrap();
         assert!(gate < insert, "降级判定必须发生在把 update 放进会话之前");
+    }
+}
+
+// ---------------- 跨重启更新意图的形状判据（#34） ----------------
+#[cfg(test)]
+mod intent_tests {
+    use super::{
+        artifact_matches_source, encode_update_intent, endpoint_for_source, is_safe_to_fallback,
+        is_valid_update_source, parse_update_intent, source_of_url, UpdateIntent,
+    };
+
+    /// 取一个顶层函数的函数体（到下一个顶层 `}` 为止；与 `status_tests::body_of` 同口径）。
+    fn body_of<'a>(src: &'a str, needle: &str) -> &'a str {
+        let at = src
+            .find(needle)
+            .unwrap_or_else(|| panic!("找不到 {needle} —— 改名/搬家时判据要同步"));
+        let rest = &src[at..];
+        let end = rest.find("\n    }\n").map(|i| i + 6).unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    fn intent(version: &str, stage: &str) -> UpdateIntent {
+        UpdateIntent {
+            version: version.to_string(),
+            stage: stage.to_string(),
+        }
+    }
+
+    #[test]
+    fn update_intent_roundtrips_and_rejects_malformed_values() {
+        let raw = encode_update_intent(&intent("5.26.0", "downloading"));
+        assert_eq!(parse_update_intent(&raw), Some(intent("5.26.0", "downloading")));
+        // 反例必须成对：只有"全都拒绝"也能让上面那条正例通过，所以下面还要有正控。
+        assert_eq!(parse_update_intent("{not json"), None, "坏 JSON 不许变成一条可用更新");
+        assert_eq!(
+            parse_update_intent(&encode_update_intent(&intent("banana", "available"))),
+            None,
+            "版本号不合法 ⇒ 失败关闭"
+        );
+        assert_eq!(
+            parse_update_intent(&encode_update_intent(&intent("5.26.0", "installing"))),
+            None,
+            "阶段越界 ⇒ 失败关闭（installing 尤其不许被恢复）"
+        );
+        assert_eq!(
+            parse_update_intent(&encode_update_intent(&intent("", "available"))),
+            None,
+            "空版本号不许落库"
+        );
+        assert_eq!(
+            parse_update_intent(&encode_update_intent(&intent("5.26.0", "available"))),
+            Some(intent("5.26.0", "available")),
+            "正控：合法 available 必须放行，否则上面的拒绝只是恒返回 None"
+        );
+    }
+
+    /// 判据必须**接在启动路径上**：只写了个恢复函数、`finish_boot` 不调用，等于没做。
+    #[test]
+    fn restore_is_wired_into_finish_boot_after_state_is_managed() {
+        let lib = include_str!("../lib.rs");
+        let manage = lib
+            .find("app.manage(state.clone());")
+            .expect("finish_boot 不再 manage AppState ⇒ 判据锚点要跟着改");
+        let restore = lib
+            .find("commands::restore_update_intent(app, state.as_ref())")
+            .expect("启动路径没有恢复更新意图 ⇒ 重启后任务行仍会消失");
+        assert!(
+            manage < restore,
+            "恢复必须在 manage 之后：它要读 settings 表，也要拿得到 UpdaterSession"
+        );
+    }
+
+    /// 恢复的是「意图」不是「进度」：不许把相位灌成 installing（那会造一条不可取消的假任务），
+    /// 也不许把上一次的字节数带回来（官方整包在内存里，进程一走就没了）。
+    #[test]
+    fn restart_restore_never_fakes_a_download_in_progress() {
+        let src = include_str!("updater.rs");
+        let restore = body_of(src, "pub fn restore_update_intent(");
+        assert!(restore.contains("st.phase = \"idle\".to_string()"), "恢复相位只能是 idle");
+        assert!(
+            !restore.contains("PHASE_INSTALLING") && !restore.contains("\"installing\""),
+            "不许恢复 installing 相位：字节已经不在，取消会被永久拒绝"
+        );
+        assert!(restore.contains("st.resumable = true"), "恢复标记必须落在全局状态上");
+        assert!(restore.contains("st.downloaded = 0"), "进度必须归零（重下整包）");
+        assert!(
+            restore.contains("is_not_an_upgrade("),
+            "装完/降级后残留的旧意图必须被判为过期，不能凭空造一行"
+        );
+        assert!(
+            restore.contains("session.set_status("),
+            "启动恢复必须复用唯一的广播出口，不许另开一处 emit"
+        );
+    }
+
+    /// 写与清要覆盖全部相位：漏掉 close/cancel 会让"用户已放弃"的更新在重启后又冒出来；
+    /// 漏掉 download 则重启后只剩 available、诊断不出用户是否真的点过下载。
+    #[test]
+    fn intent_is_written_and_cleared_on_every_relevant_transition() {
+        let src = include_str!("updater.rs");
+        // 写/清意图现在住在 `check_with_source`，两个命令共用它（状态跃迁不分家）。
+        let check = body_of(src, "async fn check_with_source(");
+        assert!(
+            check.contains("save_update_intent(&app, &v, \"available\")"),
+            "查到更新必须写意图"
+        );
+        assert!(check.contains("clear_update_intent(&app)"), "清单说已是最新必须清意图");
+        let download = body_of(src, "pub async fn updater_download(");
+        assert!(
+            download.contains("save_update_intent(&app, &update.version, \"downloading\")"),
+            "用户发起下载必须写意图"
+        );
+        assert!(
+            download.contains("st.resumable = false"),
+            "开始下载必须撤掉「待重新下载」行，否则同一份更新出现两行"
+        );
+        for name in [
+            "pub fn updater_close(",
+            "pub fn updater_cancel(",
+            "pub async fn updater_install(",
+        ] {
+            let body = body_of(src, name);
+            assert!(
+                body.contains("clear_update_intent(&app)"),
+                "{name} 必须清意图，否则重启后又冒出一条已放弃/已安装的任务"
+            );
+        }
+    }
+
+    /// 来源只按 host 认。path / query 里出现平台名、域名后缀欺骗、明文都不算 ——
+    /// 否则一个构造出来的 URL 就能把「同源」骗过去。
+    #[test]
+    fn update_source_is_decided_by_host_only() {
+        assert_eq!(
+            source_of_url("https://gitee.com/fwdq/gosslan-releases/releases/download/v1/a.tar.gz"),
+            Some("gitee")
+        );
+        assert_eq!(
+            source_of_url("https://github.com/wenzo001/gosslan/releases/download/v1/a.exe"),
+            Some("github")
+        );
+        assert_eq!(source_of_url("http://gitee.com/a"), None, "明文不算可信源");
+        assert_eq!(
+            source_of_url("https://evil.example/github.com/a"),
+            None,
+            "path 里出现平台名不算"
+        );
+        assert_eq!(source_of_url("https://gitee.com.evil.example/a"), None, "后缀欺骗不算");
+        assert_eq!(source_of_url("https://example.com/a"), None);
+        // 正控：两个端点必须是不同的常量，否则「切源」是假的。
+        assert_ne!(endpoint_for_source("gitee"), endpoint_for_source("github"));
+        assert_eq!(endpoint_for_source("auto"), None, "auto 不许覆盖配置顺序");
+        for source in ["auto", "gitee", "github"] {
+            assert!(is_valid_update_source(source), "{source} 必须是合法来源");
+        }
+        for source in ["GITEE", "", "git hub", "gitee.com"] {
+            assert!(!is_valid_update_source(source), "{source} 不该被接受");
+        }
+    }
+
+    /// 清单与包必须同源：两份清单各有各的 url，混着发时宁可拒绝下载。
+    #[test]
+    fn artifact_url_must_match_the_manifest_source() {
+        assert!(artifact_matches_source(
+            "gitee",
+            "https://gitee.com/fwdq/x/releases/download/v1/a.exe"
+        ));
+        assert!(artifact_matches_source(
+            "github",
+            "https://github.com/wenzo001/x/releases/download/v1/a.exe"
+        ));
+        assert!(
+            !artifact_matches_source("gitee", "https://github.com/w/x/a.exe"),
+            "Gitee 清单指向 GitHub 包必须挡下"
+        );
+        assert!(
+            !artifact_matches_source("github", "https://gitee.com/w/x/a.exe"),
+            "GitHub 清单指向 Gitee 包必须挡下"
+        );
+        assert!(!artifact_matches_source("gitee", "http://gitee.com/a.exe"));
+    }
+
+    /// 两个命令都必须走同一个检查实现；指定源必须真的把**单端点**交给官方插件。
+    /// 少了这条，"命令注册了但没接线"也能让其它形状判据全绿。
+    #[test]
+    fn both_check_commands_share_the_single_source_aware_implementation() {
+        let src = include_str!("updater.rs");
+        // ⚠️ 先切掉测试模块：本判据自己的字面量与注释里也写着这个函数名，
+        // 不切的话它们会被数进去（第一版实测 4 vs 1，与 emit 那条形同）。
+        let prod = &src[..src.find("#[cfg(all(test, desktop))]").unwrap_or(src.len())];
+        assert_eq!(
+            prod.matches("async fn check_with_source(").count(),
+            1,
+            "检查逻辑只许有一个家"
+        );
+        for cmd in [
+            "pub async fn updater_check(",
+            "pub async fn updater_check_source(",
+        ] {
+            let body = body_of(src, cmd);
+            assert!(body.contains("check_with_source("), "{cmd} 必须走唯一实现");
+        }
+        let once = body_of(src, "async fn check_once(");
+        assert!(
+            once.contains("endpoint_for_source(") && once.contains(".endpoints(vec![url])"),
+            "指定源必须覆盖官方端点，否则拿到的清单不一定来自那个平台"
+        );
+        assert!(
+            once.contains("UPDATE_SOURCE_MISMATCH") && once.contains("artifact_matches_source("),
+            "同源校验必须接在检查路径上"
+        );
+    }
+
+    /// GitHub 连不上要自动落到 Gitee，但降级/同源这两类安全裁决不许被换源绕过。
+    #[test]
+    fn github_failure_falls_back_to_gitee_without_bypassing_safety_verdicts() {
+        let src = include_str!("updater.rs");
+        let core = body_of(src, "async fn check_with_source(");
+        assert!(core.contains("auto_switched_to_gitee"), "自动切源要留下可见短码");
+        assert!(core.contains("is_safe_to_fallback(&e)"), "回落必须先过安全闸门");
+        // A/B 对照：普通网络错误允许回落，安全裁决不允许。
+        assert!(is_safe_to_fallback("dns error: connection refused"));
+        assert!(!is_safe_to_fallback("code=UPDATER_DOWNGRADE_BLOCKED"));
+        assert!(!is_safe_to_fallback("code=UPDATE_SOURCE_MISMATCH"));
     }
 }

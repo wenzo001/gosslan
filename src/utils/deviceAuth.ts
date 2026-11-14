@@ -16,6 +16,26 @@ export function deviceAuthClaimKey(claim: string): string {
   return DEVICE_AUTH_CLAIM_KEYS[claim] ?? claim;
 }
 
+/**
+ * 绑定状态 → 文案 key。首绑状态机扩展出 `pending_registration` / `registration_failed`
+ * 两个中间/失败态后，设置页不能把它们一律当「已撤销」显示（就绪度审计 §3.2）。
+ * 未知状态一律归到「绑定未完成」，fail closed，不误标成 active。
+ */
+export function deviceAuthStatusKey(status: string): string {
+  if (status === "active") return "deviceAuth.statusActive";
+  if (status === "revoked") return "deviceAuth.statusRevoked";
+  return "deviceAuth.statusIncomplete";
+}
+
+/**
+ * 是否需要为「拒绝」显示重试入口（P1 拒绝可观察）。
+ * 只有后端明确 `rp_notified === false`（本机已拒绝、RP 未收到）才要重试；
+ * `undefined`（老后端 / 字段缺失）保持既有一次性语义，不弹重试入口。
+ */
+export function deviceAuthDenyNeedsRetry(rpNotified: boolean | undefined): boolean {
+  return rpNotified === false;
+}
+
 /** 距过期的整秒数（向上取整，过期后恒 0，不为负）。 */
 export function deviceAuthSecondsLeft(expiresAtMs: number, nowMs: number): number {
   return Math.max(0, Math.ceil((expiresAtMs - nowMs) / 1000));

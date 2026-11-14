@@ -15,6 +15,8 @@ const emit = defineEmits<{
   (e: "cancel"): void;
   (e: "install"): void;
   (e: "dismiss"): void;
+  /** 切换清单/安装包来源：后端只挂那一个端点，随后整包重下。 */
+  (e: "switch-source", source: string): void;
 }>();
 
 const confirming = ref(false);
@@ -74,6 +76,31 @@ const canCheck = computed(
     props.state.phase !== "downloading" &&
     props.state.phase !== "installing" &&
     props.state.phase !== "ready",
+);
+
+/** 来源文案只走 i18n，界面不拼机器码。unknown/空值回落到「自动」。 */
+const SOURCE_LABELS: Record<string, string> = {
+  auto: "settings.updates.sourceAuto",
+  gitee: "settings.updates.sourceGitee",
+  github: "settings.updates.sourceGithub",
+  unknown: "settings.updates.sourceAuto",
+};
+const sourceText = computed(() =>
+  t(SOURCE_LABELS[props.state.source] ?? "settings.updates.sourceAuto"),
+);
+/** 后端自动切源是一次状态跃迁，界面必须看得见，否则用户不知道包从哪来。 */
+const autoSwitchText = computed(() => {
+  if (props.state.sourceEvent === "auto_switched_to_gitee") {
+    return t("settings.updates.autoSwitched");
+  }
+  if (props.state.sourceEvent === "auto_switched_to_gitee_failed") {
+    return t("settings.updates.autoSwitchFailed");
+  }
+  return "";
+});
+/** 慢速或失败时把「换源」摆到明面上；平时只留一行来源说明。 */
+const showSwitchHint = computed(
+  () => props.state.slow || props.state.phase === "error" || !!autoSwitchText.value,
 );
 
 const showUpdateCard = computed(
@@ -149,6 +176,47 @@ function formatDate(seconds: number | null | undefined): string {
     <p v-if="!supported" class="mt-2 text-caption leading-relaxed text-[var(--gosslan-text-2)]">
       {{ t("settings.updates.mobile") }}
     </p>
+
+    <!-- 更新来源：清单与安装包必须同源。三个按钮都是「重新查那一个端点 + 整包重下」，
+         不提供只换包不换清单的半套切换（那种组合会被后端同源校验挡下）。 -->
+    <div v-if="supported" class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+      <span class="text-caption text-[var(--gosslan-text-2)]" role="status" aria-live="polite">
+        {{ t("settings.updates.source", { source: sourceText }) }}
+      </span>
+      <button
+        v-for="src in ['auto', 'gitee', 'github']"
+        :key="src"
+        type="button"
+        class="tap-safe rounded-[var(--gosslan-radius-md)] border px-2 py-0.5 text-meta transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+        :class="state.source === src
+          ? 'border-[var(--gosslan-primary)] text-[var(--gosslan-primary)]'
+          : 'border-[var(--gosslan-border)] text-[var(--gosslan-text-2)]'"
+        :disabled="state.phase === 'installing'"
+        :aria-label="t('settings.updates.switchTo', { source: t(SOURCE_LABELS[src]) })"
+        @click="emit('switch-source', src)"
+      >
+        {{ t(SOURCE_LABELS[src]) }}
+      </button>
+    </div>
+
+    <!-- 慢速/失败给的是「提醒 + 可点的换源」，不是偷偷把在飞的整包丢掉；
+         自动切源（GitHub 连不上）则必须把发生过的跃迁说清楚。 -->
+    <p
+      v-if="showSwitchHint"
+      class="mt-2 rounded-[var(--gosslan-radius-xs)] bg-[var(--gosslan-hover)] px-2 py-1.5 text-caption leading-relaxed text-[var(--gosslan-text)]"
+      role="status"
+      aria-live="polite"
+    >
+      {{ autoSwitchText || t("settings.updates.slowHint") }}
+    </p>
+    <button
+      v-if="state.slow || state.phase === 'error'"
+      type="button"
+      class="tap-safe mt-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-meta text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+      @click="emit('switch-source', 'gitee')"
+    >
+      {{ t("settings.updates.switchToGitee") }}
+    </button>
 
     <div
       v-if="showUpdateCard"

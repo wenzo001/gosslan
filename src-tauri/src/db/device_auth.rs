@@ -19,7 +19,8 @@ pub struct RpBindingRow {
     pub pairwise_subject: String,
     /// JSON 数组字符串（allowlisted claims）。
     pub scopes: String,
-    /// active | revoked。
+    /// 绑定状态：pending_registration | active | revoked | registration_failed。
+    /// 只扩展 status 取值，不改表结构（无 CHECK 约束、无新列），见就绪度审计 §3.2 目标态。
     pub status: String,
     pub created_at: i64,
     pub last_used_at: Option<i64>,
@@ -63,6 +64,10 @@ pub fn insert_binding(conn: &Connection, b: &RpBindingRow) -> Result<()> {
 /// 首绑落库（#3）：RP 私钥的**导出只在此持久化路径**发生 —— `key.rp_secret_b64()` 是
 /// INV-P18 判据 C 授权给本文件（与身份密钥导出器只许 state.rs 调同一口径）。命令层只交来
 /// 能力封装 `key` 与公钥面（public_key/kid/subject），绝不触碰 secret 字节或原始 SigningKey。
+///
+/// 状态刻意落 `pending_registration` 而不是 `active`：只有 RP 回写 2xx 后才由 `activate_binding`
+/// 推进到 active。为什么：旧实现回调前就写 active，回写失败便形成「本地已授权、RP 未登记」
+/// 的分叉（就绪度审计 §3.3 首绑分叉）。重试时该行已存在，`prepare_assertion` 复用同一密钥。
 #[allow(clippy::too_many_arguments)] // 绑定字段直传（与 insert_binding 的列同形）；不打包成含 secret 的结构体，免得私钥面扩散
 pub fn insert_rp_binding(
     conn: &Connection,
@@ -85,7 +90,7 @@ pub fn insert_rp_binding(
         secret_key: key.rp_secret_b64(),
         pairwise_subject,
         scopes,
-        status: "active".to_string(),
+        status: "pending_registration".to_string(),
         created_at: now_ms,
         last_used_at: Some(now_ms),
         revoked_at: None,
@@ -125,11 +130,39 @@ pub fn touch_last_used(conn: &Connection, rp_origin: &str, client_id: &str, now:
 
 /// 撤销绑定：只置 status/revoked_at，**不删密钥行**（旧公钥须由 RP 账号页撤销，本地保留审计痕迹）。
 /// 返回是否真的撤销了一条 active 绑定（幂等：已撤销/不存在 ⇒ false）。
+///
+/// `WHERE status = 'active'` 即「撤销只允许 active」：pending_registration / registration_failed
+/// 这类未登记完成的绑定不许被撤销（它们应走批准重试重新登记，撤销没有意义）。
 pub fn revoke_binding(conn: &Connection, rp_origin: &str, client_id: &str, now: i64) -> Result<bool> {
     let n = conn.execute(
         "UPDATE rp_device_bindings SET status = 'revoked', revoked_at = ?3 \
          WHERE rp_origin = ?1 AND client_id = ?2 AND status = 'active'",
         params![rp_origin, client_id, now],
+    )?;
+    Ok(n > 0)
+}
+
+/// RP 回写 2xx 后把「待登记 / 登记失败重试成功」的绑定推进到 active。
+/// 只作用于中间态，已是 active 或已 revoked 的行不动（幂等，不误把撤销态复活）。
+/// 返回是否真的推进了一条。
+pub fn activate_binding(conn: &Connection, rp_origin: &str, client_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE rp_device_bindings SET status = 'active', revoked_at = NULL \
+         WHERE rp_origin = ?1 AND client_id = ?2 \
+           AND status IN ('pending_registration', 'registration_failed')",
+        params![rp_origin, client_id],
+    )?;
+    Ok(n > 0)
+}
+
+/// RP 回写失败/超时后把「待登记」绑定落到可重试终态 `registration_failed`。
+/// 只作用于 pending_registration（已是 registration_failed 无需再写，active 不许被回退）。
+/// 重试复用同一密钥、不重复 insert（就绪度审计 §3.2 失败终态）。返回是否真的落了一条。
+pub fn mark_registration_failed(conn: &Connection, rp_origin: &str, client_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE rp_device_bindings SET status = 'registration_failed' \
+         WHERE rp_origin = ?1 AND client_id = ?2 AND status = 'pending_registration'",
+        params![rp_origin, client_id],
     )?;
     Ok(n > 0)
 }
