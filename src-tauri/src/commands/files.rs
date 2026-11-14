@@ -1152,6 +1152,27 @@ pub struct ContentCancelResult {
     pub ledger_committed: bool,
 }
 
+/// 逐条尝试台账收尾，**不因首条失败而短路**。
+///
+/// 为什么不用 `Iterator::all`（2026-11-13 功能闭环审计 P1）：`all` 在首个 `false`/`Err`
+/// 后停止遍历。取消一个 cid 下的多条接收行时，第一条写失败会让其余行**根本没被尝试**——
+/// 接收器已停，台账却仍挂活动。这里对每条都调用 `write`，汇总 (成功, 失败) 计数；
+/// 失败只计数、不中断后续。调用方以 `失败 == 0` 作 `ledger_committed`，界面据此改口径。
+fn commit_each_no_short_circuit<T, E>(
+    rows: &[T],
+    mut write: impl FnMut(&T) -> Result<(), E>,
+) -> (usize, usize) {
+    let mut ok = 0usize;
+    let mut failed = 0usize;
+    for r in rows {
+        match write(r) {
+            Ok(()) => ok += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    (ok, failed)
+}
+
 #[tauri::command(async)]
 pub async fn cancel_content_fetch(
     state: State<'_, Arc<AppState>>,
@@ -1222,10 +1243,11 @@ pub async fn cancel_content_fetch(
         }
 
         // ② 台账收口（对没有接收器的行也必须落，否则任务中心那一行会一直挂着）。
+        // 逐条尝试、不短路：首条写失败也要把其余行收完（审计 P1，见 commit_each_no_short_circuit）。
         let now = db::now_ms();
-        let ledger_committed = {
+        let (ledger_ok, ledger_failed) = {
             let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
-            live.iter().all(|r| {
+            commit_each_no_short_circuit(&live, |r| {
                 crate::content::store::record_failure(
                     &dbc,
                     &r.cid,
@@ -1234,9 +1256,10 @@ pub async fn cancel_content_fetch(
                     FailReason::Cancelled,
                     now,
                 )
-                .is_ok()
+                .map(|_| ())
             })
         };
+        let ledger_committed = ledger_failed == 0;
 
         // ③ 通知界面：被停下的那些接收器与文件取消是同一件事（气泡/传输列表据此收尾）。
         for tid in &stopped_ids {
@@ -1245,7 +1268,7 @@ pub async fn cancel_content_fetch(
         s_db.logger.info(
             "file",
             format!(
-                "code=CONTENT_CANCEL 用户取消内容拉取 cid={cid} rows={} stopped={stopped} ledger_committed={ledger_committed}",
+                "code=CONTENT_CANCEL 用户取消内容拉取 cid={cid} rows={} stopped={stopped} ledger_ok={ledger_ok} ledger_failed={ledger_failed} ledger_committed={ledger_committed}",
                 live.len()
             ),
         );

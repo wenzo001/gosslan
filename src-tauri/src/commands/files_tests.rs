@@ -9,8 +9,8 @@
 #[cfg(test)]
 mod files_gate_tests {
     use super::{
-        group_file_local_state, inspect_drop_paths_blocking, ledger_path_owns, path_under_any,
-        transfer_id_of_owner,
+        commit_each_no_short_circuit, group_file_local_state, inspect_drop_paths_blocking,
+        ledger_path_owns, path_under_any, transfer_id_of_owner,
     };
     use std::path::Path;
 
@@ -485,5 +485,58 @@ mod files_gate_tests {
         let err = group_file_local_state(&conn, "me", &peer)
             .expect_err("表读不出来必须上抛，否则面板会把故障编成「未取到」");
         assert!(err.contains("code=GFILE_MY_STATUS_READ_FAILED"), "{err}");
+    }
+
+    /// 审计 P1 反例自证：台账收尾逐条尝试，首条失败**不短路**，其余仍被尝试。
+    /// 把修复换回 `Iterator::all` 时这条会红（all 首 Err 即停，attempted 只剩 [1, 2]）。
+    #[test]
+    fn cancel_ledger_attempts_every_row_even_when_one_fails() {
+        let rows = [1, 2, 3, 4];
+        let mut attempted = Vec::new();
+        let (ok, failed) = commit_each_no_short_circuit(&rows, |r| {
+            attempted.push(*r);
+            if *r == 2 {
+                Err::<(), &str>("inject")
+            } else {
+                Ok::<(), &str>(())
+            }
+        });
+        assert_eq!(attempted, vec![1, 2, 3, 4], "首条失败后必须继续尝试其余记录");
+        assert_eq!((ok, failed), (3, 1), "汇总成功/失败计数");
+    }
+
+    /// 全成功 ⇒ (n, 0)；全失败 ⇒ (0, n) 且每条都尝试（不短路）。
+    #[test]
+    fn cancel_ledger_counts_all_ok_and_all_failed() {
+        let rows = [1, 2, 3];
+        let (ok, failed) = commit_each_no_short_circuit(&rows, |_| Ok::<(), ()>(()));
+        assert_eq!((ok, failed), (3, 0));
+        let mut n = 0;
+        let (ok, failed) = commit_each_no_short_circuit(&rows, |_| {
+            n += 1;
+            Err::<(), ()>(())
+        });
+        assert_eq!((ok, failed), (0, 3));
+        assert_eq!(n, 3, "全失败也要逐条尝试");
+    }
+
+    /// 接线判据：cancel_content_fetch 真的用了不短路 helper，且不再留 `.iter().all(` 收尾。
+    #[test]
+    fn cancel_content_fetch_wires_the_no_short_circuit_helper() {
+        let src = include_str!("files.rs");
+        let start = src.find("pub async fn cancel_content_fetch").expect("函数必须在");
+        let end = src[start..]
+            .find("pub async fn cancel_file_transfer")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        let body = &src[start..end];
+        assert!(
+            body.contains("commit_each_no_short_circuit(&live"),
+            "台账收尾必须走不短路 helper"
+        );
+        assert!(
+            !body.contains(".iter().all("),
+            "不许再用 Iterator::all 收尾（首 Err 短路，审计 P1）"
+        );
     }
 }
