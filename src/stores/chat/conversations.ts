@@ -17,6 +17,8 @@ import {
   unreadAnchorIndex,
 } from "@/utils/messages";
 import { isLatestReadSeq, nextReadSeq, rollbackUnread } from "@/utils/optimistic";
+import { withReadError, withoutReadError } from "@/utils/readErrorFlags";
+import { beginHistoryStart, settleHistoryStart, releaseHistoryStart } from "@/utils/groupHistoryStart";
 import { clearWhenFull } from "@/utils/bounded";
 import { shouldRunThrottled } from "@/utils/defer";
 import { dropFilePreview, clearFilePreviews } from "@/utils/filePreview";
@@ -49,7 +51,9 @@ export function createConversationsModule(ctx: ChatContext) {
     messages,
     messageLoadErrors,
     groupDeliveries,
+    groupDeliveryErrors,
     groupHistorySync,
+    groupHistoryStarting,
     activeConv,
     mentionedConvs,
     asReadError,
@@ -82,7 +86,23 @@ export function createConversationsModule(ctx: ChatContext) {
    * 拼出来的键名它看不见，于是漏一个语言的后果是运行时静默回退成键名。
    */
   async function syncGroupHistoryNow(groupId: string) {
-    const verdict = await api.syncGroupHistoryNow(groupId);
+    // 审计 P3 #35：点下去这一刻就登记「启动中」（按钮 busy 立即为真），同群第二次点击
+    // 在这里去重、不打 IPC —— 后端 already_running 是最后一道防线，不该是唯一一道。
+    const begun = beginHistoryStart(groupHistoryStarting.value, groupId);
+    if (!begun) return;
+    groupHistoryStarting.value = begun;
+    let verdict: string;
+    try {
+      verdict = await api.syncGroupHistoryNow(groupId);
+    } catch (e) {
+      // 启动失败必须撤销：留着「启动中」= 按钮永久转圈、这个群再也点不动。
+      groupHistoryStarting.value = releaseHistoryStart(groupHistoryStarting.value, groupId);
+      throw e;
+    }
+    // 非 started 裁决（already_running / no_source / no_group / 未知短码）一律撤销；
+    // started 保留，等首条进度事件接管。事件可能先于裁决到达：settle 只减不增，
+    // 不会把已被进度事件接管/收口的群重新挂回「启动中」。
+    groupHistoryStarting.value = settleHistoryStart(groupHistoryStarting.value, groupId, verdict);
     if (verdict === "started") {
       // 见上面那条：这一段窗口里既没有横幅也没有转圈，不弹这一句就等于按下没回声。
       app.toast(t("chat.groupHistory.started"), "info");
@@ -113,6 +133,8 @@ export function createConversationsModule(ctx: ChatContext) {
       const next = { ...groupHistorySync.value };
       delete next[groupId];
       groupHistorySync.value = next;
+      // 同一句「界面这一行已经过期」也适用于启动登记：横幅撤了，「启动中」不能独留。
+      groupHistoryStarting.value = releaseHistoryStart(groupHistoryStarting.value, groupId);
       app.toast(t(verdict === "not_running" ? "chat.groupHistory.cancelNotRunning" : "chat.groupHistory.noGroup"), "info");
     }
   }
@@ -260,12 +282,14 @@ export function createConversationsModule(ctx: ChatContext) {
     messages.value = {};
     // 投递台账摘要与消息缓存同生共死（两条清除路径必须同口径）。
     groupDeliveries.value = {};
+    groupDeliveryErrors.value = {};
     conversations.value = [];
     groups.value = [];
     groupReads.value = {};
     // 与 groupReads 同批清：后端把库清了，那几条"正在补历史"的提示也就没有对应的作业了。
     // 留着它们的表现是设置里清完数据回主界面，横幅还挂着一句"正在同步 320/800"。
     groupHistorySync.value = {};
+    groupHistoryStarting.value = {};
     rawPendingRequests.value = [];
     transfers.value = [];
     // 收藏**不清**（用户 2026-10-31 决策，审计 A3）：后端已经不删 `favorites` 行、
@@ -635,16 +659,20 @@ export function createConversationsModule(ctx: ChatContext) {
    *
    * 只保留该会话的结果；`activeConv` 守卫放在**回填之后**是刻意的：这个函数也会在
    * 会话没打开时被事件调用（补发/取消发生在任务中心），提前丢弃会让下次打开又白拉一次。
-   * 失败时保留旧值：暂时读不到 ≠ 一切都送达了。
+   * 失败时保留旧值：暂时读不到 ≠ 一切都送达了。但旧值必须**被标记为可能过期**
+   * （审计 P2 #33，与 groupReadsErrors 同范式）：按会话记下原因，ChatWindow 据此
+   * 画错误档 + 重试；成功只清自己的登记，不碰别的会话。
    */
   async function refreshGroupDeliveries(convId: string): Promise<void> {
     if (!convId.startsWith("group:")) return;
     let list: GroupDeliverySummary[];
     try {
       list = await api.getGroupDeliverySummaries(convId);
-    } catch {
+    } catch (e) {
+      groupDeliveryErrors.value = withReadError(groupDeliveryErrors.value, convId, asReadError(e));
       return;
     }
+    groupDeliveryErrors.value = withoutReadError(groupDeliveryErrors.value, convId);
     const map: Record<string, GroupDeliverySummary> = {};
     for (const s of list) map[s.msg_id] = s;
     groupDeliveries.value = { ...groupDeliveries.value, [convId]: map };
@@ -751,7 +779,7 @@ export function createConversationsModule(ctx: ChatContext) {
    * - 仅本地清理，不影响对方聊天记录（前端弹窗二次确认）。
    */
   async function deleteConversation(convId: string) {
-    const prevConvs = conversations.value;
+    const removedConv = conversations.value.find((c) => c.id === convId);
     const prevMessages = messages.value[convId];
     conversations.value = conversations.value.filter((c) => c.id !== convId);
     mentionedConvs.value.delete(convId);
@@ -763,8 +791,11 @@ export function createConversationsModule(ctx: ChatContext) {
     try {
       await api.deleteConversation(convId);
     } catch (e) {
-      // 回滚：恢复会话行与消息缓存
-      conversations.value = prevConvs;
+      // 按项逆操作（审计 P2）：把移除的**那一条**会话行加回当前态（不整份覆盖，保留并发
+      // 新增/变更的其他会话）；消息缓存本就按会话还原。
+      if (removedConv && !conversations.value.some((c) => c.id === convId)) {
+        conversations.value = [...conversations.value, removedConv];
+      }
       if (prevMessages !== undefined) {
         messages.value = { ...messages.value, [convId]: prevMessages };
       }
@@ -784,14 +815,19 @@ export function createConversationsModule(ctx: ChatContext) {
    * 乐观更新 + 失败回滚：置顶是高频轻操作，等一次 IPC 往返才动列表会明显发顿。
    */
   async function setConversationPinned(convId: string, pinned: boolean) {
-    const prevConvs = conversations.value;
+    const oldPinned = conversations.value.find((c) => c.id === convId)?.pinned;
     conversations.value = sortConversations(
       conversations.value.map((c) => (c.id === convId ? { ...c, pinned } : c)),
     );
     try {
       await api.setConversationPinned(convId, pinned);
     } catch (e) {
-      conversations.value = prevConvs;
+      // 按项逆操作（审计 P2）：只还原**该会话**的 pinned（不整份覆盖，保留并发变更），再排序。
+      if (oldPinned !== undefined) {
+        conversations.value = sortConversations(
+          conversations.value.map((c) => (c.id === convId ? { ...c, pinned: oldPinned } : c)),
+        );
+      }
       throw e;
     }
   }
@@ -803,12 +839,14 @@ export function createConversationsModule(ctx: ChatContext) {
     // 投递台账摘要与消息缓存同生共死：库都清了，留着它们会让"清空后重建的会话"
     // 先看到上一轮的「已收到 2/3」角标。
     groupDeliveries.value = {};
+    groupDeliveryErrors.value = {};
     conversations.value = [];
     groups.value = [];
     groupReads.value = {};
     // 与 groupReads 同批清：后端把库清了，那几条"正在补历史"的提示也就没有对应的作业了。
     // 留着它们的表现是设置里清完数据回主界面，横幅还挂着一句"正在同步 320/800"。
     groupHistorySync.value = {};
+    groupHistoryStarting.value = {};
     activeConv.value = null;
     mentionedConvs.value = new Set();
     // 与 `resetAfterDataCleared` **同一组**（那边清的是同三张表）：后端把库清了，
@@ -855,6 +893,9 @@ export function createConversationsModule(ctx: ChatContext) {
    */
   function onGroupHistoryProgress(p: GroupHistoryProgress) {
     const convId = `group:${p.group_id}`;
+    // 任何相位都接管/收口「启动中」（审计 P3 #35）：running 是接管，done/failed/cancelled
+    // 是收口 —— 同步在首条 running 之前就结束时，不撤登记按钮就会永久转圈。
+    groupHistoryStarting.value = releaseHistoryStart(groupHistoryStarting.value, p.group_id);
     const wasTracking = !!groupHistorySync.value[p.group_id];
     const next = { ...groupHistorySync.value };
     if (p.phase === "running") {

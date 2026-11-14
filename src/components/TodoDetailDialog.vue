@@ -103,8 +103,8 @@ const emit = defineEmits<{
   (e: "restore"): void;
   (e: "edit"): void;
   (e: "remove"): void;
-  /** 任务回复 / 关联任务（用户 2026-11-13）：透传给共用字段区。 */
-  (e: "reply", text: string, parentReplyId?: string): void;
+  /** 任务回复 / 关联任务（用户 2026-11-13）：透传给共用字段区。ack 透传：成功才清草稿（bug #6）。 */
+  (e: "reply", text: string, parentReplyId: string | undefined, ack: (ok: boolean) => void): void;
   (e: "open-linked", todoId: string): void;
   (e: "create-linked"): void;
 }>();
@@ -183,7 +183,7 @@ const fullCode = computed(() =>
       @related-on="(v: string) => emit('relatedOn', v)"
       @tags="(tags: string[]) => emit('tags', tags)"
       @claim="emit('claim')"
-      @reply="(text: string, parentReplyId?: string) => emit('reply', text, parentReplyId)"
+      @reply="(text, parentReplyId, ack) => emit('reply', text, parentReplyId, ack)"
       @open-linked="(id: string) => emit('open-linked', id)"
       @create-linked="emit('create-linked')"
     />

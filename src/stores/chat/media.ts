@@ -70,7 +70,9 @@ export function createMediaModule(ctx: ChatContext) {
   }
 
   /** 群文件发送：走群文件链路（Offer → Chunk → Done → CompleteAck）。
-   *  群文件气泡/进度展示留待后续阶段，本封装只负责触发后端传输。 */
+   *  本封装只负责触发后端传输；气泡/进度展示已由 `message/MessageFileBubble.vue`
+   *  （按成员聚合的 delivery 状态 + 进度条 + 重新获取）与 `GroupFilesPanel.vue`
+   *  （面板侧取消/重取，文案走 utils/cancelFeedback 同一份映射）承担。 */
   async function sendGroupFileTo(groupId: string, path: string, msgId?: string) {
     try {
       const id = await api.sendGroupFile(groupId, path, msgId);

@@ -351,6 +351,18 @@ const groupHistory = computed(() => {
   return chat.groupHistorySync[id.slice("group:".length)] ?? null;
 });
 /**
+ * 「启动中」空窗（审计 2026-11-13 P3 #35）：IPC 在飞、首条进度事件还没到 ⇒ 横幅与
+ * 转圈都还不存在。按钮 busy 必须立刻为真，否则用户读数就是"按了一枚没反应的图标"⇒ 连点。
+ * 登记与同群去重在 store（`chat.syncGroupHistoryNow`），这里只读当前群那一格。
+ */
+const historyStartPending = computed(() => {
+  const id = chat.activeConv;
+  if (!id || !id.startsWith("group:")) return false;
+  return !!chat.groupHistoryStarting[id.slice("group:".length)];
+});
+/** 按钮 busy = 进度横幅存在 **或** 启动空窗登记在 —— 两个来源的并，缺一就回到空窗。 */
+const groupHistoryBusy = computed(() => !!groupHistory.value || historyStartPending.value);
+/**
  * 群历史同步「已经多久没有进展」的观察（10-22 审计 D-9 的一半）。
  *
  * 阈值不是拍的：后端每取一页自带期限 `GROUP_HISTORY_PAGE_TIMEOUT_MS = 20_000`
@@ -695,6 +707,20 @@ const activeGroupId = computed(() =>
 const groupReadsLoadFailed = computed(() =>
   activeGroupId.value ? (chat.groupReadsErrors[activeGroupId.value] ?? null) : null,
 );
+/**
+ * 投递台账摘要读失败（审计 2026-11-13 P2 #33，与 groupReadsLoadFailed 同范式）：
+ * 角标保留旧计数，但必须说出「可能过期」并给重试 —— 否则一次 IO 失败就让界面把
+ * 上一轮的投递台账当成最新事实。按会话取（同一个群的所有气泡共用一句提示 + 一次重试）。
+ */
+const groupDeliveryLoadFailed = computed(() => {
+  const id = chat.activeConv;
+  return id && id.startsWith("group:") ? (chat.groupDeliveryErrors[id] ?? null) : null;
+});
+/** 错误档上的「重试」：重拉当前群的投递摘要（成功清标记、再失败重新记，见 store）。 */
+function retryGroupDeliveries() {
+  const id = chat.activeConv;
+  if (id) void chat.refreshGroupDeliveries(id);
+}
 /** 全局图片预览（#40：实例只有 `ResponsiveLayout` 里那一个，这里只负责给出数组）。 */
 const preview = useImagePreviewStore();
 
@@ -1770,7 +1796,7 @@ function retryHistory() {
       @open-profile="conv && openSenderProfile(conv.id)"
       @open-members="membersOpen = true"
       @open-files="filesOpen = true"
-      :history-syncing="!!groupHistory"
+      :history-syncing="groupHistoryBusy"
       :tasks-opening="tasksOpening"
             :open-tasks="openTasksForActive"
       @open-tasks="openTasks()"
@@ -1987,6 +2013,22 @@ function retryHistory() {
         class="tap-safe shrink-0 text-[var(--gosslan-text)] underline"
         :title="t('common.retry')"
         @click="chat.refreshGroups()"
+      >
+        {{ t("common.retry") }}
+      </button>
+    </div>
+    <!-- 投递台账摘要读失败（审计 P2 #33）：角标保留旧计数，但必须说「可能过期」+ 重试。
+         与已读名单那条同一形状：消息照常显示，只在列表上方补一行说明。 -->
+    <div
+      v-if="groupDeliveryLoadFailed"
+      class="mx-4 mt-2 flex items-center justify-between gap-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs"
+      role="alert"
+    >
+      <span class="min-w-0 flex-1 text-[var(--gosslan-text-2)]">{{ t("chat.groupDeliveryLoadFailed") }}</span>
+      <button
+        class="tap-safe shrink-0 text-[var(--gosslan-text)] underline"
+        :title="t('common.retry')"
+        @click="retryGroupDeliveries"
       >
         {{ t("common.retry") }}
       </button>

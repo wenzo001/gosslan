@@ -687,17 +687,23 @@ export function createMessagingModule(ctx: ChatContext) {
   }
   async function deleteMessages(convId: string, msgIds: string[]): Promise<number> {
     if (msgIds.length === 0) return 0;
-    const prevMsgs = messages.value[convId] ?? [];
-    const prevConvs = conversations.value;
     const set = new Set(msgIds);
-    messages.value = { ...messages.value, [convId]: prevMsgs.filter((m) => !set.has(m.msg_id)) };
+    const current = messages.value[convId] ?? [];
+    const removed = current.filter((m) => set.has(m.msg_id));
+    messages.value = { ...messages.value, [convId]: current.filter((m) => !set.has(m.msg_id)) };
     try {
       const n = await api.deleteMessages(msgIds);
       await refreshConversations();
       return n;
     } catch (e) {
-      messages.value = { ...messages.value, [convId]: prevMsgs };
-      conversations.value = prevConvs;
+      // 按项逆操作（审计 P2）：把移除的消息加回**当前**会话列表（保留并发期间新增的消息），
+      // 不整份恢复快照。conversations 未被本操作乐观修改，无需整份回滚（避免盖掉并发变更）。
+      const now = messages.value[convId] ?? [];
+      const nowIds = new Set(now.map((m) => m.msg_id));
+      const restore = removed.filter((m) => !nowIds.has(m.msg_id));
+      if (restore.length > 0) {
+        messages.value = { ...messages.value, [convId]: [...now, ...restore] };
+      }
       throw e;
     }
   }

@@ -627,12 +627,21 @@ const detailLinkedTo = computed(() =>
 /** 任意群成员可回复。 */
 const canReplyDetail = computed(() => myMembership.value);
 
-async function sendDetailReply(text: string, parentReplyId?: string) {
-  if (!detailItem.value || !props.groupId) return;
+async function sendDetailReply(
+  text: string,
+  parentReplyId: string | undefined,
+  ack: (ok: boolean) => void,
+) {
+  if (!detailItem.value || !props.groupId) {
+    ack(false);
+    return;
+  }
   try {
     await chat.sendTodoReply(props.groupId, detailItem.value.todoId, text, parentReplyId);
+    ack(true); // 成功才让字段区清草稿（bug #6）
   } catch (e) {
     app.toastError(e, t("todo.replyFail"));
+    ack(false); // 失败保留草稿，用户不用重打一遍
   }
 }
 /** 跳到关联任务详情（来源或被关联）：复用 focusTodo 的筛选切换 + 定位。 */
@@ -2028,7 +2037,7 @@ watch(
             @related-on="(v: string) => detailItem && setRelatedOn(detailItem, v)"
             @tags="(tags: string[]) => detailItem && setTagsFor(detailItem, tags)"
             @claim="detailItem && claim(detailItem)"
-            @reply="(text: string, parentReplyId?: string) => sendDetailReply(text, parentReplyId)"
+            @reply="(text, parentReplyId, ack) => sendDetailReply(text, parentReplyId, ack)"
             @open-linked="openLinkedTodo"
             @create-linked="createLinkedFromDetail"
           />
@@ -2084,7 +2093,7 @@ watch(
     @related-on="(v: string) => detailItem && setRelatedOn(detailItem, v)"
     @tags="(tags: string[]) => detailItem && setTagsFor(detailItem, tags)"
     @claim="detailItem && claim(detailItem)"
-    @reply="(text: string, parentReplyId?: string) => sendDetailReply(text, parentReplyId)"
+    @reply="(text, parentReplyId, ack) => sendDetailReply(text, parentReplyId, ack)"
     @open-linked="openLinkedTodo"
     @create-linked="createLinkedFromDetail"
     @archive="detailItem && archiveTodo(detailItem)"
