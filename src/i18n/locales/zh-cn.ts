@@ -1295,6 +1295,7 @@ export const zhCN: MessageDict = {
   "deviceAuth.scopeHint": "默认都不给；只勾你愿意给的。消息正文不会离开本机。",
   "deviceAuth.scope.friends_read": "读取你的好友列表",
   "deviceAuth.scope.events_metadata": "读取最近收到的消息的通知信息（不含正文）",
+  "deviceAuth.scope.groups_read": "读取你的群列表（群名与人数，不含群成员明细）",
   "deviceAuth.identityDisclosure": "设备标识与公钥是绑定必需，批准后将恒向该应用提供（仅对此应用，不跨站关联）；昵称仅在你勾选时共享。",
   "deviceAuth.claim.device_subject": "设备标识（仅对此应用，不跨站关联）",
   "deviceAuth.claim.device_public_key": "设备公钥",

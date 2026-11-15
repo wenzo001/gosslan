@@ -193,10 +193,12 @@ fn scope_rules_are_enforced() {
     r.requested_scopes = vec!["friends.read".into(), "events.metadata".into()];
     assert!(validate_request(&r, &m, 1_700_000_000_000).is_ok());
 
-    // ⑤ allowlist 之外的两个 scope 永远不在里面（群列表 / 正文外送）。
-    assert!(!ALLOWED_SCOPES.contains(&"groups.read"));
+    // ⑤ allowlist 之外的两个 scope 永远不在里面（正文外送 / 免确认直发）。
+    // 群列表已在 2026-11-15 由用户批准开放（`groups.read`），但**成员明细**没有开放。
+    assert!(ALLOWED_SCOPES.contains(&"groups.read"));
     assert!(!ALLOWED_SCOPES.contains(&"events.content"));
     assert!(!ALLOWED_SCOPES.contains(&"chat.send"));
+    assert!(!ALLOWED_SCOPES.contains(&"groups.members"));
 }
 
 /// 分享回执端点：给了就必须 HTTPS 且与 issuer 同源（不给 ≠ 可以给个跨域的）。

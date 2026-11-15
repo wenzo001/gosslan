@@ -242,16 +242,17 @@ app.post("/device-auth/decisions/:id", express.json(), (req, res) => {
 
 1. 你建一个事务：`action=sync`、`requested_scopes` 写你要的东西。
 2. 深链唤起 Gosslan（同 §1.2 的形状），**用户会看到一个确认页**：
-   应用名、来源域，以及「这个应用还想要」的两项，逐项可勾。
+   应用名、来源域，以及「这个应用还想要」的几项，逐项可勾（**默认一项都不勾**）。
 3. 用户批准 ⇒ 客户端把数据**随决策回写一起**送到你的 `decision_endpoint`（§1.5）。
 4. 你按 `data` 的形状取用。
 
-### `requested_scopes` 只有两个值
+### `requested_scopes` 只有三个值
 
 | scope | 交付什么 |
 |---|---|
 | `friends.read` | `friends`：好友的 `device_id` 与 `nickname`（**没有公钥、没有在线态**） |
 | `events.metadata` | `events`：最近收到的消息的 `conv_id` / `sender_id` / `kind` / `ts` / `seq` + 通知性两位 `mentions_me`（这条 @ 了本机用户吗）/ `notifies`（这条会弹通知吗）（**没有正文**） |
+| `groups.read` | `groups`：群的 `group_id` / `name` / `member_count`（**没有成员明细、没有群密钥、没有正文**） |
 
 写了别的值 ⇒ **整笔拒**（`DEVICE_AUTH_UNKNOWN_SCOPE`），不是静默忽略。
 没写任何值、却用 `action=sync` ⇒ 也拒（那是个空申请）。
@@ -262,6 +263,7 @@ app.post("/device-auth/decisions/:id", express.json(), (req, res) => {
 "data": {
   "subject": "<pairwise subject>",
   "friends": [ { "device_id": "…", "nickname": "…" } ],
+  "groups": [ { "group_id": "…", "name": "…", "member_count": 3 } ],
   "events": [ {
     "conv_id": "…", "sender_id": "…", "kind": "text",
     "ts": 1731600000000, "seq": 42,
@@ -284,6 +286,8 @@ app.post("/device-auth/decisions/:id", express.json(), (req, res) => {
    （`DEVICE_AUTH_NO_BINDING`）。
 5. **消息正文永远不外送**。`events` 里没有 `content`。
    如果你的产品需要正文，那是另一个决定，不在这份契约里。
+   `groups` 同理：只有 id / 名称 / 人数，**没有成员明细**（成员明细基本就是好友集合，
+   已由 `friends.read` 单独授权 ⇒ 再给一遍就是「一个 scope 偷渡另一个 scope 的内容」）。
 6. **不承诺隐藏**：`device_id` 是设备标识，跨应用可关联（这是 P2P 的既有暴露面，
    本契约不扩大它，也不承诺隐藏）。
 
@@ -369,7 +373,7 @@ location.href = link;
 | 网页预览 / 抓取 OG 标签 | 不做。抓取等于把任意 URL 交给本机去请求（SSRF / 内网探测 / 跟踪像素） |
 | 分享结果的回执 | **可做（可选）**：带 `receipt=<https 同源地址>` 才有，见 §2.7；回执只含状态与条数 |
 | 定向分享（预填目标） | **可做（可选）**：带 `to` + `to_kind` 才有，见 §2.7。**只是预填，用户仍要点发送**；目标不存在则整笔拒 |
-| 群列表（供 RP 自动定位群） | 不做。§1.10 的 `friends.read` 只给好友列表 |
+| 群密钥、群成员明细 | 不做。§1.10 的 `groups.read` 只给群 id / 名称 / 人数 |
 
 ## 2.7 定向分享（可选）：让用户一键发到指定的人
 
@@ -395,7 +399,8 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
    群不在群列表 ⇒ 拒。**不会**替你新建会话、不会猜、不会广播。
 3. **没聊过的朋友也会出现在面板里**：客户端会先为这个好友建一个空会话（不发任何消息），
    否则面板列不出来，就没法「一键发给他」。
-4. **群 id 你得自己知道**：§1.10 的 `friends.read` 只给好友列表，**不含群列表**
+4. **群 id 从 §1.10 的 `groups.read` 拿**（`groups[].group_id`，拼成 `group:<群 id>`）；
+   没申请这个 scope 时就拿不到 ⇒ 让用户自己在面板里选
    （群列表不在本次授权范围内）。所以「一键发到某个群」需要你另行知道 `group:<群 id>`；
    拿不到就让用户在面板里自己选群。
 5. **回执是可选的**：加 `receipt=<https 地址>`（必须 HTTPS，且与 `origin` 同源），
@@ -477,7 +482,7 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
 | `DEVICE_AUTH_BAD_METADATA` | 元数据缺字段、端点非 HTTPS、端点是跨源 | 应用认证信息不完整 | 按 §1.3 补齐；端点必须同源 HTTPS |
 | `DEVICE_AUTH_UNSUPPORTED` | `protocol_version` 不认识，或不支持该 `action` | 不支持的认证协议或动作 | 用 `"1"`，并在 `supported_actions` 里声明要用的动作 |
 | `DEVICE_AUTH_UNKNOWN_CLAIM` | `requested_claims` 超出 allowlist 或不在你的 `supported_claims` 里 | 请求了不支持的信息字段 | 只用三个允许的 claim |
-| `DEVICE_AUTH_UNKNOWN_SCOPE` | `requested_scopes` 里有 allowlist 之外的值；或 `action=sync` 却没写 scope；或非 `sync` 动作却带了 scope | 请求了不支持的共享范围 | 只用 `friends.read` / `events.metadata`，且只放在 `action=sync` 的事务里（§1.10） |
+| `DEVICE_AUTH_UNKNOWN_SCOPE` | `requested_scopes` 里有 allowlist 之外的值；或 `action=sync` 却没写 scope；或非 `sync` 动作却带了 scope | 请求了不支持的共享范围 | 只用 `friends.read` / `events.metadata` / `groups.read`，且只放在 `action=sync` 的事务里（§1.10） |
 | `DEVICE_AUTH_BAD_REQUEST` | 事务字段不合法（`request_id` 不一致、`expires_at` 过期等） | 认证请求不正确 | 事务与深链引用必须同一条 |
 | `DEVICE_AUTH_EXPIRED` | 确认页停留超过有效期（本地上限 5 分钟，取你的 `expires_at` 与它的较小值） | 授权已过期，请重新发起 | 重新建事务；别复用旧 `request_id` |
 | `DEVICE_AUTH_NETWORK` | 拉元数据/事务超时或非 2xx | 与应用通信失败，请稍后再试 | 检查端点可达性、TLS 与状态码 |

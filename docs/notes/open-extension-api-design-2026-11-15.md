@@ -10,6 +10,7 @@
 |---|---|---|
 | 电脑端快捷登录 | ✅ **已有**（device auth） | 见接入指南 §1，本文不重复 |
 | 好友列表给第三方页面 | ✅ 做，**按需交付** | 只放行 `friends.read`；**无后台推送** |
+| 群列表给第三方页面 | ✅ 做（2026-11-15 用户裁决「群列表 要开」） | 放行 `groups.read`（id / 名称 / 人数，**无成员明细**） |
 | 页面上一键分享到本机聊天框 | ✅ 做，**仍需用户点确认** | 目标必须在双向好友表内，否则 fail-closed |
 | 页面收消息 / 通知类事件 | ✅ 做，**只做元数据** | **正文不外送**（与 E2EE 定位冲突） |
 
@@ -61,15 +62,18 @@
 **「这条断言里带什么」**（登录凭据的面），不放行任何读取本机数据的权限。
 
 本设计引入**第二层：`scope`**（这个应用**这一次**被允许交付什么）。
-**裁决后的 scope 只有两项**：
+**裁决后的 scope 有三项**（前两项 2026-11-15 首版，`groups.read` 同日追加）：
 
 | scope | 含义 | 交付内容 |
 |---|---|---|
 | `friends.read` | 读好友列表 | `device_id` + 昵称 + 在线态 |
 | `events.metadata` | 读消息**元事件** | 谁 / 何时 / 哪个会话 / 什么类型（**无正文**） |
+| `groups.read` | 读群列表 | `group_id` + 群名 + 成员数（**无成员明细、无群密钥**） |
 
-**不做**（裁决 1、2、3）：`groups.read`（群列表）、`chat.send`（免确认直发）、
-`events.content`（正文外送）。**不做的 scope 不出现在 allowlist 里** ——
+**不做**（裁决 1、2、3）：`chat.send`（免确认直发）、`events.content`（正文外送）、
+`groups.members`（群成员明细 —— 成员集合基本是好友集合的子集，已由 `friends.read`
+单独授权，再给一遍就是「一个 scope 偷渡另一个 scope 的内容」）。
+**不做的 scope 不出现在 allowlist 里** ——
 未知 scope **整笔拒**（与未知 claim 同口径），不静默忽略。
 
 规则：
@@ -125,9 +129,13 @@
   `{subject, share_id, status: "sent" | "partial" | "failed", targets: [...]}`。
 - 群与单聊**同一条路径**：都走既有发送通道（乐观上屏 / 台账 / 失败态），不改消息语义。
 
-### 4.2.1 群列表为什么没开放（连带后果）
+### 4.2.1 群列表（2026-11-15 已开放）
 
-裁决只放行 `friends.read` ⇒ **RP 拿不到群列表**，也就拿不到 `group:<群 id>`。
+首版只放行 `friends.read` ⇒ RP 拿不到群列表，也就拿不到 `group:<群 id>`。
+**2026-11-15 用户裁决「群列表 要开」** ⇒ 新增 `groups.read`：
+交付 `group_id` / 群名 / 成员数，**不含成员明细**（见 §3 的 scope 表）。
+连带后果：§2.7 的定向分享现在能由 RP 自己定位群（`groups[].group_id` ⇒ `group:<群 id>`），
+不用再让用户在面板里手选。
 因此「一键发到某个群」这条路径，RP 只能在自己已经知道群 id 的前提下用；
 否则就让用户在面板里自己选群（**群分享能力本身没丢**，只是不能由 RP 自动定位）。
 
@@ -165,7 +173,7 @@ Gosslan 侧用**双向好友表**匹配（§4.2）。
 ## 7. 实现顺序
 
 1. **协议核心**（跨平台纯逻辑，可单测）：
-   `ALLOWED_SCOPES`（两项）、`supported_actions` 加 `sync`、`RpRequest.requested_scopes`、
+   `ALLOWED_SCOPES`（三项）、`supported_actions` 加 `sync`、`RpRequest.requested_scopes`、
    `RpMetadata.share_receipt_endpoint`（可选，HTTPS 同源）、
    `validate_request` 对 scope 的整笔拒、`validate_metadata` 对新端点的同源校验、
    `DeviceAuthPrompt.requested_scopes`（前端要列出来）。

@@ -17,7 +17,7 @@ use crate::device_auth as da;
 use crate::error_codes;
 // 跨域依赖走 `use` 而不是 `crate::db::…` 内联：领域依赖守门只看得见 use 形式，
 // 内联全路径会变成「判据看不见的耦合」（该守门有棘轮，不许调大）。
-use crate::db::{get_recent_incoming_message_meta, list_friends};
+use crate::db::{get_recent_incoming_message_meta, list_friends, list_groups};
 use std::future::Future;
 use std::sync::atomic::Ordering;
 
@@ -409,6 +409,25 @@ fn build_delivery_data(
             })
             .collect();
         data.insert("events".into(), serde_json::Value::Array(events));
+    }
+    if granted.contains(&"groups.read") {
+        // 群列表（用户 2026-11-15「群列表 要开」）：**只有 id / 群名 / 成员数**。
+        //
+        // 刻意**不给**的：成员明细（= 好友集合的子集，已由 friends.read 单独授权 ⇒
+        // 这里再给一遍就是「一个 scope 偷渡另一个 scope 的内容」）、群密钥、任何消息正文。
+        let rows = list_groups(conn)
+            .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("读取群列表失败：{e}")))?;
+        let groups: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|g| {
+                serde_json::json!({
+                    "group_id": g.id,
+                    "name": g.name,
+                    "member_count": g.members.len(),
+                })
+            })
+            .collect();
+        data.insert("groups".into(), serde_json::Value::Array(groups));
     }
     Ok(serde_json::Value::Object(data))
 }
@@ -947,7 +966,10 @@ mod device_auth_cmd_tests {
         conn.execute_batch(
             "CREATE TABLE friends (device_id TEXT, nickname TEXT, avatar TEXT, added_at INTEGER);
              CREATE TABLE messages (id INTEGER PRIMARY KEY, conv_id TEXT, sender_id TEXT,
-               kind TEXT, ts INTEGER, seq INTEGER, mention_targets TEXT);",
+               kind TEXT, ts INTEGER, seq INTEGER, mention_targets TEXT);
+             CREATE TABLE groups (id TEXT, name TEXT, creator TEXT, created_at INTEGER);
+             CREATE TABLE group_members (group_id TEXT, device_id TEXT);
+             CREATE TABLE group_admins (group_id TEXT, device_id TEXT);",
         )
         .unwrap();
         conn.execute(
@@ -979,6 +1001,22 @@ mod device_auth_cmd_tests {
         conn.execute(
             "INSERT INTO messages (id, conv_id, sender_id, kind, ts, seq, mention_targets)
              VALUES (4, 'c1', 'peer-1', 'reaction', 400, 4, NULL)",
+            [],
+        )
+        .unwrap();
+        // 一个群（groups.read 的交付源）：两个成员。
+        conn.execute(
+            "INSERT INTO groups (id, name, creator, created_at) VALUES ('g1', '小院', 'peer-1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO group_members (group_id, device_id) VALUES ('g1', 'peer-1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO group_members (group_id, device_id) VALUES ('g1', 'peer-2')",
             [],
         )
         .unwrap();
@@ -1430,6 +1468,44 @@ mod device_auth_cmd_tests {
         assert!(data3.get("friends").is_none());
         assert!(data3.get("events").is_none());
         assert!(data3.get("subject").is_some());
+    }
+
+    /// `groups.read`（用户 2026-11-15「群列表 要开」）：只给 id / 名称 / 成员数。
+    ///
+    /// 三条硬约束：① 没勾就没有 `groups` 键；② **没有成员明细**（成员 ≈ 好友子集，
+    /// 已由 friends.read 单独授权 ⇒ 这里给一遍就是偷渡）；③ 没有任何密钥。
+    #[test]
+    fn groups_read_delivers_only_id_name_and_member_count() {
+        let conn = test_db_with_data();
+        let requested = vec!["groups.read".to_string(), "friends.read".to_string()];
+
+        // 只勾 groups.read ⇒ 只有群列表。
+        let data = build_delivery_data(
+            &conn,
+            &requested,
+            &["groups.read".to_string()],
+            "my-device",
+            "sub-1",
+        )
+        .unwrap();
+        assert!(data.get("groups").is_some(), "被允许的 scope 必须交付");
+        assert!(data.get("friends").is_none(), "没被允许的 scope 不得交付");
+        let groups = data.get("groups").unwrap().as_array().unwrap();
+        assert_eq!(groups.len(), 1);
+        let g = &groups[0];
+        assert_eq!(g.get("group_id").unwrap(), "g1");
+        assert_eq!(g.get("name").unwrap(), "小院");
+        assert_eq!(g.get("member_count").unwrap(), 2);
+        assert!(g.get("members").is_none(), "群载荷不得含成员明细");
+        assert!(g.get("creator").is_none(), "群载荷不得含创建者明细");
+        assert!(
+            !g.as_object().unwrap().keys().any(|k| k.contains("key")),
+            "群载荷不得含任何密钥字段"
+        );
+
+        // 没勾 ⇒ 连键都没有（不是空数组）。
+        let none = build_delivery_data(&conn, &requested, &[], "my-device", "sub-1").unwrap();
+        assert!(none.get("groups").is_none(), "没勾就不许有 groups 键");
     }
 
     /// `sync` 必须已有 active 绑定：没绑定就交付 = 没登记过的应用也能读你的数据。

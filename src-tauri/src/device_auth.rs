@@ -38,13 +38,20 @@ pub const ALLOWED_CLAIMS: [&str; 3] = ["device_subject", "device_public_key", "n
 /// 与 claim 是两件事：claim 管「这条断言里带什么」（登录凭据的面），
 /// scope 管「这次事务能读到什么」。scope **只对本次事务有效**，不落库、不持久化。
 ///
-/// 裁决（2026-11-15）：只放行两项，且**不做后台推送** —— 交付必须由用户当场触发。
+/// 裁决（2026-11-15 首版，两项）：只放行 `friends.read` 与 `events.metadata`，
+/// 且**不做后台推送** —— 交付必须由用户当场触发。
 /// - `friends.read`：好友列表（device_id + 昵称 + 在线态）。
 /// - `events.metadata`：消息**元事件**（谁 / 何时 / 哪个会话 / 什么类型，**无正文**）。
 ///
-/// 刻意**不在**这里的：群列表、免确认直发、消息正文（正文外送会让消息离开 E2EE 保护范围）。
-/// 未知 scope 整笔拒（与未知 claim 同口径），不静默忽略。
-pub const ALLOWED_SCOPES: [&str; 2] = ["friends.read", "events.metadata"];
+/// 裁决（2026-11-15 追加，用户 2026-11-15「群列表 要开」）：再放行 `groups.read`。
+/// - `groups.read`：群列表（群 id + 群名 + 成员数，**无群密钥、无成员明细、无正文**）。
+///   成员明细不交付的原因：成员集合基本是好友集合的子集，而好友明细已经由
+///   `friends.read` 单独授权 ⇒ 这里再给一遍就是「一个 scope 偷渡另一个 scope 的内容」。
+///
+/// 刻意**不在**这里的：消息正文（正文外送会让消息离开 E2EE 保护范围）、
+/// 免确认直发（`chat.send`）、群密钥与成员明细。未知 scope 整笔拒（与未知 claim 同口径），
+/// 不静默忽略。
+pub const ALLOWED_SCOPES: [&str; 3] = ["friends.read", "events.metadata", "groups.read"];
 
 /// RP 元数据（`GET https://<origin>/.well-known/gosslan-device-auth`）。
 #[derive(Debug, Clone, Deserialize)]

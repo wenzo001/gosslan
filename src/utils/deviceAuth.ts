@@ -20,11 +20,14 @@ export function deviceAuthClaimKey(claim: string): string {
  * scope → i18n key 的静态映射。
  *
  * scope（交付范围）与 claim（这条断言带什么）是两件事：claim 管登录凭据的面，
- * scope 管「这次事务能读到什么」。allowlist 只有两项（裁决 2026-11-15）。
+ * scope 管「这次事务能读到什么」。allowlist 三项（裁决 2026-11-15：好友 + 消息元事件，
+ * 同日追加群列表）。这张表同时是**前端侧的白名单**（`grantedScopes` 用它挡第三重），
+ * 所以它必须与后端 `ALLOWED_SCOPES` 逐字一致（判据见 `openExtensionScopeWiring.test.ts`）。
  */
 export const DEVICE_AUTH_SCOPE_KEYS: Record<string, string> = {
   "friends.read": "deviceAuth.scope.friends_read",
   "events.metadata": "deviceAuth.scope.events_metadata",
+  "groups.read": "deviceAuth.scope.groups_read",
 };
 
 /** 取 scope 的文案 key；未知 scope 原样返回（兜底，不静默吞）。 */

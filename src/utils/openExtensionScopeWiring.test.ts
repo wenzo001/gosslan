@@ -23,26 +23,26 @@ function read(path: string): string {
 }
 
 test("scope 三重收窄：请求 ∩ 勾选 ∩ allowlist", () => {
-  const requested = ["friends.read", "events.metadata"];
+  const requested = ["friends.read", "events.metadata", "groups.read"];
   // 勾了 allowlist 之外的 → 不给。
-  assert.deepEqual(grantedScopes(requested, ["groups.read"]), []);
+  assert.deepEqual(grantedScopes(requested, ["groups.read_all"]), []);
   // 没勾 → 不给。
   assert.deepEqual(grantedScopes(requested, []), []);
   // 勾了但没请求 → 不给。
   assert.deepEqual(grantedScopes(["friends.read"], ["events.metadata"]), []);
-  // 两个都勾 → 都给，且保持请求顺序。
-  assert.deepEqual(grantedScopes(requested, ["events.metadata", "friends.read"]), [
-    "friends.read",
-    "events.metadata",
-  ]);
+  // 三个都勾 → 都给，且保持请求顺序。
+  assert.deepEqual(
+    grantedScopes(requested, ["events.metadata", "groups.read", "friends.read"]),
+    ["friends.read", "events.metadata", "groups.read"],
+  );
 });
 
-test("allowlist 三处同口径：后端 / 前端映射各两项，且不含正文与群列表", () => {
+test("allowlist 三处同口径：后端 / 前端映射各三项，且不含正文与免确认直发", () => {
   const rust = read(RUST_PROTOCOL);
   const scopeLine = rust.match(/pub const ALLOWED_SCOPES: \[&str; (\d+)\] = \[([^\]]+)\]/);
   assert.ok(scopeLine, "后端没有 ALLOWED_SCOPES");
   const rustScopes = [...scopeLine[2].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(rustScopes, ["friends.read", "events.metadata"]);
+  assert.deepEqual(rustScopes, ["friends.read", "events.metadata", "groups.read"]);
 
   const frontend = read("src/utils/deviceAuth.ts");
   const mapLine = frontend.match(
@@ -57,10 +57,10 @@ test("allowlist 三处同口径：后端 / 前端映射各两项，且不含正�
   );
 
   // 刻意不做的东西不能偷偷出现在 allowlist 里。
-  for (const forbidden of ["groups.read", "events.content", "chat.send"]) {
+  for (const forbidden of ["events.content", "chat.send", "groups.members"]) {
     assert.ok(
       !rustScopes.includes(forbidden),
-      `${forbidden} 不在裁决范围内（正文外送 / 群列表 / 免确认直发）`,
+      `${forbidden} 不在裁决范围内（正文外送 / 免确认直发 / 群成员明细）`,
     );
   }
 });
@@ -111,6 +111,19 @@ test("后端：交付载荷没有正文、没有公钥（形状判据，不靠�
   assert.ok(
     !/public_key|ed25519/.test(body),
     "好友载荷里出现了公钥 —— 只给 device_id + 昵称",
+  );
+  // 群列表载荷：id / 名称 / 成员数，且**没有成员明细**。
+  // 成员明细 ≈ 好友集合的子集，已由 friends.read 单独授权 ⇒ 这里给一遍就是偷渡。
+  assert.match(body, /"group_id": g\.id/);
+  assert.match(body, /"name": g\.name/);
+  assert.match(body, /"member_count": g\.members\.len\(\)/);
+  assert.ok(
+    !/"members"\s*:/.test(body),
+    "群载荷里出现了成员明细 —— 群列表只给 id / 名称 / 成员数",
+  );
+  assert.ok(
+    !/group_key|group_secret/.test(body),
+    "群载荷里出现了群密钥 —— 密钥一律不外送",
   );
 });
 
