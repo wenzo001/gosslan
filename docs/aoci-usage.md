@@ -272,6 +272,13 @@ for l in sys.stdin:
 
 ## 9. 2026-11-05 拍板：只维护 orphan 与明显错账
 
+> **2026-11-15 更新**：本节的前提是「**别人还在途**」——当时 maintain 的批次里混着未落定的
+> Rust 在途代码，给它们下语义结论既越界也不可信。2026-11-15 工作树已完全落定（无在途改动），
+> 按当前机器签发的批次把存量一次性对齐后，`aoci check` 现读 `governance_aligned=true`、
+> `next_action=none`、退 0（470 条全是合同免条目）。细节与新读数见
+> [`docs/notes/aoci-deviation-2026-11-05.md`](notes/aoci-deviation-2026-11-05.md) §0。
+> 下面的原始拍板与其理由保留为历史；**「在别人在途期间不追全量」这条仍然有效**。
+
 **结论**：AOCI 的日常维护收缩为两件事 —— 消解 `code_orphan`、修明显错账（E 规模档位、
 把"演进叙事"改回"当下约束"）。`code_missing` / `code_stale` / `code_unbaselined` 的存量
 **登记为既有偏差，不再逐条追全量对齐**。账本在

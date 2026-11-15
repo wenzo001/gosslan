@@ -4,6 +4,31 @@
 > [`docs/aoci-usage.md` §9](../aoci-usage.md#9-2026-11-05-拍板只维护-orphan-与明显错账)。
 > 所有数字都必须现算；下面每条读数都挂了复现命令。
 
+## 0. 2026-11-15 更新：本账本的「长期退 1」前提已不成立
+
+当前 AOCI 版本的治理路径（`aoci_maintain` → 模型作者化 → 原子 Apply）**要求先对齐**
+才允许继续：`governance_aligned=false` 会挡住后续任何 authoring，而 `check` 的
+`next_action` 在对齐前恒为 `authoring_required`。2026-11-05 的「只维护 orphan 与明显错账、
+存量 missing/stale 不追全量」那条拍板，是针对当时那套不强制对齐的工具链写的。
+
+2026-11-15 按机器签发的批次把存量一次性对齐（5 批共 104 条语义），当前读数：
+
+| 类别 | 条数 | 说明 |
+|---|---:|---|
+| `code_skipped` | 470 | 合同免条目（469 二进制 + 1 超 1 MiB），不用处理 |
+| `code_missing` | **0** | 已消解 |
+| `code_stale` | **0** | 已消解 |
+| `code_unbaselined` | **0** | 已消解 |
+| `code_orphan` | **0** | 保持 |
+| **合计** | **470** | 全部是免条目 |
+
+其它现读：`structure_valid=true`、`governance_aligned=true`、`ok=true`、`exit_code=0`、
+`next_action=none`；索引条数 1140 → **1170**（新增 30 条，其中含本轮新增的
+`incoming_share.rs` / `rp_key_backup.rs` / 两个命令分册与对应前端文件）。
+
+⇒ **判回归的口径随之改变**：从「比本文件的分类计数」改成「`aoci check` 的
+`governance_aligned` / `next_action`」；本节以下的旧读数保留为历史轨迹，不再是现状。
+
 ## 1. 拍板口径
 
 2026-11-05 决定：AOCI **只维护 orphan 与明显错账**（E 规模档位错配、演进叙事口径），
