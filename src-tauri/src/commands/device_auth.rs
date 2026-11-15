@@ -485,14 +485,44 @@ pub async fn handle_device_auth_link(app: &tauri::AppHandle, url: String) -> Res
 
     let generation = s.device_auth_generation.fetch_add(1, Ordering::Relaxed) + 1;
     let key = da::pending_key(&link.rp_origin, &meta.client_id, &req.request_id);
+    // 幂等键（jti）：**跨重启复用**（D1「jti 持久化重试复用」）。
+    // 为什么必须落库：应用在用户点「同意」之前被关掉/重启过的话，用户重新点同一个链接时
+    // 若新生成了 jti，RP 侧会看到**两笔不同的决策**（断言的 jti 变了 ⇒ 一次性消费那条链
+    // 当成第二笔事务）。所以这里先查库里记住的那个；没有才新建，并立刻记住。
+    // ⚠️ 读失败**上抛**（不折叠成「没有」）：读不到就没法保证「重试是同一笔」，
+    // 与「读失败 ≠ 没这条」同口径（B1-F7）。
+    let idempotency_key = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        match crate::db::load_pending_idempotency(&dbc, &key, now_ms) {
+            Ok(Some(k)) => k,
+            Ok(None) => {
+                let fresh = uuid::Uuid::new_v4().to_string();
+                crate::db::save_pending_idempotency(&dbc, &key, &fresh, expires_at_ms)
+                    .map_err(|e| {
+                        error_codes::coded(
+                            error_codes::DEVICE_AUTH_NETWORK,
+                            format!("记住本次事务的幂等键失败：{e}"),
+                        )
+                    })?;
+                fresh
+            }
+            Err(e) => {
+                return Err(error_codes::coded(
+                    error_codes::DEVICE_AUTH_NETWORK,
+                    format!("读取上次事务的幂等键失败：{e}"),
+                ))
+            }
+        }
+    };
     let pending = da::PendingDeviceAuth {
         meta,
         request: req,
         rp_origin: link.rp_origin,
         expires_at_ms,
         generation,
-        // 每个事务生成一次，随内存态持久化：prepare 的 jti 与 post 的 Idempotency-Key 都读它。
-        idempotency_key: uuid::Uuid::new_v4().to_string(),
+        // 每个事务生成一次（重启后复用同一个值）：prepare 的 jti 与 post 的 Idempotency-Key
+        // 都读它 —— 见上面那段说明。
+        idempotency_key,
     };
     let prompt = pending.prompt();
     {
@@ -780,6 +810,15 @@ pub async fn device_auth_approve(
     }
     approval?;
 
+    // 事务进终态（RP 已 2xx、绑定已激活）⇒ 删掉记住的幂等键：
+    // 这一笔已经落地，留着它只会让「同一笔事务」在库里还留着钥匙（终态清理）。
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = crate::db::delete_pending_idempotency(&dbc, &key) {
+            eprintln!("[device-auth] code=DEVICE_AUTH_IDEM_DELETE_FAILED：{e}");
+        }
+    }
+
     Ok(da::DeviceAuthOutcome {
         decision: "approved".into(),
         rp_origin,
@@ -861,6 +900,13 @@ pub async fn device_auth_deny(
     // 只有 RP 确认收到拒绝才消费；失败保留可重试态（前端显示重试入口，重试复用同一幂等键）。
     if should_consume {
         consume_pending_if(&s.device_auth_pending, &key, generation);
+        // 事务进终态 ⇒ 记住的幂等键也删掉（终态清理：不该给同一笔事务留一把「还能用」的钥匙）。
+        {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(e) = crate::db::delete_pending_idempotency(&dbc, &key) {
+                eprintln!("[device-auth] code=DEVICE_AUTH_IDEM_DELETE_FAILED：{e}");
+            }
+        }
     }
     Ok(outcome)
 }
@@ -1215,6 +1261,69 @@ mod device_auth_cmd_tests {
     }
 
     // ---------------- P2 队列满载：拒新事务、不淘汰、不顶掉已有确认页 ----------------
+
+    /// 待确认事务的**幂等键跨重启复用**（D1「jti 持久化重试复用」）。
+    ///
+    /// 为什么这条重要：应用在用户点「同意」之前被重启过，用户重新点同一个链接时，
+    /// 若新生成了 jti，RP 侧会看到**两笔不同的决策**（断言 jti 变了 ⇒ 一次性消费那条链
+    /// 当成第二笔事务）。所以幂等键要落库、并在事务进终态时删掉。
+    #[test]
+    fn pending_idempotency_survives_a_restart_and_is_cleaned_on_terminal_state() {
+        let conn = test_db();
+        let key = "https://rp.example\u{1f}cid\u{1f}req-1";
+        let now = 1_700_000_000i64;
+        // 第一次进来：还没有 ⇒ None（不是读失败）。
+        assert_eq!(
+            crate::db::load_pending_idempotency(&conn, key, now).unwrap(),
+            None
+        );
+        crate::db::save_pending_idempotency(&conn, key, "idem-1", now + 60_000).unwrap();
+        // 「重启」后再进来 ⇒ 拿回**同一个** jti（跨重启复用，不是新生成一个）。
+        assert_eq!(
+            crate::db::load_pending_idempotency(&conn, key, now)
+                .unwrap()
+                .as_deref(),
+            Some("idem-1")
+        );
+        // 事务进终态（批准/拒绝）⇒ 删掉 ⇒ 再读就是没有。
+        crate::db::delete_pending_idempotency(&conn, key).unwrap();
+        assert_eq!(
+            crate::db::load_pending_idempotency(&conn, key, now).unwrap(),
+            None
+        );
+        // 过期 ⇒ 视为没有，且**顺手清掉**（终态清理：过期的事务不留残迹）。
+        crate::db::save_pending_idempotency(&conn, key, "idem-2", now - 1).unwrap();
+        assert_eq!(
+            crate::db::load_pending_idempotency(&conn, key, now).unwrap(),
+            None
+        );
+        assert_eq!(
+            crate::db::get_setting(&conn, &crate::db::idempotency_setting_key(key)),
+            None,
+            "过期的那条必须被删掉，不能留在库里"
+        );
+    }
+
+    /// 批准与拒绝两条**终态**路径都要删掉记住的幂等键。
+    ///
+    /// 形状判据（不是行为判据）：命令层那两处各调一次 `delete_pending_idempotency`。
+    /// 少一处 ⇒ 那一笔事务在库里还留着一把「还能用」的钥匙（RP 侧会把它当新事务）。
+    #[test]
+    fn the_terminal_paths_delete_the_remembered_idempotency_key() {
+        let src = include_str!("device_auth.rs");
+        // ⚠️ 先切掉测试模块：本判据自己的字面量与注释里也写着这些函数名，
+        // 不切的话它们会被数进去（尺子把自己也数了 ⇒ 恒多一条）。
+        let prod = &src[..src.find("mod device_auth_cmd_tests").unwrap_or(src.len())];
+        assert!(
+            prod.contains("load_pending_idempotency("),
+            "创建事务时必须先查库里记住的幂等键（跨重启复用）"
+        );
+        assert_eq!(
+            prod.matches("delete_pending_idempotency(").count(),
+            2,
+            "批准与拒绝两条终态路径都要删掉记住的幂等键"
+        );
+    }
 
     #[test]
     fn admit_pending_rejects_when_full_without_evicting() {

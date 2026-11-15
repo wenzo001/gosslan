@@ -28,6 +28,12 @@
 ### 3.1 三个层次必须分开
 
 - 客户端内存 pending map：进程内 `Mutex<HashMap>`，复合键定位，容量有上限，过期在读取与新请求时惰性清理；重启即空。它只是「本机待用户确认」的队列。现在另带一个本地 TTL 上限（取 RP `expires_at` 与插入后固定上限的较早者）与跨重试稳定的幂等键。
+- **幂等键（jti）跨重启复用**（2026-11-16 落地）：待确认事务本身仍是内存态（§5 的设计不变：拒绝/过期/退出即清除），但**幂等键单独落库**（`settings` 表的 `device_auth_idem:<复合键>`，值含过期毫秒）——
+  应用在用户点「同意」之前被重启过、用户重新点同一个链接时，**复用同一个 jti**，
+  RP 侧因而只看到**一笔**决策（否则断言 jti 变了 ⇒ 一次性消费那条链会当成第二笔事务）。
+  事务进终态（批准/拒绝）即删；过期即视为没有并顺手清掉。
+  判据：`commands/device_auth.rs::pending_idempotency_survives_a_restart_and_is_cleaned_on_terminal_state`
+  与 `the_terminal_paths_delete_the_remembered_idempotency_key`（两条都做过反向对照）。
 - 本地 DB 绑定表：`rp_device_bindings` 的表结构在 `src-tauri/src/db.rs`，CRUD 在 `src-tauri/src/db/device_auth.rs`；状态取值现为 `pending_registration | active | revoked | registration_failed`（**列结构未改**）。它记录「本机是否还认可这条凭证」。
 - RP 侧事务：RP 服务端的事务状态，记录「这次登录/绑定的最终结局」。
 - 为什么分开：三者不共状态、不互相推导。内存清空不等于 RP 撤销，DB `active` 不等于 RP 已登记公钥。审计指出的分叉来源——「首绑在 RP 回写之前就写 `active`」——现已改为回写 2xx 成功后才激活；失败落 `registration_failed` 并保留同一密钥供重试。
@@ -64,7 +70,7 @@
   - 当前状态：需 RP 侧实现。客户端只校验 HTTPS 同源 metadata 与端点，不参与 RP 会话；`scripts/device-auth-rp-mock.mjs` 免 session/CSRF。
 - **挑战一次性消费**
   - 要求：challenge、transaction_id、jti 与 RP/action/audience/会话绑定后原子消费；重放旧签名、旧事务一律拒绝且保持终态。
-  - 当前状态：已具备（客户端层）。`jti` 与幂等键现在挂在 pending 事务上、跨重试复用，不再每次 `sign_assertion` 重生成；`src-tauri/src/commands/device_auth.rs` 的一次性消费、复合键与代际对账保持。RP 侧原子消费与**持久化**重放库仍需 RP 实现；mock 只提供进程级 `jti` 去重。
+  - 当前状态：已具备（客户端层）。`jti` 与幂等键现在挂在 pending 事务上、跨重试复用，**并且跨应用重启复用**（幂等键单独落库，2026-11-16），不再每次 `sign_assertion` 重生成；`src-tauri/src/commands/device_auth.rs` 的一次性消费、复合键与代际对账保持。RP 侧原子消费与**持久化**重放库仍需 RP 实现；mock 只提供进程级 `jti` 去重。
 - **idempotency key**
   - 要求：decision 回写带 HTTP 层幂等键；网络重试不重复登记公钥、不重复创建绑定、不重复建会话。
   - 当前状态：已具备（客户端回写层）。`PendingDeviceAuth.idempotency_key` 在事务创建时生成，approve / deny 的重试都复用，`post_decision` 带 `Idempotency-Key` 头。跨进程、跨重启的幂等仍依赖 RP 按该键去重，客户端不持久化该键。

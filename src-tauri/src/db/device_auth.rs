@@ -1,5 +1,81 @@
 // 职责边界：
 // - 外部应用设备认证 RP 绑定表（rp_device_bindings）CRUD
+// ---------------- 待确认事务的幂等键（跨重启复用，2026-11-16） ----------------
+//
+// ## 为什么单独存一条
+//
+// 待确认事务本身是**内存态**（设计文档 §5：拒绝/过期/退出即清除，不落库）——
+// 那是刻意的：事务里有 RP 的 claim 列表，放进库里就得管它的过期与清理。
+//
+// 但**幂等键（jti）必须跨重启活下来**：应用在用户点「同意」之前被关掉/重启，
+// 用户重新点同一个链接时，如果新生成了 jti，RP 侧就会看到**两笔不同的决策**
+// （断言的 jti 变了 ⇒ 挑战一次性消费 / 登记公钥那条链会当成第二笔事务）。
+// 审计原话：「失败、超时和重试必须具备幂等键」—— 重试包括「重启后重来」。
+//
+// ## 存哪
+//
+// `settings` 表（键值对）—— **不动表结构**（SQLite schema 属 Frozen Core）。
+// 键 = `device_auth_idem:<复合键>`，值 = `<jti>|<过期毫秒>`。
+// 过期时间跟着事务的 TTL 走：过期即视为没有（读的时候顺手删掉）。
+//
+// ## 为什么不是「私钥那套密钥库」
+//
+// 这里存的是**幂等键**，不是私钥材料：它没有「泄露即伪造身份」的杀伤力
+// （RP 侧还要验签 + 一次性消费），但它泄露会让 RP 把两次重试当成两笔事务。
+// 落库即明文即可 —— 与「单机安全不额外考虑」的口径一致。
+
+/// 幂等键在 settings 表里的键前缀。
+pub const IDEMPOTENCY_KEY_PREFIX: &str = "device_auth_idem:";
+
+/// settings 表里的键（复合键 → 完整键）。
+pub fn idempotency_setting_key(pending_key: &str) -> String {
+    format!("{IDEMPOTENCY_KEY_PREFIX}{pending_key}")
+}
+
+/// 记住某笔待确认事务的幂等键（带过期时间）。
+pub fn save_pending_idempotency(
+    conn: &Connection,
+    pending_key: &str,
+    idempotency_key: &str,
+    expires_at_ms: i64,
+) -> Result<()> {
+    crate::db::set_setting(
+        conn,
+        &idempotency_setting_key(pending_key),
+        &format!("{idempotency_key}|{expires_at_ms}"),
+    )
+}
+
+/// 取某笔待确认事务记住的幂等键。
+///
+/// 过期 ⇒ 返回 `None` **并顺手删掉**（终态清理：过期的事务不留残迹）。
+/// 读失败**上抛**，不折叠成「没有」（读失败与「没这条」必须可分 —— B1-F7）。
+pub fn load_pending_idempotency(
+    conn: &Connection,
+    pending_key: &str,
+    now_ms: i64,
+) -> Result<Option<String>> {
+    let key = idempotency_setting_key(pending_key);
+    let raw = crate::db::get_setting_checked(conn, &key)?;
+    let Some(raw) = raw else { return Ok(None) };
+    let Some((idem, expires)) = raw.rsplit_once('|') else {
+        // 形状不对（旧值/被手改过）⇒ 当没有，并清掉。
+        crate::db::delete_setting(conn, &key)?;
+        return Ok(None);
+    };
+    let expires_at_ms: i64 = expires.parse().unwrap_or(0);
+    if expires_at_ms <= now_ms {
+        crate::db::delete_setting(conn, &key)?;
+        return Ok(None);
+    }
+    Ok(Some(idem.to_string()))
+}
+
+/// 事务进终态（批准 / 拒绝 / 过期 / 清理）⇒ 删掉记住的幂等键。
+pub fn delete_pending_idempotency(conn: &Connection, pending_key: &str) -> Result<()> {
+    crate::db::delete_setting(conn, &idempotency_setting_key(pending_key))
+}
+
 // ---------------- 外部应用设备认证绑定（2026-11-13，Phase 2） ----------------
 
 use crate::crypto;
