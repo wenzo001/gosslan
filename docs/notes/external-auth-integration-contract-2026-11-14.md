@@ -120,8 +120,17 @@
   前端 `SharePanel.vue` 做「来源线索 + 可编辑正文 + 会话搜索/单选 + 显式发送」，发送复用既有
   `send` 通道。**兜底入口**：设置 → 关于（桌面端其「安全」区）的「分享链接」粘贴框 `share_handle_link`
   走**同一个** `begin_share`（深链未注册时唯一的自测路径，与设备认证的粘贴框对称）。
-  **未做**：受控 `share_request`（需 RP 端点）、文件分享、系统分享面板、
-  第三方分享 SDK、网页预览。
+  **系统分享目标（从别的应用分享到本机）**：**读取端已实现，平台写入端未实现**。
+  协议是「写文件 → 主应用读文件」（macOS 的 Share Extension 与 Windows 的 MSIX share target
+  都是独立进程，只能写共享容器/目录）：落地区在 `app_local_data_dir()/incoming-shares/`，
+  文件名 `incoming-<32 位小写十六进制>.json`，正文见
+  [`system-share-target-design-2026-11-15.md`](system-share-target-design-2026-11-15.md) §3。
+  读取端把落地区当**不可信输入**（严格文件名、大小、时效，且内容走 `share.rs` 的同一个
+  构造入口 ⇒ 深链拦得住的落地区也拦得住），先入队后删文件，与深链**共用**队列与面板。
+  触发点是应用启动与窗口重新获得焦点（不给常驻托盘的客户端挂永不停歇的 IPC 轮询）。
+  **未做**：macOS Share Extension 与 Windows MSIX share target 两个写入端（都要独立工程与
+  签名证书，本仓产不出可安装的包），骨架与配置说明见该设计稿 §6。
+  **未做**：受控 `share_request`（需 RP 端点）、文件分享、第三方分享 SDK、网页预览。
   注意区分：`src/components/ShareDirectory.vue` 与 `src-tauri/src/commands/share.rs` 是
   **P2P 共享目录**，与这里的「外部分享到会话」是两件事（错误码也分族：`SHARE_DIR_*` vs
   `EXTERNAL_SHARE_*`）。
@@ -227,13 +236,13 @@
 | 事项 | 裁决 | 当前状态 |
 |---|---|---|
 | 分享面板单选 / 多选 | **多选**（逐项勾、按钮带目标数、部分失败只留失败项可重试） | **已实现**（`src/components/SharePanel.vue`，判据在 `shareWiring.test.ts`） |
-| 系统分享目标（从别的应用分享到本应用） | **要做，先 macOS / Windows** | 未实现。macOS 需要 Share Extension（Xcode target，本仓构建不出）、Windows 需要 MSIX share target 或 shell 扩展；两者都要签名打包与真机验证，本仓只能提供骨架与契约 |
+| 系统分享目标（从别的应用分享到本应用） | **要做，先 macOS / Windows** | **读取端已实现，平台写入端未实现**：协议 + 读取端 + 两份骨架已交（`incoming_share.rs` + `commands/external_share.rs` 的扫描 + 设计稿 §6）；macOS 需要 Share Extension（Xcode target，本仓构建不出）、Windows 需要 MSIX share target，两者都要签名打包与真机验证 |
 | 双边撤销 | **做，先定契约再实现** | **已实现（客户端侧）**：metadata 加可选 `revocation_endpoint`（HTTPS 同源）、撤销先本地后通知、通知带 `Idempotency-Key`、体只回 `{client_id, kid}`；结果由 `rp_notified` 分四态呈现，通知失败可**重发**。判据 `deviceAuthRevokeWiring.test.ts` + Rust 单测。RP 侧作废与最终一致性仍需生产实现（见 §4） |
 | RP 私钥保护 | **上平台密钥库** | 未实现。要求与迁移顺序见 §5 |
 | 导出 / 恢复绑定密钥 | **要做**（口令加密单文件；不做云备份、不导出 P2P 密钥） | **已实现（客户端）**：`rp_key_backup.rs` + 三条命令 + 设置页区块；判据 `rpKeyBackupWiring.test.ts` 与 Rust 单测。设计稿：[`rp-key-export-recovery-design-2026-11-15.md`](rp-key-export-recovery-design-2026-11-15.md)。**顺序硬约束**：导出能力必须先于「抹掉 SQLite 明文 seed」可用 |
 
-已实现的那几条（多选、导出/恢复、双边撤销的客户端侧）在本轮改代码与文档；
-其余**只有裁决、没有实现**的（系统分享目标、平台密钥库），对外仍按本节上面的
+已实现的那几条（多选、导出/恢复、双边撤销的客户端侧、系统分享目标的**读取端**）在本轮改代码与文档；
+**平台分享写入端**与**平台密钥库**仍只有裁决、没有实现，对外仍按本节上面的
 「未做」口径回答，不得写成已具备。
 
 ## 12. 复跑与维护

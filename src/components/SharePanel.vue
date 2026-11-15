@@ -59,6 +59,16 @@ onMounted(() => {
   void api.onDataCleared(() => store.clear()).then((un) => scope.onDispose(un));
   // 冷启动：事件发在窗口加载之前，靠这一条补拉回来。
   void store.load();
+  // 系统分享目标（平台扩展写进「落地区」的文件）：用户切回本应用时补扫一次。
+  //
+  // 触发点选「窗口重新获得焦点」而不是「定时轮询」：分享是低频动作，
+  // 给一个常驻托盘的客户端挂一条永不停歇的 IPC 轮询不划算；而用户从别的应用
+  // 分享完切回来的那一刻，正是最该捡起这条分享的时刻。
+  const onWindowFocus = () => {
+    void store.load();
+  };
+  window.addEventListener("focus", onWindowFocus);
+  scope.onDispose(() => window.removeEventListener("focus", onWindowFocus));
 });
 onUnmounted(() => scope.dispose());
 
