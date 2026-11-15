@@ -12,7 +12,13 @@ import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import { api } from "@/api";
 import { useDeviceAuthStore } from "@/stores/useDeviceAuthStore";
 import { useAppStore } from "@/stores/useAppStore";
-import { deviceAuthClaimKey, deviceAuthSecondsLeft, disclosedClaims } from "@/utils/deviceAuth";
+import {
+  deviceAuthClaimKey,
+  deviceAuthScopeKey,
+  deviceAuthSecondsLeft,
+  disclosedClaims,
+  grantedScopes,
+} from "@/utils/deviceAuth";
 import { createInitScope } from "@/utils/initScope";
 import { t } from "@/i18n";
 
@@ -20,12 +26,17 @@ const store = useDeviceAuthStore();
 const app = useAppStore();
 const allowNickname = ref(false);
 const now = ref(Date.now());
+// 用户**实际勾选**的交付范围（scope）。**默认全关**：新事务到达时清空，
+// 不预勾 —— scope 必须用户点头才有。
+const scopeChecks = ref<string[]>([]);
 
 // 订阅与定时器都交给 initScope 成对拆除（判据 ㊷：不许手工卸载句柄）。
 const scope = createInitScope();
 onMounted(() => {
   void api.onDeviceAuthRequest((p) => {
     allowNickname.value = false;
+    // 新事务 ⇒ 上一笔的勾选**不带过来**（scope 是本次事务的授权）。
+    scopeChecks.value = [];
     store.setPending(p);
   }).then((un) => scope.onDispose(un));
   // 清数据（clearAllData / resetAfterDataCleared 经后端广播 data-cleared）一并清掉确认页（#8）：
@@ -56,9 +67,24 @@ const secondsLeft = computed(() =>
   prompt.value ? deviceAuthSecondsLeft(prompt.value.expires_at_ms, now.value) : 0,
 );
 const expired = computed(() => secondsLeft.value <= 0);
-const actionLabel = computed(() =>
-  prompt.value?.action === "authenticate" ? t("deviceAuth.authAction") : t("deviceAuth.linkAction"),
-);
+const actionLabel = computed(() => {
+  if (prompt.value?.action === "authenticate") return t("deviceAuth.authAction");
+  if (prompt.value?.action === "sync") return t("deviceAuth.syncAction");
+  return t("deviceAuth.linkAction");
+});
+/** 本次事务请求的交付范围（RP 声明要什么）。 */
+const requestedScopes = computed(() => prompt.value?.requested_scopes ?? []);
+/** 用户勾选后**实际**会交付的那部分（请求 ∩ 勾选 ∩ allowlist）。 */
+const granted = computed(() => grantedScopes(requestedScopes.value, scopeChecks.value));
+
+function scopeLabel(sc: string): string {
+  return t(deviceAuthScopeKey(sc));
+}
+function onScopeToggle(sc: string, on: boolean) {
+  scopeChecks.value = on
+    ? [...scopeChecks.value, sc]
+    : scopeChecks.value.filter((x) => x !== sc);
+}
 
 function claimLabel(c: string): string {
   return t(deviceAuthClaimKey(c));
@@ -66,7 +92,7 @@ function claimLabel(c: string): string {
 
 async function onApprove() {
   try {
-    const out = await store.approve(allowNickname.value);
+    const out = await store.approve(allowNickname.value, granted.value);
     if (out) app.toast(t("deviceAuth.approved"), "success");
   } catch (e) {
     app.toastError(e, t("deviceAuth.approveFail"));
@@ -129,6 +155,27 @@ function onClose() {
           <SettingsToggle v-model="allowNickname" :label="t('deviceAuth.nicknameToggle')" size="sm" />
           <span class="text-meta text-[var(--gosslan-text-2)]">{{ t("deviceAuth.nicknameToggle") }}</span>
         </div>
+      </div>
+
+      <!-- 交付范围（scope）：默认全关，逐项由用户点头。 -->
+      <div v-if="requestedScopes.length">
+        <div class="mb-1 text-caption text-[var(--gosslan-text-2)]">{{ t("deviceAuth.scopesLabel") }}</div>
+        <div
+          v-for="sc in requestedScopes"
+          :key="sc"
+          class="mb-1 flex items-center gap-2"
+        >
+          <SettingsToggle
+            :model-value="scopeChecks.includes(sc)"
+            :label="scopeLabel(sc)"
+            size="sm"
+            @update:model-value="onScopeToggle(sc, $event)"
+          />
+          <span class="text-meta text-[var(--gosslan-text-2)]">{{ scopeLabel(sc) }}</span>
+        </div>
+        <p class="mt-1 text-meta leading-relaxed text-[var(--gosslan-text-2)]">
+          {{ t("deviceAuth.scopeHint") }}
+        </p>
       </div>
 
       <p class="text-caption leading-relaxed text-[var(--gosslan-text-2)]">{{ t("deviceAuth.warning") }}</p>

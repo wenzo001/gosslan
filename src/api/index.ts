@@ -882,8 +882,25 @@ export const api = {
   // 复合键定位（#8）：rp_origin + client_id + request_id，防跨 RP 的 request_id 撞键。
   deviceAuthGetPending: (rpOrigin: string, clientId: string, requestId: string) =>
     invoke<DeviceAuthPrompt>("device_auth_get_pending", { rpOrigin, clientId, requestId }),
-  deviceAuthApprove: (rpOrigin: string, clientId: string, requestId: string, allowNickname: boolean) =>
-    invoke<DeviceAuthOutcome>("device_auth_approve", { rpOrigin, clientId, requestId, allowNickname }),
+  /**
+   * 批准。`allowedScopes` = 用户在确认页**实际勾选**的交付范围。
+   *
+   * 传空数组 = 什么都不交付（fail closed）：scope 永远要用户点头才有。
+   */
+  deviceAuthApprove: (
+    rpOrigin: string,
+    clientId: string,
+    requestId: string,
+    allowNickname: boolean,
+    allowedScopes: string[] = [],
+  ) =>
+    invoke<DeviceAuthOutcome>("device_auth_approve", {
+      rpOrigin,
+      clientId,
+      requestId,
+      allowNickname,
+      allowedScopes,
+    }),
   deviceAuthDeny: (rpOrigin: string, clientId: string, requestId: string) =>
     invoke<DeviceAuthOutcome>("device_auth_deny", { rpOrigin, clientId, requestId }),
   deviceAuthListBindings: () => invoke<RpBindingInfo[]>("device_auth_list_bindings"),

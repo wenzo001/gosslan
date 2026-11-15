@@ -17,6 +17,32 @@ export function deviceAuthClaimKey(claim: string): string {
 }
 
 /**
+ * scope → i18n key 的静态映射。
+ *
+ * scope（交付范围）与 claim（这条断言带什么）是两件事：claim 管登录凭据的面，
+ * scope 管「这次事务能读到什么」。allowlist 只有两项（裁决 2026-11-15）。
+ */
+export const DEVICE_AUTH_SCOPE_KEYS: Record<string, string> = {
+  "friends.read": "deviceAuth.scope.friends_read",
+  "events.metadata": "deviceAuth.scope.events_metadata",
+};
+
+/** 取 scope 的文案 key；未知 scope 原样返回（兜底，不静默吞）。 */
+export function deviceAuthScopeKey(scope: string): string {
+  return DEVICE_AUTH_SCOPE_KEYS[scope] ?? scope;
+}
+
+/**
+ * 用户勾选后**实际交付**的 scope：请求的 ∩ 勾选的 ∩ allowlist 里的。
+ *
+ * 三重收窄的第三道（前端侧）：后端还会再收窄一次（请求 ∩ 用户允许 ∩ allowlist），
+ * 这里先拦一道，让「界面上没勾的东西不可能被交出去」在类型之外还有一层白名单。
+ */
+export function grantedScopes(requested: string[], checked: string[]): string[] {
+  return requested.filter((s) => DEVICE_AUTH_SCOPE_KEYS[s] && checked.includes(s));
+}
+
+/**
  * 绑定状态 → 文案 key。首绑状态机扩展出 `pending_registration` / `registration_failed`
  * 两个中间/失败态后，设置页不能把它们一律当「已撤销」显示（就绪度审计 §3.2）。
  * 未知状态一律归到「绑定未完成」，fail closed，不误标成 active。

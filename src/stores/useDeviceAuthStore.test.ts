@@ -42,7 +42,9 @@ export function deviceAuthWiringViolations(storeSrc: string, modalSrc: string): 
     bad.push("store 刷新未凭代际回填（guardRefresh(guard, captured, p)）（#8）");
   }
   // ③ 复合键调后端（#8）：批准必须带 rp_origin+client_id+request_id，而不是裸 request_id。
-  if (!/api\.deviceAuthApprove\(cur\.rp_origin, cur\.client_id, cur\.request_id, allowNickname\)/.test(store)) {
+  // ⚠️ 允许换行与后续参数（scope 交付是第 5 个参数）：判据的本意是
+  // 「批准必须带复合键三个参数，而不是裸 request_id」—— 参数个数不是本意。
+  if (!/api\.deviceAuthApprove\(\s*cur\.rp_origin,\s*cur\.client_id,\s*cur\.request_id,/.test(store)) {
     bad.push("store 批准未用复合键调后端（rp_origin+client_id+request_id）（#8）");
   }
   // 可重试（#1）：批准失败不得清 pending —— guardConsume 必须在 await 之后（成功才消费），

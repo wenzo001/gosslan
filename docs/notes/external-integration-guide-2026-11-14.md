@@ -97,8 +97,9 @@ https://your-app.example.com/authorize/<request_id>
 | `request_endpoint` | string | 是 | 取事务的 URL，同源，可带 `{request_id}` 占位 |
 | `decision_endpoint` | string | 是 | 收决策的 URL，同源，可带 `{request_id}` 占位 |
 | `poll_endpoint` | string | 否 | 浏览器轮询端点，客户端不使用（保留给契约完整） |
-| `supported_actions` | string[] | 是 | 至少含 `link` 与 `authenticate` |
+| `supported_actions` | string[] | 是 | 至少含 `link` 与 `authenticate`；要申请数据交付再加 `sync`（见 §1.10） |
 | `supported_claims` | string[] | 是 | 只能是 `device_subject` / `device_public_key` / `nickname` |
+| `share_receipt_endpoint` | string | 否 | 分享回执端点（定向分享发完后回传结果，见 §2.7）。**HTTPS 且与 `issuer` 同源**；不给 = 分享后不回执（与旧行为一致，不是失败） |
 
 ### 1.4 事务端点（`GET <request_endpoint>`）
 
@@ -114,6 +115,7 @@ https://your-app.example.com/authorize/<request_id>
 | `requested_claims` | string[] | allowlist 之内；未知 claim **整笔拒** |
 | `challenge` | string | 你的随机挑战（要求足够熵） |
 | `expires_at` | string | ISO-8601 过期时刻 |
+| `requested_scopes` | string[] | 否 | 本次要交付什么（见 §1.10）。**只有 `action=sync` 能带**；其它动作带它、或带未知值 ⇒ 整笔拒 |
 
 ### 1.5 决策回写（`POST <decision_endpoint>`）
 
@@ -128,9 +130,13 @@ https://your-app.example.com/authorize/<request_id>
   "public_key": "<base64url 32B Ed25519 公钥>",
   "device_subject": "<pairwise subject>",
   "claims": { "device_subject": "…", "device_public_key": "…", "nickname": "…" },
-  "assertion": "<JWS>"
+  "assertion": "<JWS>",
+  "data": { "subject": "…", "friends": [ … ], "events": [ … ] }
 }
 ```
+
+`data` 是**可选**的：只有 `action=sync` 且用户批准了对应的交付范围时才有这个键，
+**没有就是没交付**（不是空对象）。形状见 §1.10。
 
 拒绝：
 
@@ -221,6 +227,60 @@ app.post("/device-auth/decisions/:id", express.json(), (req, res) => {
   res.status(200).json({ ok: true });
 });
 ```
+
+## 1.10 数据交付（`sync`）：把好友列表与消息通知给你的页面
+
+除了登录，你还可以让用户**在你自己的页面上**看到他的好友列表与最近收到的消息通知。
+这一节是可选能力，**不实现也不影响 §1 的登录**。
+
+### 什么时候用
+
+典型场景：你的页面里有个「同步好友」按钮，用户点了之后，页面上就列出他的好友，
+并让他挑一个直接分享到你应用里的某个会话。
+
+### 流程
+
+1. 你建一个事务：`action=sync`、`requested_scopes` 写你要的东西。
+2. 深链唤起 Gosslan（同 §1.2 的形状），**用户会看到一个确认页**：
+   应用名、来源域，以及「这个应用还想要」的两项，逐项可勾。
+3. 用户批准 ⇒ 客户端把数据**随决策回写一起**送到你的 `decision_endpoint`（§1.5）。
+4. 你按 `data` 的形状取用。
+
+### `requested_scopes` 只有两个值
+
+| scope | 交付什么 |
+|---|---|
+| `friends.read` | `friends`：好友的 `device_id` 与 `nickname`（**没有公钥、没有在线态**） |
+| `events.metadata` | `events`：最近收到的消息的 `conv_id` / `sender_id` / `kind` / `ts` / `seq`（**没有正文**） |
+
+写了别的值 ⇒ **整笔拒**（`DEVICE_AUTH_UNKNOWN_SCOPE`），不是静默忽略。
+没写任何值、却用 `action=sync` ⇒ 也拒（那是个空申请）。
+
+### `data` 的形状
+
+```json
+"data": {
+  "subject": "<pairwise subject>",
+  "friends": [ { "device_id": "…", "nickname": "…" } ],
+  "events": [ { "conv_id": "…", "sender_id": "…", "kind": "text", "ts": 1731600000000, "seq": 42 } ]
+}
+```
+
+**键按你请求的 scope 出现**：没请求 `friends.read` 就**没有 `friends` 这个键**
+（不是空数组）。用户也可以在确认页里**只勾一部分** —— 那就只交付勾了的那部分。
+
+### 六条硬限制（请照着设计你的页面）
+
+1. **没有后台推送**。交付只在用户当场点、当场批准时发生一次。
+   应用闲置时不会向你发任何东西。
+2. **每次都要用户确认**。你的页面不能静默拿到数据。
+3. **scope 只对本次事务有效**，不落库。下次要数据就再走一遍流程。
+4. **`sync` 要求已有绑定**：用户必须先 `link` 过你的应用，否则整笔拒
+   （`DEVICE_AUTH_NO_BINDING`）。
+5. **消息正文永远不外送**。`events` 里没有 `content`。
+   如果你的产品需要正文，那是另一个决定，不在这份契约里。
+6. **不承诺隐藏**：`device_id` 是设备标识，跨应用可关联（这是 P2P 的既有暴露面，
+   本契约不扩大它，也不承诺隐藏）。
 
 ## 2. 分享到会话
 
@@ -324,6 +384,19 @@ location.href = link;
 - [ ] 换一台设备再绑：`device_subject` 不同（pairwise 隔离）。
 - [ ] 撤销后旧断言被你的服务端拒绝。
 
+数据交付（可选，见 §1.10）：
+
+- [ ] 先 `link` 绑定成功，再用 `action=sync` 建事务。
+- [ ] 确认页列出「这个应用还想要」的两项，且**默认都没勾**。
+- [ ] 全勾后批准：回写 body 里**有** `data`，且 `data.friends` 有好友、`data.events` 有事件。
+- [ ] 只勾一项：回写里**只有**那一个键（另一个键不存在，不是空数组）。
+- [ ] 一个都不勾：回写里**没有** `friends` 与 `events`。
+- [ ] `data.events` 的每一条都**没有** `content` 字段。
+- [ ] `data.friends` 的每一条都**没有**公钥字段。
+- [ ] 用没 `link` 过的应用申请 `sync`：被拒（`DEVICE_AUTH_NO_BINDING`）。
+- [ ] `requested_scopes` 里写 `groups.read`：整笔拒（`DEVICE_AUTH_UNKNOWN_SCOPE`）。
+- [ ] 同一个 `Idempotency-Key` 重放：你的服务端合并成一次。
+
 分享：
 
 - [ ] `gosslan://share?url=…` 能拉起面板并显示来源主机名。
@@ -356,6 +429,7 @@ location.href = link;
 | `DEVICE_AUTH_BAD_METADATA` | 元数据缺字段、端点非 HTTPS、端点是跨源 | 应用认证信息不完整 | 按 §1.3 补齐；端点必须同源 HTTPS |
 | `DEVICE_AUTH_UNSUPPORTED` | `protocol_version` 不认识，或不支持该 `action` | 不支持的认证协议或动作 | 用 `"1"`，并在 `supported_actions` 里声明要用的动作 |
 | `DEVICE_AUTH_UNKNOWN_CLAIM` | `requested_claims` 超出 allowlist 或不在你的 `supported_claims` 里 | 请求了不支持的信息字段 | 只用三个允许的 claim |
+| `DEVICE_AUTH_UNKNOWN_SCOPE` | `requested_scopes` 里有 allowlist 之外的值；或 `action=sync` 却没写 scope；或非 `sync` 动作却带了 scope | 请求了不支持的共享范围 | 只用 `friends.read` / `events.metadata`，且只放在 `action=sync` 的事务里（§1.10） |
 | `DEVICE_AUTH_BAD_REQUEST` | 事务字段不合法（`request_id` 不一致、`expires_at` 过期等） | 认证请求不正确 | 事务与深链引用必须同一条 |
 | `DEVICE_AUTH_EXPIRED` | 确认页停留超过有效期（本地上限 5 分钟，取你的 `expires_at` 与它的较小值） | 授权已过期，请重新发起 | 重新建事务；别复用旧 `request_id` |
 | `DEVICE_AUTH_NETWORK` | 拉元数据/事务超时或非 2xx | 与应用通信失败，请稍后再试 | 检查端点可达性、TLS 与状态码 |

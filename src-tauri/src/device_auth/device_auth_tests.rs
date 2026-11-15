@@ -27,7 +27,9 @@ fn good_metadata() -> RpMetadata {
         poll_endpoint: format!("{ORIGIN}/api/device-auth/requests/{{request_id}}/status"),
         // 默认不提供撤销端点：这条要与"旧 RP 没升级"的行为一致（只做本地撤销）。
         revocation_endpoint: String::new(),
-        supported_actions: vec!["link".into(), "authenticate".into()],
+        // 默认不提供分享回执端点（老 RP 没实现定向分享回执时，分享行为与旧行为一致）。
+        share_receipt_endpoint: String::new(),
+        supported_actions: vec!["link".into(), "authenticate".into(), "sync".into()],
         supported_claims: vec![
             "device_subject".into(),
             "device_public_key".into(),
@@ -46,6 +48,8 @@ fn good_request() -> RpRequest {
         action: "link".into(),
         account_hint: "li***@example.com".into(),
         requested_claims: vec!["device_subject".into(), "device_public_key".into()],
+        // 默认不请求任何交付范围（scope 只在 sync 动作下非空）。
+        requested_scopes: Vec::new(),
         challenge: challenge_b64(),
         expires_at: future_expiry(),
     }
@@ -144,6 +148,94 @@ fn metadata_validation_accepts_good_and_rejects_cross_origin() {
         validate_metadata(&m, ORIGIN).is_err(),
         "http 撤销端点必须拒"
     );
+}
+
+/// scope（交付范围）的三条硬规则（裁决 2026-11-15）。
+///
+/// 三条都要有判据：少一条就会出现「用户以为自己没给、其实给了」或反过来。
+#[test]
+fn scope_rules_are_enforced() {
+    // ① 未知 scope 整笔拒（不静默忽略 —— 静默忽略会让两边都看不出问题）。
+    let mut m = good_metadata();
+    m.supported_actions.push("sync".into());
+    let mut r = good_request();
+    r.action = "sync".into();
+    r.requested_scopes = vec!["friends.read".into(), "friends.read_all".into()];
+    let err = validate_request(&r, &m, 1_700_000_000_000).unwrap_err();
+    assert!(
+        err.contains(error_codes::DEVICE_AUTH_UNKNOWN_SCOPE),
+        "未知 scope 必须整笔拒，实际：{err}"
+    );
+
+    // ② sync 必须至少声明一项交付内容（否则是个空申请）。
+    let mut r = good_request();
+    r.action = "sync".into();
+    r.requested_scopes = Vec::new();
+    let err = validate_request(&r, &m, 1_700_000_000_000).unwrap_err();
+    assert!(
+        err.contains(error_codes::DEVICE_AUTH_UNKNOWN_SCOPE),
+        "空 scope 的 sync 必须拒，实际：{err}"
+    );
+
+    // ③ 其它动作带 scope 一律拒（「登录顺便交付了数据」是 RP 侧最危险的误读）。
+    let mut r = good_request();
+    r.action = "link".into();
+    r.requested_scopes = vec!["friends.read".into()];
+    let err = validate_request(&r, &m, 1_700_000_000_000).unwrap_err();
+    assert!(
+        err.contains(error_codes::DEVICE_AUTH_UNKNOWN_SCOPE),
+        "非 sync 动作带 scope 必须拒，实际：{err}"
+    );
+
+    // ④ 合法形态：sync + allowlist 内的 scope ⇒ 过。
+    let mut r = good_request();
+    r.action = "sync".into();
+    r.requested_scopes = vec!["friends.read".into(), "events.metadata".into()];
+    assert!(validate_request(&r, &m, 1_700_000_000_000).is_ok());
+
+    // ⑤ allowlist 之外的两个 scope 永远不在里面（群列表 / 正文外送）。
+    assert!(!ALLOWED_SCOPES.contains(&"groups.read"));
+    assert!(!ALLOWED_SCOPES.contains(&"events.content"));
+    assert!(!ALLOWED_SCOPES.contains(&"chat.send"));
+}
+
+/// 分享回执端点：给了就必须 HTTPS 且与 issuer 同源（不给 ≠ 可以给个跨域的）。
+#[test]
+fn share_receipt_endpoint_must_be_same_origin_https() {
+    let mut m = good_metadata();
+    assert!(validate_metadata(&m, ORIGIN).is_ok(), "不给是合法的");
+
+    m.share_receipt_endpoint = format!("{ORIGIN}/api/device-auth/share-receipt");
+    assert!(validate_metadata(&m, ORIGIN).is_ok());
+
+    m.share_receipt_endpoint = "https://evil.example.com/receipt".into();
+    assert!(
+        validate_metadata(&m, ORIGIN).is_err(),
+        "跨域分享回执端点必须拒"
+    );
+
+    m.share_receipt_endpoint = "http://app.example.com/api/device-auth/share-receipt".into();
+    assert!(
+        validate_metadata(&m, ORIGIN).is_err(),
+        "http 分享回执端点必须拒"
+    );
+}
+
+/// 确认页必须能看到 RP 请求了哪些交付范围（否则用户没法逐项决定）。
+#[test]
+fn prompt_carries_requested_scopes() {
+    let mut p = super::PendingDeviceAuth {
+        meta: good_metadata(),
+        request: good_request(),
+        rp_origin: ORIGIN.into(),
+        expires_at_ms: 4_000_000_000_000,
+        generation: 1,
+        idempotency_key: "idem-1".into(),
+    };
+    p.request.action = "sync".into();
+    p.request.requested_scopes = vec!["friends.read".into()];
+    let prompt = p.prompt();
+    assert_eq!(prompt.requested_scopes, vec!["friends.read".to_string()]);
 }
 
 #[test]
