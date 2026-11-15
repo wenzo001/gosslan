@@ -17,11 +17,115 @@
 // 只有 `sh` 这个别名是本文件独有的（父模块没有导入 `crate::share`），可以留一条。
 use crate::share as sh;
 
+/// 分享回执的超时：比常规请求短 —— 用户已经看到消息发出去了，
+/// 回执只是给 RP 的附带信息，等太久没意义。
+const SHARE_RECEIPT_TIMEOUT_SECS: u64 = 5;
+
 /// 外部内容入口（深链回调 / 冷启动 argv / 单实例转发）。
 ///
 /// 失败一律回具名码：调用方（网页/系统）看不见，但用户会看到一条可读提示，
 /// 日志里也能检索到是哪一类不合法。
 #[cfg_attr(not(desktop), allow(dead_code))] // 移动端深链未接线（见 `lib.rs` 里 `mod share` 的说明）
+/// 目标是否**已知**（纯函数，便于单测）。
+///
+/// - `peer`：目标 device_id 在好友列表里。
+/// - `group`：目标是 `group:<id>` 形态，剥前缀后与已知群 id 比对。
+/// - 其它种类 ⇒ 一律 false（`normalize_target` 已拒过，这里是兜底）。
+fn target_is_known(to: &str, kind: &str, friend_ids: &[String], group_ids: &[String]) -> bool {
+    match kind {
+        "peer" => friend_ids.iter().any(|id| id == to),
+        "group" => {
+            let gid = to.strip_prefix("group:").unwrap_or(to);
+            group_ids.iter().any(|id| id == gid)
+        }
+        _ => false,
+    }
+}
+
+/// 定向目标**存在性**校验（**fail closed**）。
+///
+/// 形状（字符集/种类）已在 `share::normalize_target` 判过；这里只判「有没有这个人/这个群」。
+///
+/// 查不到 ⇒ **整笔拒**（`EXTERNAL_SHARE_BAD_TARGET`）：绝不新建会话、绝不猜、绝不广播。
+/// 「预填一个不存在的目标」会让用户以为自己发给了谁，而消息可能进了另一个会话。
+fn resolve_share_target(
+    conn: &rusqlite::Connection,
+    payload: &sh::SharePayload,
+) -> Result<(), String> {
+    let (Some(to), Some(kind)) = (payload.to.as_deref(), payload.to_kind.as_deref()) else {
+        return Ok(());
+    };
+    match kind {
+        "peer" => {
+            let friends = crate::db::list_friends(conn).map_err(|e| {
+                error_codes::coded(
+                    error_codes::EXTERNAL_SHARE_BAD_TARGET,
+                    format!("读取好友列表失败：{e}"),
+                )
+            })?;
+            let ids: Vec<String> = friends.iter().map(|f| f.device_id.clone()).collect();
+            if !target_is_known(to, kind, &ids, &[]) {
+                return Err(error_codes::coded(
+                    error_codes::EXTERNAL_SHARE_BAD_TARGET,
+                    "要分享给的那个人不在你的好友列表里",
+                ));
+            }
+            let Some(f) = friends.iter().find(|f| f.device_id == to) else {
+                return Err(error_codes::coded(
+                    error_codes::EXTERNAL_SHARE_BAD_TARGET,
+                    "要分享给的那个人不在你的好友列表里",
+                ));
+            };
+            // 目标好友**还没聊过** ⇒ 库里没有会话行 ⇒ 面板里列不出来，就没法「一键发给他」。
+            // 建一个空会话（不发送任何消息，与用户在界面新建会话是一回事），
+            // 这样面板能列出并预勾这个目标。
+            crate::db::ensure_conversation(conn, &f.device_id, "single", &f.nickname, f.avatar.as_deref())
+                .map_err(|e| {
+                    error_codes::coded(
+                        error_codes::EXTERNAL_SHARE_BAD_TARGET,
+                        format!("准备目标会话失败：{e}"),
+                    )
+                })?;
+            Ok(())
+        }
+        "group" => {
+            // 群会话 id 形如 `group:<id>`；`get_group` 用的是不带前缀的群 id。
+            let gid = to.strip_prefix("group:").unwrap_or(to);
+            let groups = crate::db::list_groups(conn).map_err(|e| {
+                error_codes::coded(
+                    error_codes::EXTERNAL_SHARE_BAD_TARGET,
+                    format!("读取群列表失败：{e}"),
+                )
+            })?;
+            let gids: Vec<String> = groups.iter().map(|g| g.id.clone()).collect();
+            if !target_is_known(to, kind, &[], &gids) {
+                return Err(error_codes::coded(
+                    error_codes::EXTERNAL_SHARE_BAD_TARGET,
+                    "要分享给的那个群不在你的群列表里",
+                ));
+            }
+            let Some(g) = groups.into_iter().find(|g| g.id == gid) else {
+                return Err(error_codes::coded(
+                    error_codes::EXTERNAL_SHARE_BAD_TARGET,
+                    "要分享给的那个群不在你的群列表里",
+                ));
+            };
+            // 同样：没有会话行就建一个（群名从 groups 表取，不覆盖）。
+            crate::db::ensure_conversation(conn, to, "group", &g.name, None).map_err(|e| {
+                error_codes::coded(
+                    error_codes::EXTERNAL_SHARE_BAD_TARGET,
+                    format!("准备目标会话失败：{e}"),
+                )
+            })?;
+            Ok(())
+        }
+        other => Err(error_codes::coded(
+            error_codes::EXTERNAL_SHARE_BAD_TARGET,
+            format!("未知的分享目标种类：{other}"),
+        )),
+    }
+}
+
 pub async fn begin_share(app: &tauri::AppHandle, raw: &str) -> Result<sh::SharePrompt, String> {
     let payload = match sh::parse_share_intent(raw)? {
         sh::ShareIntent::Inline(p) => p,
@@ -40,6 +144,12 @@ pub async fn begin_share(app: &tauri::AppHandle, raw: &str) -> Result<sh::ShareP
 
     let state = (*app.state::<Arc<crate::state::AppState>>()).clone();
     let now_ms = crate::logging::now_ms();
+    // 定向目标的存在性在**入队前**判：命中不了就不该弹一个预填着假目标的面板。
+    // 读库很短（好友表全表 + 群单行），锁持有时间可忽略。
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        resolve_share_target(&dbc, &payload)?;
+    }
     let prompt = sh::SharePrompt {
         share_id: uuid::Uuid::new_v4().to_string(),
         payload,
@@ -195,6 +305,86 @@ fn scan_incoming_shares(app: &tauri::AppHandle, now_ms: i64) -> Vec<sh::SharePro
     admitted
 }
 
+/// 上报**分享回执**（可选能力）：RP 想知道「到底发出去没有」。
+///
+/// 三条设计：
+/// ① **回执体只含状态与条数**：会话名与分享内容**不回**（RP 不需要知道内容，
+///    一个被冒充的端点也不该知道）。
+/// ② **没有回执端点 ⇒ 直接回 false**，不是错误（与「没提供撤销端点」的既有口径一致）。
+/// ③ 幂等键就是 `share_id` ⇒ 重复上报能被 RP 侧合并。
+#[tauri::command(async)]
+pub async fn share_report_receipt(
+    state: State<'_, Arc<crate::state::AppState>>,
+    share_id: String,
+    status: String,
+    sent: i64,
+    failed: i64,
+) -> Result<bool, String> {
+    let state = (*state.inner()).clone();
+    // 从队列里按 share_id 找回那条分享（回执端点存在它的载荷里）。
+    let endpoint = {
+        let map = state
+            .external_share_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        map.values()
+            .find(|p| p.share_id == share_id)
+            .and_then(|p| p.payload.receipt_endpoint.clone())
+    };
+    let Some(endpoint) = endpoint else {
+        // 没有回执端点（或这条已被清掉）⇒ 不上报，不是失败。
+        return Ok(false);
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(SHARE_RECEIPT_TIMEOUT_SECS))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| {
+            error_codes::coded(
+                error_codes::EXTERNAL_SHARE_BUSY,
+                format!("回执网络初始化失败：{e}"),
+            )
+        })?;
+    let body = serde_json::json!({
+        "share_id": share_id,
+        "status": status,
+        "sent": sent,
+        "failed": failed,
+    });
+    let req = client
+        .post(&endpoint)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        // 幂等键就是 share_id：重复上报能被 RP 侧合并成一次。
+        .header("Idempotency-Key", share_id.clone())
+        .body(body.to_string())
+        .build()
+        .map_err(|e| {
+            error_codes::coded(
+                error_codes::EXTERNAL_SHARE_BUSY,
+                format!("构造回执请求失败：{e}"),
+            )
+        })?;
+    match client.execute(req).await {
+        Ok(resp) if resp.status().is_success() => Ok(true),
+        Ok(resp) => {
+            eprintln!(
+                "[share] code={} 分享回执被拒：HTTP {}",
+                error_codes::EXTERNAL_SHARE_BUSY,
+                resp.status()
+            );
+            Ok(false)
+        }
+        Err(e) => {
+            eprintln!(
+                "[share] code={} 分享回执失败：{e}",
+                error_codes::EXTERNAL_SHARE_BUSY
+            );
+            Ok(false)
+        }
+    }
+}
+
 /// 取当前待处理的分享（最新一条）。冷启动时前端拿不到「到达那一刻」的事件，靠这一条补拉。
 ///
 /// 顺带扫一次系统分享目标的落地区：平台扩展写进来的文件也是「外部递进来的内容」，
@@ -252,4 +442,30 @@ pub async fn share_dismiss(
             format!("关闭分享失败：{e}"),
         )
     })
+}
+
+#[cfg(test)]
+mod external_share_tests {
+    use super::*;
+
+    /// 定向目标的判定：**只认好友与已知群**，其余一律拒（fail closed）。
+    #[test]
+    fn target_is_known_only_accepts_friends_and_known_groups() {
+        let friends = vec!["gosslan-peer-1".to_string(), "gosslan-peer-2".to_string()];
+        let groups = vec!["g1".to_string()];
+
+        // 单聊：命中好友。
+        assert!(target_is_known("gosslan-peer-1", "peer", &friends, &groups));
+        // 单聊：不认识 ⇒ 拒（绝不新建会话）。
+        assert!(!target_is_known("gosslan-stranger", "peer", &friends, &groups));
+        // 单聊：**不能**拿群 id 冒充。
+        assert!(!target_is_known("g1", "peer", &friends, &groups));
+        // 群：`group:` 前缀要剥掉再比。
+        assert!(target_is_known("group:g1", "group", &friends, &groups));
+        assert!(!target_is_known("group:g2", "group", &friends, &groups));
+        // 群：**不能**拿好友 device_id 冒充。
+        assert!(!target_is_known("gosslan-peer-1", "group", &friends, &groups));
+        // 未知种类 ⇒ 拒。
+        assert!(!target_is_known("gosslan-peer-1", "everyone", &friends, &groups));
+    }
 }

@@ -48,7 +48,7 @@
 - `active` / `revoked`：**双边撤销已接**（客户端侧）。`device_auth_revoke` 先本地立即生效，再按 metadata 的 `revocation_endpoint` 尽力回写 RP；回写结果由 `DeviceAuthRevokeOutcome.rp_notified` 单独表达，界面把「本机已撤、对方没收到」分开提示。RP 没提供端点的老 RP 仍只做本地撤销（不是失败）。撤销通知**不回 seed、不回断言**，只回 `client_id` 与 `kid`（见 §4「撤销双边语义」）。
 - 队列边界：满载不再静默淘汰最老事务，改为返回明确错误「暂不能处理」并留具名 `code=` 日志；新事务不会顶掉用户正在看的确认页。
 - 断言时效：断言有效期常量仍只约束签名本身；事务 TTL 由上面的本地兜底与 RP `expires_at` 共同决定。
-- `/share` 深链：解析 + 内联闭环均已落地（面板、会话选择、显式发送、粘贴兜底都已接线，见 §6）。仍**没有**：受控 `share_request`（缺 RP 端点）、**定向分享（`to` 参数与回执）**、系统分享目标、文件分享，见 §11。
+- `/share` 深链：解析 + 内联闭环均已落地（面板、会话选择、显式发送、粘贴兜底都已接线，见 §6）。**定向分享已接**（`to` + `to_kind` 预填目标、目标不存在整笔拒、分享回执可选）。仍**没有**：受控 `share_request`（缺 RP 端点）、文件分享，见 §11。
 - **数据交付（`sync` 动作）**：已接（客户端侧，2026-11-15 裁决后落地）。scope 只有 `friends.read` 与
   `events.metadata` 两项，**默认全关、由用户在确认页逐项勾选**，且**只对本次事务有效（不落库）**。
   交付数据随决策回写发出，形状见接入指南 §1.10：**消息正文不外送、好友只给 device_id + 昵称、
@@ -139,6 +139,12 @@
   触发点是应用启动与窗口重新获得焦点（不给常驻托盘的客户端挂永不停歇的 IPC 轮询）。
   **未做**：macOS Share Extension 与 Windows MSIX share target 两个写入端（都要独立工程与
   签名证书，本仓产不出可安装的包），骨架与配置说明见该设计稿 §6。
+  **定向分享（可选）**：深链加 `to`（目标会话 id）与 `to_kind`（`peer` / `group`）⇒ 面板**预勾并高亮**
+  该目标，但**用户仍要点「发送」**（RP 不能静默往聊天框塞东西）。目标**必须存在**（好友表 / 群表），
+  否则**整笔拒**（`EXTERNAL_SHARE_BAD_TARGET`），**不新建会话、不猜、不广播**；目标好友还没聊过 ⇒
+  客户端先建一个空会话（不发消息），否则面板列不出来。回执可选：深链带 `receipt=`（HTTPS + 与 `origin` 同源）
+  ⇒ 发送后 `POST {share_id, status, sent, failed}`，**不含会话名与内容**；回执地址由**后端从队列取**，
+  前端不能指定。
   **未做**：受控 `share_request`（需 RP 端点）、文件分享、第三方分享 SDK、网页预览。
   注意区分：`src/components/ShareDirectory.vue` 与 `src-tauri/src/commands/share.rs` 是
   **P2P 共享目录**，与这里的「外部分享到会话」是两件事（错误码也分族：`SHARE_DIR_*` vs
@@ -248,12 +254,12 @@
 | 系统分享目标（从别的应用分享到本应用） | **要做，先 macOS / Windows** | **读取端已实现，平台写入端未实现**：协议 + 读取端 + 两份骨架已交（`incoming_share.rs` + `commands/external_share.rs` 的扫描 + 设计稿 §6）；macOS 需要 Share Extension（Xcode target，本仓构建不出）、Windows 需要 MSIX share target，两者都要签名打包与真机验证 |
 | 双边撤销 | **做，先定契约再实现** | **已实现（客户端侧）**：metadata 加可选 `revocation_endpoint`（HTTPS 同源）、撤销先本地后通知、通知带 `Idempotency-Key`、体只回 `{client_id, kid}`；结果由 `rp_notified` 分四态呈现，通知失败可**重发**。判据 `deviceAuthRevokeWiring.test.ts` + Rust 单测。RP 侧作废与最终一致性仍需生产实现（见 §4） |
 | RP 私钥保护 | **上平台密钥库** | 未实现。要求与迁移顺序见 §5；成本口径与免费路径见 [`platform-keychain-free-path-2026-11-15.md`](platform-keychain-free-path-2026-11-15.md)（只有 macOS 需签名，且免费证书即可） |
-| 开放接口：好友同步 / 定向分享 / 事件交付 | **要做**（scope 逐项授权，默认全关） | **交付侧已实现，定向分享待做**（2026-11-15 裁决后落地，设计稿 [`open-extension-api-design-2026-11-15.md`](open-extension-api-design-2026-11-15.md)）：`sync` 动作 + `friends.read` / `events.metadata` 两个 scope、确认页逐项勾选（默认全关）、决策回写体带可选 `data`（形状：**没有正文、没有公钥、没勾的连键都没有**）、scope 只对本次事务有效（**不落库**）。**待做**：定向分享（`to` / `to_kind`、目标 fail-closed 校验、回执发送） |
+| 开放接口：好友同步 / 定向分享 / 事件交付 | **要做**（scope 逐项授权，默认全关） | **已实现（客户端侧）**（2026-11-15 裁决后落地，设计稿 [`open-extension-api-design-2026-11-15.md`](open-extension-api-design-2026-11-15.md)）：`sync` 动作 + `friends.read` / `events.metadata` 两个 scope、确认页逐项勾选（默认全关）、决策回写体带可选 `data`（形状：**没有正文、没有公钥、没勾的连键都没有**）、scope 只对本次事务有效（**不落库**）；定向分享（`to` / `to_kind` 预填 + 目标 fail-closed + 可选回执）。**注意**：`friends.read` 只给好友列表 ⇒ RP 拿不到群列表，「一键发到某个群」需要 RP 另行知道 `group:<群 id>` |
 | 导出 / 恢复绑定密钥 | **要做**（口令加密单文件；不做云备份、不导出 P2P 密钥） | **已实现（客户端）**：`rp_key_backup.rs` + 三条命令 + 设置页区块；判据 `rpKeyBackupWiring.test.ts` 与 Rust 单测。设计稿：[`rp-key-export-recovery-design-2026-11-15.md`](rp-key-export-recovery-design-2026-11-15.md)。**顺序硬约束**：导出能力必须先于「抹掉 SQLite 明文 seed」可用 |
 
-已实现的那几条（多选、导出/恢复、双边撤销的客户端侧、系统分享目标的**读取端**、**数据交付的客户端侧**）
-在本轮改代码与文档；**平台分享写入端**、**平台密钥库**、**定向分享（`to` 参数与回执）**仍只有裁决、
-没有实现，对外仍按本节上面的「未做」口径回答，不得写成已具备。
+已实现的那几条（多选、导出/恢复、双边撤销的客户端侧、系统分享目标的**读取端**、**数据交付与定向分享的客户端侧**）
+在本轮改代码与文档；**平台分享写入端**与**平台密钥库**仍只有裁决、没有实现，
+对外仍按本节上面的「未做」口径回答，不得写成已具备。
 
 ## 12. 复跑与维护
 

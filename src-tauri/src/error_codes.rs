@@ -408,6 +408,11 @@ pub const EXTERNAL_SHARE_BAD_CONTENT: &str = "EXTERNAL_SHARE_BAD_CONTENT";
 pub const EXTERNAL_SHARE_TOO_LARGE: &str = "EXTERNAL_SHARE_TOO_LARGE";
 /// 待处理分享队列已满：拒新的一笔并明确告知，不淘汰用户还没处理的那几笔。
 pub const EXTERNAL_SHARE_BUSY: &str = "EXTERNAL_SHARE_BUSY";
+/// 定向分享的目标不合法：形状错（种类不匹配 / 字符集 / 长度）或**目标不存在**。
+///
+/// 与 `EXTERNAL_SHARE_BAD_CONTENT` 分开：内容不合法是「分享的东西坏了」，
+/// 目标不合法是「分享给谁」这个问题 —— 排障时要能分清是 RP 拼错了还是用户没这个好友。
+pub const EXTERNAL_SHARE_BAD_TARGET: &str = "EXTERNAL_SHARE_BAD_TARGET";
 /// 受控 share request（`/share/<不透明引用>`）需要 RP 侧的解析端点，本期未实现。
 pub const EXTERNAL_SHARE_REFERENCE_UNSUPPORTED: &str = "EXTERNAL_SHARE_REFERENCE_UNSUPPORTED";
 /// 落地区（系统分享目标写进来的文件）里有一份不合规：文件名不对、版本不认识、或内容没通过

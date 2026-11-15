@@ -953,6 +953,7 @@ export const enUS: MessageDict = {
   "errors.rule.externalShareBadContent": "The shared content is empty, or the link isn't http/https.",
   "errors.rule.externalShareTooLarge": "The shared content is too long.",
   "errors.rule.externalShareBusy": "A few shares are still pending; finish those first.",
+  "errors.rule.externalShareBadTarget": "That person or group isn't in your friends list",
   "errors.rule.externalShareReferenceUnsupported": "This share needs app-side support and isn't available yet.",
   "errors.rule.rpKeyBackupUnreadable": "Wrong passphrase, or the key bundle is damaged",
   "errors.rule.rpKeyBackupUnsupported": "This key bundle needs a newer version or uses unsupported parameters",

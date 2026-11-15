@@ -680,6 +680,7 @@ const CMDS = [
   ["device_auth_preview_import", "device_auth", "source str; passphrase str", "RpKeyImportReport|err"],
   ["device_auth_apply_import", "device_auth", "source str; passphrase str", "RpKeyImportReport|err"],
   ["share_get_pending", "share", "", "SharePrompt|null|err"],
+  ["share_report_receipt", "share", "share_id str; status str; sent i64; failed i64", "bool|err"],
   ["share_dismiss", "share", "share_id str", "bool|err"],
   ["share_handle_link", "share", "url str", "SharePrompt|err"],
   ["updater_check", "updater", "", "UpdaterInfo|null|err"],

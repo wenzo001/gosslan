@@ -73,6 +73,10 @@ onMounted(() => {
 onUnmounted(() => scope.dispose());
 
 // 换了一条（或第一次打开）：草稿与选中都重置，别把上一条的编辑内容带过去。
+//
+// 定向分享（RP 给了 `to`）：**预勾**那个目标 —— 但**不代替用户点发送**。
+// 用户仍要点「发送」才真的发出去（裁决 2026-11-15：不能静默往聊天框塞东西）。
+const preselectTarget = ref<string | null>(null);
 watch(
   () => store.pending?.shareId,
   (id) => {
@@ -80,6 +84,7 @@ watch(
     draft.value = store.pending ? composeShareText(store.pending.payload) : "";
     selected.value = [];
     query.value = "";
+    preselectTarget.value = store.pending?.payload.to ?? null;
   },
   { immediate: true },
 );
@@ -90,6 +95,15 @@ const originHost = computed(() =>
 const targets = computed(() =>
   sortShareTargets(chat.conversations.filter((c) => matchShareTarget(c, query.value))),
 );
+// 目标会话出现在列表里之后才勾它：会话是异步加载的，
+// 列表还没出来就勾 ⇒ 勾了一个列表里不存在的 id（发送会失败）。
+watch(targets, (list) => {
+  const t = preselectTarget.value;
+  if (!t) return;
+  if (!list.some((c) => c.id === t)) return;
+  selected.value = [t];
+  preselectTarget.value = null;
+});
 const textError = computed(() => shareTextError(draft.value));
 const used = computed(() => charCount(draft.value));
 const canSend = computed(() => !textError.value && selected.value.length > 0 && !sending.value);
@@ -130,6 +144,11 @@ async function onSend() {
     sending.value = false;
   }
 
+  // 回执（可选）：告诉 RP 到底发出去了几条。
+  // 后端自己从队列里取回执地址（前端不传地址 ⇒ 前端无法把回执发去别处），
+  // 没提供端点时后端回 false，不算错误。
+  void reportReceipt(ids.length - failed.length, failed.length, failed.length ? "partial" : "sent");
+
   if (!failed.length) {
     app.toast(
       ids.length === 1
@@ -151,6 +170,17 @@ async function onSend() {
       ? t("shareToChat.sendFail")
       : t("shareToChat.sendPartial", { ok, fail: failed.length }),
   );
+}
+
+/** 上报回执；失败只记日志不上屏（回执是给 RP 的附带信息，用户已经看到结果了）。 */
+async function reportReceipt(sent: number, failed: number, status: string) {
+  const id = store.pending?.shareId;
+  if (!id) return;
+  try {
+    await api.shareReportReceipt(id, status, sent, failed);
+  } catch (e) {
+    console.warn("[share] 回执上报失败", e);
+  }
 }
 
 async function onClose() {

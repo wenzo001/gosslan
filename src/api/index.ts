@@ -906,6 +906,14 @@ export const api = {
   deviceAuthListBindings: () => invoke<RpBindingInfo[]>("device_auth_list_bindings"),
   deviceAuthRevoke: (rpOrigin: string, clientId: string) =>
     invoke<DeviceAuthRevokeOutcome>("device_auth_revoke", { rpOrigin, clientId }),
+  /**
+   * 上报分享回执（可选能力）：RP 想知道「到底发出去没有」。
+   *
+   * 回执地址由**后端**从队列里取（不从前端收地址），回执体只含状态与条数，
+   * 不含会话名与内容。没提供回执端点时后端回 false —— 不是错误。
+   */
+  shareReportReceipt: (shareId: string, status: string, sent: number, failed: number) =>
+    invoke<boolean>("share_report_receipt", { shareId, status, sent, failed }),
   /** 导出已授权应用（口令加密的单文件；落点由界面保存对话框给）。 */
   deviceAuthExportBindings: (destination: string, passphrase: string) =>
     invoke<RpKeyExportSummary>("device_auth_export_bindings", { destination, passphrase }),
