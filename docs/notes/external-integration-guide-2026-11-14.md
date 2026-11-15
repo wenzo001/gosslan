@@ -299,7 +299,7 @@ location.href = link;
 | 期望 | 现状 |
 |---|---|
 | 文件（图片/文档）分享 | 不支持。只能分享链接与文字；传文件请用应用内的发送入口 |
-| 系统分享面板（macOS Share Extension / Windows 分享目标 / Android ACTION_SEND） | 未实现。需要平台工程改造与签名审核，本期只做深链 |
+| 系统分享面板（macOS Share Extension / Windows 分享目标 / Android ACTION_SEND） | **读取端已实现，平台写入端未实现**：应用会捡起平台扩展写进「落地区」的文件，与深链走同一个面板、同一套限额（协议见 [`system-share-target-design-2026-11-15.md`](system-share-target-design-2026-11-15.md)）；但 macOS/Windows 的扩展本体需要独立工程与签名证书，**用户现在装不上** |
 | 受控分享 `gosslan://share/<ref>` 或 `https://<host>/share/<ref>` | 链接形状已能解析，但需要 RP 侧提供一个「用 ref 换内容」的端点；**本期明确回「暂不支持」** |
 | 网页预览 / 抓取 OG 标签 | 不做。抓取等于把任意 URL 交给本机去请求（SSRF / 内网探测 / 跟踪像素） |
 | 分享结果的回执 | 不做。见 §2.4 |
@@ -371,6 +371,8 @@ location.href = link;
 | `EXTERNAL_SHARE_TOO_LARGE` | 超出 §2.2 的码点上限 | 分享内容太长了 | 见 §2.2 三个上限 |
 | `EXTERNAL_SHARE_BUSY` | 待处理分享已达 8 条 | 还有几条分享没处理，先处理完再分享 | 不要循环触发；等用户处理 |
 | `EXTERNAL_SHARE_REFERENCE_UNSUPPORTED` | 用了受控形态 `/share/<ref>` | 这个分享需要应用侧配合，暂不支持 | 改用内联参数（§2.1） |
+| `EXTERNAL_SHARE_INCOMING_INVALID` | 落地区里有一份文件不合规（文件名 / 版本 / 正文 / 大小） | **不显示**（只进日志，用户没做任何事） | 检查平台扩展写出的文件是否合协议 |
+| `EXTERNAL_SHARE_INCOMING_UNREADABLE` | 落地区里有一份文件读不了（权限、占用） | **不显示**（只进日志） | 检查落地区目录的读写权限 |
 
 维护提示：这张表的两侧都在仓库里 —— 码在 `src-tauri/src/error_codes.rs`，用户文案在
 `src/i18n/locales/*.ts`，两张表的双向对账由 `src/utils/errors.test.ts` 钉着。加码必须同时补两边，

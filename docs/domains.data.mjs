@@ -154,8 +154,11 @@ export default {
       // 所以实现分文件、错误码分族（DEVICE_AUTH_* / EXTERNAL_SHARE_*），只是领域归属相同。
       // `rp_key_backup.rs`（导出包的格式与加解密纯逻辑）与 `commands/rp_key_backup.rs` 也归这里：
       // 它们直接持/搬 RP 私钥（导出包就是私钥的容器），属同一条红线。
+      // `incoming_share.rs`（系统分享目标的落地区协议：文件格式 + 校验）也归这里：
+      // 它是「外部调用方递东西进本机」的又一条入口，与 `share.rs` 同一条红线。
       paths: ["src-tauri/src/device_auth.rs", "src-tauri/src/device_auth", "src-tauri/src/share.rs",
-        "src-tauri/src/rp_key_backup.rs", "src-tauri/src/commands/rp_key_backup.rs"],
+        "src-tauri/src/rp_key_backup.rs", "src-tauri/src/commands/rp_key_backup.rs",
+        "src-tauri/src/incoming_share.rs"],
       invariants: [],
       activeHome: "src-tauri/src/device_auth.rs", // 单家：协议核心；命令在装配层、绑定表在 persistence、UI 在 presentation
       enforce: false,

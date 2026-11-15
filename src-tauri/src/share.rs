@@ -222,7 +222,22 @@ fn payload_from_query(parsed: &Url, origin_hint: Option<String>) -> Result<Share
             _ => {}
         }
     }
+    payload_from_fields(url, title, text, claimed, origin_hint)
+}
 
+/// 由原始字段构造并校验一份分享内容（**唯一的构造入口**）。
+///
+/// 深链（`payload_from_query`）与系统分享目标的落地区（`incoming_share.rs`）**共用这一处**：
+/// 两条入口的字段限额、scheme 收紧、空内容判定必须完全一致 —— 分成两处写，
+/// 迟早会漂成「深链拦得住、落地区拦不住」（落地区是别的进程写进来的文件，
+/// 比深链更该按同一把尺子量）。
+pub fn payload_from_fields(
+    url: Option<String>,
+    title: Option<String>,
+    text: Option<String>,
+    claimed: Option<String>,
+    origin_hint: Option<String>,
+) -> Result<SharePayload, String> {
     let url = clean(url);
     if let Some(raw) = &url {
         let p = Url::parse(raw).map_err(|_| {

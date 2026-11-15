@@ -27,7 +27,8 @@
 | `docs/notes/full-repo-audit-2026-10-29.md` | 2026-10-29 全仓库深度审计：52 条发现（安全 12 / 功能 6 / 稳定性 8 / 重复 16 / 测试 10）、36 条 INV-P 逐条规范对账、修复顺序建议；证据在 `audit-context/` |
 | `docs/notes/reka-ui-adoption-audit-2026-11-13.md` | Reka UI 采用现状复核、尚需评估的控件、与 Gosslan 设计目标的匹配度、最佳实践与分阶段计划（只读源码审计，未改业务代码） |
 | `docs/notes/external-auth-share-readiness-audit-2026-11-14.md` | 外部快捷认证、内置外链浏览器与网页分享闭环的就绪度审计、风险分级、产品边界和分阶段接入计划（只读源码审阅，未运行测试/真机验收）。⚠️ **带日期的快照**：其中多项此后已按 `external-auth-integration-contract` 调整，判现状一律读那一份 |
-| `docs/notes/rp-key-export-recovery-design-2026-11-15.md` | **设计稿（未实现）**：RP 绑定密钥的导出/恢复 —— 文件格式 v1（Argon2id + XChaCha20-Poly1305、头部作 AAD 防降级）、冲突矩阵（不覆盖不同公钥、不复活已撤销）、原子性、与平台密钥库迁移的**先后顺序**（先密钥库 → 再导出 → 最后抹明文）、10 条验收判据 |
+| `docs/notes/system-share-target-design-2026-11-15.md` | **系统分享目标**（从别的应用分享到本机）的协议、读取端与平台骨架 —— 为什么协议是「写文件」（扩展与主应用是两个进程）、落地区协议 v1（目录/文件名/JSON/限额/TTL）、读取端把落地区当不可信输入的六道校验（内容与深链**同一把尺子**）、先入队后删文件的顺序、触发时机（启动 + 窗口聚焦）、macOS Share Extension 与 Windows MSIX 的骨架（未编译未验收） |
+| `docs/notes/rp-key-export-recovery-design-2026-11-15.md` | **已按本文实现（客户端）**：RP 绑定密钥的导出/恢复 —— 文件格式 v1（Argon2id + XChaCha20-Poly1305、头部作 AAD 防降级）、冲突矩阵（不覆盖不同公钥、不复活已撤销）、原子性、与平台密钥库迁移的**先后顺序**（先密钥库 → 再导出 → 最后抹明文）、10 条验收判据 |
 | `docs/notes/app-name-and-searchability-2026-11-15.md` | 应用名（中文「小院儿」/ 英文 Gosslan）的**七处资源清单**与各平台可搜索性：Mac/Windows 两个名字都能搜到（机制不同），Android/iOS 是单值标签做不到、以及为什么不采用「第二图标」与「中英混排名」 |
 | `docs/notes/external-app-device-auth-design-2026-11-13.md` | 设备快捷认证/绑定的**设计稿**（2026-11-13 草案，正文保留当时的方案与取舍）：威胁模型、事务与绑定状态机、claim 最小披露、双方案对比与分阶段计划。**现状读活契约那一份**；本稿已按原地实现，头部的状态横幅写明这条边界 |
 | `docs/notes/external-auth-integration-contract-2026-11-14.md` | 外部 RP 集成的**活契约**：术语口径、三层状态机及当前差距、双边撤销、密钥保护、外链/深链边界、RP mock 的限制、错误码口径、版本化约定、可勾选的发布准入清单（未验收项一律 `NOT RUN`） |

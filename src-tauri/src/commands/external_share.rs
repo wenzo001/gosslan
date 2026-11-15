@@ -112,7 +112,93 @@ pub async fn share_handle_link(
     begin_share(&state.inner().app, &url).await
 }
 
+/// 扫系统分享目标的**落地区**：把平台扩展写进来的文件转成待处理分享。
+///
+/// 落地区是**别的进程**写的 ⇒ 每个文件都要过 `incoming_share::parse_file` 的校验
+/// （严格文件名、大小、时效、内容与深链同一把尺子）。不合规的文件丢掉并留日志，
+/// **绝不让它影响分享流程本身** —— 这一层是锦上添花，深链那条主路不能被它带崩。
+///
+/// 顺序刻意是「先入队、后删文件」：入队失败就把文件留着（下次再试），
+/// 删文件失败也只是下次再入一次队（`admit` 会按内容去重，不会刷屏）。
+///
+/// 返回新入队的那些（可能空）。
+fn scan_incoming_shares(app: &tauri::AppHandle, now_ms: i64) -> Vec<sh::SharePrompt> {
+    let Ok(local_dir) = app.path().app_local_data_dir() else {
+        return Vec::new();
+    };
+    let dir = crate::incoming_share::incoming_dir(&local_dir);
+    // 目录不存在 = 平台扩展没装/没写过 = 常态，不是错误（`scan_dir` 直接回空）。
+    let candidates = crate::incoming_share::scan_dir(&dir, now_ms);
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let state = (*app.state::<Arc<crate::state::AppState>>()).clone();
+    let mut admitted: Vec<sh::SharePrompt> = Vec::new();
+    for (path, verdict) in candidates {
+        let ready = match verdict {
+            crate::incoming_share::IncomingVerdict::Ready(s) => s,
+            crate::incoming_share::IncomingVerdict::Expired => {
+                // 过期：静默删掉（留着只会一直失败）。
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            crate::incoming_share::IncomingVerdict::Malformed(why) => {
+                eprintln!(
+                    "[share] code={} 落地区文件不合规，丢弃：{}：{why}",
+                    error_codes::EXTERNAL_SHARE_INCOMING_INVALID,
+                    path.display()
+                );
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            crate::incoming_share::IncomingVerdict::Unreadable(why) => {
+                // 读不了可能是临时的（权限、占用）⇒ 文件**留着**，下次再扫。
+                eprintln!(
+                    "[share] code={} 落地区文件读不了（保留，下次再试）：{}：{why}",
+                    error_codes::EXTERNAL_SHARE_INCOMING_UNREADABLE,
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        let prompt = sh::SharePrompt {
+            // 队列里的 id 沿用深链那套 UUID 空间；落地区自己的 id 只用来对账与日志。
+            share_id: uuid::Uuid::new_v4().to_string(),
+            payload: ready.payload,
+            received_at_ms: now_ms,
+            expires_at_ms: now_ms + sh::PENDING_TTL_MS,
+        };
+        let result = {
+            let mut map = state
+                .external_share_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            sh::admit(&mut map, prompt, now_ms, sh::MAX_PENDING)
+        };
+        match result {
+            Ok(p) => {
+                // 入队成功才删文件（顺序反了会在崩溃时丢分享）。
+                let _ = std::fs::remove_file(&path);
+                admitted.push(p);
+            }
+            Err(e) => {
+                // 队列满了：文件留着，等用户处理完再扫一次。
+                eprintln!(
+                    "[share] code={} 落地区分享入队失败（文件保留，下次再试）：{e}",
+                    error_codes::EXTERNAL_SHARE_BUSY
+                );
+            }
+        }
+    }
+    admitted
+}
+
 /// 取当前待处理的分享（最新一条）。冷启动时前端拿不到「到达那一刻」的事件，靠这一条补拉。
+///
+/// 顺带扫一次系统分享目标的落地区：平台扩展写进来的文件也是「外部递进来的内容」，
+/// 走同一条队列与同一个面板（用户仍要自己选会话、点发送）。
 #[tauri::command(async)]
 pub async fn share_get_pending(
     state: State<'_, Arc<crate::state::AppState>>,
@@ -120,11 +206,21 @@ pub async fn share_get_pending(
     let state = (*state.inner()).clone();
     let now_ms = crate::logging::now_ms();
     tokio::task::spawn_blocking(move || {
-        let mut map = state
-            .external_share_pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        sh::newest_live(&mut map, now_ms)
+        // ① 先扫落地区。扫不出来（没装扩展 / 目录不可读）只是没有，不影响本命令。
+        let incoming = scan_incoming_shares(&state.app, now_ms);
+        // ② 再取队列里最新的一条（落地区刚入队的那条也会被取到）。
+        let newest = {
+            let mut map = state
+                .external_share_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            sh::newest_live(&mut map, now_ms)
+        };
+        // ③ 新到的那些也 emit 出去：面板立刻弹，不必等下一次轮询。
+        for p in &incoming {
+            let _ = state.app.emit("share-request", p);
+        }
+        newest
     })
     .await
     .map_err(|e| {

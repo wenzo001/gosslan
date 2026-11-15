@@ -405,6 +405,11 @@ pub const EXTERNAL_SHARE_TOO_LARGE: &str = "EXTERNAL_SHARE_TOO_LARGE";
 pub const EXTERNAL_SHARE_BUSY: &str = "EXTERNAL_SHARE_BUSY";
 /// 受控 share request（`/share/<不透明引用>`）需要 RP 侧的解析端点，本期未实现。
 pub const EXTERNAL_SHARE_REFERENCE_UNSUPPORTED: &str = "EXTERNAL_SHARE_REFERENCE_UNSUPPORTED";
+/// 落地区（系统分享目标写进来的文件）里有一份不合规：文件名不对、版本不认识、或内容没通过
+/// 与深链同一把尺子。只进日志，不上屏（用户没做错任何事，是平台扩展那一侧的问题）。
+pub const EXTERNAL_SHARE_INCOMING_INVALID: &str = "EXTERNAL_SHARE_INCOMING_INVALID";
+/// 落地区读不了（目录不可读、文件读不了、删不掉）。同样只进日志。
+pub const EXTERNAL_SHARE_INCOMING_UNREADABLE: &str = "EXTERNAL_SHARE_INCOMING_UNREADABLE";
 
 // ⚠️ `RP_KEY_BACKUP_*` 是**导出包**自己的族（不是设备认证流程的错）：导出/恢复是本地文件操作，
 // 出错时用户要能分清「口令错/文件坏」与「授权流程失败」，否则排障会去查 RP 而不是查文件。

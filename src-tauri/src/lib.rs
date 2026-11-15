@@ -47,6 +47,9 @@ mod file_relay;
 /// 前台/失焦节奏的防抖状态机（见该文件注释：抖动不许驱动扫描节奏）。
 mod focus_rhythm;
 mod gossip_engine;
+/// 系统分享目标（从别的应用分享到本机）的**落地区协议**：文件格式 + 校验 + 限额。
+/// 平台侧的写入端（Share Extension / MSIX share target）不在本仓，见该文件注释。
+mod incoming_share;
 /// JNI 方法登记宏（Android 的两条桥共用，见该文件注释）。
 #[cfg(target_os = "android")]
 mod jni_method;
