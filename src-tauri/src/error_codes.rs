@@ -405,6 +405,19 @@ pub const EXTERNAL_SHARE_TOO_LARGE: &str = "EXTERNAL_SHARE_TOO_LARGE";
 pub const EXTERNAL_SHARE_BUSY: &str = "EXTERNAL_SHARE_BUSY";
 /// 受控 share request（`/share/<不透明引用>`）需要 RP 侧的解析端点，本期未实现。
 pub const EXTERNAL_SHARE_REFERENCE_UNSUPPORTED: &str = "EXTERNAL_SHARE_REFERENCE_UNSUPPORTED";
+
+// ⚠️ `RP_KEY_BACKUP_*` 是**导出包**自己的族（不是设备认证流程的错）：导出/恢复是本地文件操作，
+// 出错时用户要能分清「口令错/文件坏」与「授权流程失败」，否则排障会去查 RP 而不是查文件。
+/// 密钥包读不出来：口令错、文件损坏或被篡改（**刻意不区分**，避免给爆破者提示）。
+pub const RP_KEY_BACKUP_UNREADABLE: &str = "RP_KEY_BACKUP_UNREADABLE";
+/// 密钥包用了本机不支持的格式：版本更高、未知 KDF、或 KDF 参数低于安全下限（防降级）。
+pub const RP_KEY_BACKUP_UNSUPPORTED: &str = "RP_KEY_BACKUP_UNSUPPORTED";
+/// 导出口令太短（只做长度闸，不强制复杂度）。
+pub const RP_KEY_BACKUP_WEAK_PASSPHRASE: &str = "RP_KEY_BACKUP_WEAK_PASSPHRASE";
+/// 密钥包过大（防把任意大文件喂给解析器）。
+pub const RP_KEY_BACKUP_TOO_LARGE: &str = "RP_KEY_BACKUP_TOO_LARGE";
+/// 读写密钥包失败（磁盘满 / 无权限 / 路径不可用）。
+pub const RP_KEY_BACKUP_IO: &str = "RP_KEY_BACKUP_IO";
 /// 共享目录：路径不存在 / 不是目录。
 pub const SHARE_DIR_MISSING: &str = "SHARE_DIR_MISSING";
 /// 共享目录：打开接收目录的阻塞任务失败（human 带底层原因）。

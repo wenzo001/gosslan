@@ -78,6 +78,8 @@ mod open_path;
 mod private_fs;
 pub mod protocol;
 mod restart;
+/// RP 绑定密钥导出/恢复的协议核心（格式 + Argon2id + 冲突判定），见该文件注释。
+mod rp_key_backup;
 /// 外部分享到会话的协议核心（入口解析 + 内存排队；**不发送消息**），见该文件注释。
 /// ⚠️ 与 `commands/share.rs`（P2P 共享目录/共享请求）不是一件事。
 ///
@@ -1048,6 +1050,9 @@ pub fn run() {
             commands::device_auth_deny,
             commands::device_auth_list_bindings,
             commands::device_auth_revoke,
+            commands::device_auth_export_bindings,
+            commands::device_auth_preview_import,
+            commands::device_auth_apply_import,
             commands::share_get_pending,
             commands::share_dismiss,
             commands::share_handle_link,
