@@ -37,6 +37,9 @@
   与**各自实现状态**（仅多选已实现，其余三条只是裁决）；§3.3 修掉「`/share` 只到解析层」这处第一批留下的过时表述。
 - 新增 [`app-name-and-searchability-2026-11-15.md`](docs/notes/app-name-and-searchability-2026-11-15.md)：应用名散落的七处资源、
   各平台「搜小院儿 / 搜 gosslan」的真实结果，以及移动端做不到的原因（单值标签，两条歪路为何不采用）。
+- 新增 [`rp-key-export-recovery-design-2026-11-15.md`](docs/notes/rp-key-export-recovery-design-2026-11-15.md)：RP 绑定密钥的导出/恢复**设计稿**（未实现）——
+  文件格式 v1（Argon2id + XChaCha20-Poly1305、头部作 AAD 防降级）、冲突矩阵（不覆盖不同公钥、不复活已撤销）、
+  原子性与失败路径、与平台密钥库迁移的先后顺序（先密钥库 → 再导出 → 最后抹明文）、10 条验收判据。
 
 ## [5.28.0] - 2026-11-15
 
