@@ -55,6 +55,17 @@ export const useShareStore = defineStore("externalShare", () => {
   }
 
   /**
+   * 手动粘贴一条分享链接（设置页的兜底入口）。
+   *
+   * 与深链不同：这里能拿到结果，所以失败要**抛给调用方**去提示（深链那边只能走
+   * `share-error` 事件）。成功则和深链一样把面板打开。
+   */
+  async function handleLink(url: string): Promise<void> {
+    const p = await api.shareHandleLink(url);
+    pending.value = p;
+  }
+
+  /**
    * 3 秒内只提示一次（窗口级节流，跨多次坏链接）。
    *
    * 走 `shouldRunThrottled` 而不是自己写 `now - last < N`：全仓只许有一个时间差闸门，
@@ -71,5 +82,5 @@ export const useShareStore = defineStore("externalShare", () => {
     pending.value = null;
   }
 
-  return { pending, visible, setPending, load, dismiss, shouldToastNow, clear };
+  return { pending, visible, setPending, load, dismiss, handleLink, shouldToastNow, clear };
 });

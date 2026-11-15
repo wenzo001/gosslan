@@ -487,3 +487,40 @@ test("跨语言契约：错误码两侧同源（前端读的码 ⊆ 后端产出
   const orphans = Object.keys(ERROR_CODE_RULES).filter((c) => !defined.includes(c));
   assert.deepEqual(orphans, [], `前端读了后端不产出的码：${orphans.join(", ")}`);
 });
+
+/**
+ * 接入指南的「错误码附录」与源码同源。
+ *
+ * 为什么要有这条：指南是给外部接入方看的，抄一张码表最好读；但**手抄的清单一定会漂**
+ * （契约文档 §8 因此刻意不抄完整清单）。这里把那份抄本变成**受检的抄本**：
+ * 源码新增码而文档没写（接入方看不到触发条件）、或文档写了已删/改名的码，都当场红。
+ *
+ * 覆盖范围只限 `DEVICE_AUTH_*` / `EXTERNAL_SHARE_*` 两族 —— 其余族的码不在这份指南的读者范围内。
+ */
+test("外部接入指南的错误码附录与源码同源（多一条/少一条都红）", () => {
+  // SRC 已经是 `<repo>/src`（见文件头），仓库根是它的上一级。
+  const ROOT = path.resolve(SRC, "..");
+  const rust = fs.readFileSync(path.join(ROOT, "src-tauri", "src", "error_codes.rs"), "utf8");
+  const defined = [...rust.matchAll(/^pub const ([A-Z0-9_]+): &str = /gm)]
+    .map((m) => m[1])
+    .filter((c) => c.startsWith("DEVICE_AUTH_") || c.startsWith("EXTERNAL_SHARE_"));
+
+  const guide = fs.readFileSync(
+    path.join(ROOT, "docs", "notes", "external-integration-guide-2026-11-14.md"),
+    "utf8",
+  );
+  const documented = new Set(guide.match(/(?:DEVICE_AUTH|EXTERNAL_SHARE)_[A-Z0-9_]+/g) ?? []);
+
+  assert.ok(
+    defined.length >= 20,
+    `只解析到 ${defined.length} 个码 ⇒ 提取器坏了（error_codes.rs 形状变了？）`,
+  );
+  const missing = defined.filter((c) => !documented.has(c));
+  assert.deepEqual(
+    missing,
+    [],
+    `源码新增了这些码，指南附录没写（外部接入方看不到触发条件与处置）：${missing.join(", ")}`,
+  );
+  const stale = [...documented].filter((c) => !defined.includes(c));
+  assert.deepEqual(stale, [], `指南写了源码里不存在的码（已删或改名 ⇒ 文档漂了）：${stale.join(", ")}`);
+});

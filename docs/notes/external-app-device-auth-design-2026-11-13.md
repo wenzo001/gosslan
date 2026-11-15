@@ -1,7 +1,13 @@
 # 外部应用绑定与 Gosslan 设备快捷认证设计
 
 > 日期：2026-11-13  
-> 状态：方案草案，供产品/架构评审；未修改业务代码  
+> 状态：**设计稿（2026-11-13 草案，正文保留当时的方案与取舍，不回填）**。首期已按本稿实现：
+> 协议核心 `src-tauri/src/device_auth.rs`、命令层 `src-tauri/src/commands/device_auth.rs`、
+> 绑定表 `src-tauri/src/db/device_auth.rs`、确认页 `src/components/DeviceAuthConfirmModal.vue`。
+> **现状以 [`external-auth-integration-contract-2026-11-14.md`](external-auth-integration-contract-2026-11-14.md)
+> 为准**，对外怎么接见 [`external-integration-guide-2026-11-14.md`](external-integration-guide-2026-11-14.md)；
+> 本稿的「建议 / 计划」语气是写作当时的口径，不代表还有未开工项。
+> 真机唤起、签名包注册与真实 RP 联调仍属 `NOT RUN`（见契约 §10）。  
 > 目标：允许 Web 应用及其他应用把当前 Gosslan 安装绑定为一个可信设备，并在后续登录时请求用户在 Gosslan 中确认。  
 > 关键边界：Gosslan 当前没有用户账号、中心身份服务或云端用户资料。本方案的首期是“外部应用账号 ↔ Gosslan 安装”的信任绑定与设备持有证明，不把 Gosslan 改造成全局账号提供方。
 

@@ -96,6 +96,22 @@ pub fn route_deep_link(app: &tauri::AppHandle, raw: String) {
     }
 }
 
+/// 手动粘贴一条分享链接（浏览器/系统没把深链交接过来时的兜底）。
+///
+/// 与 `device_auth_handle_link` 对称：那边也有一个粘贴入口。**这条命令不是给网页用的**，
+/// 网页照旧走深链；它解决的是「深链压根没被系统注册」的场景 —— 开发期构建、未签名包、
+/// 以及没做协议注册的 Linux 桌面。没有它，接入方在本地只能靠「先打签名包」才能自测分享。
+///
+/// 与深链入口走**同一个** `begin_share`：解析、限额、去重、排队、事件全不变，
+/// 所以测试这条路径等于测真实入口，不会出现「自测通过、线上不同」。
+#[tauri::command(async)]
+pub async fn share_handle_link(
+    state: State<'_, Arc<crate::state::AppState>>,
+    url: String,
+) -> Result<sh::SharePrompt, String> {
+    begin_share(&state.inner().app, &url).await
+}
+
 /// 取当前待处理的分享（最新一条）。冷启动时前端拿不到「到达那一刻」的事件，靠这一条补拉。
 #[tauri::command(async)]
 pub async fn share_get_pending(

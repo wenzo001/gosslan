@@ -19,6 +19,27 @@
 术语：**设备绑定**（link）、**设备快捷认证**（authenticate）、**设备凭证**。
 不要用「用户指纹」「永久身份」「同步账号资料」这类词 —— 实现里没有这些语义。
 
+### 0.1 没有签名包怎么自测（两条兜底入口）
+
+深链（`gosslan://…` / App Links）靠**系统协议注册**才通。开发期构建、未签名包、以及没做协议
+注册的 Linux 桌面拿不到注册 —— 那时点链接会「什么都没发生」。为了不让你必须先把安装包签名
+才能验证协议，客户端在**设置 → 关于**（桌面端是该页里的「安全」区）留了两个粘贴入口：
+
+| 入口 | 粘什么 | 走的后端路径 |
+|---|---|---|
+| 「授权链接」 | `gosslan://authorize/<ref>?origin=…` 或 https 形态 | 与深链**同一个** `handle_device_auth_link` |
+| 「分享链接」 | `gosslan://share?url=…` 或 https 形态 | 与深链**同一个** `begin_share` |
+
+两条都**不是**额外的信任通道：解析、限额、去重、排队、确认页/分享面板全都不变，所以
+「粘贴能过」等价于「深链能过」。
+
+唯一的差别在**失败的可见性**：粘贴是同步调用，失败会当场弹一条可读提示；深链那条路，
+分享失败也会提示（`share-error`），但**授权失败只写客户端日志**——因为对授权来说「确认页没
+出现」与「用户关掉了确认页」本来就是一个结局（= 没批准），客户端不区分这两者。联调时如果
+你只看到「没反应」，先用粘贴入口复现，能拿到具体原因。
+
+真机唤起（系统把链接交给应用）仍属 `NOT RUN`，见 §5 —— 粘贴入口不能替代它。
+
 ## 1. 设备快捷认证（登录）
 
 ### 1.1 端到端时序
@@ -61,6 +82,7 @@ https://your-app.example.com/authorize/<request_id>
 - 第二种要生效，需要把 `https://your-app.example.com` 与 App 做域名关联
   （Android App Links / iOS Universal Links）。关联文件的模板见 `docs/link-handoff/`。
 - `request_id` 是**不透明**的：客户端不解析，只原样带去 `request_endpoint`。
+- 系统没注册协议时（开发期构建、未签名包），把整条链接粘到设置页的「授权链接」里，见 §0.1。
 
 ### 1.3 元数据端点（`GET /.well-known/gosslan-device-auth`）
 
@@ -191,6 +213,9 @@ gosslan://share?url=<urlencoded>&title=<urlencoded>&text=<urlencoded>&origin=<ur
 https://your-app.example.com/share?url=…&title=…&text=…
 ```
 
+系统没注册协议时（开发期构建、未签名包），把整条链接粘到设置页的「分享链接」里，效果与深链
+相同（同一段后端逻辑），见 §0.1。
+
 ### 2.2 参数
 
 | 参数 | 必填 | 上限 | 说明 |
@@ -260,6 +285,8 @@ location.href = link;
 
 ## 4. 接入自测清单
 
+自测入口：有签名包就用真机点链接；没有就用 §0.1 的两个粘贴入口（两者走同一段后端逻辑）。
+
 登录：
 
 - [ ] 元数据端点与深链 origin 同源，HTTPS 200，字段齐全。
@@ -287,3 +314,37 @@ location.href = link;
 | Android App Links / iOS Universal Links | `NOT RUN`（配置骨架已就位，需域名关联文件与真机） |
 | 真实 RP 后端联调 | `NOT RUN`（本仓只有内存 mock：`scripts/device-auth-rp-mock.mjs`） |
 | 系统分享面板 / 文件分享 / 受控 share request | 未实现（见 §2.6） |
+| 设置页两个粘贴兜底入口（登录 / 分享） | 已实现，链路有单测钉着（`src/utils/shareWiring.test.ts` 等）；真机深链仍 `NOT RUN` |
+
+## 6. 附录：错误码与你会看到什么
+
+客户端**不把这些码发给你**（回写只有 §1.5 的决策与断言）。它们出现在用户的提示与客户端日志里
+—— 联调时你听到「用户说弹了个框」，可以对照这张表定位是谁的问题。
+
+| 错误码 | 触发条件 | 用户看到 | 你该做什么 |
+|---|---|---|---|
+| `DEVICE_AUTH_INVALID_LINK` | 深链形状不对（缺 ref、origin 缺失、scheme 不认识） | 授权链接不正确 | 检查深链拼装与 URL 编码 |
+| `DEVICE_AUTH_INVALID_ORIGIN` | `origin` 不是合法 HTTPS origin（带 userinfo / query / fragment） | 应用来源不是有效的 HTTPS 地址 | 传干净的 `https://host[:port]` |
+| `DEVICE_AUTH_CROSS_ORIGIN` | 元数据 `issuer` 与深链 origin 不同源 | 应用来源与端点不一致，已拒绝 | 两者必须是同一个 origin |
+| `DEVICE_AUTH_BAD_METADATA` | 元数据缺字段、端点非 HTTPS、端点是跨源 | 应用认证信息不完整 | 按 §1.3 补齐；端点必须同源 HTTPS |
+| `DEVICE_AUTH_UNSUPPORTED` | `protocol_version` 不认识，或不支持该 `action` | 不支持的认证协议或动作 | 用 `"1"`，并在 `supported_actions` 里声明要用的动作 |
+| `DEVICE_AUTH_UNKNOWN_CLAIM` | `requested_claims` 超出 allowlist 或不在你的 `supported_claims` 里 | 请求了不支持的信息字段 | 只用三个允许的 claim |
+| `DEVICE_AUTH_BAD_REQUEST` | 事务字段不合法（`request_id` 不一致、`expires_at` 过期等） | 认证请求不正确 | 事务与深链引用必须同一条 |
+| `DEVICE_AUTH_EXPIRED` | 确认页停留超过有效期（本地上限 5 分钟，取你的 `expires_at` 与它的较小值） | 授权已过期，请重新发起 | 重新建事务；别复用旧 `request_id` |
+| `DEVICE_AUTH_NETWORK` | 拉元数据/事务超时或非 2xx | 与应用通信失败，请稍后再试 | 检查端点可达性、TLS 与状态码 |
+| `DEVICE_AUTH_REPLAYED` | 同一事务被再次批准（已消费），或事务代际已变更 | 该授权已处理过 | 一次事务只该有一次决策；你仍要做幂等（§1.7） |
+| `DEVICE_AUTH_NOT_FOUND` | 待确认事务已被清除/从未存在 | 授权请求不存在或已清除 | 重新发起 |
+| `DEVICE_AUTH_BINDING_REVOKED` | 本机对该应用是撤销态，又收到 `authenticate` | 绑定已撤销，请重新绑定 | 引导用户走 `link` 重新绑定 |
+| `DEVICE_AUTH_BINDING_EXISTS` | 已有撤销态绑定，又收到 `link` | 已有撤销态绑定，请先在应用账号页解绑 | 让用户在你这儿解绑后再绑 |
+| `DEVICE_AUTH_NO_BINDING` | 本机没有该应用的 active 绑定就 `authenticate` | 尚未绑定该应用，请先绑定 | 先走 `link` |
+| `DEVICE_AUTH_BUSY` | 待确认队列已满（上限 4） | 待确认的授权太多，先处理手上这几条 | 别把多条授权并发塞给用户 |
+| `DEVICE_AUTH_DENY_NOTIFY_FAILED` | 本机已拒绝，回写你失败 | 本机已拒绝，但对方没收到通知，请重试 | 你的 `decision_endpoint` 要能接受重复的 `deny` |
+| `EXTERNAL_SHARE_INVALID_LINK` | 分享链接形状不对（不是 share 入口） | 这个分享链接不正确 | 检查 scheme 与路径 |
+| `EXTERNAL_SHARE_BAD_CONTENT` | 三个内容参数全空，或 `url` 不是 http/https | 分享内容为空，或链接不是 http/https | 至少给一个内容；`url` 只放 http(s) |
+| `EXTERNAL_SHARE_TOO_LARGE` | 超出 §2.2 的码点上限 | 分享内容太长了 | 见 §2.2 三个上限 |
+| `EXTERNAL_SHARE_BUSY` | 待处理分享已达 8 条 | 还有几条分享没处理，先处理完再分享 | 不要循环触发；等用户处理 |
+| `EXTERNAL_SHARE_REFERENCE_UNSUPPORTED` | 用了受控形态 `/share/<ref>` | 这个分享需要应用侧配合，暂不支持 | 改用内联参数（§2.1） |
+
+维护提示：这张表的两侧都在仓库里 —— 码在 `src-tauri/src/error_codes.rs`，用户文案在
+`src/i18n/locales/*.ts`，两张表的双向对账由 `src/utils/errors.test.ts` 钉着。加码必须同时补两边，
+否则那条判据当场红。

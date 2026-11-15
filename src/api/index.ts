@@ -897,6 +897,11 @@ export const api = {
   shareGetPending: () => invoke<SharePrompt | null>("share_get_pending"),
   /** 处理完（已发送 / 用户关掉）就把这一条移出队列；返回是否真的删掉了。 */
   shareDismiss: (shareId: string) => invoke<boolean>("share_dismiss", { shareId }),
+  /**
+   * 手动粘贴一条分享链接（兜底，不是给网页用的）。
+   * 走的是与深链**同一个** `begin_share`，所以自测等价于真实入口。
+   */
+  shareHandleLink: (url: string) => invoke<SharePrompt>("share_handle_link", { url }),
   /** 外部内容到达（深链 / 冷启动 argv / 单实例转发）。 */
   onShareRequest: (cb: (p: SharePrompt) => void) =>
     listen<SharePrompt>("share-request", (e) => cb(e.payload)),
