@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-15T12:17:59Z",
+  "updated_at": "2026-11-15T12:50:41Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -101,9 +101,9 @@
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "fa4bb79717abd824c8ff963274571b0419d0967795894e995b48dcfb50d3790a",
-      "size": 99174,
-      "normalized_sha256": "fa4bb79717abd824c8ff963274571b0419d0967795894e995b48dcfb50d3790a"
+      "sha256": "2ed0ab1f4bf6a482979393c4ec5c3450fb716fb1fe94f54cc1dee8622471ff74",
+      "size": 99605,
+      "normalized_sha256": "2ed0ab1f4bf6a482979393c4ec5c3450fb716fb1fe94f54cc1dee8622471ff74"
     },
     "CONTEXT.md": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "7ada64c75d2c4b0f7128aed58692f91e692286ab7a4ea4a2d2fcb2cc2ec6e7fc",
-      "size": 554389,
-      "normalized_sha256": "7ada64c75d2c4b0f7128aed58692f91e692286ab7a4ea4a2d2fcb2cc2ec6e7fc"
+      "sha256": "7d1e1b6c2926a22e71a1c1852c9329af7a34d17ccf43563aa0a99c94adad963c",
+      "size": 554607,
+      "normalized_sha256": "7d1e1b6c2926a22e71a1c1852c9329af7a34d17ccf43563aa0a99c94adad963c"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2033,9 +2033,9 @@
     },
     "docs/notes/external-auth-integration-contract-2026-11-14.md": {
       "role": "index",
-      "sha256": "b8f3bfe9c77b74e00ac076509785b7bc1a6e47daf9b24906020d086eb8fa270a",
-      "size": 35804,
-      "normalized_sha256": "b8f3bfe9c77b74e00ac076509785b7bc1a6e47daf9b24906020d086eb8fa270a"
+      "sha256": "5d5baa9894f549a2d9d214f45ae53ec36c0b9529900e61f41787810ac51a2085",
+      "size": 36005,
+      "normalized_sha256": "5d5baa9894f549a2d9d214f45ae53ec36c0b9529900e61f41787810ac51a2085"
     },
     "docs/notes/external-auth-share-readiness-audit-2026-11-14.md": {
       "role": "index",
@@ -2045,9 +2045,9 @@
     },
     "docs/notes/external-integration-guide-2026-11-14.md": {
       "role": "index",
-      "sha256": "995a33d58d9c60c634fcfc05c2ac7f6a99a980e096d1bcc83ebb3a578630b5f7",
-      "size": 32002,
-      "normalized_sha256": "995a33d58d9c60c634fcfc05c2ac7f6a99a980e096d1bcc83ebb3a578630b5f7"
+      "sha256": "8221d9794792d3cc433f7e1693605efc38284c1ec640c8835528dec1a4a25ac6",
+      "size": 32466,
+      "normalized_sha256": "8221d9794792d3cc433f7e1693605efc38284c1ec640c8835528dec1a4a25ac6"
     },
     "docs/notes/feature-closure-34-handover-2026-11-14.md": {
       "role": "index",
@@ -2357,15 +2357,15 @@
     },
     "package-lock.json": {
       "role": "index",
-      "sha256": "9c18566f62445a27657d37bf20252d07fcfd5228cda685d9348cbe1afa558710",
+      "sha256": "def5680d1318b76c5ae6f60ec4458e595ea05808ed0afbd0a8c188bfaa75d3c2",
       "size": 151207,
-      "normalized_sha256": "9c18566f62445a27657d37bf20252d07fcfd5228cda685d9348cbe1afa558710"
+      "normalized_sha256": "def5680d1318b76c5ae6f60ec4458e595ea05808ed0afbd0a8c188bfaa75d3c2"
     },
     "package.json": {
       "role": "index",
-      "sha256": "02344265b15894ed50e091374dc01fe41a4b68f7b15ef28df0b8c6d835447c9a",
+      "sha256": "4f6848a08a74f813cd784765da12eeeed222e294076aa1b23d3fed4f15bdf86d",
       "size": 9169,
-      "normalized_sha256": "02344265b15894ed50e091374dc01fe41a4b68f7b15ef28df0b8c6d835447c9a"
+      "normalized_sha256": "4f6848a08a74f813cd784765da12eeeed222e294076aa1b23d3fed4f15bdf86d"
     },
     "perf/README.md": {
       "role": "index",
@@ -3497,15 +3497,15 @@
     },
     "src-tauri/Cargo.lock": {
       "role": "index",
-      "sha256": "0cdef294cd684d4ddb69daec398b6e07b051b7fdc1142ce4c8ecd8650ff45d20",
+      "sha256": "2af579900eb181ac0f3ea5ee44e249aca9a675b5fadfbc8a1bf408a4f797adbe",
       "size": 159721,
-      "normalized_sha256": "0cdef294cd684d4ddb69daec398b6e07b051b7fdc1142ce4c8ecd8650ff45d20"
+      "normalized_sha256": "2af579900eb181ac0f3ea5ee44e249aca9a675b5fadfbc8a1bf408a4f797adbe"
     },
     "src-tauri/Cargo.toml": {
       "role": "index",
-      "sha256": "1fb4971730995887d901ebe806f5f70991d08b162cc6ad55991d57abcd53d2ea",
+      "sha256": "57988c9ab1e03331274c4f5f9bf7219d45c2c754ad56c1ad3e1220b6bed1c8cb",
       "size": 18584,
-      "normalized_sha256": "1fb4971730995887d901ebe806f5f70991d08b162cc6ad55991d57abcd53d2ea"
+      "normalized_sha256": "57988c9ab1e03331274c4f5f9bf7219d45c2c754ad56c1ad3e1220b6bed1c8cb"
     },
     "src-tauri/Info.plist": {
       "role": "index",
@@ -4204,9 +4204,9 @@
     },
     "src-tauri/src/commands/device_auth.rs": {
       "role": "index",
-      "sha256": "d36162efb2f3f2d473e9dfca88c1acbcf494a7012e38c4c3a213181f09dd09f9",
-      "size": 79341,
-      "normalized_sha256": "d36162efb2f3f2d473e9dfca88c1acbcf494a7012e38c4c3a213181f09dd09f9"
+      "sha256": "b2aa07172e2e94760ce18e43ac07bb3d09c5d1cfe3263b82251c474dfb5a59fc",
+      "size": 81435,
+      "normalized_sha256": "b2aa07172e2e94760ce18e43ac07bb3d09c5d1cfe3263b82251c474dfb5a59fc"
     },
     "src-tauri/src/commands/external_links.rs": {
       "role": "index",
@@ -4510,9 +4510,9 @@
     },
     "src-tauri/src/db/messages.rs": {
       "role": "index",
-      "sha256": "e1b45b1c5e0047991a23c76a7c1b4730036b5170c93fdc89bc460875ba2f8392",
-      "size": 100173,
-      "normalized_sha256": "e1b45b1c5e0047991a23c76a7c1b4730036b5170c93fdc89bc460875ba2f8392"
+      "sha256": "f65b08eabdc521b7263bc4683965841205b7c8fd2d2284fe2015335d418fea3c",
+      "size": 101356,
+      "normalized_sha256": "f65b08eabdc521b7263bc4683965841205b7c8fd2d2284fe2015335d418fea3c"
     },
     "src-tauri/src/db/migration_tests.rs": {
       "role": "index",
@@ -5398,9 +5398,9 @@
     },
     "src-tauri/tauri.conf.json": {
       "role": "index",
-      "sha256": "f0f74ffc6737368ea453a90403cd363827c3ae802c1b62da42f38001bb340f9f",
+      "sha256": "70b6ec73459225d4c1a753ad35dc0f519783ce76d6d2cd50655c03f1cdd4aed2",
       "size": 3011,
-      "normalized_sha256": "f0f74ffc6737368ea453a90403cd363827c3ae802c1b62da42f38001bb340f9f"
+      "normalized_sha256": "70b6ec73459225d4c1a753ad35dc0f519783ce76d6d2cd50655c03f1cdd4aed2"
     },
     "src-tauri/tauri.nodrop.conf.json": {
       "role": "index",
@@ -8952,9 +8952,9 @@
     },
     "src/utils/openExtensionScopeWiring.test.ts": {
       "role": "observe",
-      "sha256": "223384704a3c33cc7126ca1d25e4f663bffef5f5ab12ada9e47e0a175cbd32d5",
-      "size": 6610,
-      "normalized_sha256": "223384704a3c33cc7126ca1d25e4f663bffef5f5ab12ada9e47e0a175cbd32d5"
+      "sha256": "be28bc988c74abb74edef29be1b65c5e1cc9a1608314108427eb62f0579c5f57",
+      "size": 6939,
+      "normalized_sha256": "be28bc988c74abb74edef29be1b65c5e1cc9a1608314108427eb62f0579c5f57"
     },
     "src/utils/optimistic.test.ts": {
       "role": "observe",
