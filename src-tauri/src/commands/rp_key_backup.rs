@@ -16,7 +16,7 @@
 use rand_core::{OsRng, RngCore};
 // 跨域依赖走 `use` 而不是 `crate::db::…` 内联：领域依赖守门只看得见 use 形式，
 // 内联全路径会变成判据看不见的耦合（该守门有棘轮，本轮已撞到上限）。
-use crate::db::{insert_binding, list_bindings, now_ms, RpBindingRow};
+use crate::db::{insert_binding, list_bindings, list_bindings_with_secrets, now_ms, RpBindingRow};
 
 /// 导出结果（只回条数与落点，不回任何密钥材料）。
 #[derive(Debug, serde::Serialize)]
@@ -87,7 +87,10 @@ pub async fn device_auth_export_bindings(
         }
         let rows = {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            list_bindings(&dbc).map_err(|e| {
+            // ⚠️ 用 `list_bindings_with_secrets`（**解封后**的明文）而不是 `list_bindings`
+            // （库里原样值 = 平台密钥库信封）：导出包的卖点是「换机/重装能迁移」，
+            // 而 DPAPI 绑机器、Keystore 绑设备 ⇒ 把信封搬走等于搬了个解不开的东西。
+            list_bindings_with_secrets(&dbc).map_err(|e| {
                 error_codes::coded(error_codes::RP_KEY_BACKUP_IO, format!("读取绑定清单失败：{e}"))
             })?
         };

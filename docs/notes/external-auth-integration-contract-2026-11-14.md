@@ -97,21 +97,41 @@
 
 ## 5. 密钥保护决策
 
-- 现状：`rp_device_bindings.secret_key` 是 base64(std) 编码的 Ed25519 32 字节 seed，存本地 SQLite（应用私有目录，目录权限收紧为 0700）。`src-tauri/src/crypto.rs` 的 `RpKey` 收口生成、重建、签名与导出；私钥不 derive `Serialize`/`Debug`，不进命令返回值或事件载荷；落库导出只发生在 `src-tauri/src/db/device_auth.rs`。
+- 现状（**2026-11-15 已落地 Windows + Android**）：`rp_device_bindings.secret_key` 这一列在
+  **有平台密钥库的系统上是信封**（`gsk1.<后端>.<base64url 载荷>`），载荷由
+  **Windows 凭据管理器（DPAPI）** 或 **Android Keystore（AES-256-GCM，密钥在 TEE）** 加密；
+  读库时解回明文用（解不开 ⇒ 报错，**不回落明文**）。
+  实现：`src-tauri/src/rp_key_store.rs`（信封格式与编排）+ `rp_key_store/dpapi.rs` +
+  `rp_key_store/keystore_android.rs`（Kotlin 侧 `gen/android/.../KeyVault.kt`）。
+  **macOS 暂缓**（未签名构建读 Keychain 会弹授权框 ⇒ 与开机自启/自动重启冲突）：
+  那一列仍是 base64 的 Ed25519 32 字节 seed，存本地 SQLite（应用私有目录，目录权限收紧为 0700）。
+  `src-tauri/src/crypto.rs` 的 `RpKey` 收口生成、重建、签名与导出；私钥不 derive `Serialize`/`Debug`，
+  不进命令返回值或事件载荷；落库导出只发生在 `src-tauri/src/db/device_auth.rs`。
 - 明确不是什么：这不是硬件保护密钥，也不是硬件指纹。密钥是软件态 seed，可被读盘、备份、取证或同机高权限进程复制。
+  （Android Keystore 的 AES 密钥不可导出，但被保护的那段 seed 本身仍可在本机被取走。）
 - 威胁边界：能读应用私有目录或拿到数据库备份的一方，即拿到该 RP 的完整设备凭证，可在有效期内伪造断言；跨 RP 使用不同密钥与 pairwise subject，降低跨站关联，但不改变「本地文件即凭证」这一事实。RP 侧仍须自己防重放、限流、校验公钥绑定。
 - 取舍与待决项：
   - 是否上平台密钥库（macOS Keychain、Android Keystore、Windows 凭据/DPAPI 一类）：**2026-11-15 用户裁决「上」**，
-    待实现（未落地前现状仍是下一条的 SQLite 方案，勿按已保护描述）。落地时的硬要求：旧 seed 必须
-    **迁移后擦除**（不能两份并存）、密钥库不可用时**拒绝签名而不是回落明文**、迁移失败要可诊断且绑定不丢。
+    **Windows 与 Android 已落地**（2026-11-15），**macOS 待签名后接**。
+    落地时的硬要求（旧 seed 必须**迁移后擦除**、密钥库不可用时**拒绝签名而不是回落明文**、
+    迁移失败要可诊断且绑定不丢）逐条兑现方式：
+    - **不并存**：私钥只有一处（那一列）。有密钥库的系统上那列写的是信封；
+    - **不回落**：信封解不开 ⇒ `get_binding` 直接报错（`ForeignBackend`/`Backend` 族），签名链路拿不到私钥；
+    - **迁移顺序**：旧格式（明文）行在**第一次被读到时**升级，顺序是「封 → 开回来逐字比对 → 才写回」，
+      中途崩溃 ⇒ 下次启动重试，不会出现两条并存；
+    - **导出仍是明文**（导出包自己用用户口令加密）：换机/重装要能迁移，而 DPAPI 绑机器、Keystore 绑设备 ⇒
+      把信封搬走等于搬了个解不开的东西（`list_bindings_with_secrets` 专门负责这件事）。
     **成本口径（2026-11-15 复核）**：只有 **macOS** 需要代码签名（否则每次读 Keychain 都弹授权框，
     而本应用有开机自启与更新后自动重启 ⇒ 卡死）；**Windows（DPAPI）与 Android（Keystore）零成本即可做**。
     macOS 的免费解法是 **Apple Development 证书**（免费，Team ID 稳定 ⇒ DR 稳定 ⇒ 不再弹框）；
     **付费的 Apple Developer Program 买的是公证与分发，不是「Keychain 能不能用」**。
     详见 [`platform-keychain-free-path-2026-11-15.md`](platform-keychain-free-path-2026-11-15.md)。
-  - 待决：跨平台密钥迁移与备份恢复、无头/无用户会话环境、密钥轮换与旧绑定重绑、密钥损坏时不得静默用新密钥覆盖、移动端 Tauri 工程与签名配置的可用性。
+  - 待决：macOS Keychain 接入（等签名）、跨平台密钥迁移与备份恢复、无头/无用户会话环境、密钥轮换与旧绑定重绑、密钥损坏时不得静默用新密钥覆盖、移动端 Tauri 工程与签名配置的可用性。
   - 现状方案（SQLite + 0700 + `RpKey` 收口）与平台密钥库方案需产品与安全评审签字；未定案前不得对外宣称硬件级保护。
-- 备份 / 迁移 / 清数据后行为：私钥只在本地 DB。清数据、重装、换设备、备份迁移不含密钥或密钥损坏时，绑定丢失，必须重新显式绑定；不得自动用新密钥覆盖原绑定；旧公钥由 RP 账号管理页撤销。源码对撤销态/已存在绑定有明确拒绝（`DEVICE_AUTH_BINDING_EXISTS`、`DEVICE_AUTH_BINDING_REVOKED`）。
+- 备份 / 迁移 / 清数据后行为：私钥只在本地 DB（macOS 暂缓期间是明文列；Windows/Android 是本机密钥库信封）。
+  **Android 侧还有一条额外边界**：系统清除 Keystore（换机恢复、用户清数据、系统重置）⇒ 那份信封解不开 ⇒
+  该绑定必须重新显式绑定（不静默用新密钥覆盖原绑定）。导出包（口令加密、装的是明文）是跨机迁移的正路。
+  清数据、重装、换设备、备份迁移不含密钥或密钥损坏时，绑定丢失，必须重新显式绑定；不得自动用新密钥覆盖原绑定；旧公钥由 RP 账号管理页撤销。源码对撤销态/已存在绑定有明确拒绝（`DEVICE_AUTH_BINDING_EXISTS`、`DEVICE_AUTH_BINDING_REVOKED`）。
 - 为什么写清：外部登录比本地 P2P 身份多一层「可被外部站点验证」的语义，恢复与撤销路径必须由契约明文承担，不能靠用户自行推断。
 
 ## 6. 外链窗口与深链边界

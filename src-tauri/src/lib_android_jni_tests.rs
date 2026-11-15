@@ -47,6 +47,12 @@
         let open_fns = parse_kotlin_funs(kotlin_open);
         let bg_fns = parse_kotlin_funs(kotlin_bg);
         let apk_fns = parse_kotlin_funs(kotlin_apk);
+        // 第五条 JNI 桥：「RP 绑定私钥的 Android Keystore」（平台密钥库）。
+        // 同一个坑（描述符写错只在真机运行期抛 NoSuchMethodError）⇒ 必须同一条护栏盯着。
+        let kotlin_vault =
+            include_str!("../gen/android/app/src/main/java/com/gosslan/app/KeyVault.kt");
+        let rust_vault = include_str!("rp_key_store/keystore_android.rs");
+        let vault_fns = parse_kotlin_funs(kotlin_vault);
         for expected in [
             "start",
             "stop",
@@ -113,6 +119,13 @@
                 "没在 ApkInstaller.kt 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
             );
         }
+        // 平台密钥库桥：Rust 调 sealSecret / openSecret，Kotlin 调 nativeAttachKeyVault。
+        for expected in ["sealSecret", "openSecret", "nativeAttachKeyVault"] {
+            assert!(
+                vault_fns.iter().any(|(n, _, _)| n == expected),
+                "没在 KeyVault.kt 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
+            );
+        }
 
         // ① Rust 登记的每个 Kotlin 方法，描述符必须与 Kotlin 源码推出的**逐字相同**
         let registered = parse_kotlin_method_registrations(rust);
@@ -147,6 +160,14 @@
              解析器失效或有人漏登记",
             apk_registered.len()
         );
+        // 平台密钥库桥：应恰好 2 个登记（sealSecret + openSecret）。
+        let vault_registered = parse_kotlin_method_registrations(rust_vault);
+        assert_eq!(
+            vault_registered.len(),
+            2,
+            "rp_key_store/keystore_android.rs 应恰好登记 2 个 Kotlin 方法（sealSecret + openSecret），实际 {} —— 解析器失效或有人漏登记",
+            vault_registered.len()
+        );
         let mut static_checked = 0usize;
         // ⚠️ **按册配对**比对，不把三条桥的方法名混进一张表再 chain 着查：
         // `start` / `stop` 在 BlePeripheral.kt 与 BackgroundService.kt 里**都存在**，描述符也恰好
@@ -157,6 +178,7 @@
             (&open_registered, &open_fns, "OpenWith.kt", kotlin_open),
             (&bg_registered, &bg_fns, "BackgroundService.kt", kotlin_bg),
             (&apk_registered, &apk_fns, "ApkInstaller.kt", kotlin_apk),
+            (&vault_registered, &vault_fns, "KeyVault.kt", kotlin_vault),
         ] {
             for (name, desc) in regs {
                 let (_, kotlin_desc, _) = fns
@@ -201,9 +223,9 @@
             }
         }
         assert!(
-            static_checked >= 22,
-            "应检查 ≥22 个 Kotlin 方法：BlePeripheral 7 + OpenWith 6 + BackgroundService 5 + ApkInstaller 4 \
-             ⇒ 22 是「四条桥都走进来了」的最小分母（实际 {static_checked}，\
+            static_checked >= 24,
+            "应检查 ≥24 个 Kotlin 方法：BlePeripheral 7 + OpenWith 6 + BackgroundService 5 + ApkInstaller 4 + KeyVault 2 \
+             ⇒ 24 是「五条桥都走进来了」的最小分母（实际 {static_checked}，\
              少一个就说明某条桥的登记没被解析到）"
         );
 
@@ -213,6 +235,7 @@
             .chain(parse_extern_fn_names(rust_open))
             .chain(parse_extern_fn_names(rust_bg))
             .chain(parse_extern_fn_names(rust_apk))
+            .chain(parse_extern_fn_names(rust_vault))
         {
             let camel = snake_to_lower_camel(&snake);
             let found = kotlin_fns
@@ -220,6 +243,7 @@
                 .chain(open_fns.iter())
                 .chain(bg_fns.iter())
                 .chain(apk_fns.iter())
+                .chain(vault_fns.iter())
                 .find(|(n, _, _)| n == &camel)
                 .unwrap_or_else(|| {
                     panic!(
@@ -302,11 +326,13 @@
         let open_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/OpenWith.kt");
         let bg_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/BackgroundService.kt");
         let apk_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/ApkInstaller.kt");
+        let vault_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/KeyVault.kt");
         let cases = [
             (include_str!("transport/ble_android.rs"), ble_kt),
             (include_str!("android_open.rs"), open_kt),
             (include_str!("android_background.rs"), bg_kt),
             (include_str!("android_apk_install.rs"), apk_kt),
+            (include_str!("rp_key_store/keystore_android.rs"), vault_kt),
         ];
         let mut checked = 0usize;
         for (rust, kotlin) in cases {
@@ -325,8 +351,8 @@
             }
         }
         assert!(
-            checked >= 11,
-            "应至少检查 11 个 native 方法（BlePeripheral 5 + OpenWith 1 + BackgroundService 1 + ApkInstaller 4），\
+            checked >= 12,
+            "应至少检查 12 个 native 方法（BlePeripheral 5 + OpenWith 1 + BackgroundService 1 + ApkInstaller 4 + KeyVault 1），\
              实际 {checked} —— 解析器失效了"
         );
     }
@@ -409,6 +435,9 @@
             )))
             .chain(parse_kotlin_method_registrations(include_str!(
                 "android_apk_install.rs"
+            )))
+            .chain(parse_kotlin_method_registrations(include_str!(
+                "rp_key_store/keystore_android.rs"
             )))
             .collect();
         assert!(
@@ -530,6 +559,43 @@
         assert!(
             source_block.contains("-keep class com.gosslan.app.ApkInstallerKt"),
             "keep 块里没有 ApkInstallerKt —— Kotlin 调进 Rust 的 4 个 native 方法改名后真机 UnsatisfiedLinkError"
+        );
+
+        // 平台密钥库的桥同理：2 个 `@JvmStatic` 方法必须各自出现在**它自己的类块**里、
+        // 且写成 `public static`（只 keep 实例方法时 R8 会删掉静态桥，真机报
+        // `Method not found: sealSecret`，而 debug 包完全正常 —— 症状是
+        // 「授权第三方应用」在 release 包上永远失败）。
+        let vault_block = proguard_class_block(&source_block, "com.gosslan.app.KeyVault")
+            .expect(
+                "keep 块里没有 `-keep class com.gosslan.app.KeyVault` —— \
+                 R8 会改掉这些名字，release 真机上第三方应用授权直接失败",
+            );
+        for name in ["sealSecret", "openSecret"] {
+            assert!(
+                vault_block.lines().any(|l| {
+                    let l = l.trim();
+                    l.starts_with("public static") && l.ends_with(';') && l.contains(&format!(" {name}("))
+                }),
+                "KeyVault 的 keep 块里缺 `{name}` 的 public static 规则行；块内实测：\n{}",
+                vault_block.trim()
+            );
+        }
+        let vault_kept = proguard_kept_method_names(&vault_block);
+        for name in &vault_kept {
+            assert!(
+                registered.iter().any(|(n, _)| n == name),
+                "KeyVault 块里的 `{name}` 在 Rust 侧已经没有登记了（陈旧规则），删掉它"
+            );
+        }
+        assert_eq!(
+            vault_kept.len(),
+            2,
+            "KeyVault 块应恰好 keep 2 个方法，实际 {} —— 解析器失效或有人漏加",
+            vault_kept.len()
+        );
+        assert!(
+            source_block.contains("-keep class com.gosslan.app.KeyVaultKt"),
+            "keep 块里没有 KeyVaultKt —— Kotlin 调进 Rust 的 nativeAttachKeyVault 改名后真机 UnsatisfiedLinkError"
         );
     }
 

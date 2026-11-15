@@ -109,8 +109,20 @@
 -keep class io.github.gedgygedgy.** { *; }
 -dontwarn com.nonpolynomial.**
 -dontwarn io.github.gedgygedgy.**
-# 应用内升级的安装桥（见 gen/android/.../ApkInstaller.kt）。
-# Rust 侧用 JNI `call_static_method` 调这 4 个 `@JvmStatic` 方法；R8 改名后 release 真机上
+# RP 绑定私钥的 Android Keystore 桥（见 gen/android/.../KeyVault.kt）。
+# Rust 侧用 JNI `call_static_method` 调这 2 个 `@JvmStatic` 方法（src-tauri/src/rp_key_store/keystore_android.rs）；
+# R8 改名后 release 真机上「授权第三方应用」会直接失败（debug 包不混淆，开发期完全看不见）。
+# `sealSecret` / `openSecret` 的返回类型是 `String?`，JVM 描述符里没有可空这一档 ⇒ `java.lang.String`。
+-keep class com.gosslan.app.KeyVault {
+    public static java.lang.String sealSecret(java.lang.String, java.lang.String);
+    public static java.lang.String openSecret(java.lang.String, java.lang.String);
+}
+# Kotlin 调进 Rust 的那一头：JVM 按**当前方法名**拼符号
+#（`Java_com_gosslan_app_KeyVaultKt_nativeAttachKeyVault`），改名即 UnsatisfiedLinkError。
+-keep class com.gosslan.app.KeyVaultKt {
+    native <methods>;
+}
+# 应用内升级的安装桥（见 gen/android/.../ApkInstaller.kt）。# Rust 侧用 JNI `call_static_method` 调这 4 个 `@JvmStatic` 方法；R8 改名后 release 真机上
 # 点「安装」只会得到 NoSuchMethodError（debug 包不混淆，所以开发期完全看不见）。
 # `install` / `inspect` 的返回类型是 `String?`，JVM 描述符里没有可空这一档 ⇒ `java.lang.String`。
 -keep class com.gosslan.app.ApkInstaller {

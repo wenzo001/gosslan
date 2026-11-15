@@ -3,12 +3,23 @@
 // ---------------- 外部应用设备认证绑定（2026-11-13，Phase 2） ----------------
 
 use crate::crypto;
+// 跨域依赖走 `use` 而不是 `crate::rp_key_store::…` 内联：领域依赖守门只看得见 use 形式
+// （内联全路径会变成「判据看不见的耦合」，该守门有棘轮，不许调大）。
+use crate::rp_key_store;
 
 /// RP 绑定的**内部行**：含 RP 专属登录私钥，**刻意不 derive Serialize**（INV-P18）。
 ///
 /// 私钥只在命令层签名时本地读取，绝不进命令返回值/事件载荷；前端「已授权应用」清单走
 /// `device_auth::RpBindingInfo`（只公钥面）。这与身份密钥同一保护类（本地 SQLite + 0700
 /// 目录，无系统 Keychain，限制见设计文档 §3.1）。
+///
+/// ⚠️ `secret_key` 这一格**有两种可能的形态**，取决于取行用的是哪个函数。
+///
+/// - `get_binding` / `list_bindings_with_secrets` ⇒ **明文**（已从平台密钥库解开）；
+/// - `list_bindings` ⇒ **库里的原样值**（在有密钥库的机器上就是信封 `gsk1.…`）。
+///
+/// 需要私钥的路径一律走前两个；只需要公钥面的（清单展示）走 `list_bindings`，
+/// 免得「密钥库打不开」把整个设置页顶掉。
 pub struct RpBindingRow {
     pub rp_origin: String,
     pub client_id: String,
@@ -47,14 +58,77 @@ fn map_binding_row(r: &rusqlite::Row<'_>) -> Result<RpBindingRow> {
     })
 }
 
+/// 写库前：把私钥封进**本机平台密钥库**（Windows DPAPI / Android Keystore）。
+///
+/// 三种结果，**没有第四种**：
+/// - 本机有密钥库 ⇒ 返回信封（`gsk1.<后端>.<载荷>`）；
+/// - 本机没有（macOS 暂缓 / Linux）⇒ 原样返回（维持旧行为，不是失败）；
+/// - 密钥库**用不了** ⇒ 报错。**绝不**回落成明文写库 ——
+///   那种静默降级会让用户以为私钥已经受系统保护了。
+fn sealed_for_storage(stored: &str) -> Result<String> {
+    if rp_key_store::is_envelope(stored) {
+        return Ok(stored.to_string());
+    }
+    match rp_key_store::seal_secret(stored) {
+        Ok(Some(envelope)) => Ok(envelope),
+        Ok(None) => Ok(stored.to_string()),
+        Err(e) => Err(rusqlite::Error::ToSqlConversionFailure(Box::new(e))),
+    }
+}
+
+/// 读库后：把信封解回明文（非信封 = 旧格式明文，原样返回）。
+///
+/// 解不开 ⇒ 报错上抛（fail closed）：密钥库不可用时**不回落明文**。
+fn opened_secret(stored: &str) -> Result<String> {
+    rp_key_store::open_secret(stored)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+}
+
+/// 把库里那一格私钥处理成「内存里的明文」，并**顺手把旧格式升级成密钥库信封**。
+///
+/// 升级顺序（**封 → 开回来逐字验 → 才写回**，见 `rp_key_store.rs` 的硬约束②）：
+/// 1. 已是信封 ⇒ 直接开；开不开 ⇒ 报错（不回落明文）；
+/// 2. 还是旧格式明文 ⇒ 本机有密钥库就封一份、开回来比对一致才写回；
+///    封不上（本机没有密钥库）⇒ 原样返回（本机不支持，不算失败）。
+///
+/// 写回只动 `secret_key` 一列，**不动表结构**（SQLite schema 属 Frozen Core）。
+fn upgrade_and_open(conn: &Connection, row: &RpBindingRow) -> Result<String> {
+    if rp_key_store::is_envelope(&row.secret_key) {
+        return opened_secret(&row.secret_key);
+    }
+    let Some(envelope) = rp_key_store::seal_secret(&row.secret_key)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+    else {
+        // 本机没有密钥库（macOS 暂缓 / Linux）：保持旧行为。
+        return Ok(row.secret_key.clone());
+    };
+    // 验一次：开回来必须与原文逐字相同，否则**不写回**（宁可不升级，也不能写坏）。
+    let back = opened_secret(&envelope)?;
+    if back != row.secret_key {
+        return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+            rp_key_store::KeyStoreError::Malformed(
+                "升级校验不一致（封回去解出来不是同一串）—— 已放弃写回，库里仍是旧值".into(),
+            ),
+        )));
+    }
+    conn.execute(
+        "UPDATE rp_device_bindings SET secret_key = ?3 WHERE rp_origin = ?1 AND client_id = ?2",
+        params![row.rp_origin, row.client_id, envelope],
+    )?;
+    Ok(row.secret_key.clone())
+}
+
 /// 新建一条绑定。主键 (rp_origin, client_id) 冲突即拒（不静默覆盖旧公钥，设计文档 §3.1）。
+///
+/// 私钥在这里**封进平台密钥库**再落库（有密钥库的平台）/ 原样落库（没有密钥库的平台）。
 pub fn insert_binding(conn: &Connection, b: &RpBindingRow) -> Result<()> {
+    let secret = sealed_for_storage(&b.secret_key)?;
     conn.execute(
         "INSERT INTO rp_device_bindings \
          (rp_origin, client_id, display_name, kid, public_key, secret_key, pairwise_subject, scopes, status, created_at, last_used_at, revoked_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
-            b.rp_origin, b.client_id, b.display_name, b.kid, b.public_key, b.secret_key,
+            b.rp_origin, b.client_id, b.display_name, b.kid, b.public_key, secret,
             b.pairwise_subject, b.scopes, b.status, b.created_at, b.last_used_at, b.revoked_at
         ],
     )?;
@@ -101,22 +175,53 @@ pub fn insert_rp_binding(
 
 /// 取一条绑定。**读库错误与「没有这条」分开**：`optional()` 只把 NoRows 折成 None，
 /// 其它错误向上抛（读-改-写路径不能把读抖动当成「没绑定」）。
+///
+/// 私钥**已解密**（平台密钥库的信封在此解开）；顺手把旧格式（明文）升级成信封。
 pub fn get_binding(conn: &Connection, rp_origin: &str, client_id: &str) -> Result<Option<RpBindingRow>> {
-    conn.query_row(
-        &format!("SELECT {BINDING_COLS} FROM rp_device_bindings WHERE rp_origin = ?1 AND client_id = ?2"),
-        params![rp_origin, client_id],
-        map_binding_row,
-    )
-    .optional()
+    let row = conn
+        .query_row(
+            &format!("SELECT {BINDING_COLS} FROM rp_device_bindings WHERE rp_origin = ?1 AND client_id = ?2"),
+            params![rp_origin, client_id],
+            map_binding_row,
+        )
+        .optional()?;
+    match row {
+        None => Ok(None),
+        Some(mut r) => {
+            r.secret_key = upgrade_and_open(conn, &r)?;
+            Ok(Some(r))
+        }
+    }
 }
 
 /// 全部绑定（含已撤销，前端清单要能显示并管理撤销态），按创建时间倒序。
+///
+/// ⚠️ 这里的 `secret_key` 是**库里的原样值**（可能是密钥库信封）：这个函数服务
+/// 「只要公钥面」的清单展示，不去碰密钥库 —— 免得「密钥库打不开」把整个设置页顶掉。
+/// 要私钥的路径用 `get_binding` 或 `list_bindings_with_secrets`。
 pub fn list_bindings(conn: &Connection) -> Result<Vec<RpBindingRow>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {BINDING_COLS} FROM rp_device_bindings ORDER BY created_at DESC"
     ))?;
     let rows = stmt.query_map([], map_binding_row)?;
     rows.collect()
+}
+
+/// 全部绑定，**私钥已解密**。导出用。
+///
+/// 为什么导出要明文：导出包自己用**用户口令**加密（Argon2id + XChaCha20-Poly1305），
+/// 它的卖点就是「换机/重装能迁移」⇒ 里面装的是这台机器的密钥库信封就废了
+/// （DPAPI 绑机器、Keystore 绑设备，换台机器根本解不开）。
+pub fn list_bindings_with_secrets(conn: &Connection) -> Result<Vec<RpBindingRow>> {
+    let rows = list_bindings(conn)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for mut r in rows {
+        if rp_key_store::is_envelope(&r.secret_key) {
+            r.secret_key = opened_secret(&r.secret_key)?;
+        }
+        out.push(r);
+    }
+    Ok(out)
 }
 
 /// 记一次最近使用（authenticate 成功后）。

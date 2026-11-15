@@ -1,8 +1,9 @@
 # 平台密钥库：免费路径与三平台成本表（2026-11-15）
 
-> 状态：**决策文档，未实现**。用户 2026-11-15 问「开发者证书要付费吗、有没有免费办法」，
+> 状态：**Windows（DPAPI）与 Android（Keystore）已实现**（2026-11-15）；**macOS 暂缓**（等签名）。
 > 本文给出三平台的真实成本、macOS 弹框的机制、免费证书的可复现步骤与迁移约束。
-> **代码一行未动**（密钥库迁移本身仍未开工）。
+> 实现见 `src-tauri/src/rp_key_store.rs`（信封格式与编排）、`rp_key_store/dpapi.rs`、
+> `rp_key_store/keystore_android.rs`（Kotlin 侧 `gen/android/.../KeyVault.kt`）。
 
 ## 1. 先纠正一句口径
 
@@ -86,25 +87,46 @@ codesign -dv --verbose=4 "src-tauri/target/release/bundle/macos/Gosslan.app" 2>&
 
 ## 5. 三个平台各自要做什么
 
-| 平台 | 后端 | 依赖 | 备注 |
+| 平台 | 后端 | 依赖 | 状态 |
 |---|---|---|---|
-| macOS | Keychain | `keyring`（apple-native） | **挂 macOS 目标段**（跨平台纯逻辑会 E0433） |
-| Windows | 凭据管理器（DPAPI） | `keyring`（windows-native） | 同样挂 windows 目标段 |
-| Android | Android Keystore | `keyring`（android-native，依赖 JNI） | 需要真机验证；模拟器不可用 |
-| 跨平台 | **统一的存取抽象 + 纯逻辑** | — | 格式判定、迁移编排、失败语义做成**可单测的纯函数**，平台后端只在最后一步 |
+| macOS | Keychain | `keyring`（apple-native） | **待做**：挂 macOS 目标段（跨平台纯逻辑会 E0433）；等签名身份 |
+| Windows | 凭据管理器（DPAPI） | `windows-sys` 的 `Win32_Security_Cryptography`（**无新依赖**） | **已做**（`rp_key_store/dpapi.rs`） |
+| Android | Android Keystore | `jni`（已在依赖树里）+ Kotlin 侧 `KeyVault.kt` | **已做**（`rp_key_store/keystore_android.rs`；真机验收 NOT RUN） |
+| 跨平台 | **统一的存取抽象 + 纯逻辑** | — | **已做**（`rp_key_store.rs`：信封格式、封/开编排、升级顺序） |
+
+### 5.1 落地形状（2026-11-15 已实现）
+
+私钥**仍然只有一处**：`rp_device_bindings.secret_key` 那一列。有密钥库的系统上，那列写的是
+**信封** `gsk1.<后端>.<base64url 载荷>`：
+
+- **落库前封**（`insert_binding`）、**读库后开**（`get_binding` / `list_bindings_with_secrets`）；
+- **不回落明文**：信封解不开 ⇒ 报错上抛（`ForeignBackend` / `Backend` / `Malformed` 三族）；
+- **升级顺序**：旧格式（明文）行在第一次被读到时升级，顺序是「封 → 开回来逐字比对 → 才写回」；
+- **导出仍是明文**：导出包自己用用户口令加密（换机要能迁移，而 DPAPI 绑机器、Keystore 绑设备）。
 
 ## 6. 待办与验收
 
-- [ ] 先做**跨平台的存取抽象与迁移编排**（纯逻辑，可单测，不碰平台 API）。
-- [ ] 接 Windows（零成本，最先验证形态）。
+- [x] 跨平台的存取抽象与迁移编排（纯逻辑，可单测，不碰平台 API）。
+- [x] 接 Windows（DPAPI，`windows-sys`，**无新依赖**）。
 - [ ] 接 macOS（需先建好免费签名身份）。
-- [ ] 接 Android（需真机）。
-- [ ] 验收判据草案：
+- [x] 接 Android（Kotlin 侧 `KeyVault.kt` + Rust 侧 JNI 桥；**真机验收 NOT RUN**）。
+- 验收判据：
   1. 写入新位置 → 用新位置签名成功 → 旧 seed 被删，**三步顺序可被源码判据钉住**。
+     ✅（升级写在 `db/device_auth.rs::upgrade_and_open`，顺序即代码顺序）
   2. 密钥库不可用时**拒绝签名**，错误可读，**不回落明文**。
+     ✅（`rp_key_store::open_secret` 的三族错误；判据在 `rp_key_store/tests.rs`）
   3. 迁移中途崩溃后重启：要么完成、要么完整回退，**不出现两条并存**。
+     ✅（写回前先逐字校验；崩溃时库里仍是旧值，下次启动重试）
   4. 导出/恢复在迁移前后都能用（兜底仍在）。
+     ✅（导出走 `list_bindings_with_secrets` ⇒ 装的是明文，换机可恢复）
   5. 跨平台：同一份绑定在 macOS 导出 → Windows 恢复成功（格式与平台无关）。
+     ⏳ **NOT RUN**（导出包格式与平台无关有源码判据，但跨机实跑未做）。
+
+### 6.1 macOS 那一半还差什么
+
+只剩「Keychain 后端」这一步：macOS 侧照 Windows 的形状加一个 `rp_key_store/keychain.rs`
+（`security-framework` 已在依赖树里，可零新依赖），并把 `Backend` 加一个 `AppleKeychain` 变体。
+**前置条件仍是签名身份**（见 §3）：没签名就读一次弹一次框 ⇒ 与开机自启/自动重启冲突。
 
 ## 7. 相关文件
 
