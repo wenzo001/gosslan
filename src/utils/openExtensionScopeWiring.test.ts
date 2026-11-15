@@ -91,7 +91,8 @@ test("后端：交付载荷没有正文、没有公钥（形状判据，不靠�
   const block = cmd.match(/fn build_delivery_data\([\s\S]*?\n\}/);
   assert.ok(block, "找不到 build_delivery_data");
   const body = block[0];
-  // 事件只挑五个字段：conv/sender/kind/ts/seq。**不能**整条消息序列化。
+  // 事件只挑七个字段：conv/sender/kind/ts/seq + 通知性两位（mentions_me/notifies）。
+  // **不能**整条消息序列化。
   assert.match(body, /"conv_id": m\.conv_id/);
   assert.match(body, /"sender_id": m\.sender_id/);
   assert.match(body, /"kind": m\.kind/);
@@ -101,6 +102,9 @@ test("后端：交付载荷没有正文、没有公钥（形状判据，不靠�
     !/"content"|m\.content/.test(body),
     "交付数据里出现了正文 —— 正文不外送（裁决 2026-11-15）",
   );
+  // 通知性两位：@ 了我 / 会弹通知（用户要的是「通知类消息」，光有元信息不够）。
+  assert.match(body, /"mentions_me": m\.mentions_me/, "事件载荷缺 mentions_me");
+  assert.match(body, /"notifies": m\.notifies/, "事件载荷缺 notifies");
   // 好友只给 device_id + 昵称。
   assert.match(body, /"device_id": f\.device_id/);
   assert.match(body, /"nickname": f\.nickname/);
