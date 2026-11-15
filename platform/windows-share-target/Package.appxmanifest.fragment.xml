@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Windows MSIX `shareTarget` 扩展声明片段（贴进主应用的 Package.appxmanifest）。
+
+  ⚠️ 这只是**声明**：Windows 的分享目标不是独立进程，而是**主应用被系统唤起**
+  （`DataTransferManager` 的 `DataRequested` 事件）⇒ 真正干活的代码在
+  `ShareTarget.cs`（需要在主应用进程里跑）。
+
+  ⚠️ 与 macOS 同一套协议：扩展/应用只负责「把内容写成一份落地区文件」，
+  主应用自己去捡（读取端在 src-tauri/src/incoming_share.rs）。
+  目录：`%LOCALAPPDATA%\<包标识>\incoming-shares\`。
+-->
+<Extensions>
+  <uap:Extension Category="windows.shareTarget">
+    <uap:ShareTarget>
+      <!-- 本版本只收链接与纯文本（与 macOS 侧同一口径） -->
+      <uap:DataFormats>URI</uap:DataFormats>
+      <uap:DataFormats>Text</uap:DataFormats>
+      <uap:Title>小院儿</uap:Title>
+    </uap:ShareTarget>
+  </uap:Extension>
+</Extensions>

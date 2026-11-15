@@ -132,6 +132,16 @@ IPC 轮询不划算；而且用户切回来的那一刻，正是最该捡起这�
 
 两份骨架都**未编译、未打包、未真机验收**。它们的唯一职责是「把内容写成 §3 的那份文件」。
 
+> 2026-11-15：两份骨架已从本文**落到仓库里的源文件**（可粘进各自的平台工程）：
+> - macOS：[`platform/macos-share-extension/`](../platform/macos-share-extension/README.md)
+>   （`ShareViewController.swift` + `Info.plist` + App Group entitlement + 接线步骤）；
+> - Windows：[`platform/windows-share-target/`](../platform/windows-share-target/README.md)
+>   （`Package.appxmanifest.fragment.xml` 扩展声明 + `ShareTarget.cs` 接线 + 步骤）。
+>
+> ⚠️ Windows 那半边与 macOS 有个**结构性差别**：Windows 的分享目标**不是独立进程**，
+> 而是主应用被唤起后由 `DataTransferManager.DataRequested` 接住 ⇒ C# 代码要跑在
+> 主应用进程里（Rust + Tauri ⇒ 需要一个薄壳或 Tauri 插件承载）。
+
 ### 6.1 macOS Share Extension（Swift）
 
 需要：Xcode target（`GosslanShareExtension`）、App Group 能力、签名证书。本仓的 Cargo/前端

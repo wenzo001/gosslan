@@ -497,6 +497,10 @@ export default {
         "src-tauri/src/jni_method.rs", // Android 专属
         "src-tauri/src/notifications.rs",
         "src-tauri/src/user_dirs.rs",
+        // 系统分享目标的**平台写入端**（2026-11-15）：macOS Share Extension 与
+        // Windows MSIX shareTarget 的源码在这两个目录里 —— 它们由各自的平台工程
+        // 编译打包（本仓的 Cargo 链产不出），但协议与主应用读取端同源，归平台域。
+        "platform",
       ],
       invariants: [
         // ↓ 2026-10-14 补登，口径同「本节/其判据点名的实现落在本域 paths 上」：

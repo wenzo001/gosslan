@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  App Group：扩展与主应用唯一共有的通道（扩展写文件，主应用读文件）。
+	  ⚠️ **必须与主应用 target 的 entitlement 完全一致**，否则扩展写的地方主应用读不到
+	  （症状：分享完什么也没发生，且没有任何报错）。
+	  ⚠️ Team ID 换成你自己的：`<你的 Team ID>.group.com.gosslan.app`
+	  ⚠️ 这个 group 需要在 Apple Developer 后台先建好（免费账号也能建 App Group）。
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.gosslan.app</string>
+	</array>
+</dict>
+</plist>
