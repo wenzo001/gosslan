@@ -1131,6 +1131,19 @@ export interface RpBindingInfo {
   revoked_at: number | null;
 }
 
+/**
+ * 撤销结果：**本地撤销**与**RP 是否收到通知**是两件事。
+ *
+ * `revoked=false` 表示本机没有这条绑定（不是失败）。
+ * `revoked=true` 表示撤销之后本机这条绑定处于撤销态（含「本来就是撤销态、这次只是补发通知」）。
+ * `rpNotified=false` 表示对方服务端没收到撤销通知（该 RP 没提供端点 / 网络失败 / 非 2xx）——
+ * 此时**本机已经撤销**，但对方那边可能还认这把公钥，需要用户自己去对方账号页撤销，或重发通知。
+ */
+export interface DeviceAuthRevokeOutcome {
+  revoked: boolean;
+  rpNotified: boolean;
+}
+
 /** 导出结果：只回条数与落点，不含任何密钥材料。 */
 export interface RpKeyExportSummary {
   count: number;

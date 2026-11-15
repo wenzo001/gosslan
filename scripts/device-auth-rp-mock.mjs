@@ -79,6 +79,8 @@ const transactions = new Map(); // request_id -> {action, claims, challenge, sta
 const bindings = new Map();     // `${subject}` -> {kid, publicKey, subject, revoked}
 const consumedJtis = new Set(); // 已消费断言的 jti；重放判据与事务状态无关
 const requestWindows = new Map(); // 来源 -> {start, count}；创建事务限流占位
+// 幂等键 -> 已处理的撤销结果。客户端重试（用户点两次 / 网络失败后再点）必须合并成一次。
+const revokeIdempotency = new Map();
 
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -92,6 +94,8 @@ function metadata() {
     request_endpoint: `${ORIGIN}/api/device-auth/requests/{request_id}`,
     decision_endpoint: `${ORIGIN}/api/device-auth/requests/{request_id}/decision`,
     poll_endpoint: `${ORIGIN}/api/device-auth/requests/{request_id}/status`,
+    // 双边撤销：客户端撤销时 POST 到这个端点（体形 {client_id, kid} + Idempotency-Key 头）。
+    revocation_endpoint: `${ORIGIN}/api/device-auth/revoke`,
     supported_actions: ["link", "authenticate"],
     supported_claims: ["device_subject", "device_public_key", "nickname"],
   };
@@ -215,9 +219,25 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
     }
     if (req.method === "POST" && url.pathname === "/api/device-auth/revoke") {
       const body = await readBody(req);
-      const hit = revokeBinding({ kid: body.key_id, subject: body.subject });
+      // 两种调用方：
+      //  ① RP 账号页：`{ key_id }` 或 `{ subject }`（旧形状，保留）。
+      //  ② 客户端撤销通知：`{ client_id, kid }`（新形状）。
+      // 归一成同一个 revokeBinding，避免两处各写一份撤销语义而漂移。
+      const idem = req.headers["idempotency-key"];
+      if (idem && revokeIdempotency.has(idem)) {
+        // 重放：直接回上次的结果，不再改状态（撤销本身就是幂等的，但回放标记要可观察）。
+        return send(res, 200, { ...revokeIdempotency.get(idem), replayed: true });
+      }
+      // 客户端会带自己的 client_id：核对一下，免得任何人都能拿一个 kid 撤掉别人的绑定。
+      // （RP 账号页自己的调用不带这个字段 —— 那条路径本来就在 RP 内部，不需要自证。）
+      if (body.client_id && body.client_id !== CLIENT_ID) {
+        return send(res, 403, { code: "DEVICE_AUTH_CLIENT_MISMATCH", message: "client_id 不是本 RP 的客户端" });
+      }
+      const hit = revokeBinding({ kid: body.kid || body.key_id, subject: body.subject });
       if (!hit) return send(res, 404, { code: "DEVICE_AUTH_BINDING_NOT_FOUND" });
-      return send(res, 200, { status: "revoked", key_id: hit.kid });
+      const result = { status: "revoked", key_id: hit.kid };
+      if (idem) revokeIdempotency.set(idem, result);
+      return send(res, 200, result);
     }
     const m = url.pathname.match(/^\/api\/device-auth\/requests\/([^/]+)(\/decision|\/status)?$/);
     if (!m) return send(res, 404, { code: "DEVICE_AUTH_REQUEST_NOT_FOUND" });

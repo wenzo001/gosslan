@@ -167,7 +167,16 @@ https://your-app.example.com/authorize/<request_id>
 - 用户可以在设置里把已授权应用**导出成一个口令加密的文件**、换机后恢复（与深链无关，纯本地文件）。
   恢复不改变公钥 ⇒ 你的登记仍然有效，撤销逻辑也不用变；但**你看不出**这台机器是不是原来那台
   （导出文件可复制）。
-- **RP 侧公钥需要你自己在账号页撤销**（客户端目前是单边撤销，没有通知你的服务端）。
+- **双边撤销（可选启用）**：如果你的 metadata 里带 `revocation_endpoint`，客户端撤销时会**尽力**
+  `POST` 一次到这个地址（头带 `Idempotency-Key`，体是 `{ client_id, kid }`），让你那边也能作废这把公钥。
+  - 端点必须 **HTTPS 且与 `issuer` 同源**，否则客户端直接拒（不会把撤销请求发去别处）。
+  - 客户端**先本地撤销、再通知**：通知失败不会让本地撤销回滚，但你的服务端会**仍然认这把公钥**，
+    所以你的校验流程里必须保留「撤销即拒」的开关，而不是只认签名。
+  - 通知**不带私钥、不带断言** —— 你收到的是「客户端说这把 kid 该撤了」，不是「客户端证明它持有私钥」。
+  - 通知失败时，客户端在列表里给那条已撤销的应用留一个「重发撤销通知」的入口 ——
+    你那边按同一个 `Idempotency-Key` 合并重复通知即可（**你的撤销动作本身要幂等**）。
+  - 没有 `revocation_endpoint`（或该 RP 还没升级）时，客户端只做本地撤销，与旧行为一致。
+- **RP 侧公钥始终可以自己在账号页撤销**（账号页那条路不受上面这个可选端点影响）。
   因此你的校验流程里必须保留「撤销即拒」的开关，而不是只认签名。
 
 ### 1.9 最小服务端示例（Node/Express，仅示意字段关系）
@@ -181,9 +190,22 @@ app.get("/.well-known/gosslan-device-auth", (req, res) => {
     issuer: "https://acme.example.com",
     request_endpoint: "https://acme.example.com/device-auth/requests/{request_id}",
     decision_endpoint: "https://acme.example.com/device-auth/decisions/{request_id}",
+    // 可选：给了客户端就会在撤销时通知你（必须 HTTPS 且与 issuer 同源）。
+    // 不给 = 客户端只做本地撤销，你这边照旧在账号页手动撤销。
+    revocation_endpoint: "https://acme.example.com/device-auth/revoke",
     supported_actions: ["link", "authenticate"],
     supported_claims: ["device_subject", "device_public_key", "nickname"],
   });
+});
+
+// 撤销通知（可选）：客户端撤销时 POST 一次到这里。
+// 体是 { client_id, kid }，头带 Idempotency-Key —— 同一把钥匙的重复通知要合并成一次。
+app.post("/device-auth/revoke", express.json(), (req, res) => {
+  const idem = req.get("Idempotency-Key") ?? "";
+  if (seenRevocations.has(idem)) return res.status(200).json({ ok: true });
+  seenRevocations.add(idem);
+  revokePublicKey(req.body.kid); // 之后这把 key 的断言一律拒
+  res.status(200).json({ ok: true });
 });
 
 app.post("/device-auth/decisions/:id", express.json(), (req, res) => {

@@ -12,7 +12,7 @@
 import { defineStore } from "pinia";
 import { computed, reactive, ref } from "vue";
 import { api } from "@/api";
-import type { DeviceAuthOutcome, DeviceAuthPrompt, RpBindingInfo } from "@/types";
+import type { DeviceAuthOutcome, DeviceAuthPrompt, DeviceAuthRevokeOutcome, RpBindingInfo } from "@/types";
 import {
   createPendingGuard,
   deviceAuthDenyNeedsRetry,
@@ -104,9 +104,16 @@ export const useDeviceAuthStore = defineStore("deviceAuth", () => {
     bindings.value = await api.deviceAuthListBindings();
   }
 
-  async function revoke(rpOrigin: string, clientId: string): Promise<void> {
-    await api.deviceAuthRevoke(rpOrigin, clientId);
+  /**
+   * 撤销：本地立即生效，随后尽力通知 RP。
+   *
+   * 返回撤销结果供界面区分「已彻底撤销」与「本机已撤销、但对方还没收到通知」——
+   * 后者必须提示用户去对方账号页再撤一次，否则对方仍认这把公钥。
+   */
+  async function revoke(rpOrigin: string, clientId: string): Promise<DeviceAuthRevokeOutcome> {
+    const out = await api.deviceAuthRevoke(rpOrigin, clientId);
     await loadBindings();
+    return out;
   }
 
   return {
