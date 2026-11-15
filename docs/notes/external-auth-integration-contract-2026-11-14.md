@@ -99,6 +99,11 @@
   - 是否上平台密钥库（macOS Keychain、Android Keystore、Windows 凭据/DPAPI 一类）：**2026-11-15 用户裁决「上」**，
     待实现（未落地前现状仍是下一条的 SQLite 方案，勿按已保护描述）。落地时的硬要求：旧 seed 必须
     **迁移后擦除**（不能两份并存）、密钥库不可用时**拒绝签名而不是回落明文**、迁移失败要可诊断且绑定不丢。
+    **成本口径（2026-11-15 复核）**：只有 **macOS** 需要代码签名（否则每次读 Keychain 都弹授权框，
+    而本应用有开机自启与更新后自动重启 ⇒ 卡死）；**Windows（DPAPI）与 Android（Keystore）零成本即可做**。
+    macOS 的免费解法是 **Apple Development 证书**（免费，Team ID 稳定 ⇒ DR 稳定 ⇒ 不再弹框）；
+    **付费的 Apple Developer Program 买的是公证与分发，不是「Keychain 能不能用」**。
+    详见 [`platform-keychain-free-path-2026-11-15.md`](platform-keychain-free-path-2026-11-15.md)。
   - 待决：跨平台密钥迁移与备份恢复、无头/无用户会话环境、密钥轮换与旧绑定重绑、密钥损坏时不得静默用新密钥覆盖、移动端 Tauri 工程与签名配置的可用性。
   - 现状方案（SQLite + 0700 + `RpKey` 收口）与平台密钥库方案需产品与安全评审签字；未定案前不得对外宣称硬件级保护。
 - 备份 / 迁移 / 清数据后行为：私钥只在本地 DB。清数据、重装、换设备、备份迁移不含密钥或密钥损坏时，绑定丢失，必须重新显式绑定；不得自动用新密钥覆盖原绑定；旧公钥由 RP 账号管理页撤销。源码对撤销态/已存在绑定有明确拒绝（`DEVICE_AUTH_BINDING_EXISTS`、`DEVICE_AUTH_BINDING_REVOKED`）。
@@ -238,12 +243,13 @@
 | 分享面板单选 / 多选 | **多选**（逐项勾、按钮带目标数、部分失败只留失败项可重试） | **已实现**（`src/components/SharePanel.vue`，判据在 `shareWiring.test.ts`） |
 | 系统分享目标（从别的应用分享到本应用） | **要做，先 macOS / Windows** | **读取端已实现，平台写入端未实现**：协议 + 读取端 + 两份骨架已交（`incoming_share.rs` + `commands/external_share.rs` 的扫描 + 设计稿 §6）；macOS 需要 Share Extension（Xcode target，本仓构建不出）、Windows 需要 MSIX share target，两者都要签名打包与真机验证 |
 | 双边撤销 | **做，先定契约再实现** | **已实现（客户端侧）**：metadata 加可选 `revocation_endpoint`（HTTPS 同源）、撤销先本地后通知、通知带 `Idempotency-Key`、体只回 `{client_id, kid}`；结果由 `rp_notified` 分四态呈现，通知失败可**重发**。判据 `deviceAuthRevokeWiring.test.ts` + Rust 单测。RP 侧作废与最终一致性仍需生产实现（见 §4） |
-| RP 私钥保护 | **上平台密钥库** | 未实现。要求与迁移顺序见 §5 |
+| RP 私钥保护 | **上平台密钥库** | 未实现。要求与迁移顺序见 §5；成本口径与免费路径见 [`platform-keychain-free-path-2026-11-15.md`](platform-keychain-free-path-2026-11-15.md)（只有 macOS 需签名，且免费证书即可） |
+| 开放接口：好友同步 / 定向分享 / 事件推送 | **要做**（scope 逐项授权，默认全关） | **未实现，待裁决**：通道与授权模型已定（出站 POST + 深链、scope 与 claim 分层），设计稿 [`open-extension-api-design-2026-11-15.md`](open-extension-api-design-2026-11-15.md)。⚠️ **跨过 Frozen Core 的好友 / 消息 / 通知边界，未获裁决前不得实现** |
 | 导出 / 恢复绑定密钥 | **要做**（口令加密单文件；不做云备份、不导出 P2P 密钥） | **已实现（客户端）**：`rp_key_backup.rs` + 三条命令 + 设置页区块；判据 `rpKeyBackupWiring.test.ts` 与 Rust 单测。设计稿：[`rp-key-export-recovery-design-2026-11-15.md`](rp-key-export-recovery-design-2026-11-15.md)。**顺序硬约束**：导出能力必须先于「抹掉 SQLite 明文 seed」可用 |
 
 已实现的那几条（多选、导出/恢复、双边撤销的客户端侧、系统分享目标的**读取端**）在本轮改代码与文档；
-**平台分享写入端**与**平台密钥库**仍只有裁决、没有实现，对外仍按本节上面的
-「未做」口径回答，不得写成已具备。
+**平台分享写入端**、**平台密钥库**、**开放接口（好友同步 / 定向分享 / 事件推送）**仍只有裁决、
+没有实现，对外仍按本节上面的「未做」口径回答，不得写成已具备。
 
 ## 12. 复跑与维护
 
