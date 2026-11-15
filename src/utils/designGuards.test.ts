@@ -6128,19 +6128,50 @@ test("更新来源：切源命令从界面一路接到后端（链路不许断�
   );
   assert.match(
     read("components/settings/AboutSection.vue"),
-    /@switch-source="updater\.switchSource\(\$event\)"/,
-    "换源事件没接到 updater 状态机",
+    /@switch-source="updater\.chooseSource\(\$event\)"/,
+    "换源事件没接到 updater 状态机（用户点的要走**记住**那条：落盘 ⇒ 下次默认用它）",
   );
   assert.match(read("updater/service.ts"), /async function switchSource\(/, "状态机缺换源动作");
+  assert.match(
+    read("updater/service.ts"),
+    /async function chooseSource\(/,
+    "状态机缺「记住用户选择」这个动作",
+  );
   assert.match(
     read("updater/tauriAdapter.ts"),
     /checkSource: \(source\) => api\.updaterCheckSource\(source\)/,
     "适配器没接切源命令",
   );
   assert.match(
+    read("updater/tauriAdapter.ts"),
+    /setSourcePref: \(source\) => api\.updaterSetSourcePref\(source\)/,
+    "适配器没接「记住用户选择」的命令",
+  );
+  assert.match(
     read("api/index.ts"),
     /"updater_check_source", \{ source \}\)/,
     "门面没真的 invoke 后端命令",
+  );
+  assert.match(
+    read("api/index.ts"),
+    /"updater_set_source_pref", \{ source \}\)/,
+    "门面没 invoke「记住用户选择」的后端命令",
+  );
+  // ⚠️ 自动回落（下载失败后的换源）必须走**不落盘**那条：网络抖动不是用户的选择。
+  const service = read("updater/service.ts");
+  // 只截「下载失败后的自动回落」那一段（从判据到下一个函数定义之前）——
+  // 截到文件末尾会把后面 `chooseSource` 的定义也圈进来，断言就变成自相矛盾。
+  const from = service.indexOf('state.source === "github"');
+  const to = service.indexOf("/**\n   * 手动（或下载失败自动）换源");
+  assert.ok(from > 0 && to > from, "找不到自动回落那一段（源码形状变了，判据要同步）");
+  const autoFallback = service.slice(from, to);
+  assert.ok(
+    autoFallback.includes('switchSource("gitee")'),
+    "下载失败后的自动回落必须走 switchSource（不落盘）",
+  );
+  assert.ok(
+    !autoFallback.includes("chooseSource"),
+    "自动回落不许走 chooseSource（那会把网络抖动写成用户的选择）",
   );
 });
 

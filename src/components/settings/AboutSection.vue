@@ -119,7 +119,7 @@ async function onFingerprintTap() {
       @cancel="updater.cancel()"
       @install="updater.install()"
       @dismiss="updater.dismiss()"
-      @switch-source="updater.switchSource($event)"
+      @switch-source="updater.chooseSource($event)"
     />
   </SettingsGroup>
 </template>

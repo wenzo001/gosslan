@@ -5,6 +5,8 @@ import type { UpdaterAdapter } from "./service";
 export const tauriUpdaterAdapter: UpdaterAdapter = {
   check: () => api.updaterCheck(),
   checkSource: (source) => api.updaterCheckSource(source),
+  /** 用户显式选源 ⇒ 后端落盘记住（下次默认用它）。 */
+  setSourcePref: (source) => api.updaterSetSourcePref(source),
   download: (onEvent) => api.updaterDownload(onEvent),
   cancel: () => api.updaterCancel(),
   recheckReady: () => api.updaterRecheckReady(),

@@ -197,6 +197,10 @@ function formatDate(seconds: number | null | undefined): string {
       >
         {{ t(SOURCE_LABELS[src]) }}
       </button>
+      <!-- 选了就记住：用户 2026-11-15「这个就是缓存下来，下次默认用那个对应的渠道去更新」。 -->
+      <span class="text-caption text-[var(--gosslan-text-2)]">
+        {{ t("settings.updates.sourceRemembered") }}
+      </span>
     </div>
 
     <!-- 慢速/失败给的是「提醒 + 可点的换源」，不是偷偷把在飞的整包丢掉；
