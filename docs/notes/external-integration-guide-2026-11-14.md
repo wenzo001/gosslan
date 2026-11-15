@@ -323,7 +323,7 @@ location.href = link;
 
 | 错误码 | 触发条件 | 用户看到 | 你该做什么 |
 |---|---|---|---|
-| `DEVICE_AUTH_INVALID_LINK` | 深链形状不对（缺 ref、origin 缺失、scheme 不认识） | 授权链接不正确 | 检查深链拼装与 URL 编码 |
+| `DEVICE_AUTH_INVALID_LINK` | 深链形状不对（scheme / 路径不认识，或缺 `<ref>`） | 授权链接不正确 | 检查深链拼装与 URL 编码 |
 | `DEVICE_AUTH_INVALID_ORIGIN` | `origin` 不是合法 HTTPS origin（带 userinfo / query / fragment） | 应用来源不是有效的 HTTPS 地址 | 传干净的 `https://host[:port]` |
 | `DEVICE_AUTH_CROSS_ORIGIN` | 元数据 `issuer` 与深链 origin 不同源 | 应用来源与端点不一致，已拒绝 | 两者必须是同一个 origin |
 | `DEVICE_AUTH_BAD_METADATA` | 元数据缺字段、端点非 HTTPS、端点是跨源 | 应用认证信息不完整 | 按 §1.3 补齐；端点必须同源 HTTPS |
@@ -340,7 +340,7 @@ location.href = link;
 | `DEVICE_AUTH_BUSY` | 待确认队列已满（上限 4） | 待确认的授权太多，先处理手上这几条 | 别把多条授权并发塞给用户 |
 | `DEVICE_AUTH_DENY_NOTIFY_FAILED` | 本机已拒绝，回写你失败 | 本机已拒绝，但对方没收到通知，请重试 | 你的 `decision_endpoint` 要能接受重复的 `deny` |
 | `EXTERNAL_SHARE_INVALID_LINK` | 分享链接形状不对（不是 share 入口） | 这个分享链接不正确 | 检查 scheme 与路径 |
-| `EXTERNAL_SHARE_BAD_CONTENT` | 三个内容参数全空，或 `url` 不是 http/https | 分享内容为空，或链接不是 http/https | 至少给一个内容；`url` 只放 http(s) |
+| `EXTERNAL_SHARE_BAD_CONTENT` | 三个内容参数全空；`url` 不是 http(s)；或 `origin` 给了但不是合法 HTTPS origin | 分享内容为空，或链接不是 http/https（三种情况共用这一条提示） | 至少给一个内容；`url` 只放 http(s) |
 | `EXTERNAL_SHARE_TOO_LARGE` | 超出 §2.2 的码点上限 | 分享内容太长了 | 见 §2.2 三个上限 |
 | `EXTERNAL_SHARE_BUSY` | 待处理分享已达 8 条 | 还有几条分享没处理，先处理完再分享 | 不要循环触发；等用户处理 |
 | `EXTERNAL_SHARE_REFERENCE_UNSUPPORTED` | 用了受控形态 `/share/<ref>` | 这个分享需要应用侧配合，暂不支持 | 改用内联参数（§2.1） |
