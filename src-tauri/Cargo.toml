@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "5.34.1"
+version = "5.35.0"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -134,9 +134,16 @@ clipboard-win = "5"
 #
 # `Win32_Storage_FileSystem` 是 2026-10-27 为"接收前查卷余量"（`storage/disk_space.rs`）
 # 加的：`GetDiskFreeSpaceExW` 住在那里。同样没有传递关系，必须显式点名。
+#
+# `Win32_Security_Cryptography` + `Win32_System_Memory` 是 2026-11-15 为
+# **RP 绑定私钥的平台密钥库**（`rp_key_store/dpapi.rs`）加的：`CryptProtectData` /
+# `CryptUnprotectData` 住在前者，解开后要 `LocalFree` 归还的内存住在后者。
+# 同样必须逐个点名（windows-sys 的 feature 没有传递关系）。
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
+    "Win32_System_Memory",
     "Win32_System_ProcessStatus",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",

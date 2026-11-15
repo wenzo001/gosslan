@@ -1253,6 +1253,7 @@ export const enUS: MessageDict = {
   "deviceAuth.scopeHint": "Nothing is shared by default; tick only what you're willing to share. Message contents never leave this device.",
   "deviceAuth.scope.friends_read": "Read your friends list",
   "deviceAuth.scope.events_metadata": "Read notifications about recently received messages (no message contents)",
+  "deviceAuth.scope.groups_read": "Read your group list (names and member counts, no member details)",
   "deviceAuth.identityDisclosure": "Device identifier and public key are required for binding and are always provided to this app on approval (this app only, not cross-site). Nickname is shared only if you enable it.",
   "deviceAuth.claim.device_subject": "Device identifier (this app only, not cross-site)",
   "deviceAuth.claim.device_public_key": "Device public key",
