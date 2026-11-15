@@ -47,6 +47,12 @@ pub struct RpMetadata {
     #[serde(default)]
     #[allow(dead_code)]
     pub poll_endpoint: String,
+    /// RP 侧的**撤销**端点（可选）。空串 = 该 RP 没提供 ⇒ 客户端只做本地撤销（与旧行为一致）。
+    ///
+    /// 为什么放在 metadata 而不是绑定表：绑定表 schema 属 Frozen Core，且 RP 换端点时不该
+    /// 需要迁移本地数据；撤销是低频操作，每次重新拉一次 metadata 反而总是最新的。
+    #[serde(default)]
+    pub revocation_endpoint: String,
     pub supported_actions: Vec<String>,
     pub supported_claims: Vec<String>,
 }
@@ -240,6 +246,21 @@ pub fn validate_metadata(meta: &RpMetadata, expected_origin: &str) -> Result<(),
     let issuer_url = Url::parse(&issuer).map_err(|_| {
         error_codes::coded(error_codes::DEVICE_AUTH_BAD_METADATA, "issuer 解析失败")
     })?;
+    // 撤销端点可选，但**给了就必须合规**（不给 ≠ 可以给个 http/跨域的）。
+    if !meta.revocation_endpoint.is_empty() {
+        let u = Url::parse(&meta.revocation_endpoint).map_err(|_| {
+            error_codes::coded(
+                error_codes::DEVICE_AUTH_BAD_METADATA,
+                "撤销端点网址格式不正确",
+            )
+        })?;
+        if u.scheme() != "https" || !same_origin(&u, &issuer_url) {
+            return Err(error_codes::coded(
+                error_codes::DEVICE_AUTH_CROSS_ORIGIN,
+                "撤销端点必须与 issuer 同源且为 HTTPS",
+            ));
+        }
+    }
     for endpoint in [&meta.request_endpoint, &meta.decision_endpoint] {
         let u = Url::parse(endpoint).map_err(|_| {
             error_codes::coded(error_codes::DEVICE_AUTH_BAD_METADATA, "端点网址格式不正确")
@@ -518,6 +539,23 @@ pub fn generate_rp_key() -> (crypto::RpKey, String, String, String) {
     let kid = kid_from_public(&public_bytes);
     let subject = uuid::Uuid::new_v4().to_string();
     (key, public_b64, kid, subject)
+}
+
+/// 撤销请求的幂等键。
+///
+/// 刻意**由 (rp_origin, client_id, kid) 确定性派生**，不落库：
+/// 同一次撤销的多次重试必须带同一个键（RP 才能合并），而"重试"发生在进程内、也可能跨重启
+/// （用户点两次、或第一次网络失败后再点），所以不能随机生成、也不能依赖内存状态。
+pub fn revoke_idempotency_key(rp_origin: &str, client_id: &str, kid: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"gosslan-revoke-v1|");
+    h.update(rp_origin.as_bytes());
+    h.update(b"|");
+    h.update(client_id.as_bytes());
+    h.update(b"|");
+    h.update(kid.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(h.finalize())
 }
 
 /// 断言 audience：issuer + `/api/device-auth`（与 RP 约定一致，mock RP 同口径校验）。

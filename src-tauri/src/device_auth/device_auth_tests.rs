@@ -25,6 +25,8 @@ fn good_metadata() -> RpMetadata {
         request_endpoint: format!("{ORIGIN}/api/device-auth/requests/{{request_id}}"),
         decision_endpoint: format!("{ORIGIN}/api/device-auth/requests/{{request_id}}/decision"),
         poll_endpoint: format!("{ORIGIN}/api/device-auth/requests/{{request_id}}/status"),
+        // 默认不提供撤销端点：这条要与"旧 RP 没升级"的行为一致（只做本地撤销）。
+        revocation_endpoint: String::new(),
         supported_actions: vec!["link".into(), "authenticate".into()],
         supported_claims: vec![
             "device_subject".into(),
@@ -120,6 +122,53 @@ fn metadata_validation_accepts_good_and_rejects_cross_origin() {
     let mut m = good_metadata();
     m.supported_claims = vec!["email".into()];
     assert!(validate_metadata(&m, ORIGIN).is_err());
+
+    // 撤销端点：**不给是合法的**（老 RP 不实现双边撤销，客户端只做本地撤销）。
+    let m = good_metadata();
+    assert_eq!(m.revocation_endpoint, "");
+    assert!(validate_metadata(&m, ORIGIN).is_ok());
+
+    // 给了就必须同源 + HTTPS —— 撤销会把"这台设备不再被信任"告诉一个地址，
+    // 跨域等于把撤销请求发给攻击者指定的地方。
+    let mut m = good_metadata();
+    m.revocation_endpoint = format!("{ORIGIN}/api/device-auth/revoke");
+    assert!(validate_metadata(&m, ORIGIN).is_ok());
+
+    let mut m = good_metadata();
+    m.revocation_endpoint = "https://evil.example.com/revoke".into();
+    assert!(validate_metadata(&m, ORIGIN).is_err(), "跨域撤销端点必须拒");
+
+    let mut m = good_metadata();
+    m.revocation_endpoint = "http://app.example.com/api/device-auth/revoke".to_string();
+    assert!(
+        validate_metadata(&m, ORIGIN).is_err(),
+        "http 撤销端点必须拒"
+    );
+}
+
+#[test]
+fn revoke_idempotency_key_is_deterministic_and_scoped() {
+    use super::revoke_idempotency_key;
+    let a = revoke_idempotency_key(ORIGIN, "cid", "kid-1");
+    let b = revoke_idempotency_key(ORIGIN, "cid", "kid-1");
+    assert_eq!(a, b, "同一次撤销重试必须得到同一个键（RP 才能合并）");
+
+    assert_ne!(
+        a,
+        revoke_idempotency_key(ORIGIN, "cid", "kid-2"),
+        "不同密钥必须不同键"
+    );
+    assert_ne!(
+        a,
+        revoke_idempotency_key(ORIGIN, "cid2", "kid-1"),
+        "不同应用必须不同键"
+    );
+    assert_ne!(
+        a,
+        revoke_idempotency_key("https://other.example.com", "cid", "kid-1"),
+        "不同来源必须不同键"
+    );
+    assert!(!a.is_empty() && !a.contains('/'), "应是 URL 安全的串：{a}");
 }
 
 #[test]

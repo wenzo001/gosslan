@@ -6,6 +6,7 @@
 import { onMounted, ref } from "vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import { useDeviceAuthStore } from "@/stores/useDeviceAuthStore";
 import { useAppStore } from "@/stores/useAppStore";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
@@ -37,10 +38,26 @@ async function onHandleLink() {
   }
 }
 
-async function onRevoke(rpOrigin: string, clientId: string) {
+/**
+ * 撤销：本地立即生效，随后尽力通知 RP。
+ *
+ * 结局要分开说 —— 尤其「本机已撤销、但没通知到对方」：
+ * 对方服务端可能还认这把公钥，只说"已撤销"会骗用户以为彻底解绑了。
+ *
+ * `wasRevoked` = 这一行本来就是撤销态 ⇒ 这是「重发通知」，不是新的撤销。
+ */
+async function onRevoke(rpOrigin: string, clientId: string, wasRevoked = false) {
   try {
-    await store.revoke(rpOrigin, clientId);
-    app.toast(t("deviceAuth.revoked"), "success");
+    const out = await store.revoke(rpOrigin, clientId);
+    if (!out.revoked) {
+      app.toast(t("deviceAuth.revokeNotFound"), "info");
+      return;
+    }
+    if (!out.rpNotified) {
+      app.toast(t("deviceAuth.revokeLocalOnly"), "info");
+      return;
+    }
+    app.toast(t(wasRevoked ? "deviceAuth.revokeRenotified" : "deviceAuth.revoked"), "success");
   } catch (e) {
     app.toastError(e, t("deviceAuth.revokeFail"));
   }
@@ -97,6 +114,15 @@ function fmtTime(ms: number | null): string {
         <DangerBtn v-if="b.status === 'active'" size="xs" shrink @click="onRevoke(b.rp_origin, b.client_id)">
           {{ t("deviceAuth.revoke") }}
         </DangerBtn>
+        <!-- 撤销态也给「重发通知」：第一次通知可能因网络失败没送到，用户需要能补发一次。 -->
+        <SecondaryBtn
+          v-else-if="b.status === 'revoked'"
+          size="xs"
+          shrink
+          @click="onRevoke(b.rp_origin, b.client_id, true)"
+        >
+          {{ t("deviceAuth.revokeRenotify") }}
+        </SecondaryBtn>
       </li>
     </ul>
   </section>

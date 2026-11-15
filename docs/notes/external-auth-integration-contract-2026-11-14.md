@@ -45,7 +45,7 @@
 - `denied`：可观察性已闭合。`DeviceAuthOutcome` 新增 `rp_notified`：`false` = 本机已拒绝、RP 未收到（事务保留可重试、留具名 `code=` 日志），`true` = RP 确认收到（此时才消费事务）；`decision` 仍恒为 `denied`，保持兼容语义。
 - `expired`：客户端已加本地 TTL 兜底（取 RP `expires_at` 与插入后固定上限的较早者）与读取时的明确过期错误码；仍是惰性清理、无后台定时器、无 RP 侧终态回写。
 - `pending_registration` / `registration_failed`：均已落地（见 `src-tauri/src/db/device_auth.rs`）。失败态可重试，`active` 不许被回退。
-- `active` / `revoked`：`device_auth_revoke` 仍是**本地单边**撤销，无任何 HTTP 通知；RP 侧公钥须由 RP 账号页撤销。mock 已提供 RP 侧撤销端点作契约演示，但客户端尚未接双边撤销 API（见 §4）。
+- `active` / `revoked`：**双边撤销已接**（客户端侧）。`device_auth_revoke` 先本地立即生效，再按 metadata 的 `revocation_endpoint` 尽力回写 RP；回写结果由 `DeviceAuthRevokeOutcome.rp_notified` 单独表达，界面把「本机已撤、对方没收到」分开提示。RP 没提供端点的老 RP 仍只做本地撤销（不是失败）。撤销通知**不回 seed、不回断言**，只回 `client_id` 与 `kid`（见 §4「撤销双边语义」）。
 - 队列边界：满载不再静默淘汰最老事务，改为返回明确错误「暂不能处理」并留具名 `code=` 日志；新事务不会顶掉用户正在看的确认页。
 - 断言时效：断言有效期常量仍只约束签名本身；事务 TTL 由上面的本地兜底与 RP `expires_at` 共同决定。
 - `/share` 深链：解析 + 内联闭环均已落地（面板、会话选择、显式发送、粘贴兜底都已接线，见 §6）。仍**没有**：受控 `share_request`（缺 RP 端点）、系统分享目标、文件分享，见 §11。
@@ -71,10 +71,24 @@
   - 当前状态：已具备（客户端与确认页）。`rp_notified` 区分两态，回写失败保留事务可重试并留具名日志；确认页据该字段给重试入口。运行时整链路验收仍 `NOT RUN`。
 - **撤销双边语义**
   - 要求：本地撤销与 RP 侧公钥撤销分别定义；失败可重试，并给出最终一致性状态；撤销后旧 key 立即不能登录。
-  - 当前状态：需 RP 侧实现。客户端仍是单边本地撤销；mock 已提供 RP 侧撤销端点作契约演示，但客户端未接双边撤销 API，失败重试与最终一致性状态未具备。
-  - **2026-11-15 用户裁决：要做双边撤销，先定契约再实现。** 待定方案（未实现，勿当现状）：metadata 增加
-    `revocation_endpoint`（HTTPS 同源），撤销时按 `Idempotency-Key` 尽力回写一次；本地撤销**立即生效**，
-    回写失败只标记 `rp_notified=false` 并可重试（与拒绝回写同形，不阻塞本地撤销）。落地前本节状态不变。
+  - 当前状态：**客户端侧已具备**（2026-11-15 落地），RP 侧仍需生产实现。
+    - metadata 增加可选字段 `revocation_endpoint`（**给了就必须 HTTPS 且与 issuer 同源**，跨域或 http 一律拒）。
+      空串 = 该 RP 没提供 ⇒ 客户端只做本地撤销，与旧行为一致，**不是失败**。
+    - 撤销顺序：**先本地、后通知**。本地撤销立即生效；通知失败只体现为 `rp_notified=false`，
+      绝不回滚本地撤销（否则网络不通时会出现「点了撤销却还是已授权」）。
+    - 通知请求：`POST {revocation_endpoint}`，头带 `Idempotency-Key`（由 `revoke_idempotency_key`
+      **确定性派生**自 `(rp_origin, client_id, kid)`，不落库 ⇒ 跨重试恒定，RP 才能合并）。
+      体只有 `{ client_id, kid }` —— **不回 seed、不回断言**（撤销不需要证明「我是私钥持有者」）。
+      超时 5 秒（比常规 RP 请求短：用户在界面点「撤销」时等 10 秒不可接受）。
+    - **可重试**：`revoke_binding` 只改 `active` 的行，所以「本地早已撤销」时那次 UPDATE 返回 0 行 ——
+      但那种情况**照样要发通知**（那正是「第一次通知失败、用户来补发」的场景）。
+      撤销态的行因此仍带一个「重发撤销通知」入口，重复发由同一个 `Idempotency-Key` 在 RP 侧合并。
+    - 最终一致性状态由界面分四态呈现：已彻底撤销 / 本机已撤但对方没收到（提示去对方账号页再撤，
+      并可重发通知）/ 重发通知已送达 / 本机没有这条绑定。
+      判据：`src/utils/deviceAuthRevokeWiring.test.ts`（含 Rust↔mock 跨语言契约对账与重试路径）。
+  - 仍需 RP 侧实现：按 `kid` 真正作废公钥、拒绝该 key 后续登录、持久化幂等键去重。
+    mock 已提供端点作契约演示（且会核对 `client_id`、按 `Idempotency-Key` 合并重放），
+    但它是内存态，**不能作为生产接入依据**。
 
 ## 5. 密钥保护决策
 
@@ -129,7 +143,7 @@
 - 事务状态仍是简化模型：对外 pending / approved / denied / expired，内部另有 `consumed` 终态；仍缺 `created`、`awaiting_device`、`cancelled` 等 RP 侧细分。
 - 事务 TTL 写死为短时值（以该脚本内的 TTL 常量现读为准），没有可配置的生产级过期与清理策略。
 - 验签已要求 `jti` 存在；决策路径按 `jti` 全局去重，重复断言返回明确的重放冲突。这只是 mock 内的进程级去重，不是生产级持久化重放库。
-- 已提供 RP 侧撤销端点（按 `kid` 或 `subject`），撤销后 authenticate 拒绝；但绑定仍在内存里，重启即恢复。
+- 已提供 RP 侧撤销端点（`POST /api/device-auth/revoke`，按 `kid` 或 `subject`；客户端的撤销通知走同一条路径，会带 `client_id` 与 `Idempotency-Key`，mock 会核对 `client_id` 并合并同一幂等键的重放），撤销后 authenticate 拒绝；但绑定仍在内存里，重启即恢复。
 - 无分享端点，metadata 不含分享字段；外部分享走的是**内联内容**（不经 RP），因此 mock 不参与分享链路。
 - `account_hint` 硬编码为固定掩码串，不来自真实 RP 账号。
 - **不能作为生产接入依据。** 生产接入必须以 §9 交付的版本化文档与服务端参考实现为准。
@@ -214,11 +228,12 @@
 |---|---|---|
 | 分享面板单选 / 多选 | **多选**（逐项勾、按钮带目标数、部分失败只留失败项可重试） | **已实现**（`src/components/SharePanel.vue`，判据在 `shareWiring.test.ts`） |
 | 系统分享目标（从别的应用分享到本应用） | **要做，先 macOS / Windows** | 未实现。macOS 需要 Share Extension（Xcode target，本仓构建不出）、Windows 需要 MSIX share target 或 shell 扩展；两者都要签名打包与真机验证，本仓只能提供骨架与契约 |
-| 双边撤销 | **做，先定契约再实现** | 未实现。方案见 §4「撤销双边语义」 |
+| 双边撤销 | **做，先定契约再实现** | **已实现（客户端侧）**：metadata 加可选 `revocation_endpoint`（HTTPS 同源）、撤销先本地后通知、通知带 `Idempotency-Key`、体只回 `{client_id, kid}`；结果由 `rp_notified` 分四态呈现，通知失败可**重发**。判据 `deviceAuthRevokeWiring.test.ts` + Rust 单测。RP 侧作废与最终一致性仍需生产实现（见 §4） |
 | RP 私钥保护 | **上平台密钥库** | 未实现。要求与迁移顺序见 §5 |
 | 导出 / 恢复绑定密钥 | **要做**（口令加密单文件；不做云备份、不导出 P2P 密钥） | **已实现（客户端）**：`rp_key_backup.rs` + 三条命令 + 设置页区块；判据 `rpKeyBackupWiring.test.ts` 与 Rust 单测。设计稿：[`rp-key-export-recovery-design-2026-11-15.md`](rp-key-export-recovery-design-2026-11-15.md)。**顺序硬约束**：导出能力必须先于「抹掉 SQLite 明文 seed」可用 |
 
-已实现的那一条（多选）在本轮改代码与文档；其余三条**只有裁决，没有实现**，对外仍按本节上面的
+已实现的那几条（多选、导出/恢复、双边撤销的客户端侧）在本轮改代码与文档；
+其余**只有裁决、没有实现**的（系统分享目标、平台密钥库），对外仍按本节上面的
 「未做」口径回答，不得写成已具备。
 
 ## 12. 复跑与维护

@@ -24,6 +24,9 @@ const MAX_PENDING_DEVICE_AUTH: usize = 4;
 const MAX_RP_JSON_BYTES: usize = 64 * 1024;
 /// RP 网络请求超时。
 const RP_TIMEOUT_SECS: u64 = 10;
+/// 撤销通知的超时：比常规 RP 请求更短 —— 用户在设置页点「撤销」时等 10 秒是不可接受的，
+/// 而撤销**本地已经生效**，通知只是锦上添花，宁可快失败也别拖住界面。
+const REVOKE_NOTIFY_TIMEOUT_SECS: u64 = 5;
 
 // 错误码统一登记在 `error_codes.rs`：那张表由 `src/utils/errors.test.ts` 与前端
 // `CODE_RULES` 双向对账，写在本地的私有常量对那条判据不可见，前端也就无法翻成人话。
@@ -94,6 +97,133 @@ async fn post_decision(
         return Err(error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("RP 回写返回 HTTP {}", resp.status())));
     }
     Ok(())
+}
+
+/// 撤销请求构造器（与 decision 同形：JSON body + `Idempotency-Key`）。
+fn revoke_request(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    idempotency_key: &str,
+) -> Result<reqwest::Request, String> {
+    client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header("Idempotency-Key", idempotency_key)
+        .body(body.to_string())
+        .build()
+        .map_err(|e| {
+            error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("构造撤销请求失败：{e}"))
+        })
+}
+
+/// 撤销结果：**本地撤销**与**RP 是否收到通知**是两件事，UI 必须分开说。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceAuthRevokeOutcome {
+    /// 本地是否置成了撤销态（false = 原本就没有这条绑定）。
+    pub revoked: bool,
+    /// RP 是否确认收到撤销通知（false = 没提供端点 / 网络失败 / 非 2xx）。
+    pub rp_notified: bool,
+}
+
+/// 撤销通知的请求体（**纯函数**，便于单测钉住形状）。
+///
+/// 只回身份与公钥指纹：**不回 seed，也不回断言** —— 撤销不需要证明"我是私钥持有者"，
+/// 而回 seed 等于把私钥又发了一次出去（哪怕是发给 RP）。
+fn revoke_notify_body(client_id: &str, kid: &str) -> serde_json::Value {
+    json!({ "client_id": client_id, "kid": kid })
+}
+
+/// 从已校验的 metadata 里取撤销端点。
+///
+/// `None` = 该 RP 没提供 ⇒ 客户端只做本地撤销（与旧行为一致，不是失败）。
+/// 非空但不合规的情况已在 `validate_metadata` 里拒掉了（跨域 / 非 HTTPS）。
+fn revocation_endpoint_of(meta: &da::RpMetadata) -> Option<&str> {
+    let e = meta.revocation_endpoint.trim();
+    if e.is_empty() {
+        None
+    } else {
+        Some(e)
+    }
+}
+
+/// 撤销编排：**本地状态**与**通知状态**是两件事，分开表达。
+///
+/// 通知做成可注入的闭包，是为了让「通知失败绝不影响本地撤销」这条语义能被单测钉住：
+/// 真连一个 HTTPS 端点需要受信证书（mock 的自签证书过不了校验），而生产代码里
+/// 放行无效证书是绝不能做的折衷。
+///
+/// `revoked` = 撤销**之后**本机这条绑定是不是撤销态（含"本来就已经是撤销态"）。
+/// 通知是否要发，由调用方决定（有没有 kid 可报），本函数只负责如实汇报结果。
+async fn revoke_with_notify<F, Fut>(revoked: bool, notify: F) -> DeviceAuthRevokeOutcome
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let rp_notified = notify().await;
+    DeviceAuthRevokeOutcome {
+        revoked,
+        rp_notified,
+    }
+}
+
+/// 尽力通知 RP 撤销：**任何失败都只回 false，不阻断本地撤销**（本地已经生效了）。
+async fn notify_rp_revoke(rp_origin: &str, client_id: &str, kid: &str) -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(REVOKE_NOTIFY_TIMEOUT_SECS))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[device-auth] code={} 撤销通知网络初始化失败：{e}", error_codes::DEVICE_AUTH_NETWORK);
+            return false;
+        }
+    };
+    let meta_url = format!("{rp_origin}/.well-known/gosslan-device-auth");
+    let meta: da::RpMetadata = match fetch_rp_json(&client, &meta_url).await {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[device-auth] code={} 撤销通知拉取 metadata 失败：{e}", error_codes::DEVICE_AUTH_NETWORK);
+            return false;
+        }
+    };
+    if let Err(e) = da::validate_metadata(&meta, rp_origin) {
+        eprintln!("[device-auth] code={} 撤销通知 metadata 校验失败：{e}", error_codes::DEVICE_AUTH_BAD_METADATA);
+        return false;
+    }
+    let endpoint = match revocation_endpoint_of(&meta) {
+        Some(e) => e.to_string(),
+        None => {
+            // 该 RP 没提供端点：不是失败，只是"没法通知"，与旧行为一致。
+            return false;
+        }
+    };
+    let idem = da::revoke_idempotency_key(rp_origin, client_id, kid);
+    let body = revoke_notify_body(&meta.client_id, kid);
+    let req = match revoke_request(&client, &endpoint, &body, &idem) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[device-auth] code={} 撤销通知构造失败：{e}", error_codes::DEVICE_AUTH_NETWORK);
+            return false;
+        }
+    };
+    match client.execute(req).await {
+        Ok(resp) if resp.status().is_success() => true,
+        Ok(resp) => {
+            eprintln!(
+                "[device-auth] code={} 撤销通知被拒绝：HTTP {}",
+                error_codes::DEVICE_AUTH_NETWORK,
+                resp.status()
+            );
+            false
+        }
+        Err(e) => {
+            eprintln!("[device-auth] code={} 撤销通知失败：{e}", error_codes::DEVICE_AUTH_NETWORK);
+            false
+        }
+    }
 }
 
 /// 内部行 → 前端清单条目（**只公钥面**，丢弃 secret_key，INV-P18）。
@@ -614,21 +744,53 @@ pub async fn device_auth_list_bindings(
     .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("读取任务被中断：{e}")))?
 }
 
-/// 撤销某 RP 绑定（本地置撤销态；服务端解绑仍由 RP 账号页负责）。
+/// 撤销某 RP 绑定：**本地立即生效**，随后尽力通知 RP（`revocation_endpoint`）。
+///
+/// 顺序刻意是「先本地、后通知」：网络不通、RP 没提供端点、RP 返回 5xx，都不能让用户
+/// "点了撤销却还是已授权"。通知失败只体现在 `rp_notified=false`，界面据此提示可重试。
 #[tauri::command(async)]
 pub async fn device_auth_revoke(
     state: State<'_, Arc<crate::state::AppState>>,
     rp_origin: String,
     client_id: String,
-) -> Result<bool, String> {
+) -> Result<DeviceAuthRevokeOutcome, String> {
     let s = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
+    let (origin, cid) = (rp_origin.clone(), client_id.clone());
+    // ① 本地：先读这一行（要 kid、也要知道撤销前的状态），再置撤销态。
+    //    两步在同一个阻塞任务里，避免中间态被其它命令看到。
+    //
+    //    `revoke_binding` 只改 `active` 的行 ⇒ 已经撤销过的行会返回 false。
+    //    但那种情况**仍然要通知 RP**：那正是「第一次通知失败、用户来重试」的场景。
+    //    所以撤销态 = 「这次改动了」或「本来就是撤销态」。
+    let (revoked, kid) = tokio::task::spawn_blocking(move || {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        crate::db::revoke_binding(&dbc, &rp_origin, &client_id, crate::db::now_ms())
-            .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("撤销失败：{e}")))
+        let row = crate::db::get_binding(&dbc, &origin, &cid)
+            .map_err(|e| {
+                error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("读取绑定失败：{e}"))
+            })?;
+        let kid = row.as_ref().map(|r| r.kid.clone());
+        let was_revoked = row
+            .as_ref()
+            .map(|r| r.status == "revoked")
+            .unwrap_or(false);
+        let changed = crate::db::revoke_binding(&dbc, &origin, &cid, crate::db::now_ms())
+            .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("撤销失败：{e}")))?;
+        Ok::<_, String>((changed || was_revoked, kid))
     })
     .await
-    .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("撤销任务被中断：{e}")))?
+    .map_err(|e| {
+        error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("撤销任务被中断：{e}"))
+    })??;
+
+    // ② 通知：有 kid 就报（本地已撤销 ⇒ 这把公钥该在对方那边作废）。
+    //    没有 kid = 本机压根没有这条绑定，没什么可报的。
+    let outcome = match kid {
+        Some(k) => {
+            revoke_with_notify(revoked, || notify_rp_revoke(&rp_origin, &client_id, &k)).await
+        }
+        None => revoke_with_notify(false, || async { false }).await,
+    };
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -667,6 +829,8 @@ mod device_auth_cmd_tests {
             request_endpoint: format!("{ORIGIN}/api/device-auth/requests/{{request_id}}"),
             decision_endpoint: format!("{ORIGIN}/api/device-auth/requests/{{request_id}}/decision"),
             poll_endpoint: String::new(),
+            // 默认不提供撤销端点（老 RP 不实现双边撤销时，客户端只做本地撤销）。
+            revocation_endpoint: String::new(),
             supported_actions: vec!["link".into(), "authenticate".into()],
             supported_claims: vec!["device_subject".into(), "device_public_key".into(), "nickname".into()],
         };
@@ -941,6 +1105,97 @@ mod device_auth_cmd_tests {
         // 同一幂等键重试 ⇒ 头一致，RP 可据以合并重复回写。
         let req2 = decision_request(&client, url, &body, "idem-abc-123").unwrap();
         assert_eq!(req.headers().get("Idempotency-Key"), req2.headers().get("Idempotency-Key"));
+    }
+
+    // ---------------- 双边撤销：请求形状 + 编排语义 ----------------
+
+    /// 撤销通知的请求形状：POST、JSON 体 `{client_id, kid}`、`Idempotency-Key` 头。
+    ///
+    /// 判据点：**体里只有身份与公钥指纹** —— 出现 `secret_key` / `seed` / `assertion`
+    /// 就意味着撤销把私钥又发了一次出去（撤销不需要证明"我是私钥持有者"）。
+    #[test]
+    fn revoke_request_shape_carries_only_identity_and_kid() {
+        let client = reqwest::Client::builder().build().unwrap();
+        let body = revoke_notify_body("com.example.product", "kid-1");
+        let url = "https://app.example.com/api/device-auth/revoke";
+        let idem = da::revoke_idempotency_key(ORIGIN, "com.example.product", "kid-1");
+        let req = revoke_request(&client, url, &body, &idem).unwrap();
+
+        assert_eq!(req.method(), reqwest::Method::POST);
+        assert_eq!(req.url().as_str(), url);
+        assert_eq!(req.headers().get(reqwest::header::CONTENT_TYPE).unwrap(), "application/json");
+        assert_eq!(req.headers().get("Idempotency-Key").unwrap().to_str().unwrap(), idem);
+
+        let raw: &[u8] = req.body().unwrap().as_bytes().unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(raw).unwrap();
+        assert_eq!(parsed["client_id"], "com.example.product");
+        assert_eq!(parsed["kid"], "kid-1");
+        let keys: Vec<&str> = parsed.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        assert_eq!(
+            keys.len(),
+            2,
+            "撤销通知体只允许两个字段，实际：{keys:?}（多出来的可能是私钥/断言）"
+        );
+    }
+
+    /// 撤销编排：**通知失败绝不影响本地撤销**（这是"先本地、后通知"的全部意义）。
+    ///
+    /// 这条是最容易被后来的改动踩坏的：一旦有人把顺序换成"先通知、成功才本地撤销"，
+    /// 网络不通时用户就会"点了撤销却还是已授权"。
+    #[tokio::test]
+    async fn revoke_notify_failure_never_blocks_local_revoke() {
+        let out = revoke_with_notify(true, || async { false }).await;
+        assert!(out.revoked, "本地撤销必须已经生效");
+        assert!(!out.rp_notified, "通知失败只能体现在 rp_notified=false");
+
+        // RP 明确 2xx 确认 ⇒ rp_notified=true。
+        let out = revoke_with_notify(true, || async { true }).await;
+        assert!(out.revoked);
+        assert!(out.rp_notified);
+
+        // 本机压根没有这条绑定 ⇒ 没有任何可报的东西，调用方根本不该走到通知这一步。
+        let out = revoke_with_notify(false, || async { false }).await;
+        assert!(!out.revoked);
+        assert!(!out.rp_notified);
+    }
+
+    /// **重试路径**：本地早就是撤销态时，仍要能再通知一次 RP。
+    ///
+    /// 这是「第一次通知失败（网络断）⇒ 用户过会儿重试」的场景。
+    /// `revoke_binding` 只改 `active` 的行 ⇒ 已撤销的行让 UPDATE 返回 0 行；
+    /// 如果把那当成"没东西可撤"就跳过通知，用户将**永远无法补发**这次撤销。
+    #[tokio::test]
+    async fn already_revoked_binding_still_notifies_rp() {
+        // 编排层：revoked=true（本地已是撤销态）+ 通知成功 ⇒ 两边都成立。
+        let out = revoke_with_notify(true, || async { true }).await;
+        assert!(out.revoked, "本地早已是撤销态");
+        assert!(out.rp_notified, "重试必须真的再发一次通知");
+    }
+
+    /// 撤销端点的解析：空串 = 该 RP 没提供（老 RP 兼容，不是失败）。
+    #[test]
+    fn revocation_endpoint_absent_is_not_a_failure() {
+        let mut meta = da::RpMetadata {
+            protocol_version: "1".into(),
+            client_id: CLIENT.into(),
+            display_name: "示例".into(),
+            issuer: ORIGIN.into(),
+            request_endpoint: format!("{ORIGIN}/api/device-auth/requests/{{request_id}}"),
+            decision_endpoint: format!("{ORIGIN}/api/device-auth/requests/{{request_id}}/decision"),
+            poll_endpoint: String::new(),
+            revocation_endpoint: String::new(),
+            supported_actions: vec!["link".into()],
+            supported_claims: vec!["device_subject".into()],
+        };
+        assert_eq!(revocation_endpoint_of(&meta), None);
+
+        // 空白也当"没提供"（metadata 由对方生成，可能带尾随空白）。
+        meta.revocation_endpoint = "   ".into();
+        assert_eq!(revocation_endpoint_of(&meta), None);
+
+        let expect = format!("{ORIGIN}/api/device-auth/revoke");
+        meta.revocation_endpoint = expect.clone();
+        assert_eq!(revocation_endpoint_of(&meta), Some(expect.as_str()));
     }
 
     /// 拒绝 settlement（P1）：本机已拒绝 / RP 已收到拒绝可区分，且失败保留可重试态。
