@@ -248,6 +248,16 @@ pub struct MessageMeta {
     pub kind: String,
     pub ts: i64,
     pub seq: i64,
+    /// 这条消息 **@ 了我**（提及目标里有本机设备 id）。
+    ///
+    /// 为什么单独一个布尔：「谁发的」是元信息，「是不是对我说的」才是**通知性**。
+    /// 第三方页面要显示「有 1 条 @ 你的消息」就需要这一位，而它**不含正文**。
+    pub mentions_me: bool,
+    /// 这条消息**会触发通知**（`kind` 不是静默类）。
+    ///
+    /// 判定走 `protocol::kind_class` 这一处唯一口径：静默类（表情回应、撤回、置顶…）
+    /// 不计未读、不改预览、不弹通知 ⇒ 不该被当成「一条通知」。
+    pub notifies: bool,
 }
 
 /// 最近的**收到的**消息元事件（跨会话，按 ts 倒序）。
@@ -260,16 +270,24 @@ pub fn get_recent_incoming_message_meta(
     limit: i64,
 ) -> Result<Vec<MessageMeta>> {
     let mut stmt = conn.prepare(
-        "SELECT conv_id, sender_id, kind, ts, seq FROM messages
+        "SELECT conv_id, sender_id, kind, ts, seq, mention_targets FROM messages
          WHERE sender_id != ?1 ORDER BY ts DESC, id DESC LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![my_device_id, limit], |r| {
+        let kind = crate::protocol::display_kind(&r.get::<_, String>(2)?);
+        // 「@ 了我」用 mention_targets 的**三态**语义：整份坏掉时（None）当「没 @ 我」，
+        // 不猜半个 —— 与呈现层的兜底口径一致（宁可少说，不能说错）。
+        let mentions_me = decode_mention_targets(r.get(5)?)
+            .map(|targets| targets.iter().any(|t| t.id == my_device_id))
+            .unwrap_or(false);
         Ok(MessageMeta {
             conv_id: r.get(0)?,
             sender_id: r.get(1)?,
-            kind: crate::protocol::display_kind(&r.get::<_, String>(2)?),
+            notifies: crate::protocol::kind_class(&kind) != crate::protocol::KindClass::Silent,
+            kind,
             ts: r.get(3)?,
             seq: r.get(4)?,
+            mentions_me,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())

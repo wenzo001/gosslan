@@ -251,7 +251,7 @@ app.post("/device-auth/decisions/:id", express.json(), (req, res) => {
 | scope | 交付什么 |
 |---|---|
 | `friends.read` | `friends`：好友的 `device_id` 与 `nickname`（**没有公钥、没有在线态**） |
-| `events.metadata` | `events`：最近收到的消息的 `conv_id` / `sender_id` / `kind` / `ts` / `seq`（**没有正文**） |
+| `events.metadata` | `events`：最近收到的消息的 `conv_id` / `sender_id` / `kind` / `ts` / `seq` + 通知性两位 `mentions_me`（这条 @ 了本机用户吗）/ `notifies`（这条会弹通知吗）（**没有正文**） |
 
 写了别的值 ⇒ **整笔拒**（`DEVICE_AUTH_UNKNOWN_SCOPE`），不是静默忽略。
 没写任何值、却用 `action=sync` ⇒ 也拒（那是个空申请）。
@@ -262,7 +262,12 @@ app.post("/device-auth/decisions/:id", express.json(), (req, res) => {
 "data": {
   "subject": "<pairwise subject>",
   "friends": [ { "device_id": "…", "nickname": "…" } ],
-  "events": [ { "conv_id": "…", "sender_id": "…", "kind": "text", "ts": 1731600000000, "seq": 42 } ]
+  "events": [ {
+    "conv_id": "…", "sender_id": "…", "kind": "text",
+    "ts": 1731600000000, "seq": 42,
+    "mentions_me": true,     // 这条 @ 了本机用户
+    "notifies": true         // 这条会触发通知（表情回应、撤回、置顶这类静默事件不算）
+  } ]
 }
 ```
 
@@ -425,6 +430,8 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
 - [ ] 只勾一项：回写里**只有**那一个键（另一个键不存在，不是空数组）。
 - [ ] 一个都不勾：回写里**没有** `friends` 与 `events`。
 - [ ] `data.events` 的每一条都**没有** `content` 字段。
+- [ ] `data.events` 的每一条都有 `mentions_me` 与 `notifies` 两个布尔；
+      一条 @ 了本机的消息 `mentions_me=true`，一条表情回应 `notifies=false`。
 - [ ] `data.friends` 的每一条都**没有**公钥字段。
 - [ ] 用没 `link` 过的应用申请 `sync`：被拒（`DEVICE_AUTH_NO_BINDING`）。
 - [ ] `requested_scopes` 里写 `groups.read`：整笔拒（`DEVICE_AUTH_UNKNOWN_SCOPE`）。

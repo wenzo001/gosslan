@@ -402,6 +402,9 @@ fn build_delivery_data(
                     "kind": m.kind,
                     "ts": m.ts,
                     "seq": m.seq,
+                    // 通知性两位：@ 了我 / 会弹通知。**仍不含正文**。
+                    "mentions_me": m.mentions_me,
+                    "notifies": m.notifies,
                 })
             })
             .collect();
@@ -944,7 +947,7 @@ mod device_auth_cmd_tests {
         conn.execute_batch(
             "CREATE TABLE friends (device_id TEXT, nickname TEXT, avatar TEXT, added_at INTEGER);
              CREATE TABLE messages (id INTEGER PRIMARY KEY, conv_id TEXT, sender_id TEXT,
-               kind TEXT, ts INTEGER, seq INTEGER);",
+               kind TEXT, ts INTEGER, seq INTEGER, mention_targets TEXT);",
         )
         .unwrap();
         conn.execute(
@@ -954,12 +957,28 @@ mod device_auth_cmd_tests {
         .unwrap();
         // 一条**收到的**（sender ≠ 本机）与一条**本机发的**（不该出现在交付里）。
         conn.execute(
-            "INSERT INTO messages (id, conv_id, sender_id, kind, ts, seq) VALUES (1, 'c1', 'peer-1', 'text', 100, 1)",
+            "INSERT INTO messages (id, conv_id, sender_id, kind, ts, seq, mention_targets)
+             VALUES (1, 'c1', 'peer-1', 'text', 100, 1, NULL)",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO messages (id, conv_id, sender_id, kind, ts, seq) VALUES (2, 'c1', 'my-device', 'text', 200, 2)",
+            "INSERT INTO messages (id, conv_id, sender_id, kind, ts, seq, mention_targets)
+             VALUES (2, 'c1', 'my-device', 'text', 200, 2, NULL)",
+            [],
+        )
+        .unwrap();
+        // 一条**@ 了本机**的（mentions_me = true）。
+        conn.execute(
+            "INSERT INTO messages (id, conv_id, sender_id, kind, ts, seq, mention_targets)
+             VALUES (3, 'c1', 'peer-2', 'text', 300, 3, '[{\"id\":\"my-device\",\"name\":\"me\",\"n\":1}]')",
+            [],
+        )
+        .unwrap();
+        // 一条**静默类**的（reaction ⇒ 不弹通知）。
+        conn.execute(
+            "INSERT INTO messages (id, conv_id, sender_id, kind, ts, seq, mention_targets)
+             VALUES (4, 'c1', 'peer-1', 'reaction', 400, 4, NULL)",
             [],
         )
         .unwrap();
@@ -1375,13 +1394,36 @@ mod device_auth_cmd_tests {
         assert!(data2.get("events").is_some());
         assert!(data2.get("friends").is_none());
         let events = data2.get("events").unwrap().as_array().unwrap();
-        assert_eq!(events.len(), 1, "只有收到的消息才算（sender ≠ 本机）");
-        let ev = &events[0];
-        assert_eq!(ev.get("conv_id").unwrap(), "c1");
-        assert_eq!(ev.get("sender_id").unwrap(), "peer-1");
-        assert!(ev.get("kind").is_some());
-        assert!(ev.get("content").is_none(), "事件载荷绝不能含正文");
-        assert!(ev.get("body").is_none(), "事件载荷绝不能含正文");
+        assert_eq!(events.len(), 3, "只有收到的消息才算（sender ≠ 本机）");
+        for ev in events {
+            assert_eq!(ev.get("conv_id").unwrap(), "c1");
+            assert!(ev.get("kind").is_some());
+            assert!(ev.get("content").is_none(), "事件载荷绝不能含正文");
+            assert!(ev.get("body").is_none(), "事件载荷绝不能含正文");
+            // 通知性两位必须都在（@ 了我 / 会弹通知）。
+            assert!(ev.get("mentions_me").is_some(), "事件载荷缺 mentions_me");
+            assert!(ev.get("notifies").is_some(), "事件载荷缺 notifies");
+        }
+        // @ 了本机的那条：mentions_me = true。
+        let mentioned = events
+            .iter()
+            .find(|e| e.get("sender_id").unwrap() == "peer-2")
+            .expect("应有 peer-2 那条");
+        assert_eq!(mentioned.get("mentions_me").unwrap(), true);
+        assert_eq!(mentioned.get("notifies").unwrap(), true);
+        // 普通文本：没提及，但会弹通知。
+        let plain = events
+            .iter()
+            .find(|e| e.get("sender_id").unwrap() == "peer-1" && e.get("kind").unwrap() == "text")
+            .expect("应有 peer-1 的文本那条");
+        assert_eq!(plain.get("mentions_me").unwrap(), false);
+        assert_eq!(plain.get("notifies").unwrap(), true);
+        // 静默类（reaction）⇒ 不弹通知。
+        let silent = events
+            .iter()
+            .find(|e| e.get("kind").unwrap() == "reaction")
+            .expect("应有 reaction 那条");
+        assert_eq!(silent.get("notifies").unwrap(), false);
 
         // 一个都没勾 ⇒ 只有 subject，什么都不交付。
         let data3 = build_delivery_data(&conn, &requested, &[], "my-device", "sub-1").unwrap();
