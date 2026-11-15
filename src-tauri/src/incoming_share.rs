@@ -26,6 +26,13 @@ pub const INCOMING_DIR_NAME: &str = "incoming-shares";
 /// 几百 MB 的文件喂给解析器」。
 pub const MAX_FILE_BYTES: u64 = 64 * 1024;
 
+/// 一轮扫描最多看多少个文件。
+///
+/// 单文件有上限还不够：落地区是**可写的目录**，同机的另一个进程可以把上万个文件塞进来
+/// ⇒ 一轮全读就是几百 MB 的 IO，而这个读取发生在**分享主路的命令里**（会拖慢用户点分享）。
+/// 所以一轮只看前 N 个，剩下的留给下一轮（下一轮由启动/聚焦触发）；过期文件最终会被清掉。
+pub const MAX_SCAN_FILES: usize = 32;
+
 /// 文件存活上限（毫秒）：超过就当过期。
 ///
 /// 取 30 分钟而不是 10 分钟：平台扩展写完文件后，用户可能过一会儿才切回本应用；
@@ -185,6 +192,10 @@ pub fn scan_dir(dir: &std::path::Path, now_ms: i64) -> Vec<(std::path::PathBuf, 
     };
     let mut out = Vec::new();
     for entry in entries.flatten() {
+        // 一轮只看前 N 个（见 MAX_SCAN_FILES 的理由）。
+        if out.len() >= MAX_SCAN_FILES {
+            break;
+        }
         let name = entry.file_name().to_string_lossy().to_string();
         // 文件名不合规 ⇒ 不是落地区文件（可能是扩展的临时文件或用户自己放的）⇒ 不动它。
         if !is_valid_file_name(&name) {
@@ -473,6 +484,28 @@ mod tests {
         }
         assert_eq!(expired, 1);
         assert_eq!(invalid, 1);
+    }
+
+    /// 一轮扫描的文件数有上限：落地区是可写目录，被塞爆时不能把分享主路拖死。
+    #[test]
+    fn scan_dir_caps_the_number_of_files_per_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = 1_700_000_000_000i64;
+        for i in 0..(MAX_SCAN_FILES + 5) {
+            // 32 位十六进制 id：每份一个不同的。
+            let id = format!("{i:032x}");
+            std::fs::write(
+                dir.path().join(file_name(&id)),
+                body(&id, now, Some("https://example.com/a"), None),
+            )
+            .unwrap();
+        }
+        let found = scan_dir(dir.path(), now);
+        assert_eq!(
+            found.len(),
+            MAX_SCAN_FILES,
+            "一轮扫描的文件数必须有上限（落地区是可写目录）"
+        );
     }
 
     /// 目录不存在 = 常态（没装平台扩展），必须安静回空，不能当错误。

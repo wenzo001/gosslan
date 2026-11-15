@@ -642,6 +642,7 @@ incoming_share::tests::file_to_queue_chain_works_end_to_end
 incoming_share::tests::id_mismatch_is_rejected
 incoming_share::tests::oversized_file_is_rejected_before_parsing
 incoming_share::tests::ready_file_is_parsed
+incoming_share::tests::scan_dir_caps_the_number_of_files_per_pass
 incoming_share::tests::scan_dir_on_missing_directory_is_empty
 incoming_share::tests::scan_dir_only_touches_strictly_named_files
 incoming_share::tests::scan_dir_reports_expired_and_invalid_separately
