@@ -236,6 +236,45 @@ pub fn get_latest_messages(
     Ok(out)
 }
 
+/// 一条消息的**元事件**（**刻意不含正文**）。
+///
+/// 为什么单独一个类型而不是复用 `MessageRecord`：正文一旦进了这个结构，
+/// 「不小心带出去」就只是 `json!` 里多写一个字段的事。单独一个类型 ⇒
+/// 正文的类型上**不可能**出现在这里（裁决 2026-11-15：正文不外送）。
+#[derive(Debug, Clone)]
+pub struct MessageMeta {
+    pub conv_id: String,
+    pub sender_id: String,
+    pub kind: String,
+    pub ts: i64,
+    pub seq: i64,
+}
+
+/// 最近的**收到的**消息元事件（跨会话，按 ts 倒序）。
+///
+/// 「收到」= `sender_id != ?1`（本机自己发的消息不算）。
+/// 只取最近 N 条：交付是「用户当场拉一次」，不是全量导出。
+pub fn get_recent_incoming_message_meta(
+    conn: &Connection,
+    my_device_id: &str,
+    limit: i64,
+) -> Result<Vec<MessageMeta>> {
+    let mut stmt = conn.prepare(
+        "SELECT conv_id, sender_id, kind, ts, seq FROM messages
+         WHERE sender_id != ?1 ORDER BY ts DESC, id DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![my_device_id, limit], |r| {
+        Ok(MessageMeta {
+            conv_id: r.get(0)?,
+            sender_id: r.get(1)?,
+            kind: crate::protocol::display_kind(&r.get::<_, String>(2)?),
+            ts: r.get(3)?,
+            seq: r.get(4)?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 /// 预览取源：按 msg_id 返回 (sender_id, content)，供 read_file_preview 定位本地路径
 /// 并判定归属（本机的自选文件 / 接收方 downloads 路径），避免命令层直连 rusqlite。
 pub fn get_message_preview_source(conn: &Connection, msg_id: &str) -> Option<(String, String)> {

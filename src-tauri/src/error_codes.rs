@@ -369,6 +369,11 @@ pub const DEVICE_AUTH_BAD_METADATA: &str = "DEVICE_AUTH_BAD_METADATA";
 pub const DEVICE_AUTH_UNSUPPORTED: &str = "DEVICE_AUTH_UNSUPPORTED";
 /// 请求了未知或未支持的 claim（整笔拒）。
 pub const DEVICE_AUTH_UNKNOWN_CLAIM: &str = "DEVICE_AUTH_UNKNOWN_CLAIM";
+/// 请求了未知/不匹配的**交付范围**（scope）。
+///
+/// 与 `DEVICE_AUTH_UNKNOWN_CLAIM` 分开：claim 是「这条断言带什么」，scope 是
+/// 「这次事务能读到什么」。混成一个码会让排障时分不清是登录字段错了还是交付申请错了。
+pub const DEVICE_AUTH_UNKNOWN_SCOPE: &str = "DEVICE_AUTH_UNKNOWN_SCOPE";
 /// 事务畸形（request_id 空 / challenge 熵不足 / expires_at 非法）。
 pub const DEVICE_AUTH_BAD_REQUEST: &str = "DEVICE_AUTH_BAD_REQUEST";
 /// 事务或 challenge 已过期。

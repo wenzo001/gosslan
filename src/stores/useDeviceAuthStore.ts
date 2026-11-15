@@ -65,13 +65,28 @@ export const useDeviceAuthStore = defineStore("deviceAuth", () => {
 
   /** 批准（昵称仅 allowNickname 时共享）。RP 2xx 后后端才消费事务，这里成功才清确认页；
    * 失败**保留** pending（可重试，#1），抛出由 UI 反馈。代际对账防止清掉新到达的事务。 */
-  async function approve(allowNickname: boolean): Promise<DeviceAuthOutcome | null> {
+  /**
+   * 批准。
+   *
+   * `allowedScopes` = 用户在确认页**实际勾选**的交付范围；默认空 = 什么都不交付。
+   * 组件负责呈现与勾选，这里只负责把结果原样传下去。
+   */
+  async function approve(
+    allowNickname: boolean,
+    allowedScopes: string[] = [],
+  ): Promise<DeviceAuthOutcome | null> {
     const cur = guard.pending;
     if (!cur || busy.value) return null;
     const captured = guard.generation;
     busy.value = true;
     try {
-      const out = await api.deviceAuthApprove(cur.rp_origin, cur.client_id, cur.request_id, allowNickname);
+      const out = await api.deviceAuthApprove(
+        cur.rp_origin,
+        cur.client_id,
+        cur.request_id,
+        allowNickname,
+        allowedScopes,
+      );
       guardConsume(guard, captured);
       return out;
     } finally {

@@ -1084,6 +1084,12 @@ export interface DeviceAuthPrompt {
   action: string;
   account_hint: string;
   requested_claims: string[];
+  /**
+   * 本次事务请求的交付范围（scope）：`friends.read` | `events.metadata`。
+   *
+   * **默认全关**：确认页要逐项让用户勾，不预勾。
+   */
+  requested_scopes: string[];
   expires_at_ms: number;
   nickname_default: boolean;
 }

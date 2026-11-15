@@ -15,6 +15,9 @@
 
 use crate::device_auth as da;
 use crate::error_codes;
+// 跨域依赖走 `use` 而不是 `crate::db::…` 内联：领域依赖守门只看得见 use 形式，
+// 内联全路径会变成「判据看不见的耦合」（该守门有棘轮，不许调大）。
+use crate::db::{get_recent_incoming_message_meta, list_friends};
 use std::future::Future;
 use std::sync::atomic::Ordering;
 
@@ -27,6 +30,11 @@ const RP_TIMEOUT_SECS: u64 = 10;
 /// 撤销通知的超时：比常规 RP 请求更短 —— 用户在设置页点「撤销」时等 10 秒是不可接受的，
 /// 而撤销**本地已经生效**，通知只是锦上添花，宁可快失败也别拖住界面。
 const REVOKE_NOTIFY_TIMEOUT_SECS: u64 = 5;
+/// 单次交付携带的消息元事件条数上限。
+///
+/// 交付是「用户当场拉一次」，不是全量导出 ⇒ 给一个明确上限，
+/// 免得一个很长的历史把回写体撑大（回写体有 64KiB 上限的兄弟：MAX_RP_JSON_BYTES 是响应侧）。
+const DELIVERY_EVENT_LIMIT: i64 = 50;
 
 // 错误码统一登记在 `error_codes.rs`：那张表由 `src/utils/errors.test.ts` 与前端
 // `CODE_RULES` 双向对账，写在本地的私有常量对那条判据不可见，前端也就无法翻成人话。
@@ -253,7 +261,9 @@ fn prepare_assertion(
     pending: &da::PendingDeviceAuth,
     allow_nickname: bool,
     now_ms: i64,
-) -> Result<(String, da::RpBindingInfo, serde_json::Value), String> {
+    my_device_id: &str,
+    allowed_scopes: &[String],
+) -> Result<(String, da::RpBindingInfo, serde_json::Value, Option<serde_json::Value>), String> {
     let meta = &pending.meta;
     let req = &pending.request;
     let origin = &pending.rp_origin;
@@ -297,6 +307,24 @@ fn prepare_assertion(
         ("authenticate", None) => {
             return Err(error_codes::coded(error_codes::DEVICE_AUTH_NO_BINDING, "尚未绑定该应用，请先绑定"));
         }
+        // `sync` = 申请一次数据交付。它**必须已有 active 绑定**（交付的前提是这台设备
+        // 已经被这个 RP 登记过），复用同一把密钥签断言 —— 与 authenticate 同一套语义。
+        ("sync", Some(b)) if b.status == "active" => {
+            crate::db::touch_last_used(conn, origin, &meta.client_id, now_ms)
+                .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("更新绑定失败：{e}")))?;
+            b
+        }
+        ("sync", Some(b))
+            if b.status == "pending_registration" || b.status == "registration_failed" =>
+        {
+            return Err(error_codes::coded(error_codes::DEVICE_AUTH_NO_BINDING, "绑定尚未完成 RP 登记，请重新绑定或重试"));
+        }
+        ("sync", Some(_)) => {
+            return Err(error_codes::coded(error_codes::DEVICE_AUTH_BINDING_REVOKED, "绑定已撤销，请重新绑定"));
+        }
+        ("sync", None) => {
+            return Err(error_codes::coded(error_codes::DEVICE_AUTH_NO_BINDING, "尚未绑定该应用，请先绑定"));
+        }
         _ => return Err(error_codes::coded(error_codes::DEVICE_AUTH_UNSUPPORTED, "不支持的动作")),
     };
 
@@ -313,7 +341,73 @@ fn prepare_assertion(
             claims.insert("nickname".into(), json!(nick));
         }
     }
-    Ok((assertion, binding_to_info(&row), serde_json::Value::Object(claims)))
+    // 交付数据：**只在 sync 动作且用户实际勾选了 scope 时才有**。
+    // 三重收窄：请求了什么 ∩ 用户允许了什么 ∩ allowlist 里的 ⇒ 少一项都不交付。
+    let data = if req.action == "sync" {
+        Some(build_delivery_data(
+            conn,
+            &req.requested_scopes,
+            allowed_scopes,
+            my_device_id,
+            &row.pairwise_subject,
+        )?)
+    } else {
+        None
+    };
+    Ok((assertion, binding_to_info(&row), serde_json::Value::Object(claims), data))
+}
+
+/// 组装交付数据（**只含被请求且被允许的 scope 对应的键**）。
+///
+/// 三条硬约束：
+/// ① **没有请求就没有键** —— 不是「键在、值为空」。RP 侧按存在性判断要不要读。
+/// ② **正文永远不在**（裁决 2026-11-15）：事件只给 conv/sender/kind/ts/seq。
+/// ③ **好友只给 device_id + 昵称**：公钥、在线态等都不给（最小披露）。
+fn build_delivery_data(
+    conn: &rusqlite::Connection,
+    requested_scopes: &[String],
+    allowed_scopes: &[String],
+    my_device_id: &str,
+    subject: &str,
+) -> Result<serde_json::Value, String> {
+    let granted: Vec<&str> = requested_scopes
+        .iter()
+        .filter(|sc| allowed_scopes.iter().any(|a| a == *sc))
+        .map(|s| s.as_str())
+        .collect();
+
+    let mut data = serde_json::Map::new();
+    data.insert("subject".into(), serde_json::json!(subject));
+
+    if granted.contains(&"friends.read") {
+        let rows = list_friends(conn)
+            .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("读取好友失败：{e}")))?;
+        let friends: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|f| serde_json::json!({ "device_id": f.device_id, "nickname": f.nickname }))
+            .collect();
+        data.insert("friends".into(), serde_json::Value::Array(friends));
+    }
+    if granted.contains(&"events.metadata") {
+        let rows = get_recent_incoming_message_meta(conn, my_device_id, DELIVERY_EVENT_LIMIT)
+            .map_err(|e| {
+                error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("读取消息元事件失败：{e}"))
+            })?;
+        let events: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "conv_id": m.conv_id,
+                    "sender_id": m.sender_id,
+                    "kind": m.kind,
+                    "ts": m.ts,
+                    "seq": m.seq,
+                })
+            })
+            .collect();
+        data.insert("events".into(), serde_json::Value::Array(events));
+    }
+    Ok(serde_json::Value::Object(data))
 }
 
 /// 处理授权深链：解析 → 拉 metadata/请求 → 校验 → 存待确认 → 唤起主窗并 emit 确认页数据。
@@ -579,6 +673,11 @@ pub async fn device_auth_get_pending(
 /// 用户批准（可重试，#1）：排队 → 复核 → 读/建绑定并签名 → 回写 RP → **2xx 后才消费**事务。
 /// 同一 RP 的多个批准排队依次处理（不是单飞拒绝）；POST 失败保留可重试态（不丢事务、不假授权）。
 /// 首绑在 prepare 只落 `pending_registration`，整笔成功（含 RP 2xx）后才 `active`（见下方收尾）。
+///
+/// `allowed_scopes` = 用户在确认页**实际勾选**的交付范围（scope）。
+/// 缺省 = 空 = **什么都不交付**（fail closed）：旧前端不传这个参数时，`sync` 事务拿不到数据
+/// （RP 重试即可），而 `link` / `authenticate` 完全不受影响。
+/// 这也是「scope 只对本次事务有效」的实现方式 —— 它从不落库。
 #[tauri::command(async)]
 pub async fn device_auth_approve(
     state: State<'_, Arc<crate::state::AppState>>,
@@ -586,8 +685,11 @@ pub async fn device_auth_approve(
     client_id: String,
     request_id: String,
     allow_nickname: bool,
+    allowed_scopes: Option<Vec<String>>,
 ) -> Result<da::DeviceAuthOutcome, String> {
     let s = state.inner().clone();
+    let my_device_id = s.device_id.clone();
+    let granted_scopes = allowed_scopes.unwrap_or_default();
     let key = da::pending_key(&rp_origin, &client_id, &request_id);
     let queue_key = da::rp_queue_key(&rp_origin, &client_id);
     // 先读一次（不消费，顺带清理过期）：拿代际 / meta / 幂等键。真正的消费在 RP 2xx 之后。
@@ -611,19 +713,32 @@ pub async fn device_auth_approve(
         move |pending| async move {
             let prepared = tokio::task::spawn_blocking(move || {
                 let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
-                prepare_assertion(&dbc, &pending, allow_nickname, crate::db::now_ms())
+                prepare_assertion(
+                    &dbc,
+                    &pending,
+                    allow_nickname,
+                    crate::db::now_ms(),
+                    &my_device_id,
+                    &granted_scopes,
+                )
             })
             .await
             .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("签名任务被中断：{e}")))??;
-            let (assertion, info, claims) = prepared;
-            Ok(json!({
+            let (assertion, info, claims, data) = prepared;
+            let mut body = json!({
                 "decision": "approve",
                 "key_id": info.kid,
                 "public_key": info.public_key,
                 "device_subject": info.pairwise_subject,
                 "claims": claims,
                 "assertion": assertion,
-            }))
+            });
+            // 交付数据**只在 sync 动作下出现**（prepare 里决定）；没有就**不加这个键**
+            // （不是加个 null）—— RP 侧按存在性判断。
+            if let Some(d) = data {
+                body["data"] = d;
+            }
+            Ok(body)
         },
         move |body| async move {
             let client = rp_client()?;
@@ -820,6 +935,37 @@ mod device_auth_cmd_tests {
         conn
     }
 
+    /// 带好友与消息的内存库（交付数据的形状判据用）。
+    ///
+    /// 表结构只保留读口真正用到的列：这样「读口多读了哪一列」会当场炸，
+    /// 而不是悄悄多带一个字段出去。
+    fn test_db_with_data() -> rusqlite::Connection {
+        let conn = test_db();
+        conn.execute_batch(
+            "CREATE TABLE friends (device_id TEXT, nickname TEXT, avatar TEXT, added_at INTEGER);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY, conv_id TEXT, sender_id TEXT,
+               kind TEXT, ts INTEGER, seq INTEGER);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO friends (device_id, nickname, avatar, added_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["peer-1", "阿青", "a1", 1_i64],
+        )
+        .unwrap();
+        // 一条**收到的**（sender ≠ 本机）与一条**本机发的**（不该出现在交付里）。
+        conn.execute(
+            "INSERT INTO messages (id, conv_id, sender_id, kind, ts, seq) VALUES (1, 'c1', 'peer-1', 'text', 100, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, conv_id, sender_id, kind, ts, seq) VALUES (2, 'c1', 'my-device', 'text', 200, 2)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
     fn pending(action: &str, claims: Vec<String>) -> da::PendingDeviceAuth {
         let meta = da::RpMetadata {
             protocol_version: "1".into(),
@@ -831,7 +977,9 @@ mod device_auth_cmd_tests {
             poll_endpoint: String::new(),
             // 默认不提供撤销端点（老 RP 不实现双边撤销时，客户端只做本地撤销）。
             revocation_endpoint: String::new(),
-            supported_actions: vec!["link".into(), "authenticate".into()],
+            // 默认不提供分享回执端点（老 RP 没实现定向分享回执时，分享行为与旧行为一致）。
+            share_receipt_endpoint: String::new(),
+            supported_actions: vec!["link".into(), "authenticate".into(), "sync".into()],
             supported_claims: vec!["device_subject".into(), "device_public_key".into(), "nickname".into()],
         };
         let request = da::RpRequest {
@@ -843,6 +991,8 @@ mod device_auth_cmd_tests {
             action: action.into(),
             account_hint: String::new(),
             requested_claims: claims,
+            // 默认不请求任何交付范围（scope 只在 sync 动作下非空）。
+            requested_scopes: Vec::new(),
             challenge: URL_SAFE_NO_PAD.encode([7u8; 32]),
             expires_at: "2099-01-01T00:00:00Z".into(),
         };
@@ -859,7 +1009,7 @@ mod device_auth_cmd_tests {
     fn link_creates_active_binding_and_signs() {
         let conn = test_db();
         let p = pending("link", vec!["device_subject".into(), "device_public_key".into()]);
-        let (assertion, info, _claims) = prepare_assertion(&conn, &p, false, 1_000).unwrap();
+        let (assertion, info, _claims, _) = prepare_assertion(&conn, &p, false, 1_000, "my-device", &[]).unwrap();
         assert_eq!(info.status, "pending_registration", "回调前绝不提前写 active");
         assert!(!info.public_key.is_empty());
         assert_eq!(assertion.split('.').count(), 3, "JWS 三段");
@@ -875,8 +1025,8 @@ mod device_auth_cmd_tests {
     fn link_is_idempotent_reuses_key() {
         let conn = test_db();
         let p = pending("link", vec!["device_subject".into()]);
-        let (_, info1, _) = prepare_assertion(&conn, &p, false, 1_000).unwrap();
-        let (_, info2, _) = prepare_assertion(&conn, &p, false, 2_000).unwrap();
+        let (_, info1, _, _) = prepare_assertion(&conn, &p, false, 1_000, "my-device", &[]).unwrap();
+        let (_, info2, _, _) = prepare_assertion(&conn, &p, false, 2_000, "my-device", &[]).unwrap();
         assert_eq!(info1.kid, info2.kid, "重复 link 复用同一密钥，不静默轮换");
         assert_eq!(info1.pairwise_subject, info2.pairwise_subject);
     }
@@ -885,18 +1035,18 @@ mod device_auth_cmd_tests {
     fn authenticate_requires_active_binding() {
         let conn = test_db();
         let p = pending("authenticate", vec!["device_subject".into()]);
-        let err = prepare_assertion(&conn, &p, false, 1_000).unwrap_err();
+        let err = prepare_assertion(&conn, &p, false, 1_000, "my-device", &[]).unwrap_err();
         assert!(err.contains("DEVICE_AUTH_NO_BINDING"));
     }
 
     #[test]
     fn authenticate_after_link_succeeds() {
         let conn = test_db();
-        prepare_assertion(&conn, &pending("link", vec!["device_subject".into()]), false, 1_000).unwrap();
+        prepare_assertion(&conn, &pending("link", vec!["device_subject".into()]), false, 1_000, "my-device", &[]).unwrap();
         // 首绑要 RP 回写 2xx 后才 active；authenticate 必须有 active 绑定。
         assert!(crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap());
-        let (assertion, info, _) =
-            prepare_assertion(&conn, &pending("authenticate", vec!["device_subject".into()]), false, 2_000).unwrap();
+        let (assertion, info, _, _) =
+            prepare_assertion(&conn, &pending("authenticate", vec!["device_subject".into()]), false, 2_000, "my-device", &[]).unwrap();
         assert_eq!(info.status, "active");
         assert_eq!(assertion.split('.').count(), 3);
     }
@@ -905,13 +1055,13 @@ mod device_auth_cmd_tests {
     fn revoked_binding_blocks_link_and_authenticate() {
         let conn = test_db();
         let link = pending("link", vec!["device_subject".into()]);
-        prepare_assertion(&conn, &link, false, 1_000).unwrap();
+        prepare_assertion(&conn, &link, false, 1_000, "my-device", &[]).unwrap();
         // 撤销只允许 active：先把待登记绑定激活（模拟回写 2xx），再撤销。
         assert!(crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap());
         crate::db::revoke_binding(&conn, ORIGIN, CLIENT, 2_000).unwrap();
-        let err = prepare_assertion(&conn, &link, false, 3_000).unwrap_err();
+        let err = prepare_assertion(&conn, &link, false, 3_000, "my-device", &[]).unwrap_err();
         assert!(err.contains("DEVICE_AUTH_BINDING_EXISTS"), "撤销态不许静默覆盖");
-        let err = prepare_assertion(&conn, &pending("authenticate", vec!["device_subject".into()]), false, 3_000).unwrap_err();
+        let err = prepare_assertion(&conn, &pending("authenticate", vec!["device_subject".into()]), false, 3_000, "my-device", &[]).unwrap_err();
         assert!(err.contains("DEVICE_AUTH_BINDING_REVOKED"));
     }
 
@@ -920,9 +1070,9 @@ mod device_auth_cmd_tests {
         let conn = test_db();
         crate::db::set_setting(&conn, "nickname", "小院").unwrap();
         let p = pending("link", vec!["device_subject".into(), "nickname".into()]);
-        let (_, _, claims_off) = prepare_assertion(&conn, &p, false, 1_000).unwrap();
+        let (_, _, claims_off, _) = prepare_assertion(&conn, &p, false, 1_000, "my-device", &[]).unwrap();
         assert!(claims_off.get("nickname").is_none(), "默认不共享昵称");
-        let (_, _, claims_on) = prepare_assertion(&conn, &p, true, 2_000).unwrap();
+        let (_, _, claims_on, _) = prepare_assertion(&conn, &p, true, 2_000, "my-device", &[]).unwrap();
         assert_eq!(claims_on.get("nickname").unwrap().as_str().unwrap(), "小院");
     }
 
@@ -933,7 +1083,7 @@ mod device_auth_cmd_tests {
     fn registration_failed_retry_reuses_key_and_can_activate() {
         let conn = test_db();
         let p = pending("link", vec!["device_subject".into()]);
-        let (_, first, _) = prepare_assertion(&conn, &p, false, 1_000).unwrap();
+        let (_, first, _, _) = prepare_assertion(&conn, &p, false, 1_000, "my-device", &[]).unwrap();
         assert_eq!(first.status, "pending_registration");
         assert!(crate::db::mark_registration_failed(&conn, ORIGIN, CLIENT).unwrap());
         assert_eq!(
@@ -941,7 +1091,7 @@ mod device_auth_cmd_tests {
             "registration_failed"
         );
         // 重试：复用同一密钥，仍能签名（不会因中间态被当成新首绑重复 insert）。
-        let (_, retry, _) = prepare_assertion(&conn, &p, false, 2_000).unwrap();
+        let (_, retry, _, _) = prepare_assertion(&conn, &p, false, 2_000, "my-device", &[]).unwrap();
         assert_eq!(retry.kid, first.kid, "重试复用同一密钥");
         assert_eq!(retry.pairwise_subject, first.pairwise_subject);
         // 这次回写成功才激活。
@@ -954,7 +1104,7 @@ mod device_auth_cmd_tests {
     #[test]
     fn activate_binding_only_promotes_intermediate_states() {
         let conn = test_db();
-        prepare_assertion(&conn, &pending("link", vec![]), false, 1_000).unwrap();
+        prepare_assertion(&conn, &pending("link", vec![]), false, 1_000, "my-device", &[]).unwrap();
         assert!(crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap());
         assert!(!crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap(), "已 active 幂等");
         crate::db::revoke_binding(&conn, ORIGIN, CLIENT, 3_000).unwrap();
@@ -966,7 +1116,7 @@ mod device_auth_cmd_tests {
     #[test]
     fn mark_registration_failed_only_affects_pending() {
         let conn = test_db();
-        prepare_assertion(&conn, &pending("link", vec![]), false, 1_000).unwrap();
+        prepare_assertion(&conn, &pending("link", vec![]), false, 1_000, "my-device", &[]).unwrap();
         assert!(crate::db::mark_registration_failed(&conn, ORIGIN, CLIENT).unwrap());
         assert!(!crate::db::mark_registration_failed(&conn, ORIGIN, CLIENT).unwrap(), "已是失败态幂等");
         crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap();
@@ -978,7 +1128,7 @@ mod device_auth_cmd_tests {
     #[test]
     fn revoke_binding_only_allows_active() {
         let conn = test_db();
-        prepare_assertion(&conn, &pending("link", vec![]), false, 1_000).unwrap();
+        prepare_assertion(&conn, &pending("link", vec![]), false, 1_000, "my-device", &[]).unwrap();
         assert!(!crate::db::revoke_binding(&conn, ORIGIN, CLIENT, 2_000).unwrap(), "待登记不许撤销");
         assert_eq!(
             crate::db::get_binding(&conn, ORIGIN, CLIENT).unwrap().unwrap().status,
@@ -993,10 +1143,16 @@ mod device_auth_cmd_tests {
     #[test]
     fn authenticate_rejects_pending_registration_binding() {
         let conn = test_db();
-        prepare_assertion(&conn, &pending("link", vec![]), false, 1_000).unwrap();
+        prepare_assertion(&conn, &pending("link", vec![]), false, 1_000, "my-device", &[]).unwrap();
         let err = prepare_assertion(
-            &conn, &pending("authenticate", vec!["device_subject".into()]), false, 2_000,
-        ).unwrap_err();
+            &conn,
+            &pending("authenticate", vec!["device_subject".into()]),
+            false,
+            2_000,
+            "my-device",
+            &[],
+        )
+        .unwrap_err();
         assert!(err.contains("DEVICE_AUTH_NO_BINDING"), "未完成登记的绑定绝不能签名发断言");
         assert!(err.contains("登记"), "错误信息要点明「尚未完成 RP 登记」");
     }
@@ -1172,6 +1328,87 @@ mod device_auth_cmd_tests {
         assert!(out.rp_notified, "重试必须真的再发一次通知");
     }
 
+    /// 交付数据的**形状**判据（最要紧的一条）：
+    ///
+    /// ① 没被允许的 scope ⇒ **没有那个键**（不是"空数组"）；
+    /// ② 好友载荷**没有公钥**；
+    /// ③ 事件载荷**没有正文**（裁决 2026-11-15：正文不外送）；
+    /// ④ 事件只含**收到的**消息（本机自己发的不算）。
+    #[test]
+    fn delivery_data_carries_only_granted_scopes_and_no_content() {
+        let conn = test_db_with_data();
+        let requested = vec!["friends.read".to_string(), "events.metadata".to_string()];
+
+        // 用户只勾了 friends.read。
+        let data = build_delivery_data(
+            &conn,
+            &requested,
+            &["friends.read".to_string()],
+            "my-device",
+            "sub-1",
+        )
+        .unwrap();
+        assert!(data.get("friends").is_some(), "被允许的 scope 必须交付");
+        assert!(
+            data.get("events").is_none(),
+            "没被允许的 scope 不得交付（不是空数组，是没有这个键）"
+        );
+        assert_eq!(data.get("subject").unwrap(), "sub-1");
+
+        let friends = data.get("friends").unwrap().as_array().unwrap();
+        assert_eq!(friends.len(), 1);
+        let f = &friends[0];
+        assert_eq!(f.get("device_id").unwrap(), "peer-1");
+        assert!(f.get("nickname").is_some());
+        assert!(f.get("public_key").is_none(), "好友载荷不得含公钥");
+        assert!(f.get("ed25519_pubkey").is_none(), "好友载荷不得含公钥");
+
+        // 只勾 events.metadata。
+        let data2 = build_delivery_data(
+            &conn,
+            &requested,
+            &["events.metadata".to_string()],
+            "my-device",
+            "sub-1",
+        )
+        .unwrap();
+        assert!(data2.get("events").is_some());
+        assert!(data2.get("friends").is_none());
+        let events = data2.get("events").unwrap().as_array().unwrap();
+        assert_eq!(events.len(), 1, "只有收到的消息才算（sender ≠ 本机）");
+        let ev = &events[0];
+        assert_eq!(ev.get("conv_id").unwrap(), "c1");
+        assert_eq!(ev.get("sender_id").unwrap(), "peer-1");
+        assert!(ev.get("kind").is_some());
+        assert!(ev.get("content").is_none(), "事件载荷绝不能含正文");
+        assert!(ev.get("body").is_none(), "事件载荷绝不能含正文");
+
+        // 一个都没勾 ⇒ 只有 subject，什么都不交付。
+        let data3 = build_delivery_data(&conn, &requested, &[], "my-device", "sub-1").unwrap();
+        assert!(data3.get("friends").is_none());
+        assert!(data3.get("events").is_none());
+        assert!(data3.get("subject").is_some());
+    }
+
+    /// `sync` 必须已有 active 绑定：没绑定就交付 = 没登记过的应用也能读你的数据。
+    #[test]
+    fn sync_requires_an_active_binding() {
+        let conn = test_db();
+        let err = prepare_assertion(
+            &conn,
+            &pending("sync", vec!["device_subject".into()]),
+            false,
+            1_000,
+            "my-device",
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("DEVICE_AUTH_NO_BINDING"),
+            "sync 没有绑定时必须拒，实际：{err}"
+        );
+    }
+
     /// 撤销端点的解析：空串 = 该 RP 没提供（老 RP 兼容，不是失败）。
     #[test]
     fn revocation_endpoint_absent_is_not_a_failure() {
@@ -1184,6 +1421,7 @@ mod device_auth_cmd_tests {
             decision_endpoint: format!("{ORIGIN}/api/device-auth/requests/{{request_id}}/decision"),
             poll_endpoint: String::new(),
             revocation_endpoint: String::new(),
+            share_receipt_endpoint: String::new(),
             supported_actions: vec!["link".into()],
             supported_claims: vec!["device_subject".into()],
         };

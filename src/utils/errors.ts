@@ -235,6 +235,7 @@ const CODE_RULES: Record<string, string> = {
   DEVICE_AUTH_BAD_METADATA: "errors.rule.deviceAuthBadMetadata",
   DEVICE_AUTH_UNSUPPORTED: "errors.rule.deviceAuthUnsupported",
   DEVICE_AUTH_UNKNOWN_CLAIM: "errors.rule.deviceAuthUnknownClaim",
+  DEVICE_AUTH_UNKNOWN_SCOPE: "errors.rule.deviceAuthUnknownScope",
   DEVICE_AUTH_BAD_REQUEST: "errors.rule.deviceAuthBadRequest",
   DEVICE_AUTH_EXPIRED: "errors.rule.deviceAuthExpired",
   DEVICE_AUTH_NETWORK: "errors.rule.deviceAuthNetwork",

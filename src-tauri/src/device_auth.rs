@@ -29,10 +29,22 @@ pub const ASSERTION_TTL_SECS: i64 = 60;
 /// 为什么：TTL 完全来自 RP，RP 给了超长/畸形过期时间时事务会无限期挂在内存；本地封顶保证
 /// 事务必然有终点，重启即空之外也有一道可证明的上限（就绪度审计 §4 最大 TTL）。
 pub const LOCAL_PENDING_TTL_MS: i64 = 5 * 60 * 1000;
-/// 首期支持的 RP 动作。
-pub const ALLOWED_ACTIONS: [&str; 2] = ["link", "authenticate"];
+/// 首期支持的 RP 动作。`sync` = 申请一次**数据交付**（好友列表 / 消息元事件）。
+pub const ALLOWED_ACTIONS: [&str; 3] = ["link", "authenticate", "sync"];
 /// 首期 claim allowlist：pairwise subject + 设备公钥；昵称仅用户主动允许（默认不选）。
 pub const ALLOWED_CLAIMS: [&str; 3] = ["device_subject", "device_public_key", "nickname"];
+/// **scope** allowlist：这个应用这一次被允许交付什么。
+///
+/// 与 claim 是两件事：claim 管「这条断言里带什么」（登录凭据的面），
+/// scope 管「这次事务能读到什么」。scope **只对本次事务有效**，不落库、不持久化。
+///
+/// 裁决（2026-11-15）：只放行两项，且**不做后台推送** —— 交付必须由用户当场触发。
+/// - `friends.read`：好友列表（device_id + 昵称 + 在线态）。
+/// - `events.metadata`：消息**元事件**（谁 / 何时 / 哪个会话 / 什么类型，**无正文**）。
+///
+/// 刻意**不在**这里的：群列表、免确认直发、消息正文（正文外送会让消息离开 E2EE 保护范围）。
+/// 未知 scope 整笔拒（与未知 claim 同口径），不静默忽略。
+pub const ALLOWED_SCOPES: [&str; 2] = ["friends.read", "events.metadata"];
 
 /// RP 元数据（`GET https://<origin>/.well-known/gosslan-device-auth`）。
 #[derive(Debug, Clone, Deserialize)]
@@ -53,6 +65,12 @@ pub struct RpMetadata {
     /// 需要迁移本地数据；撤销是低频操作，每次重新拉一次 metadata 反而总是最新的。
     #[serde(default)]
     pub revocation_endpoint: String,
+    /// RP 侧的**分享回执**端点（可选）。空串 = 该 RP 没提供 ⇒ 分享后不回执（与旧行为一致）。
+    ///
+    /// 为什么要有：分享是单向的（RP 递内容、用户决定发不发），RP 拿不到「到底发出去没有」。
+    /// 有回执端点时，发送完成后 Gosslan 会 `POST` 一次结果。
+    #[serde(default)]
+    pub share_receipt_endpoint: String,
     pub supported_actions: Vec<String>,
     pub supported_claims: Vec<String>,
 }
@@ -70,6 +88,12 @@ pub struct RpRequest {
     #[serde(default)]
     pub account_hint: String,
     pub requested_claims: Vec<String>,
+    /// 本次事务请求的**交付范围**（scope）。空 = 不请求任何数据交付。
+    ///
+    /// 只有 `action=sync` 才允许非空；其它动作带 scope 一律整笔拒 ——
+    /// 「带着 scope 却做了别的事」会让 RP 误以为交付发生过。
+    #[serde(default)]
+    pub requested_scopes: Vec<String>,
     pub challenge: String,
     pub expires_at: String,
 }
@@ -92,6 +116,8 @@ pub struct DeviceAuthPrompt {
     pub action: String,
     pub account_hint: String,
     pub requested_claims: Vec<String>,
+    /// 本次事务请求的交付范围（**默认全关**：前端要逐项让用户勾，不预勾）。
+    pub requested_scopes: Vec<String>,
     /// 过期时间（Unix ms）。
     pub expires_at_ms: i64,
     /// 昵称是否默认勾选（恒 false：最小披露，用户主动允许才共享）。
@@ -177,6 +203,7 @@ impl PendingDeviceAuth {
             action: self.request.action.clone(),
             account_hint: self.request.account_hint.clone(),
             requested_claims: self.request.requested_claims.clone(),
+            requested_scopes: self.request.requested_scopes.clone(),
             expires_at_ms: self.expires_at_ms,
             nickname_default: false,
         }
@@ -258,6 +285,23 @@ pub fn validate_metadata(meta: &RpMetadata, expected_origin: &str) -> Result<(),
             return Err(error_codes::coded(
                 error_codes::DEVICE_AUTH_CROSS_ORIGIN,
                 "撤销端点必须与 issuer 同源且为 HTTPS",
+            ));
+        }
+    }
+    // 分享回执端点可选，但**给了就必须合规**（不给 ≠ 可以给个 http/跨域的）。
+    // 理由与撤销端点一样：回执会把「内容发到哪个会话」告诉一个地址，
+    // 跨域等于把这份信息发给攻击者指定的地方。
+    if !meta.share_receipt_endpoint.is_empty() {
+        let u = Url::parse(&meta.share_receipt_endpoint).map_err(|_| {
+            error_codes::coded(
+                error_codes::DEVICE_AUTH_BAD_METADATA,
+                "分享回执端点网址格式不正确",
+            )
+        })?;
+        if u.scheme() != "https" || !same_origin(&u, &issuer_url) {
+            return Err(error_codes::coded(
+                error_codes::DEVICE_AUTH_CROSS_ORIGIN,
+                "分享回执端点必须与 issuer 同源且为 HTTPS",
             ));
         }
     }
@@ -355,6 +399,37 @@ pub fn validate_request(req: &RpRequest, meta: &RpMetadata, now_ms: i64) -> Resu
         return Err(error_codes::coded(
             error_codes::DEVICE_AUTH_UNKNOWN_CLAIM,
             "请求了未知或未支持的 claim",
+        ));
+    }
+    // scope：**只对本次事务有效**，且必须与动作对得上。
+    //
+    // 三条硬规则：
+    // ① 未知 scope 整笔拒（与未知 claim 同口径，不静默忽略 —— 静默忽略会让 RP
+    //    以为申请到了 `events.content`，实际没拿到，排查时两边都看不出问题）。
+    // ② 只有 `sync` 动作能带 scope；其它动作带 scope 一律拒（否则 RP 会误以为
+    //    「登录顺便交付了数据」）。
+    // ③ `sync` 必须至少请求一项，否则是个空申请（没有可交付的东西，语义可疑）。
+    if req
+        .requested_scopes
+        .iter()
+        .any(|sc| !ALLOWED_SCOPES.contains(&sc.as_str()))
+    {
+        return Err(error_codes::coded(
+            error_codes::DEVICE_AUTH_UNKNOWN_SCOPE,
+            "请求了未知或不支持的交付范围",
+        ));
+    }
+    if req.action == "sync" {
+        if req.requested_scopes.is_empty() {
+            return Err(error_codes::coded(
+                error_codes::DEVICE_AUTH_UNKNOWN_SCOPE,
+                "同步请求必须声明至少一项交付内容",
+            ));
+        }
+    } else if !req.requested_scopes.is_empty() {
+        return Err(error_codes::coded(
+            error_codes::DEVICE_AUTH_UNKNOWN_SCOPE,
+            "只有同步请求可以声明交付范围",
         ));
     }
     // challenge：base64url，解码后至少 32 字节（256-bit nonce）。

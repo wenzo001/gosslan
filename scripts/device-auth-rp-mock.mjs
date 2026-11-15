@@ -81,6 +81,8 @@ const consumedJtis = new Set(); // 已消费断言的 jti；重放判据与事�
 const requestWindows = new Map(); // 来源 -> {start, count}；创建事务限流占位
 // 幂等键 -> 已处理的撤销结果。客户端重试（用户点两次 / 网络失败后再点）必须合并成一次。
 const revokeIdempotency = new Map();
+// 分享回执（定向分享发完后的结果回传）。
+const shareReceipts = [];
 
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -96,8 +98,12 @@ function metadata() {
     poll_endpoint: `${ORIGIN}/api/device-auth/requests/{request_id}/status`,
     // 双边撤销：客户端撤销时 POST 到这个端点（体形 {client_id, kid} + Idempotency-Key 头）。
     revocation_endpoint: `${ORIGIN}/api/device-auth/revoke`,
-    supported_actions: ["link", "authenticate"],
+    supported_actions: ["link", "authenticate", "sync"],
     supported_claims: ["device_subject", "device_public_key", "nickname"],
+    // 交付端点：sync 动作批准后，客户端把「好友列表 / 消息元事件」随决策回写一起送来
+    //（body 的 data 字段）。这里只公布端点形状，收到的 data 会被记下来供联调观察。
+    // 分享回执端点：可选；分享完成后客户端会 POST 一次结果到这里。
+    share_receipt_endpoint: `${ORIGIN}/api/device-auth/share-receipt`,
   };
 }
 
@@ -192,11 +198,16 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
       const denied = checkCreateSource(req);
       if (denied) return send(res, denied.status, { code: denied.code, message: denied.message });
       const body = await readBody(req);
-      const action = body.action === "authenticate" ? "authenticate" : "link";
+      // 动作：link / authenticate / sync（sync = 申请一次数据交付）。
+      // 未知动作一律当 link —— mock 不做严格校验（客户端会自己拒），但**不能**把
+      // sync 悄悄降级成 link：那样联调时看到的现象与真实契约不符。
+      const action = ["link", "authenticate", "sync"].includes(body.action) ? body.action : "link";
       const id = b64url(crypto.randomBytes(32));
       const tx = {
         id, action,
         claims: Array.isArray(body.requested_claims) ? body.requested_claims : ["device_subject", "device_public_key"],
+        // 交付范围（scope）：只有 sync 会用到；空 = 不交付。
+        scopes: Array.isArray(body.requested_scopes) ? body.requested_scopes : [],
         challenge: b64url(crypto.randomBytes(32)),
         state: "pending", decision: null, expires: Date.now() + TTL_MS,
       };
@@ -216,6 +227,12 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
       const hit = revokeBinding({ kid: decodeURIComponent(revokeByKid[1]) });
       if (!hit) return send(res, 404, { code: "DEVICE_AUTH_BINDING_NOT_FOUND" });
       return send(res, 200, { status: "revoked", key_id: hit.kid });
+    }
+    if (req.method === "POST" && url.pathname === "/api/device-auth/share-receipt") {
+      // 分享回执（定向分享发完后客户端回传结果）。存下来供联调观察。
+      const body = await readBody(req);
+      shareReceipts.push(body);
+      return send(res, 200, { status: "received" });
     }
     if (req.method === "POST" && url.pathname === "/api/device-auth/revoke") {
       const body = await readBody(req);
@@ -249,7 +266,8 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
       return send(res, 200, {
         protocol_version: "1", request_id: tx.id, client_id: CLIENT_ID, issuer: ORIGIN,
         display_name: DISPLAY_NAME, action: tx.action, account_hint: "mo***@example.com",
-        requested_claims: tx.claims, challenge: tx.challenge, expires_at: new Date(tx.expires).toISOString(),
+        requested_claims: tx.claims, requested_scopes: tx.scopes,
+        challenge: tx.challenge, expires_at: new Date(tx.expires).toISOString(),
       });
     }
     if (req.method === "GET" && m[2] === "/status") {
@@ -270,7 +288,9 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
       try {
         let publicKey = body.public_key;
         let known = null;
-        if (tx.action === "authenticate") {
+        // `sync`（数据交付）与 `authenticate` 同理：**必须已有绑定**，
+        // 否则交付就成了「没登记过的应用也能读你的数据」。
+        if (tx.action === "authenticate" || tx.action === "sync") {
           known = [...bindings.values()].find((b) => b.kid === body.key_id);
           // 撤销后旧 key 立即不能登录：区分「绑定已撤销」与「从未绑定」两种拒绝，
           // 让撤销语义在响应里可观察，而不是笼统的未授权。
@@ -297,6 +317,9 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
         consumedJtis.add(payload.jti);
         tx.jti = payload.jti;
         tx.decision = "approved";
+        // 交付数据（sync 动作）：**没有这个键就是没交付**（不是"空对象"）。
+        // 记下来是为了联调时能看见客户端到底送了什么。
+        if (body.data !== undefined) tx.deliveredData = body.data;
         // consumed 是显式终态：已消费事务不可再次决策。对外结果由 decision 承载，
         // /status 仍返回 approved / denied，端点契约不变。
         tx.state = "consumed";
