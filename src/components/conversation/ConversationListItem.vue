@@ -2,7 +2,6 @@
 import { t } from "@/i18n";
 import { localizeLastMsg } from "@/utils/messages";
 import { fmtConversationTime } from "@/utils/time";
-import { avatarSeedFor, type AvatarSeed } from "@/utils/avatarSeed";
 import { computed } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useAppStore } from "@/stores/useAppStore";
@@ -14,6 +13,7 @@ import UnreadBadge from "@/components/UnreadBadge.vue";
 import Icon from "@/components/ui/Icon.vue";
 import type { Conversation } from "@/types";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
+import GroupAvatar from "@/components/ui/GroupAvatar.vue";
 
 const props = defineProps<{
   conv: Conversation;
@@ -126,23 +126,16 @@ function onContextMenu(conv: Conversation, e: MouseEvent) {
  */
 const press = usePressMenu<Conversation>((conv, x, y) => emit("context", conv, x, y));
 
-/** 群头像九宫格成员（微信式 2x2）：资料解析统一走 useMemberProfile（本机/好友/节点，
- *  离线好友照常显示）。必须保持响应式：好友/群数据是异步加载的，非响应式会在
- *  启动时算死成占位块且不再更新。九宫格每格的种子是**成员的设备 id**，保证
- *  同一成员在单聊列表、群聊九宫格与消息流里是同一张脸。 */
-const gridTiles = computed(() => {
+/** 群头像的成员（资料解析统一走 useMemberProfile：本机/好友/节点，离线好友照常显示）。
+ *  必须保持响应式：好友/群数据是异步加载的，非响应式会在启动时算死成占位块且不再更新。
+ *  每张脸的种子是**成员的设备 id**，保证同一成员在单聊列表、群头像簇与消息流里是同一张脸。
+ *
+ *  形状（几个人摆成什么样）在 `utils/groupAvatar.ts` 里算 —— 那里是纯函数，可单测。 */
+const groupMembers = computed(() => {
   if (props.conv.kind !== "group") return [];
   const groupId = props.conv.id.replace(/^group:/, "");
   const memberIds = chat.groups.find((g) => g.id === groupId)?.members ?? [];
-  const tiles: { avatar: string | null; seed: AvatarSeed | null }[] = [];
-  for (const id of memberIds.slice(0, 4)) {
-    const p = memberProfile(id);
-    tiles.push({ avatar: p.avatar, seed: avatarSeedFor(id) });
-  }
-  while (tiles.length < Math.min(4, Math.max(memberIds.length, 1))) {
-    tiles.push({ avatar: null, seed: avatarSeedFor(groupId) });
-  }
-  return tiles;
+  return memberIds.map((id) => ({ id, avatar: memberProfile(id).avatar }));
 });
 </script>
 
@@ -173,20 +166,11 @@ const gridTiles = computed(() => {
     @touchcancel.passive="press.clear"
   >
     <div class="relative shrink-0">
-      <!-- 群聊：微信式 2x2 九宫格头像；单聊：单头像 -->
-      <div
-        v-if="conv.kind === 'group' && gridTiles.length"
-        class="grid h-[var(--gosslan-row-avatar)] w-[var(--gosslan-row-avatar)] grid-cols-2 grid-rows-2 gap-px overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-divider)]"
-      >
-        <AvatarBox
-          v-for="(t, i) in gridTiles"
-          :key="i"
-          round="none"
-          :bg="t.seed?.bg ?? null"
-          :emoji="t.seed?.emoji ?? null"
-          :src="t.avatar"
-        />
-      </div>
+      <!-- 群聊：交叠的「簇」（人少就把脸放大铺满，不留空角）；单聊：单头像 -->
+      <GroupAvatar
+        v-if="conv.kind === 'group' && groupMembers.length"
+        :members="groupMembers"
+      />
       <AvatarBox
         v-else
         class="h-[var(--gosslan-row-avatar)] w-[var(--gosslan-row-avatar)]"
