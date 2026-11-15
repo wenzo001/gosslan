@@ -137,6 +137,7 @@ pub const UPDATE_ENDPOINT_GITHUB: &str =
 ///
 /// 三种取值：`auto`（默认：两个源并发查，谁快用谁）/ `gitee` / `github`。
 /// 写的是**用户的选择**，不是「这次从哪下的」—— 后者会随网络抖动变化，不该被记住。
+#[cfg_attr(not(desktop), allow(dead_code))] // 与同层的端点常量同形状：移动端没有应用内更新器（见文件头）
 pub const UPDATE_SOURCE_PREF_KEY: &str = "update_source_pref";
 
 /// 允许的来源偏好。`auto` = 交给配置文件里的顺序（Gitee 优先、GitHub 兜底）。
