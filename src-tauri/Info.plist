@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- 显示名：主屏 / 桌面图标名。中文主市场默认「相闻」；
+	<!-- 显示名：主屏 / 桌面图标名。中文主市场默认「小院儿」（旧名「相闻」已于 2026-10-23 全量替换）；
 	     macOS 英文系统由 en.lproj/InfoPlist.strings 覆盖为 "Gosslan"（见 tauri.conf.json > bundle.macOS.files）；
 	     iOS 的英文本地化需后续在 Xcode 工程补 zh-Hans.lproj / en.lproj。 -->
 	<key>CFBundleDisplayName</key>

@@ -96,6 +96,29 @@
     StrCpy $NoShortcutMode 1
   ${EndIf}
 
+  ; ── 开始菜单留一份「锚点名」别名（Gosslan），让两个名字都搜得到 ──────────────
+  ;
+  ; 需求（用户 2026-11-15）：在 Mac / Windows / iOS / Android 上搜索时，
+  ; **「小院儿」与「gosslan」都应该能找到这个应用**。
+  ;
+  ; Windows 的机制：开始菜单搜索只匹配**快捷方式名**。而上面那段把开始菜单那一份
+  ; 改成了本地化名（小院儿），`exe` 叫 Gosslan.exe 并不参与开始菜单索引 ⇒ 搜
+  ; "gosslan" 会一无所获。所以这里补一份英文名别名。
+  ;
+  ; 三重边界（都写清，别让人以为漏了）：
+  ;  · **只加开始菜单，不加桌面** —— 桌面保持单个图标，避免 5.16.95 那类「两份快捷方式」
+  ;    回归（`src-tauri/src/win_shortcut.rs` 的对账只处理桌面，不处理这里）。
+  ;  · **只在两个名字确实不同时加** —— 英文安装时 `$R8` 就是 "Gosslan"，再加一份
+  ;    同名快捷方式只会变成重复项。
+  ;  · 卸载侧已经覆盖：`NSIS_HOOK_PREUNINSTALL` 里会按 `${PRODUCTNAME}` 与「小院儿」
+  ;    两个名字各删一次 `$SMPROGRAMS` 下的快捷方式。
+  ;
+  ; 别名条目在「开始菜单」里会显示成 "Gosslan"，点开仍是同一个应用 —— 这是有意的：
+  ; 用户要的是"搜得到"，不是"两个不同入口"。
+  ${If} $R8 != "${PRODUCTNAME}"
+    !insertmacro Gosslan_CreateShortcutIfMissing "$SMPROGRAMS" "${PRODUCTNAME}"
+  ${EndIf}
+
   ; ── 让 Explorer 丢掉 exe 的旧图标缓存（2026-11-07 用户报「软件内升级后图标还是旧的」）──
   ;
   ; 分层证据（详见 CHANGELOG 5.18.73 的「Windows 图标」小节）：

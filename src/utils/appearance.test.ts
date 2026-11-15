@@ -325,9 +325,9 @@ test("首屏脚本与 i18n 对**首帧语言**的判定逐例一致（含 langua
 });
 
 test("骨架标题按首帧语言取中英两支；HTML 没声明两支时不许把标题写坏", () => {
-  const pair = { zh: "相闻 · 设置", en: "Gosslan · Settings" };
+  const pair = { zh: "小院儿 · 设置", en: "Gosslan · Settings" };
   const zh = bootAndI18n({ pref: "zh-CN", languages: ["en-US"], titles: pair });
-  assert.equal(zh.boot.title, "相闻 · 设置", `中文偏好下标题没取中文支：${String(zh.boot.title)}`);
+  assert.equal(zh.boot.title, "小院儿 · 设置", `中文偏好下标题没取中文支：${String(zh.boot.title)}`);
   const en = bootAndI18n({ pref: "en-US", languages: ["zh-CN"], titles: pair });
   assert.equal(en.boot.title, "Gosslan · Settings", `英文偏好下标题没取英文支：${String(en.boot.title)}`);
   const none = bootAndI18n({ pref: "zh-CN", languages: ["zh-CN"] });

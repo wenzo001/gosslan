@@ -70,7 +70,7 @@ export function installFrontendErrorReporting() {
 // ---------------- 窗口标题 ----------------
 /**
  * 让 `document.title` 跟随语言。标题由**每个窗口自己的 HTML** 用
- * `data-title-zh` / `data-title-en` 声明（主窗口「相闻」、设置窗口「相闻 · 设置」…），
+ * `data-title-zh` / `data-title-en` 声明（主窗口「小院儿」、设置窗口「小院儿 · 设置」…），
  * 所以这里不需要按窗口写分支，也就不会出现"三个窗口各写一套"的冗余。
  * 切换语言时也会同步（独立窗口是常驻的，不能只在首次加载时算一遍）。
  */
