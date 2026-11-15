@@ -948,6 +948,12 @@ export const api = {
   /** 指定来源重新查清单：后端只挂那一个端点，并校验安装包与清单同源。 */
   updaterCheckSource: (source: string) =>
     invoke<UpdaterInfo | null>("updater_check_source", { source }),
+  /**
+   * **记住**用户选的更新源（落盘）：下次打开应用默认用它。
+   * 与 `updaterCheckSource` 的区别：后者只是本次换源（下载失败后的自动回落走它）。
+   */
+  updaterSetSourcePref: (source: string) =>
+    invoke<UpdaterInfo | null>("updater_set_source_pref", { source }),
   updaterDownload: (onEvent: (event: UpdaterDownloadEvent) => void) => {
     const channel = new Channel<UpdaterDownloadEvent>();
     channel.onmessage = onEvent;

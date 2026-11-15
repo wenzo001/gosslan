@@ -128,6 +128,17 @@ pub const UPDATE_ENDPOINT_GITEE: &str =
 pub const UPDATE_ENDPOINT_GITHUB: &str =
     "https://github.com/wenzo001/gosslan/releases/latest/download/latest.json";
 
+/// 用户**显式**选的更新源，落在 settings 表里的键。
+///
+/// 为什么要有这个持久化：用户在设置页点了「Gitee」/「GitHub」，那是一个**明确的偏好**
+/// —— 下次打开应用、或者几周后自动检查更新时，还应该用他选的那条路，而不是又回到
+/// 「自动」（用户 2026-11-15：「如果用户选了 Gitee 或者选了 GitHub，这个就是缓存下来，
+/// 下次默认用那个对应的渠道去更新」）。
+///
+/// 三种取值：`auto`（默认：两个源并发查，谁快用谁）/ `gitee` / `github`。
+/// 写的是**用户的选择**，不是「这次从哪下的」—— 后者会随网络抖动变化，不该被记住。
+pub const UPDATE_SOURCE_PREF_KEY: &str = "update_source_pref";
+
 /// 允许的来源偏好。`auto` = 交给配置文件里的顺序（Gitee 优先、GitHub 兜底）。
 #[cfg_attr(not(desktop), allow(dead_code))]
 pub fn is_valid_update_source(source: &str) -> bool {
@@ -195,7 +206,8 @@ mod desktop {
         artifact_matches_source, encode_update_intent, endpoint_for_source,
         is_safe_to_fallback, is_valid_update_source, parse_update_intent, source_of_url,
         DownloadEvent, UpdateInfo,
-        UpdateIntent, UpdaterStatus, UPDATE_INTENT_KEY,
+        UpdateIntent, UpdaterStatus, UPDATE_ENDPOINT_GITEE, UPDATE_ENDPOINT_GITHUB,
+        UPDATE_INTENT_KEY, UPDATE_SOURCE_PREF_KEY,
     };
     use semver::Version;
     use url::Url;
@@ -420,23 +432,98 @@ mod desktop {
         }
     }
 
-    /// 按指定来源查**一次**清单。`auto` 不覆盖配置（Gitee 优先、GitHub 兜底），
+    /// 读用户记住的更新源偏好。读不到 / 非法值 ⇒ `auto`（默认）。
+    ///
+    /// 刻意**不在命令体里直接读库**：那是「持有锁等几秒」的重活（R-18），
+    /// 而命令体只该留一次调用 —— 读库这一段整体进阻塞池由调用方负责。
+    fn load_source_pref(app: &AppHandle) -> Result<String, String> {
+        let s = app.state::<Arc<crate::state::AppState>>().inner().clone();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        // ⚠️ 用 `get_setting_checked`（返回 Result）而不是 `get_setting`（返回 Option）：
+        // 「读失败」与「没这条」必须可分（B1-F7 / B3-F3）—— 读失败时折叠成「自动」，
+        // 就等于把用户记住的选择悄悄抹掉（他下次会回到自动，且没人知道为什么）。
+        let raw = crate::db::get_setting_checked(&dbc, UPDATE_SOURCE_PREF_KEY)
+            .map_err(|e| format!("code=UPDATE_SOURCE_PREF_READ_FAILED：{e}"))?
+            .unwrap_or_default();
+        let v = raw.trim().to_ascii_lowercase();
+        if is_valid_update_source(&v) {
+            Ok(v)
+        } else {
+            Ok("auto".to_string())
+        }
+    }
+
+    /// 落盘用户记住的更新源偏好。
+    fn store_source_pref(app: &AppHandle, source: &str) -> Result<(), String> {
+        let s = app.state::<Arc<crate::state::AppState>>().inner().clone();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::db::set_setting(&dbc, UPDATE_SOURCE_PREF_KEY, source)
+            .map_err(|e| format!("code=UPDATE_SOURCE_PREF_SAVE_FAILED：{e}"))
+    }
+
+    /// 按**一个**端点查清单（并发比较的那一半）。
+    async fn fetch_manifest(app: &AppHandle, endpoint: &str) -> Result<Option<Update>, String> {
+        let url = Url::parse(endpoint)
+            .map_err(|e| format!("code=UPDATE_ENDPOINT_INVALID：{e}"))?;
+        let updater = app
+            .updater_builder()
+            .timeout(CHECK_TIMEOUT)
+            .endpoints(vec![url])
+            .map_err(|e| format!("code=UPDATE_ENDPOINT_INVALID：{e}"))?
+            .build()
+            .map_err(|e| e.to_string())?;
+        updater.check().await.map_err(|e| e.to_string())
+    }
+
+    /// 「自动」= **两个端点同时查，谁先回就用谁**（用户 2026-11-15：「看哪个连接的快就用哪个」）。
+    ///
+    /// 旧行为是「按配置顺序 Gitee 优先、GitHub 兜底」—— 那不是「挑快的」，
+    /// 只是「挑配置里第一个能连上的」。并发之后：
+    /// · 谁先成功用谁（快的赢；清单与安装包同源仍由 #34 那条保证）；
+    /// · 一个失败不等它，继续用另一个；
+    /// · 两个都失败 ⇒ 报最后一个错误。
+    ///
+    /// ⚠️ 已知边界：Gitee 镜像是**发布后延迟传播**的（分片上传约 30–35 分钟），
+    /// 那个窗口里它手里的清单还是上一版 ⇒ 谁快用谁可能挑到「旧清单」。
+    /// 这与旧行为（Gitee 优先）同源，不是本次引入的退化；真要「又新又快」得等镜像追上。
+    async fn check_auto_race(app: &AppHandle) -> Result<Option<Update>, String> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+        for endpoint in [UPDATE_ENDPOINT_GITEE, UPDATE_ENDPOINT_GITHUB] {
+            let app = app.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let r = fetch_manifest(&app, endpoint).await;
+                let _ = tx.send(r).await;
+            });
+        }
+        drop(tx);
+        let mut last_err: Option<String> = None;
+        while let Some(r) = rx.recv().await {
+            match r {
+                Ok(v) => return Ok(v),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err
+            .unwrap_or_else(|| "code=UPDATE_CHECK_FAILED：两个更新源都没查通".to_string()))
+    }
+
+    /// 按指定来源查**一次**清单。`auto` 两个端点并发（谁快用谁），
     /// 指定源则只把那一个端点交给官方插件 ⇒ 清单与安装包天然同源。
     async fn check_once(
         app: &AppHandle,
         state: &UpdaterSession,
         requested: &str,
     ) -> Result<Option<(UpdateInfo, String)>, String> {
-        let mut builder = app.updater_builder().timeout(CHECK_TIMEOUT);
-        if let Some(endpoint) = endpoint_for_source(requested) {
-            let url = Url::parse(endpoint)
-                .map_err(|e| format!("code=UPDATE_ENDPOINT_INVALID：{e}"))?;
-            builder = builder
-                .endpoints(vec![url])
-                .map_err(|e| format!("code=UPDATE_ENDPOINT_INVALID：{e}"))?;
-        }
-        let updater = builder.build().map_err(|e| e.to_string())?;
-        let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+        let update = if requested == "auto" {
+            // 「自动」：两个端点并发，谁快用谁（见 `check_auto_race`）。
+            check_auto_race(app).await?
+        } else {
+            let endpoint = endpoint_for_source(requested)
+                .ok_or_else(|| "code=UPDATE_SOURCE_INVALID：未知来源".to_string())?;
+            fetch_manifest(app, endpoint).await?
+        };
+        let Some(update) = update else {
             return Ok(None);
         };
         // 禁止降级：清单版本必须严格高于当前版本（见 `is_not_an_upgrade`）。
@@ -578,8 +665,33 @@ mod desktop {
         app: AppHandle,
         state: State<'_, UpdaterSession>,
     ) -> Result<Option<UpdateInfo>, String> {
-        let preferred = state.source.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // 默认源 = **用户记住的那一个**（没选过就是 auto）。
+        // 为什么不看会话里的那一格：那是「本次临时切过去的」（下载失败后的自动回落），
+        // 把它当成默认值就等于让一次网络抖动改掉用户的选择。
+        let preferred = load_source_pref(&app)?;
+        *state.source.lock().unwrap_or_else(|e| e.into_inner()) = preferred.clone();
         check_with_source(app, state.inner(), preferred).await
+    }
+
+    /// 用户**显式**选了更新源（Gitee / GitHub / 自动）⇒ **记住**它。
+    ///
+    /// 与 `updater_check_source` 的区别（这一条是本轮新增的语义）：
+    /// - `updater_check_source`：**本次**换源，不落盘（下载失败后的自动回落走它，
+    ///   所以网络抖动**不会**改掉用户的偏好）；
+    /// - 本命令：用户自己点的 ⇒ 落盘，下次打开应用默认就用它。
+    #[tauri::command(async)]
+    pub async fn updater_set_source_pref(
+        app: AppHandle,
+        state: State<'_, UpdaterSession>,
+        source: String,
+    ) -> Result<Option<UpdateInfo>, String> {
+        let source = source.trim().to_ascii_lowercase();
+        if !is_valid_update_source(&source) {
+            return Err("code=UPDATE_SOURCE_INVALID：只支持 auto / gitee / github".to_string());
+        }
+        store_source_pref(&app, &source)?;
+        *state.source.lock().unwrap_or_else(|e| e.into_inner()) = source.clone();
+        check_with_source(app, state.inner(), source).await
     }
 
     /// 用户（或失败自动切换）指定来源后重新查清单。
@@ -1051,6 +1163,12 @@ pub async fn updater_check_source(_source: String) -> Result<Option<UpdateInfo>,
 
 #[cfg(not(desktop))]
 #[tauri::command]
+pub async fn updater_set_source_pref(_source: String) -> Result<Option<UpdateInfo>, String> {
+    Err("应用内更新仅支持桌面端".to_string())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
 pub async fn updater_download(_on_event: tauri::ipc::Channel<DownloadEvent>) -> Result<(), String> {
     Err("应用内更新仅支持桌面端".to_string())
 }
@@ -1176,6 +1294,71 @@ mod status_tests {
         assert!(
             ts.contains(&literal),
             "src/updater/service.ts 里没有 {literal} ⇒ 前端判不出安装相位，取消按钮会在安装中又冒出来"
+        );
+    }
+
+    /// 用户**显式**选的更新源必须被**记住**（落盘），而**自动回落**不许改它。
+    ///
+    /// 用户 2026-11-15：「如果用户选了 Gitee 或者选了 GitHub，这个就是缓存下来，
+    /// 下次默认用那个对应的渠道去更新，就是如果用户不改的话」。
+    ///
+    /// 三条分别钉住：用户点的那条走落盘命令；自动回落走的那条**不**落盘
+    /// （网络抖动不该改用户的偏好）；默认检查读的是「记住的那一个」。
+    #[test]
+    fn an_explicit_source_choice_is_remembered_but_the_auto_fallback_is_not() {
+        let src = include_str!("updater.rs");
+        let set_pref = body_of(src, "pub async fn updater_set_source_pref(");
+        assert!(
+            set_pref.contains("store_source_pref("),
+            "用户点的源必须落盘（否则下次启动又回到自动）"
+        );
+        assert!(
+            set_pref.contains("check_with_source("),
+            "记住之后要立刻按那个源查清单（用户点了就该看到那个源的结果）"
+        );
+        let check_source = body_of(src, "pub async fn updater_check_source(");
+        assert!(
+            !check_source.contains("store_source_pref("),
+            "临时切源（下载失败后的自动回落走它）**不许**写偏好 —— 网络抖动不是用户的选择"
+        );
+        let check = body_of(src, "pub async fn updater_check(");
+        assert!(
+            check.contains("load_source_pref("),
+            "默认检查必须读用户记住的那个源"
+        );
+        // 偏好只有三个合法值（其余按 auto 处理，不许被当成某个源）。
+        assert!(super::is_valid_update_source("auto"));
+        assert!(super::is_valid_update_source("gitee"));
+        assert!(super::is_valid_update_source("github"));
+        assert!(!super::is_valid_update_source("gitee.com"));
+        assert!(!super::is_valid_update_source(""));
+    }
+
+    /// 「自动」= **两个端点并发查，谁快用谁**（用户 2026-11-15：「看哪个连接的快就用哪个」）。
+    ///
+    /// 旧行为是「按配置顺序 Gitee 优先、GitHub 兜底」—— 那不是挑快的，
+    /// 只是挑配置里第一个能连上的。判据钉住三件事：两个源都在查、
+    /// **并发**（串行就退回旧行为了）、以及 auto 分支确实走这条。
+    #[test]
+    fn auto_mode_races_both_endpoints_instead_of_using_a_fixed_order() {
+        let src = include_str!("updater.rs");
+        let race = body_of(src, "async fn check_auto_race(");
+        assert!(
+            race.contains("UPDATE_ENDPOINT_GITEE") && race.contains("UPDATE_ENDPOINT_GITHUB"),
+            "两个源都要查（只查一个就不是「挑快的」）"
+        );
+        assert!(
+            race.contains("tokio::spawn("),
+            "必须**并发**查（串行就还是「第一个能连上的那个」）"
+        );
+        let once = body_of(src, "async fn check_once(");
+        assert!(
+            once.contains("check_auto_race("),
+            "auto 分支必须走并发那条"
+        );
+        assert!(
+            once.contains("fetch_manifest("),
+            "指定源走单端点那条（清单与安装包同源）"
         );
     }
 
@@ -1474,14 +1657,22 @@ mod intent_tests {
         for cmd in [
             "pub async fn updater_check(",
             "pub async fn updater_check_source(",
+            "pub async fn updater_set_source_pref(",
         ] {
             let body = body_of(src, cmd);
             assert!(body.contains("check_with_source("), "{cmd} 必须走唯一实现");
         }
         let once = body_of(src, "async fn check_once(");
         assert!(
-            once.contains("endpoint_for_source(") && once.contains(".endpoints(vec![url])"),
-            "指定源必须覆盖官方端点，否则拿到的清单不一定来自那个平台"
+            once.contains("endpoint_for_source(") && once.contains("fetch_manifest("),
+            "指定源必须走「只查那一个端点」那条，否则拿到的清单不一定来自那个平台"
+        );
+        // 锚点跟着实现搬家（2026-11-15）：端点覆盖现在住在 `fetch_manifest` 里
+        // （`check_once` 只决定「查哪个端点」）⇒ 「只给一个端点」这条判据搬到它身上。
+        let fetch = body_of(src, "async fn fetch_manifest(");
+        assert!(
+            fetch.contains(".endpoints(vec![url])"),
+            "查清单时必须只把那一个端点交给官方插件（清单与安装包同源，#34）"
         );
         assert!(
             once.contains("UPDATE_SOURCE_MISMATCH") && once.contains("artifact_matches_source("),

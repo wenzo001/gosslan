@@ -46,6 +46,13 @@ export interface UpdaterAdapter {
    * 后端会只把那一个端点交给官方插件 ⇒ 清单与安装包同源；换源只能整包重下。
    */
   checkSource?(source: string): Promise<UpdateInfo | null>;
+  /**
+   * **记住**用户选的源（落盘）：下次打开应用、或者自动检查更新时，默认用它。
+   *
+   * 与 `checkSource` 的区别：后者只是「这一次换源查清单」（下载失败后的自动回落走它），
+   * 不该改掉用户的偏好；这一条是用户自己点的 ⇒ 落盘。
+   */
+  setSourcePref?(source: string): Promise<UpdateInfo | null>;
   download(onEvent: (event: DownloadEvent) => void): Promise<void>;
   cancel(): Promise<void>;
   /**
@@ -283,8 +290,27 @@ export function createUpdaterService(
   /**
    * 手动（或下载失败自动）换源：先停掉在飞的下载，再用那一个端点重新查清单。
    * 官方更新器整块内存下载、验签后一次返回 ⇒ 换源没有续传，只能整包重下。
+   *
+   * ⚠️ **不落盘**：调用它的地方有两类 —— 用户在设置页手动点（走 `chooseSource`，
+   * 那条会落盘）与**下载失败后的自动回落**（这里）。后者是网络抖动，
+   * 绝不该把用户记住的偏好改掉。
    */
   async function switchSource(source: string): Promise<void> {
+    await applySource(source, false);
+  }
+
+  /**
+   * 用户**显式**选了更新源 ⇒ **记住**（下次默认用它）。
+   *
+   * 用户 2026-11-15：「如果用户选了 Gitee 或者选了 GitHub，这个就是缓存下来，
+   * 下次默认用那个对应的渠道去更新，就是如果用户不改的话」。
+   */
+  async function chooseSource(source: string): Promise<void> {
+    await applySource(source, true);
+  }
+
+  /** 换源的共同实现：停下载 → 切状态 → 重新查清单（`persist` 决定要不要记住）。 */
+  async function applySource(source: string, persist: boolean): Promise<void> {
     if (state.phase === "downloading") {
       cancelRequested = true;
       try {
@@ -304,9 +330,13 @@ export function createUpdaterService(
     state.source = source;
     state.sourceEvent = null;
     try {
-      const info = adapter.checkSource
-        ? await withTimeout(adapter.checkSource(source), checkTimeoutMs)
-        : await withTimeout(adapter.check(), checkTimeoutMs);
+      // 记住的那条路走后端落盘；其余（含自动回落）只换这一次。
+      const info =
+        persist && adapter.setSourcePref
+          ? await withTimeout(adapter.setSourcePref(source), checkTimeoutMs)
+          : adapter.checkSource
+            ? await withTimeout(adapter.checkSource(source), checkTimeoutMs)
+            : await withTimeout(adapter.check(), checkTimeoutMs);
       if (id !== attempt) return;
       if (info && info.version !== state.currentVersion) {
         state.info = info;
@@ -466,7 +496,18 @@ export function createUpdaterService(
     }
   }
 
-  return { state, check, download, cancel, install, dismiss, dispose, restore, switchSource };
+  return {
+    state,
+    check,
+    download,
+    cancel,
+    install,
+    dismiss,
+    dispose,
+    restore,
+    switchSource,
+    chooseSource,
+  };
 }
 
 export type UpdaterService = ReturnType<typeof createUpdaterService>;

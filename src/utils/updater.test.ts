@@ -28,7 +28,16 @@ function deferred<T>() {
 }
 
 function fake(overrides: Partial<UpdaterAdapter> = {}) {
-  const calls = { check: 0, checkSource: 0, download: 0, cancel: 0, install: 0, close: 0, recheck: 0 };
+  const calls = {
+    check: 0,
+    checkSource: 0,
+    setSourcePref: 0,
+    download: 0,
+    cancel: 0,
+    install: 0,
+    close: 0,
+    recheck: 0,
+  };
   const adapter: UpdaterAdapter = {
     check: async () => {
       calls.check += 1;
@@ -39,6 +48,14 @@ function fake(overrides: Partial<UpdaterAdapter> = {}) {
           checkSource: async (source: string) => {
             calls.checkSource += 1;
             return overrides.checkSource!(source);
+          },
+        }
+      : {}),
+    ...(overrides.setSourcePref
+      ? {
+          setSourcePref: async (source: string) => {
+            calls.setSourcePref += 1;
+            return overrides.setSourcePref!(source);
           },
         }
       : {}),
@@ -421,6 +438,19 @@ test("手动切源：只查那一个端点，来源落到可查询状态上", as
   assert.equal(svc.state.slow, false);
 });
 
+test("用户显式选源：走「记住」那条路（落盘），不是只换这一次", async () => {
+  const f = fake({
+    checkSource: async () => INFO,
+    setSourcePref: async () => INFO,
+  });
+  const svc = service(f.adapter);
+  await svc.chooseSource("gitee");
+  assert.equal(f.calls.setSourcePref, 1, "用户点的源必须被记住（下次默认用它）");
+  assert.equal(f.calls.checkSource, 0, "记住那条路已经是同一次查清单，不该再走临时切源");
+  assert.equal(svc.state.source, "gitee");
+  assert.equal(svc.state.phase, "available");
+});
+
 test("恢复快照带来源与自动切源短码", () => {
   const svc = service(fake().adapter);
   svc.restore({
@@ -460,6 +490,11 @@ test("GitHub 下载失败自动切到 Gitee 整包重下，只试一次", async 
   await svc.download();
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(f.calls.checkSource, 1, "GitHub 下载失败要自动改查 Gitee");
+  assert.equal(
+    f.calls.setSourcePref,
+    0,
+    "自动回落是网络抖动，**不许**改掉用户记住的偏好（用户 2026-11-15）",
+  );
   assert.equal(downloads, 2, "换源后必须整包重下");
   assert.equal(svc.state.source, "gitee");
   assert.equal(svc.state.phase, "ready");

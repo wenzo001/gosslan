@@ -537,6 +537,7 @@ export const zhCN: MessageDict = {
   "settings.updates.sourceAuto": "自动（Gitee 优先）",
   "settings.updates.sourceGitee": "Gitee",
   "settings.updates.sourceGithub": "GitHub",
+  "settings.updates.sourceRemembered": "选了就记住：下次更新默认用它",
   "settings.updates.switchTo": "切换到{source}",
   "settings.updates.switchToGitee": "切换到 Gitee 重新下载",
   "settings.updates.slowHint": "下载缓慢或连接失败，可切换到 Gitee 重新下载整包（不会续传）。",

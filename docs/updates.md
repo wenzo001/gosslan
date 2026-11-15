@@ -1,14 +1,24 @@
 # 自动更新（Tauri Updater + Gitee 固定清单 / GitHub 备份）
 
 > 方案：**Tauri 官方 updater 插件 + Gitee 固定静态清单 + GitHub Release 备份**。不建更新服务器、不买域名。
-> 客户端同时写两条地址，**Gitee 在前、GitHub 在后**：
+> 客户端同时写两条地址：
 >
 > 1. `https://gitee.com/fwdq/gosslan-releases/raw/master/updates/latest.json`
 > 2. `https://github.com/wenzo001/gosslan/releases/latest/download/latest.json`
 >
-> Tauri 只在下一条返回 **非 2XX** 时才回退（官方文档原文：“only continue to the next url if a
-> non-2XX status code is returned”）。所以 Gitee 返回 200 的**旧清单不会**回退 GitHub；
-> 同步失败必须在 Actions 里红，不能静默。
+> ⚠️ **怎么用这两条（2026-11-15 起）**：默认是「**自动**」—— 两个端点**并发**查，
+> **谁快用谁**（旧行为是「按配置顺序 Gitee 优先、GitHub 兜底」，那不是挑快的，
+> 只是挑配置里第一个能连上的）。
+> 用户在设置页**显式**选了 Gitee 或 GitHub 之后，那个选择会被**记住**
+> （`settings` 里的 `update_source_pref`），下次打开应用默认就走他选的那条；
+> 没选过 / 选回「自动」 ⇒ 回到并发挑快的。
+>
+> 下载失败后的**自动回落**（GitHub 连不上 ⇒ 改用 Gitee 整包重下）**不会**改掉用户记住的偏好
+> —— 那是网络抖动，不是用户的选择。
+>
+> ⚠️ 已知边界：Gitee 镜像是**发布后延迟传播**的（分片上传约 30–35 分钟），
+> 那个窗口里它手里的清单还是上一版 ⇒「谁快用谁」可能挑到**旧清单**，更新会晚一会儿出现。
+> 这与旧行为同源，不是新退化；真要「又新又快」得等镜像追上。
 
 ## 1. 架构与平台范围
 

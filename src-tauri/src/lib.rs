@@ -1065,6 +1065,7 @@ pub fn run() {
             commands::share_handle_link,
             commands::updater_check,
             commands::updater_check_source,
+            commands::updater_set_source_pref,
             commands::updater_download,
             commands::updater_cancel,
             commands::updater_status,

@@ -537,6 +537,7 @@ export const enUS: MessageDict = {
   "settings.updates.sourceAuto": "Auto (Gitee first)",
   "settings.updates.sourceGitee": "Gitee",
   "settings.updates.sourceGithub": "GitHub",
+  "settings.updates.sourceRemembered": "Remembered: your choice becomes the default next time",
   "settings.updates.switchTo": "Switch to {source}",
   "settings.updates.switchToGitee": "Switch to Gitee and download again",
   "settings.updates.slowHint": "This download is slow or failing. Switch to Gitee to download the package again (no resume).",
