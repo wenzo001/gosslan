@@ -35,6 +35,9 @@ class MainActivity : TauriActivity() {
     // 应用内升级：把 Activity 交给 ApkInstaller（PackageInstaller 的「待用户确认」Intent
     // 必须由 Activity 发起；安装结果与「未知来源」授权结果都经 onActivityResult 回来）。
     ApkInstaller.bootstrap(this)
+    // RP 绑定私钥的 Android Keystore 桥：把 JavaVM 交给 Rust 侧（密钥库本身不需要
+    // Context，但 JNI 的 FindClass 依赖调用方的类加载器 ⇒ 必须在这里交）。
+    KeyVault.bootstrap(applicationContext)
   }
 
   // `onActivityResult` 在 ComponentActivity 里已 deprecated（推荐 ActivityResult API），

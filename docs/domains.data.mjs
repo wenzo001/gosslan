@@ -156,13 +156,15 @@ export default {
       // 它们直接持/搬 RP 私钥（导出包就是私钥的容器），属同一条红线。
       // `incoming_share.rs`（系统分享目标的落地区协议：文件格式 + 校验）也归这里：
       // 它是「外部调用方递东西进本机」的又一条入口，与 `share.rs` 同一条红线。
+      // `rp_key_store.rs`（RP 绑定私钥的**平台密钥库**：Windows DPAPI / Android Keystore）
+      // 也归这里：它直接持/搬 RP 私钥（信封就是私钥的容器），与 `rp_key_backup.rs` 同一族。
       paths: ["src-tauri/src/device_auth.rs", "src-tauri/src/device_auth", "src-tauri/src/share.rs",
         "src-tauri/src/rp_key_backup.rs", "src-tauri/src/commands/rp_key_backup.rs",
-        "src-tauri/src/incoming_share.rs"],
+        "src-tauri/src/incoming_share.rs", "src-tauri/src/rp_key_store.rs", "src-tauri/src/rp_key_store"],
       invariants: [],
       activeHome: "src-tauri/src/device_auth.rs", // 单家：协议核心；命令在装配层、绑定表在 persistence、UI 在 presentation
       enforce: false,
-      consumes: ["observability", "identity", "persistence"], // observability: error_codes；identity: RP 私钥能力封装（crypto::RpKey）；persistence: 导出/恢复要读写 rp_device_bindings（commands/rp_key_backup.rs 用 use 声明，不再内联全路径）
+      consumes: ["observability", "identity", "persistence", "platform"], // observability: error_codes；identity: RP 私钥能力封装（crypto::RpKey）；persistence: 导出/恢复要读写 rp_device_bindings（commands/rp_key_backup.rs 用 use 声明，不再内联全路径）；platform: 2026-11-15 平台密钥库的 Android 后端走 JNI 桥（jni_method::kotlin_method，platform 域）
       notes:
         "外部分享入口（2026-11-14）：`gosslan://share?…` 内联内容 → 内存排队 → 面板选会话后由用户显式发送；不联网、不落库、不发消息。外部应用（RP）把本安装绑定为可信设备：RP 专属 Ed25519 密钥（**不复用 P2P 身份钥**，避免跨站关联）+ pairwise subject + 强制确认 UI。与核心 P2P 身份隔离，不触好友/传输/身份锚点。Phase 2 客户端最小绑定；RP 后端在外部，契约 mock 驱动。私钥不过 UI 边界（INV-P18 延伸）。真机深链唤起与系统协议注册 NOT RUN。",
     },
@@ -464,6 +466,10 @@ export default {
         // 2026-11-14（#3）：db/device_auth.rs 首绑落库调 crypto::RpKey::rp_secret_b64() 导出 RP 私钥。
         // 这是 RP 密钥持久化的**唯一授权落点**（与身份密钥导出器只许 state.rs 调同一口径，INV-P18 判据 C）。
         "identity",
+        // 2026-11-15：db/device_auth.rs 的私钥列改为「**平台密钥库信封**」（Windows DPAPI /
+        // Android Keystore）—— 落库前封、读库后开，都在 `rp_key_store`（device-auth 域）里。
+        // 所以本域确实消耗 device-auth；走 `use` 口径（不许内联全路径，见上面的说明）。
+        "device-auth",
       ], // 2026-09-28 #122 第二段起这是**真生产依赖**：db/messages.rs 的 mention_targets 列存的就是 protocol::MentionTarget，解码走 protocol::parse_mention_targets_column（三态规则只此一家，不在 db 里另写一份）。
       notes:
         "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、file_relay、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。",
