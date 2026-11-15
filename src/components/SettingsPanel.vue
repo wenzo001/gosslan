@@ -17,6 +17,7 @@ import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AuthorizedAppsSection from "@/components/settings/AuthorizedAppsSection.vue";
 import ExternalShareSection from "@/components/settings/ExternalShareSection.vue";
+import RpKeyBackupSection from "@/components/settings/RpKeyBackupSection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import { t } from "@/i18n";
@@ -263,6 +264,7 @@ watch(
               <SecuritySection />
               <AuthorizedAppsSection />
               <ExternalShareSection />
+              <RpKeyBackupSection />
               <AboutSection @dev-open="devDiagOpen = true" />
             </template>
             <ResetSection v-else-if="mobileNav === 'reset'" @restored="reloadToken++" />
@@ -288,6 +290,7 @@ watch(
       <SecuritySection />
       <AuthorizedAppsSection />
       <ExternalShareSection />
+      <RpKeyBackupSection />
       <AboutSection @dev-open="devDiagOpen = true" />
     </div>
   </BaseModal>

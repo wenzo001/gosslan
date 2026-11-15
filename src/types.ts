@@ -1131,6 +1131,33 @@ export interface RpBindingInfo {
   revoked_at: number | null;
 }
 
+/** 导出结果：只回条数与落点，不含任何密钥材料。 */
+export interface RpKeyExportSummary {
+  count: number;
+  path: string;
+}
+
+/** 导入时对单条的判定（与 `rp_key_backup::ImportAction` 一一对应）。 */
+export interface RpKeyImportItem {
+  rpOrigin: string;
+  clientId: string;
+  displayName: string;
+  /** add | skip | conflict | refuseRevived | rejected */
+  action: string;
+  /** 冲突/拒绝时给人的原因。 */
+  reason: string;
+}
+
+/** 导入预览与导入结果同形（预览不写库，结果写完后回同一份计划）。 */
+export interface RpKeyImportReport {
+  items: RpKeyImportItem[];
+  added: number;
+  skipped: number;
+  conflicts: number;
+  refused: number;
+  rejected: number;
+}
+
 /** 批准/拒绝结果（无断言/密钥）。 */
 export interface DeviceAuthOutcome {
   /** approved | denied */

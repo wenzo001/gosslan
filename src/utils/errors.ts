@@ -251,6 +251,12 @@ const CODE_RULES: Record<string, string> = {
   EXTERNAL_SHARE_TOO_LARGE: "errors.rule.externalShareTooLarge",
   EXTERNAL_SHARE_BUSY: "errors.rule.externalShareBusy",
   EXTERNAL_SHARE_REFERENCE_UNSUPPORTED: "errors.rule.externalShareReferenceUnsupported",
+  // RP 绑定密钥导出包（`RP_KEY_BACKUP_*`）：本地文件操作，与设备认证流程分开报，便于排障定位。
+  RP_KEY_BACKUP_UNREADABLE: "errors.rule.rpKeyBackupUnreadable",
+  RP_KEY_BACKUP_UNSUPPORTED: "errors.rule.rpKeyBackupUnsupported",
+  RP_KEY_BACKUP_WEAK_PASSPHRASE: "errors.rule.rpKeyBackupWeakPassphrase",
+  RP_KEY_BACKUP_TOO_LARGE: "errors.rule.rpKeyBackupTooLarge",
+  RP_KEY_BACKUP_IO: "errors.rule.rpKeyBackupIo",
   FAVORITE_DELETE_BATCH_TOO_LARGE: "errors.rule.favoriteDeleteBatchTooLarge",
   // B6 第十三批：群管理 reject 族。
   GROUP_TODO_ASSIGNEE_NOT_MEMBER: "errors.rule.groupTodoAssigneeNotMember",

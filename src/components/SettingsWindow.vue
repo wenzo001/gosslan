@@ -33,6 +33,7 @@ import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AuthorizedAppsSection from "@/components/settings/AuthorizedAppsSection.vue";
 import ExternalShareSection from "@/components/settings/ExternalShareSection.vue";
+import RpKeyBackupSection from "@/components/settings/RpKeyBackupSection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import Icon from "@/components/ui/Icon.vue";
@@ -352,6 +353,7 @@ useEventListener(window, "keydown", onKeydown);
               <AuthorizedAppsSection />
               <!-- 外部分享的粘贴兜底：与设备认证的粘贴入口对称，但分成两个组件。 -->
               <ExternalShareSection />
+              <RpKeyBackupSection />
               <AboutSection @dev-open="devDiagOpen = true" />
             </div>
             <div v-else-if="section === 'reset'" class="space-y-5">
