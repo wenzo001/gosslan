@@ -968,6 +968,7 @@ export const zhCN: MessageDict = {
   "errors.rule.externalShareBadContent": "分享内容为空，或链接不是 http/https",
   "errors.rule.externalShareTooLarge": "分享内容太长了",
   "errors.rule.externalShareBusy": "还有几条分享没处理，先处理完再分享",
+  "errors.rule.externalShareBadTarget": "要分享给的那个人或群不在你的好友列表里",
   "errors.rule.externalShareReferenceUnsupported": "这个分享需要应用侧配合，暂不支持",
   "errors.rule.rpKeyBackupUnreadable": "口令错误，或密钥包已损坏",
   "errors.rule.rpKeyBackupUnsupported": "这个密钥包版本更高或参数不被支持，请升级后再试",

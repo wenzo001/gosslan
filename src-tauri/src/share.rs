@@ -38,6 +38,15 @@ pub const MAX_TITLE_CHARS: usize = 300;
 pub const MAX_TEXT_CHARS: usize = 2000;
 /// 分享内容 URL 长度上限。
 pub const MAX_URL_CHARS: usize = 2048;
+/// 定向目标 id 的长度上限。会话 id = 设备 id（`gosslan-` + 十六进制）或 `group:<id>`，
+/// 都远小于这个数；上限只是防「拿一个 MB 长的字符串当目标」。
+pub const MAX_TARGET_CHARS: usize = 128;
+/// 定向目标允许的字符集：字母、数字、`-`、`_`、`.`、`:`。
+///
+/// 为什么这么紧：目标 id 会进 SQL 参数与前端 DOM，白名单比「逐个危险字符」更好推理。
+/// 真正能不能用由**查库**判定（见 `resolve_share_target`），形状合法 ≠ 目标存在。
+const TARGET_ALLOWED: fn(char) -> bool =
+    |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':');
 
 /// 一条被分享进来的内容。三个正文字段都可缺，但**至少要有一个非空**。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +59,21 @@ pub struct SharePayload {
     pub text: Option<String>,
     /// 调用方**自称**的来源（https origin）。只用于展示线索，不参与任何信任判断。
     pub claimed_origin: Option<String>,
+    /// **定向目标**（会话 id）：单聊 = 对方设备 id，群 = `group:<id>`。`None` = 不指定。
+    ///
+    /// 它只**预填**面板上的目标，**不代替用户点发送**：RP 不能静默往聊天框塞东西
+    /// （裁决 2026-11-15）。能否命中由后端查库判定，命中不了整笔拒（fail closed）。
+    #[serde(default)]
+    pub to: Option<String>,
+    /// 目标种类：`peer`（单聊好友）或 `group`（群）。给了 `to` 就必须给它。
+    #[serde(default)]
+    pub to_kind: Option<String>,
+    /// RP 要接收**分享回执**的地址（可选）。**不是内容**，所以不显示给用户。
+    ///
+    /// 必须 HTTPS；给了来源时还要与它同源。回执体只含状态与条数，
+    /// **不含会话名、不含分享内容** —— 一个被冒充的端点最多知道「发了几条」。
+    #[serde(default)]
+    pub receipt_endpoint: Option<String>,
 }
 
 impl SharePayload {
@@ -61,10 +85,12 @@ impl SharePayload {
     /// 用不可见分隔符拼，避免 "a|b" 与 "a" + "|b" 撞车。
     pub fn dedupe_key(&self) -> String {
         format!(
-            "{}\u{1f}{}\u{1f}{}",
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
             self.url.as_deref().unwrap_or(""),
             self.title.as_deref().unwrap_or(""),
-            self.text.as_deref().unwrap_or("")
+            self.text.as_deref().unwrap_or(""),
+            self.to.as_deref().unwrap_or(""),
+            self.to_kind.as_deref().unwrap_or("")
         )
     }
 }
@@ -94,6 +120,55 @@ fn coded(code: &'static str, msg: impl Into<String>) -> String {
 /// 去掉首尾空白；全空白视为「没给」。
 fn clean(raw: Option<String>) -> Option<String> {
     raw.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// 规范化定向目标：**形状校验**，不查库。
+///
+/// 三条规则：
+/// ① 给了 `to` 就必须给 `to_kind`，反之亦然（半个目标 = 意图不明 ⇒ 整笔拒）。
+/// ② `to_kind` 只能是 `peer` / `group`。
+/// ③ `to` 的长度与字符集受限。
+///
+/// 「这个目标存不存在」不在这里判 —— 那是**查库**那一层的事（`resolve_share_target`），
+/// 混在一起会让「形状错」与「目标不存在」两种错误给出同一条提示。
+pub fn normalize_target(
+    to: Option<String>,
+    to_kind: Option<String>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let to = clean(to);
+    let to_kind = clean(to_kind);
+    match (&to, &to_kind) {
+        (None, None) => Ok((None, None)),
+        (Some(_), None) => Err(coded(
+            error_codes::EXTERNAL_SHARE_BAD_TARGET,
+            "指定分享目标时必须同时说明目标种类",
+        )),
+        (None, Some(_)) => Err(coded(
+            error_codes::EXTERNAL_SHARE_BAD_TARGET,
+            "说明目标种类时必须同时给出目标",
+        )),
+        (Some(raw), Some(kind)) => {
+            if kind != "peer" && kind != "group" {
+                return Err(coded(
+                    error_codes::EXTERNAL_SHARE_BAD_TARGET,
+                    "目标种类只能是 peer 或 group",
+                ));
+            }
+            if raw.chars().count() > MAX_TARGET_CHARS {
+                return Err(coded(
+                    error_codes::EXTERNAL_SHARE_BAD_TARGET,
+                    "分享目标过长",
+                ));
+            }
+            if !raw.chars().all(TARGET_ALLOWED) {
+                return Err(coded(
+                    error_codes::EXTERNAL_SHARE_BAD_TARGET,
+                    "分享目标含有不允许的字符",
+                ));
+            }
+            Ok((Some(raw.clone()), Some(kind.clone())))
+        }
+    }
 }
 
 /// 这条链接是不是**本应用的分享入口**（用于把深链/启动参数分派给分享而不是设备认证）。
@@ -213,16 +288,67 @@ fn payload_from_query(parsed: &Url, origin_hint: Option<String>) -> Result<Share
     let mut title = None;
     let mut text = None;
     let mut claimed = None;
+    let mut to = None;
+    let mut to_kind = None;
+    let mut receipt = None;
     for (k, v) in parsed.query_pairs() {
         match k.as_ref() {
             "url" => url = Some(v.into_owned()),
             "title" => title = Some(v.into_owned()),
             "text" => text = Some(v.into_owned()),
             "origin" => claimed = Some(v.into_owned()),
+            // 定向分享（裁决 2026-11-15）：`to` 只**预填**面板上的目标，
+            // 用户仍要点「发送」；能不能命中由后端查库判定。
+            "to" => to = Some(v.into_owned()),
+            "to_kind" => to_kind = Some(v.into_owned()),
+            "receipt" => receipt = Some(v.into_owned()),
             _ => {}
         }
     }
-    payload_from_fields(url, title, text, claimed, origin_hint)
+    let mut payload = payload_from_fields(url, title, text, claimed, origin_hint)?;
+
+    // 定向目标：形状校验（normalize_target）。**存在性**由后端查库判定，
+    // 查不到整笔拒 —— 这里只管「长得对不对」。
+    let (to, to_kind) = normalize_target(to, to_kind)?;
+    payload.to = to;
+    payload.to_kind = to_kind;
+
+    // 回执地址：必须 HTTPS；给了来源就还要同源。
+    payload.receipt_endpoint = match clean(receipt) {
+        Some(raw) => {
+            let u = Url::parse(&raw).map_err(|_| {
+                coded(
+                    error_codes::EXTERNAL_SHARE_BAD_CONTENT,
+                    "回执地址格式不正确",
+                )
+            })?;
+            if u.scheme() != "https" {
+                return Err(coded(
+                    error_codes::EXTERNAL_SHARE_BAD_CONTENT,
+                    "回执地址必须是 HTTPS",
+                ));
+            }
+            // 给了来源就要求同源：回执会把「发了几条」送到这个地址，
+            // 跨源等于让别处知道你的分享行为。
+            if let Some(origin) = payload.claimed_origin.as_ref() {
+                let ou = Url::parse(origin).map_err(|_| {
+                    coded(
+                        error_codes::EXTERNAL_SHARE_BAD_CONTENT,
+                        "来源标识格式不正确",
+                    )
+                })?;
+                if ou.origin() != u.origin() {
+                    return Err(coded(
+                        error_codes::EXTERNAL_SHARE_BAD_CONTENT,
+                        "回执地址必须与来源同源",
+                    ));
+                }
+            }
+            Some(raw)
+        }
+        None => None,
+    };
+    Ok(payload)
 }
 
 /// 由原始字段构造并校验一份分享内容（**唯一的构造入口**）。
@@ -271,6 +397,10 @@ pub fn payload_from_fields(
         title: clean(title),
         text: clean(text),
         claimed_origin,
+        // 内容层**不产生**定向字段：定向只来自深链（落地区没有「分享给谁」这层语义）。
+        to: None,
+        to_kind: None,
+        receipt_endpoint: None,
     };
     if payload.is_empty() {
         return Err(coded(
@@ -351,10 +481,73 @@ mod share_tests {
                 title: None,
                 text: None,
                 claimed_origin: None,
+                to: None,
+                to_kind: None,
+                receipt_endpoint: None,
             },
             received_at_ms: 1_000,
             expires_at_ms: 2_000,
         }
+    }
+
+    /// 定向目标的三条形状规则（裁决 2026-11-15）。
+    #[test]
+    fn target_shape_rules() {
+        // ① 都没给 ⇒ 普通分享。
+        assert_eq!(normalize_target(None, None).unwrap(), (None, None));
+        // ② 给了目标没给种类 ⇒ 拒（意图不明）。
+        assert!(normalize_target(Some("peer-1".into()), None).is_err());
+        // ③ 给了种类没给目标 ⇒ 拒。
+        assert!(normalize_target(None, Some("peer".into())).is_err());
+        // ④ 种类不认识 ⇒ 拒。
+        assert!(normalize_target(Some("peer-1".into()), Some("everyone".into())).is_err());
+        // ⑤ 形状合法 ⇒ 过。
+        assert_eq!(
+            normalize_target(Some("peer-1".into()), Some("peer".into())).unwrap(),
+            (Some("peer-1".to_string()), Some("peer".to_string()))
+        );
+        // ⑥ 字符集外的目标 ⇒ 拒（防「拿任意串当会话 id」）。
+        assert!(normalize_target(Some("peer 1/../x".into()), Some("peer".into())).is_err());
+        // ⑦ 超长目标 ⇒ 拒。
+        let long = "a".repeat(MAX_TARGET_CHARS + 1);
+        assert!(normalize_target(Some(long), Some("peer".into())).is_err());
+    }
+
+    /// 定向分享：深链的 `to` / `to_kind` 会进载荷；`receipt` 要 HTTPS 且与来源同源。
+    #[test]
+    fn inline_reads_target_and_receipt() {
+        let raw = "gosslan://share?url=https%3A%2F%2Fnews.example.com%2Fa&to=gosslan-abc&to_kind=peer&receipt=https%3A%2F%2Frp.example.com%2Freceipt&origin=https%3A%2F%2Frp.example.com";
+        let ShareIntent::Inline(p) = parse_share_intent(raw).expect("应解析成功") else {
+            panic!("必须解析成 Inline");
+        };
+        assert_eq!(p.to.as_deref(), Some("gosslan-abc"));
+        assert_eq!(p.to_kind.as_deref(), Some("peer"));
+        assert_eq!(
+            p.receipt_endpoint.as_deref(),
+            Some("https://rp.example.com/receipt")
+        );
+    }
+
+    /// 回执地址：http ⇒ 拒；跨源（与来源不同主机）⇒ 拒。
+    #[test]
+    fn receipt_endpoint_must_be_https_and_same_origin() {
+        let http = "gosslan://share?url=https%3A%2F%2Fa.example.com&receipt=http%3A%2F%2Frp.example.com%2Fr&origin=https%3A%2F%2Frp.example.com";
+        assert!(parse_share_intent(http).is_err(), "http 回执地址必须拒");
+
+        let cross = "gosslan://share?url=https%3A%2F%2Fa.example.com&receipt=https%3A%2F%2Fevil.example.com%2Fr&origin=https%3A%2F%2Frp.example.com";
+        assert!(parse_share_intent(cross).is_err(), "跨源回执地址必须拒");
+    }
+
+    /// 落地区（平台扩展写的文件）**没有**定向语义：内容层不产生 to/toKind。
+    #[test]
+    fn plain_share_has_no_target() {
+        let raw = "gosslan://share?url=https%3A%2F%2Fa.example.com&to=gosslan-abc&to_kind=peer";
+        let ShareIntent::Inline(p) = parse_share_intent(raw).expect("应解析成功") else {
+            panic!("必须解析成 Inline");
+        };
+        assert_eq!(p.to.as_deref(), Some("gosslan-abc"));
+        assert_eq!(p.to_kind.as_deref(), Some("peer"));
+        assert!(p.receipt_endpoint.is_none());
     }
 
     /// 自定义 scheme 的内联形态：内容全在 query，来源来自 `origin` 参数。

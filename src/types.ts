@@ -1110,6 +1110,15 @@ export interface SharePayload {
    * **不参与任何信任判断** —— 任何安全结论都不许建立在这个字段上。
    */
   claimedOrigin: string | null;
+  /**
+   * **定向目标**（会话 id）：单聊 = 对方设备 id，群 = `group:<id>`。`null` = 未指定。
+   *
+   * 它只**预填**面板上的目标，用户仍要点「发送」；RP 不能静默往聊天框塞东西。
+   * 后端已校验目标存在（不在好友列表 ⇒ 整笔拒），这里拿到的必然是有效目标。
+   */
+  to: string | null;
+  /** 目标种类：`peer` | `group`。 */
+  toKind: string | null;
 }
 
 /** 排队中的一条外部分享（后端 `share::SharePrompt`）。 */

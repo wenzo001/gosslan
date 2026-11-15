@@ -50,6 +50,7 @@ commands::device_auth_cmd_tests::revoked_binding_blocks_link_and_authenticate
 commands::device_auth_cmd_tests::same_rp_approvals_serialize
 commands::device_auth_cmd_tests::settle_deny_distinguishes_local_denial_from_rp_ack
 commands::device_auth_cmd_tests::sync_requires_an_active_binding
+commands::external_share_tests::target_is_known_only_accepts_friends_and_known_groups
 commands::files_gate_tests::allows_files_inside_a_managed_dir
 commands::files_gate_tests::any_of_several_managed_dirs_matches
 commands::files_gate_tests::cancel_content_fetch_wires_the_no_short_circuit_helper
@@ -1359,8 +1360,12 @@ share::share_tests::expired_entries_are_reaped_on_access
 share::share_tests::full_queue_rejects_without_evicting
 share::share_tests::inline_custom_scheme_reads_query_and_origin
 share::share_tests::inline_https_takes_origin_from_the_link_itself
+share::share_tests::inline_reads_target_and_receipt
 share::share_tests::oversized_fields_are_rejected_per_field
+share::share_tests::plain_share_has_no_target
+share::share_tests::receipt_endpoint_must_be_https_and_same_origin
 share::share_tests::reference_form_is_recognised_not_rejected
+share::share_tests::target_shape_rules
 share::share_tests::unknown_params_are_ignored_but_bad_origin_is_not
 signals::tests::sigterm_watchpoint_is_wired_into_boot
 startup_error::startup_error_window_tests::claim_retry_is_a_swap_not_a_check_then_set

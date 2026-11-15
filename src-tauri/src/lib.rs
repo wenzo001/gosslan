@@ -1057,6 +1057,7 @@ pub fn run() {
             commands::device_auth_preview_import,
             commands::device_auth_apply_import,
             commands::share_get_pending,
+            commands::share_report_receipt,
             commands::share_dismiss,
             commands::share_handle_link,
             commands::updater_check,
