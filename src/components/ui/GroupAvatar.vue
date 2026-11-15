@@ -42,7 +42,9 @@ const faces = computed(() => props.members.slice(0, layout.value.slots.length));
     :style="{ width: props.size, height: props.size }"
     data-group-avatar
   >
-    <!-- 簇本体：整块圆被裁成一个圆，成员脸在里面交叠 ⇒ 没有空角。 -->
+    <!-- 簇本体：整块圆被裁成一个圆，成员脸在里面交叠。
+         每张脸带一圈底色描边（2px）：交叠处与圆边剩下的缝因此读成「底色上的几张脸」，
+         而不是「缺了一块」—— 这正是旧 2×2 形状最难看的地方。 -->
     <div
       class="absolute inset-0 overflow-hidden rounded-full bg-[var(--gosslan-divider)]"
     >
@@ -50,7 +52,7 @@ const faces = computed(() => props.members.slice(0, layout.value.slots.length));
         v-for="(slot, i) in layout.slots"
         :key="i"
         round="full"
-        class="absolute"
+        class="absolute border-2 border-[var(--gosslan-divider)]"
         :id="faces[i]?.id"
         :src="faces[i]?.avatar ?? null"
         :style="{
