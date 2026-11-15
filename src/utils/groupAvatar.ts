@@ -70,13 +70,15 @@ export const GROUP_AVATAR_MAX_FACES = 3;
  *
  * 形状约定（改这里必须同时改 `groupAvatar.test.ts` 的判据）：
  * - 1 人：一张脸铺满（`size = 1`），角标是群标；
- * - 2 人：两张 `0.80` 的脸沿对角线交叠（左上 / 右下）；
- * - 3 人：三张 `0.68` 的脸摆成三角形（上中 / 左下 / 右下）；
+ * - 2 人：两张 `0.84` 的脸沿对角线交叠（左上 / 右下）；
+ * - 3 人：三张 `0.72` 的脸摆成三角形（上中 / 左下 / 右下）；
  * - 4+：三角形簇（多出来的人不画在头像里）。
  *
  * 尺寸是**覆盖率与可辨识度的折中**：脸再大一点，交叠就深到只剩一条边（看不出是谁）；
- * 再小一点，圆里就空出明显的两块。判据（`groupAvatar.test.ts`）钉住两件事：
- * 四个象限中心都被脸盖住（旧的 2×2 形状在这种判据下会红）+ 圆内覆盖率 ≥ 85%。
+ * 再小一点，圆里就空出明显的两块。当前取值下圆内覆盖率 ≈ 90%（两人 90.5% / 三人 90.7%），
+ * 剩下的缝在**对角的两侧**（不是某个象限整块空着 —— 那是旧 2×2 形状的毛病）。
+ * 判据（`groupAvatar.test.ts`）钉住两件事：四个象限中心都被脸盖住（旧的 2×2 形状会红）
+ * + 圆内覆盖率 ≥ 85%。
  *
  * 为什么不画超过 3 张：再往上挤，每张脸就只剩一条边 —— 看不出是谁，
  * 而「看不出是谁的脸」对头像来说是零价值。总数去看群名与成员面板。
@@ -95,8 +97,8 @@ export function groupAvatarLayout(memberCount: number): GroupAvatarLayout {
   if (n === 2) {
     return {
       slots: [
-        { size: 0.8, left: 0, top: 0, z: 1 },
-        { size: 0.8, left: 0.2, top: 0.2, z: 2 },
+        { size: 0.84, left: 0, top: 0, z: 1 },
+        { size: 0.84, left: 0.16, top: 0.16, z: 2 },
       ],
       chip: { kind: "group" },
     };
@@ -105,9 +107,9 @@ export function groupAvatarLayout(memberCount: number): GroupAvatarLayout {
   // 3 人及以上：三角形簇（上中 / 左下 / 右下），彼此交叠 ⇒ 没有空角。
   return {
     slots: [
-      { size: 0.68, left: 0.16, top: 0, z: 3 },
-      { size: 0.68, left: 0, top: 0.32, z: 1 },
-      { size: 0.68, left: 0.32, top: 0.32, z: 2 },
+      { size: 0.72, left: 0.14, top: 0, z: 3 },
+      { size: 0.72, left: 0, top: 0.28, z: 1 },
+      { size: 0.72, left: 0.28, top: 0.28, z: 2 },
     ],
     chip: { kind: "group" },
   };
