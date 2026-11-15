@@ -95,3 +95,42 @@ test("协议核心：限额与 TTL 是一处常量，且有单测钉着", () => 
   const ts = read("src/utils/share.test.ts");
   assert.match(ts, /readFileSync\(RUST_SRC/, "前端↔后端限额对账判据被拿掉了");
 });
+
+/**
+ * 粘贴兜底：深链没被系统注册时（开发期构建 / 未签名包 / 未注册的 Linux 桌面）唯一的自测入口。
+ *
+ * 为什么要单独钉：这条链路断掉的表现和「深链没注册」一模一样 —— 输入框还在、点了没反应，
+ * 排障时会被误判成系统没注册协议。而它正是接入文档 §4 自测清单能被执行的前提。
+ */
+test("兜底：粘贴入口走同一条 begin_share，且两端设置页都挂了它", () => {
+  const cmd = read("src-tauri/src/commands/external_share.rs");
+  // 拆掉会怎样：自己再写一遍解析/入队 ⇒ 限额与去重出现第二套口径，自测结果不再等价于真实入口。
+  assert.match(
+    cmd,
+    /pub async fn share_handle_link\([\s\S]{0,200}begin_share\(&state\.inner\(\)\.app, &url\)\.await/,
+    "粘贴命令必须复用 begin_share（不许另写一条入队路径）",
+  );
+
+  const lib = read("src-tauri/src/lib.rs");
+  assert.match(lib, /commands::share_handle_link,/, "命令没注册 ⇒ 设置页一点就 reject");
+
+  const api = read("src/api/index.ts");
+  assert.match(
+    api,
+    /shareHandleLink: \(url: string\) => invoke<SharePrompt>\("share_handle_link"/,
+    "门面缺 shareHandleLink ⇒ 组件没得调",
+  );
+
+  const store = read("src/stores/useShareStore.ts");
+  assert.match(store, /async function handleLink\(url: string\)/, "store 缺 handleLink");
+  assert.match(store, /api\.shareHandleLink\(url\)/, "store 没调门面");
+  assert.match(store, /pending\.value = p;/, "拿到结果后没打开面板 ⇒ 用户点完像没发生");
+
+  for (const surface of ["src/components/SettingsWindow.vue", "src/components/SettingsPanel.vue"]) {
+    assert.match(read(surface), /<ExternalShareSection \/>/, `${surface} 没挂粘贴入口`);
+  }
+
+  const section = read("src/components/settings/ExternalShareSection.vue");
+  assert.match(section, /store\.handleLink\(/, "组件必须经 store，不许自己 invoke");
+  assert.doesNotMatch(section, /\binvoke\(/, "组件里裸 invoke ⇒ 绕开了错误口径与面板状态");
+});

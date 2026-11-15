@@ -1329,6 +1329,12 @@ export const zhCN: MessageDict = {
   "shareToChat.sendFail": "分享发送失败",
   "shareToChat.openFail": "这条分享链接无法处理",
   "shareToChat.tooLong": "最多 {max} 字",
+  // 设置里的粘贴兜底（深链没被系统注册时用：开发期构建、未签名包、未注册的 Linux 桌面）。
+  "shareToChat.linkSectionTitle": "分享链接",
+  "shareToChat.linkSectionHint": "粘贴一条分享链接直接打开分享面板。系统没把链接交给小院儿时（开发期构建、未签名包）用这里自测。",
+  "shareToChat.linkLabel": "分享链接",
+  "shareToChat.linkPlaceholder": "gosslan://share?url=… 或 https://<站点>/share?url=…",
+  "shareToChat.linkSubmit": "打开分享面板",
   "todo.statusChange": "更改状态",
   "todo.doneAt": "完成于 {time}",
   "todo.impossibleAt": "标记为做不了于 {time}",

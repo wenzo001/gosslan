@@ -16,6 +16,7 @@ import NetworkSection from "@/components/settings/NetworkSection.vue";
 import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AuthorizedAppsSection from "@/components/settings/AuthorizedAppsSection.vue";
+import ExternalShareSection from "@/components/settings/ExternalShareSection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import { t } from "@/i18n";
@@ -261,6 +262,7 @@ watch(
             <template v-else-if="mobileNav === 'about'">
               <SecuritySection />
               <AuthorizedAppsSection />
+              <ExternalShareSection />
               <AboutSection @dev-open="devDiagOpen = true" />
             </template>
             <ResetSection v-else-if="mobileNav === 'reset'" @restored="reloadToken++" />
@@ -285,6 +287,7 @@ watch(
       <ResetSection @restored="reloadToken++" />
       <SecuritySection />
       <AuthorizedAppsSection />
+      <ExternalShareSection />
       <AboutSection @dev-open="devDiagOpen = true" />
     </div>
   </BaseModal>

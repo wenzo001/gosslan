@@ -1050,6 +1050,7 @@ pub fn run() {
             commands::device_auth_revoke,
             commands::share_get_pending,
             commands::share_dismiss,
+            commands::share_handle_link,
             commands::updater_check,
             commands::updater_check_source,
             commands::updater_download,

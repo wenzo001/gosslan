@@ -32,6 +32,7 @@ import NetworkSection from "@/components/settings/NetworkSection.vue";
 import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AuthorizedAppsSection from "@/components/settings/AuthorizedAppsSection.vue";
+import ExternalShareSection from "@/components/settings/ExternalShareSection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import Icon from "@/components/ui/Icon.vue";
@@ -349,6 +350,8 @@ useEventListener(window, "keydown", onKeydown);
               <!-- 安全并入关于（用户 2026-10-25：桌面不再单独一组）。 -->
               <SecuritySection />
               <AuthorizedAppsSection />
+              <!-- 外部分享的粘贴兜底：与设备认证的粘贴入口对称，但分成两个组件。 -->
+              <ExternalShareSection />
               <AboutSection @dev-open="devDiagOpen = true" />
             </div>
             <div v-else-if="section === 'reset'" class="space-y-5">

@@ -99,12 +99,14 @@
 - 网页分享到聊天：**内联闭环已落地** —— 入口解析 + 限额 + 去重 + 内存排队（cap 8 / TTL 10 分钟）
   + `share-request` / `share-error` 事件 + `share_get_pending` / `share_dismiss` 两条命令；
   前端 `SharePanel.vue` 做「来源线索 + 可编辑正文 + 会话搜索/单选 + 显式发送」，发送复用既有
-  `send` 通道。**未做**：受控 `share_request`（需 RP 端点）、文件分享、系统分享面板、
+  `send` 通道。**兜底入口**：设置 → 关于 → 安全 的「分享链接」粘贴框 `share_handle_link`
+  走**同一个** `begin_share`（深链未注册时唯一的自测路径，与设备认证的粘贴框对称）。
+  **未做**：受控 `share_request`（需 RP 端点）、文件分享、系统分享面板、
   第三方分享 SDK、网页预览。
   注意区分：`src/components/ShareDirectory.vue` 与 `src-tauri/src/commands/share.rs` 是
   **P2P 共享目录**，与这里的「外部分享到会话」是两件事（错误码也分族：`SHARE_DIR_*` vs
   `EXTERNAL_SHARE_*`）。
-- 分享若未来开放，只走窄边界：
+- 分享的边界（内联形态已开放；下列约束是它的红线，不是「将来再说」）：
   - 只暴露窄操作（例如「创建待审分享请求」），不提供任意 Tauri command bridge。
   - 绑定来源（已验证的 RP HTTPS 同源 issuer）、一次性 nonce、过期时间、用户手势、原生确认页，缺一不可。
   - 分享事务与认证事务用不同 action、不同 endpoint、不同状态记录；分享不能借 `authenticate` 的 challenge，不能隐式批准设备绑定。
@@ -165,7 +167,7 @@
 - [ ] 签名断言仅含协议约定字段，不泄露全局设备 ID、P2P 私钥、Cookie 或长期 token。 — `部分：源码可见，未运行时验收`（源码可见 claim allowlist 与只公钥面输出，未跑最小披露验收）
 - [ ] 桌面签名安装包真实唤起通过；Android / iOS App Links / Universal Links 分平台通过。 — `NOT RUN`
 - [ ] 外链窗口不能调用任意本机命令；所有远端回调严格限制 HTTPS 同源与重定向。 — `部分：源码可见，未运行时验收`（源码可见 `link` 窗口隔离、不跟随重定向、端点同源校验，未跑反例验收）
-- [ ] 分享流程经用户选择接收人并显式发送；取消不会发消息，失败保留可恢复草稿。 — `部分：源码可见，未运行时验收`（面板 + 会话选择 + 显式发送 + 失败保留草稿已落地；真机唤起与真实体验收仍 `NOT RUN`）
+- [ ] 分享流程经用户选择接收人并显式发送；取消不会发消息，失败保留可恢复草稿。 — `部分：源码可见，未运行时验收`（面板 + 会话选择 + 显式发送 + 失败保留草稿已落地；接线由 `src/utils/shareWiring.test.ts` 七段钉着，含设置页粘贴兜底；真机唤起与真实体验收仍 `NOT RUN`）
 - [ ] 外部 RP 文档、示例、错误码和生产注意事项与实际客户端版本一致。 — `部分：文档已交付`（[`external-integration-guide-2026-11-14.md`](external-integration-guide-2026-11-14.md) 覆盖两端点字段表、断言校验步骤、错误码与接入自测清单；「与实际版本一致」仍需真实 RP 联调后复核）
 
 **只有全部有可复现证据，才可把「外部直接接入」标为可用。** 部分项有源码可见的实现，不等于已有准入证据；`NOT RUN` 项不得以「代码路径存在」代替。
@@ -186,6 +188,12 @@
 `share-error` 事件、`share_get_pending` / `share_dismiss` 两条命令）；面板做「来源线索 + 可编辑
 正文 + 会话搜索/单选 + 显式发送」，发送复用既有 `send`。深链分派收口到 `route_deep_link`
 （分享 / 授权靠 host 区分，避免三处各判一次）。
+
+本轮已落地（2026-11-14 第三批，自测兜底）：`share_handle_link` 命令 + 设置 → 关于 → 安全 的
+「分享链接」粘贴框。深链靠系统协议注册，开发期构建/未签名包/未注册的 Linux 桌面拿不到注册 ——
+没有这条，接入方在本地只能先打签名包才能验证分享，接入指南 §4 的自测清单也就无法执行。
+它与深链入口走**同一个** `begin_share`（限额/去重/排队/事件全不变），因此「粘贴能过」等价于
+「深链能过」，不构成第二条信任通道。
 
 本轮仍不做（有明确理由，不是遗漏）：
 - **受控 share request**（`/share/<不透明引用>`）：需要 RP 侧「用 ref 换内容」的端点，本仓没有；
@@ -217,6 +225,7 @@
 | `src-tauri/gen/android/app/src/main/AndroidManifest.xml`、`src-tauri/Info.plist`、`src-tauri/entitlements.plist`、域名关联文件 | §6、§9、§11 |
 | `scripts/device-auth-rp-mock.mjs` | §7 |
 | `src-tauri/src/error_codes.rs`（`DEVICE_AUTH_*`） | §8 |
+| `src-tauri/src/share.rs`、`src-tauri/src/commands/external_share.rs`（分享入口、限额、排队、粘贴兜底） | §6、§10、§11 |
 | 契约版本或客户端版本（`package.json`、`scripts/version.mjs`） | 用 `npm run version:show` 重读并同步 §9 |
 | 跑完真机 / 安装包 / 真实 RP 后端 / 端到端验收 | 更新 §10、§11 的证据状态（`NOT RUN` → 可复现证据） |
 
