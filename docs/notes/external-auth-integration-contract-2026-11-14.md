@@ -99,7 +99,7 @@
 - 网页分享到聊天：**内联闭环已落地** —— 入口解析 + 限额 + 去重 + 内存排队（cap 8 / TTL 10 分钟）
   + `share-request` / `share-error` 事件 + `share_get_pending` / `share_dismiss` 两条命令；
   前端 `SharePanel.vue` 做「来源线索 + 可编辑正文 + 会话搜索/单选 + 显式发送」，发送复用既有
-  `send` 通道。**兜底入口**：设置 → 关于 → 安全 的「分享链接」粘贴框 `share_handle_link`
+  `send` 通道。**兜底入口**：设置 → 关于（桌面端其「安全」区）的「分享链接」粘贴框 `share_handle_link`
   走**同一个** `begin_share`（深链未注册时唯一的自测路径，与设备认证的粘贴框对称）。
   **未做**：受控 `share_request`（需 RP 端点）、文件分享、系统分享面板、
   第三方分享 SDK、网页预览。
