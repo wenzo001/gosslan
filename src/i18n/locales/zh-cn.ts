@@ -403,7 +403,7 @@ export const zhCN: MessageDict = {
   "startupError.title": "数据打不开，应用无法启动",
   "startupError.descLoading": "正在读取失败原因…",
   "startupError.details": "错误详情",
-  "startupError.version": "Gosslan {version}",
+  "startupError.version": "小院儿 {version}",
   "startupError.dataDir": "数据目录",
   "startupError.logDir": "日志目录",
   // 安全说明拆成三段是因为中间那句 `<b>` 要加粗：中文这里不留空格，
@@ -770,7 +770,7 @@ export const zhCN: MessageDict = {
   "errors.rule.fileSelfChat": "和自己聊天暂不支持发送图片或文件，请改用文字。",
   "errors.rule.localWriteFailed": "本机没能写入这条消息（可能是磁盘已满或被占用），清理后重试一次",
   "errors.rule.readStateWrite": "已读状态没写进本机数据库，红点已恢复到与库里一致",
-  "errors.rule.kindUnsupported": "对方这个版本的 Gosslan 还不认识这种内容，已先存在本机待发队列；等对方升级客户端后在传输队列点「重新发送」",
+  "errors.rule.kindUnsupported": "对方这个版本的小院儿还不认识这种内容，已先存在本机待发队列；等对方升级客户端后在传输队列点「重新发送」",
   "errors.rule.peerKeyMissing": "还没拿到对方的加密公钥（这条关系从没握过手），等对方上线一次再发",
   "errors.rule.auxWindow": "辅助窗口没能打开 · 须重启生效",
   "errors.rule.auxWindowRestart": "立即重启",
@@ -862,7 +862,7 @@ export const zhCN: MessageDict = {
   "errors.rule.relayConfigReadFailed": "中转配置这次没读出来，稍后重试（不用重新填一遍）",
   "errors.rule.routedEndpointFormatInvalid": "地址格式不对：填 ip 或 ip:端口，例如 203.0.113.10:59992",
   "errors.rule.routedIpv6Unsupported": "这条跨网段地址暂不支持 IPv6：请填对方的 IPv4 地址（例如 100.64.0.1）",
-  "errors.rule.notifyPermissionDenied": "系统通知权限被限制了：请在系统设置里允许 Gosslan 发送通知，再点一次测试",
+  "errors.rule.notifyPermissionDenied": "系统通知权限被限制了：请在系统设置里允许小院儿发送通知，再点一次测试",
   "errors.rule.notifySendFailed": "系统通知没发出去：检查系统的通知设置（勿扰模式 / 应用通知开关）后再试",
   "errors.rule.imageDataUrlInvalid": "这张图片的数据读不出来，重新复制或换一张再试",
   "errors.rule.imageBase64Required": "只支持从剪贴板粘贴的图片数据，换一种方式粘贴再试",
@@ -997,7 +997,7 @@ export const zhCN: MessageDict = {
   // Block 3 另一格：对方全程离线（熬满 7 天保留窗口），下一步是等对方上线再重发。
   "msg.fail.peerOfflineExpired":
     "这条消息没能送达：对方一直离线（已保留 7 天）。下一步：等对方上线、打开应用后，在传输队列点「重新发送」。",
-  "msg.fail.kindUnsupported": "对方这个版本的 Gosslan 不支持这种内容，再等也不会送达；对方升级后可在传输队列点「重新发送」",
+  "msg.fail.kindUnsupported": "对方这个版本的小院儿不支持这种内容，再等也不会送达；对方升级后可在传输队列点「重新发送」",
   "msg.fail.peerKeyMissing": "还没拿到对方的加密公钥，这条发不出去；等对方上线一次再点「重新发送」",
   "msg.fail.orphanAtStart": "本机重启时这条还卡在发送中，且已没有待发队列，按未送达处理",
   "msg.fail.peerDeleted": "对方已不在好友列表，这条没有送达",
@@ -1288,7 +1288,7 @@ export const zhCN: MessageDict = {
   "deviceAuth.claim.device_public_key": "设备公钥",
   "deviceAuth.claim.nickname": "昵称",
   "deviceAuth.nicknameToggle": "同时共享昵称（设备展示名，非实名）",
-  "deviceAuth.warning": "批准前请确认上方域名是你信任的应用。Gosslan 不会共享你的好友、群、聊天内容或全局设备 ID。",
+  "deviceAuth.warning": "批准前请确认上方域名是你信任的应用。小院儿不会共享你的好友、群、聊天内容或全局设备 ID。",
   "deviceAuth.expiresIn": "{s} 秒后过期",
   "deviceAuth.expired": "已过期，请重新发起",
   "deviceAuth.approve": "批准",
@@ -1296,7 +1296,7 @@ export const zhCN: MessageDict = {
   "deviceAuth.approved": "已批准",
   "deviceAuth.approveFail": "批准失败",
   "deviceAuth.appsTitle": "已授权的应用",
-  "deviceAuth.appsHint": "外部应用经你批准后，可用本机 Gosslan 证明设备身份。撤销后该应用需重新绑定。",
+  "deviceAuth.appsHint": "外部应用经你批准后，可用本机小院儿证明设备身份。撤销后该应用需重新绑定。",
   "deviceAuth.linkLabel": "粘贴授权链接",
   "deviceAuth.linkPlaceholder": "gosslan://authorize/… 或 https://…/authorize/…",
   "deviceAuth.linkSubmit": "绑定",
@@ -1326,6 +1326,9 @@ export const zhCN: MessageDict = {
   "shareToChat.send": "发送",
   "shareToChat.sending": "发送中…",
   "shareToChat.sent": "已发送到「{name}」",
+  "shareToChat.sentMany": "已发送到 {count} 个会话",
+  "shareToChat.sendToCount": "发送（{count}）",
+  "shareToChat.sendPartial": "已发送 {ok} 个，{fail} 个失败，可再点一次重试",
   "shareToChat.sendFail": "分享发送失败",
   "shareToChat.openFail": "这条分享链接无法处理",
   "shareToChat.tooLong": "最多 {max} 字",
@@ -1605,7 +1608,7 @@ export const zhCN: MessageDict = {
   "friend.add.copyInvite": "复制邀请",
   "friend.add.copyInvite.failed": "复制失败：剪贴板不可用",
   "friend.add.invite.text":
-    "我在 Gosslan 上的设备 ID 是 {id}（{name}）。把这段邀请发给对方，对方添加后即可跨网段互见。",
+    "我在小院儿上的设备 ID 是 {id}（{name}）。把这段邀请发给对方，对方添加后即可跨网段互见。",
   "friend.add.toast.inviteCopied": "邀请文案已复制",
   "friend.add.channelFailed": "通道开启失败",
   "friend.add.searchPlaceholder": "搜索昵称 / IP / 设备 ID",
@@ -1963,7 +1966,7 @@ export const zhCN: MessageDict = {
   // 预览失败的两种确定性原因之一（另一种复用上面的 msg.cleaned）。
   // 原因由 utils/mediaAvailability.ts 的 PREVIEW_FAILURE_KEYS 给出，这里只放文案。
   "media.tooLarge": "文件过大，无法预览",
-  // 认不出的消息类型（对端 Gosslan 比本机新）：可解释的占位，绝不显示载荷原文（INV-P24）
+  // 认不出的消息类型（对端小院儿比本机新）：可解释的占位，绝不显示载荷原文（INV-P24）
   "msg.unsupportedKind": "对方发送了一种本机还不支持的消息，升级小院儿后可查看",
   "msg.showRawContent": "查看原始内容",
   "msg.hideRawContent": "收起原始内容",

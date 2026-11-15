@@ -1,12 +1,16 @@
 <script setup lang="ts">
 /**
  * 外部分享到会话的面板：外部网页/应用经深链把一条内容递进来，用户在这里**确认内容、
- * 选一个会话、显式点发送**。
+ * 选会话（可多选）、显式点发送**。
  *
  * 为什么必须是这样（活契约 §6 / §D 的红线）：
  * - 分享入口**任何网页都能触发**（`gosslan://share?...` 就是个链接）。自动发送等于给网页
  *   一个静默发消息的通道，所以这里恒需一次用户手势，关闭面板 = 什么都不发。
  * - 不预选会话：预选 + 回车就是"一路点确定"，用户很可能没看清发给谁。
+ * - 多选是**逐个显式勾**（设计稿验收矩阵要求「多选、逐项可辨认」），不是"发给最近的人"；
+ *   按钮上带目标数，点之前就能看见这次要发给几个会话。
+ * - 部分失败不整笔回滚：已发出去的消息收不回来，能做的只有「留住面板 + 只保留失败的那几个勾选
+ *   + 草稿不动」，让用户直接再点一次。
  * - 不抓取网页预览：预览要把 URL 交给本机去请求（SSRF / 跟踪像素 / 内网探测），
  *   本期只显示调用方**自己给的**标题与正文，来源只作为线索展示、不参与任何信任判断。
  */
@@ -38,7 +42,7 @@ const app = useAppStore();
 const scope = createInitScope();
 const query = ref("");
 const draft = ref("");
-const selected = ref<string | null>(null);
+const selected = ref<string[]>([]);
 const sending = ref(false);
 
 onMounted(() => {
@@ -64,7 +68,7 @@ watch(
   (id) => {
     if (!id) return;
     draft.value = store.pending ? composeShareText(store.pending.payload) : "";
-    selected.value = null;
+    selected.value = [];
     query.value = "";
   },
   { immediate: true },
@@ -78,26 +82,65 @@ const targets = computed(() =>
 );
 const textError = computed(() => shareTextError(draft.value));
 const used = computed(() => charCount(draft.value));
-const selectedName = computed(
-  () => chat.conversations.find((c) => c.id === selected.value)?.name ?? "",
-);
-const canSend = computed(() => !textError.value && !!selected.value && !sending.value);
+const canSend = computed(() => !textError.value && selected.value.length > 0 && !sending.value);
+
+/** 会话名只用于提示文案；查不到就退回空串（提示里会退化成「已发送」而不是露出 id）。 */
+function nameOf(id: string): string {
+  return chat.conversations.find((c) => c.id === id)?.name ?? "";
+}
+
+/** 点一下切换勾选；勾选顺序即发送顺序，用户能预期「先发给谁」。 */
+function toggleTarget(id: string) {
+  const i = selected.value.indexOf(id);
+  if (i >= 0) selected.value.splice(i, 1);
+  else selected.value.push(id);
+}
 
 async function onSend() {
-  const convId = selected.value;
-  if (!convId || textError.value || sending.value) return;
+  const ids = [...selected.value];
+  if (!ids.length || textError.value || sending.value) return;
   sending.value = true;
+  const body = draft.value.trim();
+  const failed: string[] = [];
+  let firstError: unknown = null;
+  let ok = 0;
   try {
-    // 走既有的统一发送路径（乐观上屏 / 台账 / 失败态全在那一层），不另开一条发送通道。
-    await chat.send(convId, draft.value.trim(), "text");
-    app.toast(t("shareToChat.sent", { name: selectedName.value }), "success");
-    await store.dismiss();
-  } catch (e) {
-    // 失败**保留面板与草稿**：重试要能直接点第二次，而不是回浏览器重新点一遍链接。
-    app.toastError(e, t("shareToChat.sendFail"));
+    for (const id of ids) {
+      try {
+        // 每个会话都走既有的统一发送路径（乐观上屏 / 台账 / 失败态全在那一层），
+        // 不另开一条发送通道，也不批量吞异常：一个会话失败不该挡住后面的。
+        await chat.send(id, body, "text");
+        ok += 1;
+      } catch (e) {
+        failed.push(id);
+        firstError ??= e;
+      }
+    }
   } finally {
     sending.value = false;
   }
+
+  if (!failed.length) {
+    app.toast(
+      ids.length === 1
+        ? t("shareToChat.sent", { name: nameOf(ids[0]) })
+        : t("shareToChat.sentMany", { count: ids.length }),
+      "success",
+    );
+    await store.dismiss();
+    return;
+  }
+
+  // 部分/全部失败：**保留面板与草稿**，只把失败的那几个留在勾选里 —— 已发出去的消息收不回来，
+  // 所以这里的"重试"只能是"把没发成的再发一次"，不能重发全部（会重复）。
+  selected.value = failed;
+  // 一个都没成 ⇒ 用「分享发送失败」；部分成 ⇒ 报清成功/失败数（用户要知道哪些已经发出去了）。
+  app.toastError(
+    firstError,
+    ok === 0
+      ? t("shareToChat.sendFail")
+      : t("shareToChat.sendPartial", { ok, fail: failed.length }),
+  );
 }
 
 async function onClose() {
@@ -168,9 +211,9 @@ async function onClose() {
         />
       </div>
 
-      <!-- 会话列表：单选，必须显式点一下；不预选（预选 + 回车就是一路点确定）。 -->
+      <!-- 会话列表：逐项勾选（可多选），必须显式点；不预选（预选 + 回车就是一路点确定）。 -->
       <div
-        role="radiogroup"
+        role="group"
         :aria-label="t('shareToChat.pickHint')"
         class="min-h-0 flex-1 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-divider)]"
       >
@@ -181,11 +224,11 @@ async function onClose() {
           v-for="c in targets"
           :key="c.id"
           type="button"
-          role="radio"
-          :aria-checked="selected === c.id"
+          role="checkbox"
+          :aria-checked="selected.includes(c.id)"
           class="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-[var(--gosslan-hover)]"
-          :class="selected === c.id ? 'bg-[var(--gosslan-list-active)]' : ''"
-          @click="selected = c.id"
+          :class="selected.includes(c.id) ? 'bg-[var(--gosslan-list-active)]' : ''"
+          @click="toggleTarget(c.id)"
         >
           <Icon
             :name="c.kind === 'group' ? 'users' : 'user-round'"
@@ -194,7 +237,7 @@ async function onClose() {
           />
           <span class="min-w-0 flex-1 truncate text-sm text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
           <Icon
-            v-if="selected === c.id"
+            v-if="selected.includes(c.id)"
             name="check"
             class="h-4 w-4 shrink-0 text-[var(--gosslan-primary)]"
             aria-hidden="true"
@@ -211,7 +254,12 @@ async function onClose() {
           {{ t("common.cancel") }}
         </SecondaryBtn>
         <PrimaryBtn :disabled="!canSend" @click="onSend">
-          {{ sending ? t("shareToChat.sending") : t("shareToChat.send") }}
+          <!-- 多选时把目标数写进按钮：点之前就能看见这次要发给几个会话。 -->
+          <template v-if="sending">{{ t("shareToChat.sending") }}</template>
+          <template v-else-if="selected.length > 1">
+            {{ t("shareToChat.sendToCount", { count: selected.length }) }}
+          </template>
+          <template v-else>{{ t("shareToChat.send") }}</template>
         </PrimaryBtn>
       </div>
     </div>

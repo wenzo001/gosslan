@@ -61,7 +61,7 @@ test("正则转义只有一份定义：任何文件都不许再内联一份字�
 });
 
 test("用 escapeRe 的每个文件都从公共份导入（不再各自私有一份）", () => {
-  for (const rel of ["emoji.ts", "linkify.ts", "messages.ts", "highlight.ts", "platform.test.ts"]) {
+  for (const rel of ["emoji.ts", "linkify.ts", "messages.ts", "highlight.ts", "platform.test.ts", "appName.test.ts"]) {
     const src = readFileSync(new URL(`./${rel}`, import.meta.url), "utf8");
     assert.match(src, /from "\.\/escapeRe\.ts"/, `${rel} 必须从公共份导入`);
   }

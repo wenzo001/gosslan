@@ -74,16 +74,28 @@ test("前端：面板挂在主窗壳上，且发送走既有 send 通道", () =>
   assert.doesNotMatch(closeBlock, /chat\.send\(/, "取消必须什么都不发（关闭路径里出现了 send）");
 });
 
-test("前端：默认不预选会话（预选 + 回车就是一路点确定）", () => {
+test("前端：默认不预选会话，且多选必须逐项勾、部分失败只留失败项", () => {
   const panel = read("src/components/SharePanel.vue");
+  // 设计稿验收矩阵要求「多选、逐项可辨认」。预选等于替用户决定发给谁；空数组是唯一的正确初值。
   assert.match(
     panel,
-    /const selected = ref<string \| null>\(null\)/,
-    "选中项初值必须是 null —— 预选会话等于替用户决定发给谁",
+    /const selected = ref<string\[\]>\(\[\]\)/,
+    "选中项初值必须是空数组 —— 预选会话等于替用户决定发给谁",
   );
-  const reset = panel.match(/selected\.value = null/g) ?? [];
-  // 声明处是 `ref(...)(null)`（上面已钉），所以这里数的是**换一条时**的重置次数。
-  assert.ok(reset.length >= 1, "换一条分享时必须重置选中（否则上一条的收件人会带过来）");
+  assert.match(panel, /function toggleTarget\(/, "多选必须有显式切换（点一下勾上、再点取消）");
+  assert.match(
+    panel,
+    /role="checkbox"/,
+    "多选行语义应为 checkbox；用 radio 会让读屏暗示只能选一个",
+  );
+  assert.match(panel, /for \(const id of ids\)/, "发送必须逐个会话投递（一次失败不该挡住后面的）");
+  assert.match(
+    panel,
+    /selected\.value = failed;/,
+    "部分失败必须只保留失败目标 —— 重发全部会让已经发出去的那几个重复",
+  );
+  const reset = panel.match(/selected\.value = \[\]/g) ?? [];
+  assert.ok(reset.length >= 1, "换一条分享时必须清空勾选（否则上一条的收件人会带过来）");
 });
 
 test("协议核心：限额与 TTL 是一处常量，且有单测钉着", () => {
