@@ -27,6 +27,8 @@ mod tests {
             "\n",
             include_str!("commands/bots.rs"),
             "\n",
+            include_str!("commands/topology.rs"),
+            "\n",
             include_str!("commands/network.rs"),
             "\n",
             include_str!("commands/dev_diag.rs"),

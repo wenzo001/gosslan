@@ -587,6 +587,9 @@ export default {
         "src/styles",
         "src/workers",
         "src/updater", // 更新状态机与 Tauri 适配器（前端侧，IPC 仍走 src/api 门面）
+              // 2026-11-16 阶段 2：「我的网络」的拖拽位置偏好走 settings 表，
+        // 它只是本机呈现偏好（不进网络协议）⇒ 归呈现层。
+        "src-tauri/src/commands/topology.rs",
       ],
       invariants: [
         // ↓ 2026-10-14 补登，口径 = 「本节正文或其钩子点名的实现/判据落在本域 paths 上」
@@ -599,7 +602,7 @@ export default {
       ],
       activeHome: "src/stores",
       enforce: false,
-      consumes: [], // 前端域:本守门不扫 src/*(避跨 parser,且 utils/Api/组件相互 import 模式与后端 crate 不同),见 check-domain-deps.mjs 头部注释
+      consumes: ["persistence"], // 2026-11-16 阶段 2：「我的网络」拖拽位置落 settings 表（本机偏好，不进协议） // 前端域:本守门不扫 src/*(避跨 parser,且 utils/Api/组件相互 import 模式与后端 crate 不同),见 check-domain-deps.mjs 头部注释
       notes:
         "⚠️ **没有领域边界**：`src/stores` 只有 3 个文件、`src/utils` 是平铺的一堆 —— **行数与个数一律现算，不许抄在图上**：`wc -l src/stores/*.ts`、`ls src/utils | wc -l`（截至 2026-09-28 现算：stores 共 3427 行、useChatStore.ts 2276 行、utils 119 个文件）。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。",
     },

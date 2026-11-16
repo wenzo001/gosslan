@@ -123,6 +123,10 @@ export const api = {
   botDelete: (botId: string) => invoke<void>("bot_delete", { botId }),
   botInbox: (botId: string) => invoke<BotInboxEntry[]>("bot_inbox", { botId }),
   botPullOnce: (botId: string) => invoke<BotPullOutcome>("bot_pull_once", { botId }),
+  // ---------------- 「我的网络」布局偏好（阶段 2） ----------------
+  topologyLayoutLoad: () => invoke<string>("topology_layout_load"),
+  topologyLayoutSave: (raw: string) => invoke<void>("topology_layout_save", { raw }),
+  topologyLayoutReset: () => invoke<void>("topology_layout_reset"),
   /**
    * 托盘图标被点（任务栏里闪的那个）⇒ **直接进第一条未读会话**。
    *
