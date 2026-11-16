@@ -32,6 +32,16 @@ macOS 那边是**独立的 Share Extension 进程**，两边唯一共有的通�
 4. 打包后安装，在别的应用里分享一段文字 ⇒ 应用被唤起 ⇒ 落地区出现
    `incoming-<32 位十六进制>.json` ⇒ 切回应用时面板弹出。
 
+## 3.5 ⚠️ payload 字段名必须小写（2026-11-16 修）
+
+`Payload` 的 C# 属性是 PascalCase（`Url/Title/Text`），但 `System.Text.Json`
+**默认按属性名原样输出** PascalCase —— 而读取端（`src-tauri/src/incoming_share.rs`
+的 `IncomingPayload`）带 `#[serde(rename_all = "camelCase")]`，只认 `url/title/text`。
+两边对不上的话，文件会被判成「三个字段都缺」**直接拒收**。
+
+现在三个属性都显式标了 `[JsonPropertyName("url"|"title"|"text")]` ⇒ 不依赖序列化器默认。
+判据在 `src/utils/incomingShareWiring.test.ts`：去掉任一注解当场红。
+
 ## 4. 已知边界
 
 - 只收链接与纯文本（与 macOS 侧同口径）；图片/文件暂不支持。

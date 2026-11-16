@@ -27,6 +27,7 @@ using System;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Windows.ApplicationModel.DataTransfer;
 
 namespace Gosslan.ShareTarget;
@@ -126,11 +127,22 @@ public static class ShareTarget
     /// </summary>
     private static string PackageIdentityName() => "Gosslan";
 
-    /// <summary>落地区载荷（与协议 §3.3 同形）。</summary>
+    /// <summary>
+    /// 落地区载荷。**字段名必须小写开头**：`JsonSerializer.Serialize` 默认输出
+    /// PascalCase（`Url/Title/Text`），而读取端（Rust `incoming_share.rs` 的
+    /// `IncomingPayload` 带 `#[serde(rename_all = "camelCase")]`）只认
+    /// `url/title/text` —— 两边不一致的话，文件会被当成「三个字段都缺」直接拒收。
+    /// 用 `JsonPropertyName` 显式钉住，不依赖序列化器的默认命名策略。
+    /// </summary>
     private sealed class Payload
     {
+        [JsonPropertyName("url")]
         public string? Url { get; set; }
+
+        [JsonPropertyName("title")]
         public string? Title { get; set; }
+
+        [JsonPropertyName("text")]
         public string? Text { get; set; }
     }
 }
