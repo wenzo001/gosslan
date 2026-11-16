@@ -13,13 +13,14 @@
  * 2. **投递目标**只两种：本机收件箱 / 某个群（由本机代发；群成员**不必**连通知服务）；
  * 3. 撤销**不可逆** ⇒ 界面要说清。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, onBeforeUnmount } from "vue";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import Icon from "@/components/ui/Icon.vue";
 import { useQuery } from "@tanstack/vue-query";
+import { createInitScope } from "@/utils/initScope";
 import { api } from "@/api";
 import { panelQueryOptions } from "@/utils/panelQuery";
 import SettingsSelect from "@/components/ui/SettingsSelect.vue";
@@ -45,6 +46,8 @@ const loadError = computed<string | null>(() => {
 });
 /** 写操作在飞（创建/暂停/删除/取件）。 */
 const busy = ref(false);
+/** 订阅↔卸载的配对容器（判据 ㊷：不许手工卸载句柄）。 */
+const scope = createInitScope();
 
 /** 创建表单 */
 const name = ref("");
@@ -59,6 +62,9 @@ const inbox = ref<BotInboxEntry[]>([]);
 const inboxBotId = ref<string | null>(null);
 
 const groups = computed(() => chat.groups ?? []);
+/** curl 示例里的密钥占位与正文（界面文案 ⇒ 走 i18n）。 */
+const secretPlaceholder = t("bot.curlSecretPlaceholder");
+const sampleBody = t("bot.curlSampleBody");
 /** 空选项的提示文案（放在脚本里：i18n 守卫的「引用面」按脚本里的 t() 调用统计）。 */
 const groupPlaceholder = t("bot.field.groupPlaceholder");
 
@@ -85,6 +91,19 @@ async function reload() {
 
 onMounted(() => {
   void botsQuery.refetch();
+  // 后台轮询取到新消息 ⇒ 重读收件箱（用户正开着收件箱时能立刻看到）。
+  // 组件卸载时退订（`listen` 返回取消函数）。
+  // `listen` 返回 Promise（要等一次 IPC 往返才拿到取消函数）⇒ 交给 initScope：
+  // 迟到的注册在 scope 已拆掉时会**就地执行**（不会永久挂着监听）。
+  void api.onBotInboxUpdated((botId) => {
+    void botsQuery.refetch();
+    if (inboxBotId.value && (botId === "" || botId === inboxBotId.value)) {
+      void loadInbox(inboxBotId.value);
+    }
+  }).then((un) => scope.onDispose(un));
+});
+onBeforeUnmount(() => {
+  scope.dispose();
 });
 
 async function create() {
@@ -203,7 +222,8 @@ async function copy(text: string) {
 
 function curlExample(): string {
   if (!created.value) return "";
-  return `curl -X POST ${created.value.endpoint} \\\n  -H "Authorization: Bearer <发送密钥>" \\\n  -H "Content-Type: application/json" \\\n  -d '{"text":"构建完成 ✅"}'`;
+  // 示例里的占位与正文也是**界面文案** ⇒ 走 i18n（不写死中文）。
+  return `curl -X POST ${created.value.endpoint} \\\n  -H "Authorization: Bearer ${secretPlaceholder}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"text":"${sampleBody}"}'`;
 }
 </script>
 
@@ -364,10 +384,10 @@ function curlExample(): string {
       </div>
       <div class="mb-1 text-caption text-[var(--gosslan-text-2)]">{{ t("bot.secret") }}</div>
       <div class="mb-2 flex items-center gap-2">
-        <code class="min-w-0 flex-1 truncate rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-hover)] px-2 py-1 font-mono text-meta" :title="created.sendSecret">
-          {{ created.sendSecret }}
+        <code class="min-w-0 flex-1 truncate rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-hover)] px-2 py-1 font-mono text-meta" :title="created.sendToken">
+          {{ created.sendToken }}
         </code>
-        <SecondaryBtn size="dense" @click="copy(created.sendSecret)">{{ t("common.copy") }}</SecondaryBtn>
+        <SecondaryBtn size="dense" @click="copy(created.sendToken)">{{ t("common.copy") }}</SecondaryBtn>
       </div>
       <pre class="mb-2 overflow-x-auto rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-hover)] p-2 font-mono text-meta">{{ curlExample() }}</pre>
       <SecondaryBtn size="dense" @click="copy(curlExample())">{{ t("bot.copyCurl") }}</SecondaryBtn>

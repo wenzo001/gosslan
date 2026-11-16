@@ -1235,7 +1235,13 @@ export interface BotView {
 /** 创建机器人后的返回值：**发送密钥只在这里出现一次**。 */
 export interface BotCreatedView {
   bot: BotView;
-  sendSecret: string;
+  /**
+   * 外部发送者用的发送 token（**一次性**：创建后只回显这一次）。
+   *
+   * 命名与后端一致：叫 `token` 不叫 `secret`（它是 bearer token，
+   * 与 relay 的 token 同一性质，不是 E2EE 私钥）。
+   */
+  sendToken: string;
   endpoint: string;
 }
 

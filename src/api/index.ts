@@ -130,6 +130,16 @@ export const api = {
    */
   onTrayOpenUnread: (cb: () => void) => listen("tray-open-unread", () => cb()),
   /**
+   * 后台轮询取到了新的机器人消息 ⇒ 刷新收件箱（2026-11-16）。
+   *
+   * 载荷 = bot_id；界面据此决定要不要重读那个机器人的收件箱。
+   */
+  onBotInboxUpdated: (cb: (botId: string, count: number) => void) =>
+    listen<{ bot_id?: string; count?: number }>("bot-inbox-updated", (e) => {
+      const p = (e.payload ?? {}) as { bot_id?: string; count?: number };
+      cb(String(p.bot_id ?? ""), Number(p.count ?? 0));
+    }),
+  /**
    * 只订阅 `message-received`（**窄**封装）。
    *
    * 给独立窗口用：群任务窗口只关心"我这个会话来了新消息"，不能跑 `bindEvents`（那是主窗口
@@ -1322,9 +1332,9 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
 // 动作名与 emitAction 抽到 utils/appActions.ts：useShortcuts / shortcuts 这类纯逻辑也要用，
 // 而纯逻辑会被 node:test 直接 import（Node 无法解析 @/ 别名）。这里继续 re-export，
 // 保证既有的 `import { APP_ACTION } from "@/api"` 调用处无需改动。
-import { APP_ACTION, emitAction, onAction, NAVIGATE_TO_CONTACTS } from "../utils/appActions";
+import { APP_ACTION, emitAction, onAction, NAVIGATE_TO_CONTACTS, NAVIGATE_TO_BOTS } from "../utils/appActions";
 import type { AppAction } from "../utils/appActions";
-export { APP_ACTION, emitAction, onAction, NAVIGATE_TO_CONTACTS };
+export { APP_ACTION, emitAction, onAction, NAVIGATE_TO_CONTACTS, NAVIGATE_TO_BOTS };
 
 /**
  * 监听 macOS 原生菜单栏的自定义项 → 转成应用级动作。

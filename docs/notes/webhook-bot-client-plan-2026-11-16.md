@@ -23,10 +23,16 @@ SQLite schema 属 Frozen Core ⇒ **一律走 `settings` 表**（键值对）：
 
 | 键 | 内容 |
 |---|---|
-| `bot:<bot_id>` | `{name, server_url, client_secret, target, status, created_at, last_event_at, last_error, pending, failed}` |
+| `bot:<bot_id>` | `{name, server_url, client_token, target, status, created_at, last_event_at, last_error, pending, failed}` |
 | `bot_inbox:<bot_id>` | 收件箱消息数组（最近 200 条）：`{event_id, text, source, images[], received_at, state}` |
 
-- `client_secret` 是外部凭证 ⇒ **不进日志/诊断/错误响应**；轮换/撤销时一并清掉。
+- `client_token` 是外部凭证 ⇒ **不进日志/诊断/错误响应**；轮换/撤销时一并清掉。
+  ⚠️ **命名口径（2026-11-16 实现时改的）**：本地一律叫 `token` 不叫 `secret` ——
+  本仓的密钥边界守卫（`check-key-boundary.mjs`）把带 `secret` 的**可序列化**类型判成
+  「E2EE 私钥」，而这只是一枚 bearer token（与 relay 的 `token` 同一性质）。
+  守卫的口径是「别用密钥命名」⇒ 改名，不加例外。
+  **wire 格式不变**：服务端仍然叫 `send_secret` / `client_secret`（见 `webhook-api.md`），
+  客户端用 `#[serde(rename = …)]` 映射。
 - `event_id` 唯一 ⇒ 收件箱按 `event_id` 幂等（重复投递不重复显示）。
 - 收件箱**只在本机**（不跨设备同步、不进好友关系）。
 
@@ -34,9 +40,9 @@ SQLite schema 属 Frozen Core ⇒ **一律走 `settings` 表**（键值对）：
 
 | 命令 | 做什么 | 关键约束 |
 |---|---|---|
-| `bot_create(name, target, server_url, client_token)` | 向服务端注册 ⇒ 存 bot ⇒ **一次性**回传 `send_secret` + endpoint | 密钥只在此处返回一次；服务端返回 4xx 时**不落库** |
+| `bot_create(name, target, server_url, client_token)` | 向服务端注册 ⇒ 存 bot ⇒ **一次性**回传 `send_token` + endpoint | 凭证只在此处返回一次；服务端返回 4xx 时**不落库** |
 | `bot_list()` | 列出机器人（**不含任何密钥**） | 目标失效/服务不可达要带可见状态 |
-| `bot_set_status(bot_id, status)` | 暂停 / 恢复 / 撤销 | 撤销**不可逆**（要新建）；同时清掉 client_secret |
+| `bot_set_status(bot_id, status)` | 暂停 / 恢复 / 撤销 | 撤销**不可逆**（要新建）；同时清掉 client_token |
 | `bot_delete(bot_id)` | 撤销并删本地记录 | 提示队列是否清理 |
 | `bot_pull_once(bot_id)` | 拉取 → 落本地 → ACK/NACK | **先落库再 ACK**；落库失败 ⇒ NACK 可重试 |
 | `bot_inbox(bot_id)` | 取收件箱 | 分页/上限 |
@@ -45,6 +51,12 @@ SQLite schema 属 Frozen Core ⇒ **一律走 `settings` 表**（键值对）：
 - HTTP 客户端走 `reqwest`（已在依赖树里）⇒ **HTTPS 强制**（`http://` 只允许显式开关的本地调试）。
 - 拉取 worker：一个后台 tokio 任务，每个启用的 bot 每 `WEBHOOK_PULL_INTERVAL` 拉一次；
   **只在应用运行时**；退出/暂停时停止。
+  ✅ 已实现（2026-11-16）：`commands::spawn_bot_poller`（`src-tauri/src/commands/bots.rs`），
+  每 **60 秒**一轮、启动后先等 20 秒；只拉 `active` 的机器人；一轮里**逐个**拉
+  （一个坏的不卡住整轮）；失败只记一条日志、等下一轮（服务端有租约重投兜底）。
+  它登记在 `worker_supervisor::UNSUPERVISED_LOOPS`（**刻意不监督**：死了只影响
+  「通知不再自动进来」，用户仍可手动「立即取件」，且没有任何数据会坏）。
+  取到后发 `bot-inbox-updated` 事件（载荷 `{bot_id, count}`）⇒ 前端刷新收件箱 + 系统通知。
 
 ### 1.3 投递
 
@@ -62,7 +74,7 @@ SQLite schema 属 Frozen Core ⇒ **一律走 `settings` 表**（键值对）：
 - **设置 › 通知机器人**（新分组）：
   - 列表：名称 / 投递位置 / 状态 / 待投递与失败数 / 最近收到时间 / 服务连接状态；
   - 创建：名称 → 目标（本机收件箱 | 选一个群）→ 服务地址与客户端令牌 → 创建 →
-    **一次性展示 endpoint + send_secret + 可复制的 curl 示例** → 自测按钮；
+    **一次性展示 endpoint + send_token + 可复制的 curl 示例** → 自测按钮；
   - 每个机器人：暂停 / 恢复 / 轮换密钥 / 撤销；
   - 收件箱：机器人消息列表（图片可预览）。
 - 文案：zh-cn 与 en-us **同步**；外部来源名与正文一律当**不可信文本**（转义 + 限长）。

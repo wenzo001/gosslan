@@ -2064,6 +2064,10 @@ export const enUS: MessageDict = {
 
 
   // ---- Network topology ----
+  "bot.notifyTitle": "Notification bot",
+  "bot.notifyBody": "{n} new notifications (open Settings to read them)",
+  "bot.curlSecretPlaceholder": "SEND_SECRET",
+  "bot.curlSampleBody": "build finished",
   "bot.title": "Notification bots",
   "bot.footer": "External systems (CI, scripts, servers) can send notifications here: one bot = one external message entry. Several senders may share the same bot.",
   "bot.privacy": "Note: the notification service sees what you receive and keeps it while the gateway is offline. It is a service you host yourself, so only send it what you are comfortable with.",

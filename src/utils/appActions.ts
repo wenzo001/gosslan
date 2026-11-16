@@ -28,7 +28,16 @@ export type AppAction = (typeof APP_ACTION)[keyof typeof APP_ACTION];
 /** 通知点击后切到通讯录（此前用 `new CustomEvent("navigate-to-contacts")`）。 */
 export const NAVIGATE_TO_CONTACTS = "navigate-to-contacts";
 
-export type AppEvent = AppAction | typeof NAVIGATE_TO_CONTACTS;
+/**
+ * 通知点击后打开**通知机器人**面板（2026-11-16）。
+ *
+ * 为什么单独一个事件：机器人消息落在**收件箱**里，不是某个会话 ⇒ 没有 conv_id
+ * 可路由 ⇒ 点通知时该去哪儿必须显式说清楚（打开设置里的机器人面板），
+ * 不能靠「猜一个会话 id」糊过去。
+ */
+export const NAVIGATE_TO_BOTS = "navigate-to-bots";
+
+export type AppEvent = AppAction | typeof NAVIGATE_TO_CONTACTS | typeof NAVIGATE_TO_BOTS;
 
 /**
  * 事件表即类型：新增事件必须同时加到 `AppEvent` 与总线的值类型里，
