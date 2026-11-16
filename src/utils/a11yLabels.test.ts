@@ -2,7 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { findUnlabeledButtons, findUnnamedImages } from "./a11yLabels.ts";
+import {
+  findClickableWithoutKeyboard,
+  findPositiveTabindex,
+  findUnlabeledButtons,
+  findUnnamedImages,
+} from "./a11yLabels.ts";
 
 // ---------------- 无名按钮：图标按钮只写 title 不算可访问名 ----------------
 //
@@ -163,4 +168,49 @@ test("src 下所有 .vue 的 <img> 都声明了 alt（含装饰性 alt=\"\"）",
     [],
     `发现没有 alt 的图片（装饰性请写 alt=""，内容图写实际描述）：\n${bad.join("\n")}`,
   );
+});
+
+// ---------------- 2026-11-16 全量无障碍扫描：两个尚未覆盖的维度 ----------------
+
+test("正数 tabindex 会破坏自然 Tab 顺序 —— 反例必须被抓到", () => {
+  assert.equal(findPositiveTabindex(`<template><div tabindex="-1">x</div></template>`).length, 0);
+  assert.equal(findPositiveTabindex(`<template><div tabindex="0">x</div></template>`).length, 0);
+  const bad = findPositiveTabindex(`<template><div tabindex="1">x</div></template>`);
+  assert.equal(bad.length, 1, "正数 tabindex 必须报出");
+  // 动态绑定不判（表达式可能是 -1，机械判不出）
+  assert.equal(findPositiveTabindex(`<template><div :tabindex="n">x</div></template>`).length, 0);
+});
+
+test("可点击的 div/span 没有键盘出口 —— 反例必须被抓到", () => {
+  assert.equal(findClickableWithoutKeyboard(`<template><div @click="go()">x</div></template>`).length, 1);
+  assert.equal(
+    findClickableWithoutKeyboard(
+      `<template><div role="button" tabindex="0" @click="go()" @keydown.enter="go()">x</div></template>`,
+    ).length,
+    0,
+    "补齐 role + tabindex + 键盘处理之后应通过",
+  );
+  // 真按钮不算（它的可访问名/键盘由原生提供）
+  assert.equal(findClickableWithoutKeyboard(`<template><button @click="go()">x</button></template>`).length, 0);
+});
+
+test("全仓 .vue：没有正数 tabindex、没有缺键盘出口的可点击非交互元素", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const badTab: string[] = [];
+  const badClick: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    const rel = f.replace(srcDir + "/", "");
+    for (const i of findPositiveTabindex(src)) badTab.push(`${rel}:${i.line}  ${i.snippet}`);
+    for (const i of findClickableWithoutKeyboard(src)) badClick.push(`${rel}:${i.line}  ${i.snippet}`);
+  }
+  assert.deepEqual(badTab, [], `正数 tabindex（破坏自然 Tab 顺序）：\n${badTab.join("\n")}`);
+  assert.deepEqual(
+    badClick,
+    [],
+    `可点击但键盘到不了的非交互元素（换成 <button> 或补 role+tabindex+键盘处理）：\n${badClick.join("\n")}`,
+  );
+  console.log(`· 全量无障碍补充扫描：${files.length} 个 .vue，tab 顺序与键盘出口 0 缺口`);
 });
