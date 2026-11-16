@@ -249,7 +249,21 @@ cd src-tauri && cargo test --features bluetooth incoming_share
 
 # 读取端接线判据（落地区 → 队列 → 面板）
 node --experimental-strip-types --test src/utils/incomingShareWiring.test.ts
+# ↑ 含**三端协议一致性**（2026-11-16 补）：Swift / C# 写入端的 payload 字段名、
+#   目录名、文件名形状、格式版本、id 同源，逐项对着 Rust 读取端核对。
+#   这一类漂移两端各自都能编译，只有三端放一起比才抓得到。
 ```
+
+## 10. 已修的协议漂移（2026-11-16）
+
+- **Windows 写入端的 payload 字段名**：C# 的 `Payload` 属性原来是 `Url/Title/Text`
+  （PascalCase），`JsonSerializer.Serialize` 默认就输出 PascalCase，而读取端
+  `IncomingPayload` 带 `#[serde(rename_all = "camelCase")]` ⇒ 文件会被当成
+  「三个字段都缺」直接拒收。现已用 `[JsonPropertyName("url"|"title"|"text")]`
+  显式钉住小写名（`ShareTarget.cs`），并由
+  `incomingShareWiring.test.ts::三端一致` 判据钉住 —— 去掉任一注解即红。
+
+**这仍是源码层修复**：没有签名证书，两个写入端依旧产不出可安装的包（见 §7/§8）。
 
 改动实现时同步本文哪一节：协议字段改 §3、限额改 §3.4、读取端校验改 §4、
 平台骨架改 §6、红线改 §5。

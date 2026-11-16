@@ -111,3 +111,83 @@ test("触发：启动与窗口聚焦都会补扫一次", () => {
   // 监听必须能摘掉（仓库有整类「注册了却摘不掉」的缺陷）。
   assert.match(panel, /removeEventListener\("focus"/, "focus 监听没有卸载路径");
 });
+
+// ---------------- 三端协议一致性：写入端（Swift / C#）↔ 读取端（Rust） ----------------
+//
+// 背景（2026-11-16）：Windows 写入端的 `Payload` 类用 PascalCase 属性
+// （Url/Title/Text），`JsonSerializer.Serialize` 默认就输出 PascalCase，
+// 而 Rust 读取端 `IncomingPayload` 带 `#[serde(rename_all = "camelCase")]` ⇒
+// **两边字段名对不上**，文件会被当成「三个字段都缺」拒收。
+// 两边各自都能编译/通过判据，只有把三端放在一起比才抓得到 ⇒ 这就是这一节的价值。
+
+test("三端一致：payload 字段名必须是小写 url/title/text", () => {
+  const swift = read("platform/macos-share-extension/ShareViewController.swift");
+  const cs = read("platform/windows-share-target/ShareTarget.cs");
+  const rust = read(RUST_PROTOCOL);
+
+  // ① 读取端（真源）：camelCase + 三个字段。
+  assert.match(
+    rust,
+    /#\[serde\(rename_all = "camelCase"\)\][\s\S]{0,200}pub struct IncomingPayload/,
+    "读取端不再用 camelCase ⇒ 下面两端的小写字段名就不再正确（要一起改）",
+  );
+  for (const key of ["url", "title", "text"]) {
+    assert.match(rust, new RegExp(`pub ${key}: Option<String>`), `读取端字段 ${key} 不见了`);
+  }
+
+  // ② macOS 写入端：手写字面量，必须是小写键。
+  for (const key of ["url", "title", "text"]) {
+    assert.match(
+      swift,
+      new RegExp(`"${key}"\\s*:`),
+      `Swift 写入端没有小写键 "${key}"（会跟读取端对不上）`,
+    );
+  }
+
+  // ③ Windows 写入端：属性是 PascalCase ⇒ 必须靠 JsonPropertyName 显式钉成小写。
+  //    只断言存在三个 JsonPropertyName 还不够（名字写错也会过）⇒逐个核对。
+  for (const key of ["url", "title", "text"]) {
+    assert.match(
+      cs,
+      new RegExp(`\\[JsonPropertyName\\("${key}"\\)\\]`),
+      `C# 写入端没有 [JsonPropertyName("${key}")] ⇒ System.Text.Json 会输出 PascalCase，读取端不认`,
+    );
+  }
+  assert.match(
+    cs,
+    /using System\.Text\.Json\.Serialization;/,
+    "C# 写入端没导入 JsonPropertyName 所在的命名空间",
+  );
+});
+
+test("三端一致：落地区目录名与文件名前缀/后缀必须是 incoming-shares / incoming-*.json", () => {
+  const swift = read("platform/macos-share-extension/ShareViewController.swift");
+  const cs = read("platform/windows-share-target/ShareTarget.cs");
+  const rust = read(RUST_PROTOCOL);
+  // 读取端是真源
+  assert.match(rust, /INCOMING_DIR_NAME:\s*&str\s*=\s*"incoming-shares"/);
+  assert.match(rust, /FILE_PREFIX:\s*&str\s*=\s*"incoming-"/);
+  assert.match(rust, /FILE_SUFFIX:\s*&str\s*=\s*"\.json"/);
+  // 写入端必须逐字对齐
+  assert.match(swift, /dropFolderName\s*=\s*"incoming-shares"/, "Swift 落地区目录名不一致");
+  assert.match(swift, /"incoming-\\\(identifier\)\.json"/, "Swift 文件名形状不一致");
+  assert.match(cs, /DropFolderName\s*=\s*"incoming-shares"/, "C# 落地区目录名不一致");
+  assert.match(cs, /\$"incoming-\{id\}\.json"/, "C# 文件名形状不一致");
+});
+
+test("三端一致：格式版本 v=1 与 id 必须与文件名同源", () => {
+  const swift = read("platform/macos-share-extension/ShareViewController.swift");
+  const cs = read("platform/windows-share-target/ShareTarget.cs");
+  const rust = read(RUST_PROTOCOL);
+  assert.match(rust, /FORMAT_VERSION:\s*u32\s*=\s*1/);
+  assert.match(swift, /"v":\s*1/, "Swift 写的格式版本不是 1");
+  assert.match(cs, /\bv\s*=\s*1\b/, "C# 写的格式版本不是 1");
+  // id：文件名里的那段就是内容里的 id（两端都要同一个变量）
+  // 两端都得先生成一个 id 变量，内容 id 与文件名 id 都引用同一个变量（不写死两遍）。
+  assert.match(swift, /let identifier = UUID\(\)\.uuidString/, "Swift 没有生成 id");
+  assert.match(swift, /"id":\s*identifier/, "Swift 内容里的 id 不是那个变量");
+  assert.match(swift, /incoming-\\\(identifier\)\.json/, "Swift 文件名里的 id 不是那个变量");
+  assert.match(cs, /var id = Guid\.NewGuid\(\)\.ToString\("N"\)/, "C# 没有生成 id");
+  assert.match(cs, /\bid,\s*$/m, "C# 内容里的 id 不是那个变量");
+  assert.match(cs, /incoming-\{id\}\.json/, "C# 文件名里的 id 不是那个变量");
+});
