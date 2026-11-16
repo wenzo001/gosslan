@@ -80,6 +80,8 @@ interface TopoNode {
   pathKind?: PathKind;
   hop?: number;
   rtt?: number | null;
+  /** 该节点是否显示文字标签（规模大时按密度稀疏）。 */
+  showLabel?: boolean;
   x?: number;
   y?: number;
   vx?: number;
@@ -186,6 +188,10 @@ const stats = computed(() => ({
 const listItems = computed<TopologyListItem[]>(
   () => filterTopologyList(buildTopologyList(topologyInput.value), listFilter.value),
 );
+/** 列表一次渲染多少行（1000 个设备全渲染太重 ⇒ 先给一段，再「显示更多」）。 */
+const LIST_PAGE = 120;
+const listShown = ref(LIST_PAGE);
+const listVisible = computed(() => listItems.value.slice(0, listShown.value));
 /** 数据是否可能已过期（最近一次刷新失败 ⇒ 保留上次成功视图但要说明）。 */
 const stale = computed(() => loadError.value !== null);
 
@@ -257,7 +263,7 @@ function drawNode(node: TopoNode, ctx: CanvasRenderingContext2D, scale: number) 
   // 节点几何**全部除以 scale**：屏幕上恒为设计尺寸（18/12/11px），不随自动缩放膨胀 ——
   // 否则只有一个节点时 self 会被画成 ~144px 大圆，把空态提示压在身上（2026-11-11 用户实报）。
   const s = Math.max(Number(scale) || 1, 0.1);
-  const r = (node.kind === "self" ? 18 : 11) / s;
+  const r = (node.kind === "self" ? 18 : nodeRadius.value) / s;
   const x = node.x ?? 0;
   const y = node.y ?? 0;
   ctx.save();
@@ -286,17 +292,20 @@ function drawNode(node: TopoNode, ctx: CanvasRenderingContext2D, scale: number) 
     ctx.textBaseline = "middle";
     ctx.fillText((node.label || "?").slice(0, 1).toUpperCase(), x, y + 0.5 / s);
   }
-  // 名称与链路徽标：只画两层小字，避免图面被文字淹没。
+  // 名称与链路徽标：只画两层小字；**密度大时只标一部分**（其余是纯点），
+  // 否则 1000 个设备的图面会被文字淹没、也拖慢绘制。
   const labelY = y + r + 10 / s;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  ctx.font = `500 ${10 / scale}px sans-serif`;
-  ctx.fillStyle = p.text;
-  ctx.fillText(clip(node.label, 10), x, labelY);
-  if (node.kind !== "self") {
-    ctx.font = `${9 / scale}px sans-serif`;
-    ctx.fillStyle = linkStyle[node.pathKind ?? "unknown"].color;
-    ctx.fillText(linkText(node.pathKind, node.hop), x, labelY + 12 / scale);
+  if (node.kind === "self" || node.showLabel !== false) {
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.font = `500 ${10 / scale}px sans-serif`;
+    ctx.fillStyle = p.text;
+    ctx.fillText(clip(node.label, 10), x, labelY);
+    if (node.kind !== "self") {
+      ctx.font = `${9 / scale}px sans-serif`;
+      ctx.fillStyle = linkStyle[node.pathKind ?? "unknown"].color;
+      ctx.fillText(linkText(node.pathKind, node.hop), x, labelY + 12 / scale);
+    }
   }
   ctx.restore();
 }
@@ -448,30 +457,33 @@ function applyLayout(nodes: TopoNode[], w: number, h: number) {
     n.x = p.x;
     n.y = p.y;
   }
+  // 规模自适应（方案 §超多节点：有界渲染）：
+  // · 节点半径跟着格子走 ⇒ 档位越高点越小，密集时也不互相压死；
+  // · 标签按密度稀疏 ⇒ 1000 个设备时只标一小部分，其余是纯点（图面不被文字淹没）。
+  nodeRadius.value = Math.max(3.5, Math.min(11, l.cell * 0.32));
+  const peerNodes = nodes.filter((n) => n.kind !== "self");
+  labelEvery.value = Math.max(1, Math.ceil(peerNodes.length / 18));
+  peerNodes.forEach((n, i) => {
+    n.showLabel = i % labelEvery.value === 0;
+  });
 }
 
 /** 节点对象按 id **持久化**：graphData 重算时复用同一对象（只改字段），d3 就不会
  *  重新初始化坐标 —— 这是"增量更新、老节点不大动"的根基。 */
 const nodeStore = new Map<string, TopoNode>();
 
-/** 图上实际放得下的设备数（超出的只在列表里 —— 方案 §超多节点：有界渲染）。 */
-const shownPeerCount = ref(0);
+/** 当前节点半径（随档位自适应）。 */
+const nodeRadius = ref(11);
+/** 标签稀疏度：每 labelEvery 个节点标一个名字。 */
+const labelEvery = ref(1);
 
 function buildGraphData(): { nodes: TopoNode[]; links: TopoLink[] } {
   const spec = topoSpec.value;
   const w = host.value?.clientWidth ?? 800;
   const h = host.value?.clientHeight ?? 600;
-  // 先按**全部**节点算一次布局，只为拿 maxNodes（图上放不下多少个）——
-  // 放不下的设备留在列表里，不进画布（否则会被画到屏幕外、点不到）。
-  const probe = layoutNeighborhood(
-    spec.nodes.map((n) => ({ id: n.id, ts: n.ts ?? 0, self: n.kind === "self" })),
-    w,
-    h,
-  );
-  const peerIds = spec.nodes.filter((n) => n.kind !== "self").map((n) => n.id);
-  const keep = new Set([SELF_ID, ...peerIds.slice(0, probe.maxNodes)]);
-  shownPeerCount.value = Math.min(peerIds.length, probe.maxNodes);
-  const nodes = spec.nodes.filter((sp) => keep.has(sp.id)).map((sp) => {
+  // 布局：分档网格（k×k）。**全部设备都进图**（常规 50~100、极限 500~1000 都装得下，
+  // 格子随档位变小）；节点半径与标签密度随档位自适应（见 applyLayout / drawNode）。
+  const nodes = spec.nodes.map((sp) => {
     let n = nodeStore.get(sp.id);
     if (!n) {
       n = sp;
@@ -482,9 +494,9 @@ function buildGraphData(): { nodes: TopoNode[]; links: TopoLink[] } {
     return n;
   });
   for (const id of [...nodeStore.keys()]) {
-    if (!keep.has(id)) nodeStore.delete(id);
+    if (!spec.nodes.some((sp) => sp.id === id)) nodeStore.delete(id);
   }
-  const links = spec.links.filter((l) => keep.has(l.source) && keep.has(l.target)).map((l) => ({ ...l }));
+  const links = spec.links.map((l) => ({ ...l }));
   applyLayout(nodes, w, h);
   return { nodes, links };
 }
@@ -704,7 +716,7 @@ const selectedRole = computed(() => {
         </div>
         <ul class="flex flex-col gap-1">
           <li
-            v-for="item in listItems"
+            v-for="item in listVisible"
             :key="item.id"
             class="flex items-center gap-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-2"
           >
@@ -741,6 +753,14 @@ const selectedRole = computed(() => {
         <p v-if="listItems.length === 0" class="mt-6 text-center text-caption text-[var(--gosslan-text-2)]">
           {{ t("topology.list.empty") }}
         </p>
+        <button
+          v-else-if="listItems.length > listShown"
+          type="button"
+          class="tap-safe mt-2 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] py-1.5 text-caption text-[var(--gosslan-text-2)]"
+          @click="listShown += LIST_PAGE"
+        >
+          {{ t("topology.list.more", { n: listItems.length - listShown }) }}
+        </button>
       </div>
 
       <!-- 路径摘要（**图外**）：公网中转 / Mesh 是**路径类型**，不是设备清单；
@@ -762,11 +782,7 @@ const selectedRole = computed(() => {
         <p v-if="summaryOpen" class="mt-1.5 leading-relaxed">
           {{ t("topology.summary.explain") }}
         </p>
-        <!-- 图上放不下的设备（超多节点）：说清楚它们在哪，不假装不存在。 -->
-        <p v-if="stats.online > shownPeerCount" class="mt-1 leading-relaxed" data-topo-overflow>
-          {{ t("topology.summary.moreInList", { n: stats.online - shownPeerCount }) }}
-          <button type="button" class="ml-1 underline" @click="view = 'list'">{{ t("topology.view.list") }}</button>
-        </p>
+
       </div>
 
       <!-- 图例：节点种类 + 路径类型（**没有「中转节点」这一项** —— 中转不是设备）。

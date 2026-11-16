@@ -196,7 +196,7 @@ test("邻域布局：本机是侧边/底部锚点，设备节点向另一侧展�
   }
 });
 
-test("邻域布局：新节点只追加，老节点一个像素都不动", () => {
+test("邻域布局：同一档内新节点只追加，老节点一个像素都不动；跨档才重排", () => {
   const base = [
     { id: "__self__", ts: 0, self: true },
     { id: "p1", ts: 1 },
@@ -208,6 +208,7 @@ test("邻域布局：新节点只追加，老节点一个像素都不动", () =>
     1000,
     600,
   );
+  assert.equal(before.tier, after.tier, "同一档内档位不许变");
   for (const id of ["__self__", "p1", "p2"]) {
     assert.deepEqual(
       after.points.get(id),
@@ -215,6 +216,17 @@ test("邻域布局：新节点只追加，老节点一个像素都不动", () =>
       `${id} 的位置不能因为新节点加入而改变`,
     );
   }
+  // 跨档（数量超过当前档容量）⇒ **允许**重排，但必须换更大的档（格子更小）。
+  const many = layoutNeighborhood(
+    [
+      { id: "__self__", ts: 0, self: true },
+      ...Array.from({ length: 40 }, (_, i) => ({ id: `p${i}`, ts: i + 1 })),
+    ],
+    1000,
+    600,
+  );
+  assert.ok(many.tier > before.tier, "数量涨上去必须换更大的档位（否则装不下）");
+  assert.ok(many.maxNodes >= 40, "档位容量必须装得下当前数量");
 });
 
 test("邻域布局：同环节点不重叠（最小间距大于节点直径）", () => {
@@ -274,4 +286,30 @@ test("邻域布局：网格云铺满可用区域（不留大块空白）", () =>
     used > 600,
     `1000 宽的画布上设备只占了 ${used.toFixed(0)}px ⇒ 大片留白（review 实测的旧毛病）`,
   );
+});
+
+test("邻域布局：50~100 是常规量级、500~1000 是极限量级，都要装得下且不出画布", () => {
+  // 用户 2026-11-16：节点多的时候（50~100 常规、500~1000 极限）渲染必须扛得住。
+  for (const [w, h] of [[1000, 600], [1440, 900], [390, 780]] as const) {
+    for (const n of [10, 50, 100, 500, 1000]) {
+      const l = layoutNeighborhood(
+        [
+          { id: "__self__", ts: 0, self: true },
+          ...Array.from({ length: n }, (_, i) => ({ id: `p${i}`, ts: i + 1 })),
+        ],
+        w,
+        h,
+      );
+      assert.ok(l.maxNodes >= n, `${n} 个设备装不下（档位容量只有 ${l.maxNodes}）`);
+      for (const id of [...l.points.keys()]) {
+        const p = l.points.get(id)!;
+        assert.ok(
+          p.x >= -w / 2 && p.x <= w / 2 && p.y >= -h / 2 && p.y <= h / 2,
+          `${n} 个设备时 ${id} 超出画布（${w}x${h}）：(${p.x.toFixed(0)}, ${p.y.toFixed(0)})`,
+        );
+      }
+      // 格子越小 ⇒ 节点半径要跟着缩（否则密集档位互相压死）。
+      assert.ok(l.cell > 0, "格子尺寸必须现算");
+    }
+  }
 });
