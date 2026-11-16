@@ -2085,6 +2085,7 @@ export const enUS: MessageDict = {
   "topology.summary.relay": "{n} relayed path(s)",
   "topology.summary.mesh": "{n} reachable via Mesh",
   "topology.summary.none": "No relayed paths right now",
+  "topology.summary.moreInList": "{n} more devices do not fit on the canvas; see the list",
   "topology.summary.explain": "Public relay and Mesh forwarding are **path types**, not devices: this device cannot see the relay server or the intermediate nodes. This lists the paths observed from this device, not the whole network.",
   "topology.legend.self": "This device (viewpoint)",
   "topology.legend.friend": "Friend",
