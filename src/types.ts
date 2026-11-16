@@ -1090,6 +1090,13 @@ export interface DeviceAuthPrompt {
    * **默认全关**：确认页要逐项让用户勾，不预勾。
    */
   requested_scopes: string[];
+  /**
+   * **同一个 RP 上次**被用户点头允许过的 scope（记忆，2026-11-16）。
+   *
+   * 确认页据此**预勾**（省掉同一应用重复表态）；只影响勾选的默认状态，
+   * 不改变「不勾就不给」。新 RP / 首次授权仍然是全关。
+   */
+  remembered_scopes: string[];
   expires_at_ms: number;
   nickname_default: boolean;
 }

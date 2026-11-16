@@ -10,6 +10,7 @@ import {
   deviceAuthStatusKey,
   disclosedClaims,
   guardClear,
+  rememberedScopes,
   guardConsume,
   guardRefresh,
   guardSetPending,
@@ -127,4 +128,16 @@ test("guard：新事务到达后旧批准结果不得清掉新确认页（#8 竞
   // req-old 的批准这时才返回：代际已变 ⇒ 不许清掉 req-new 的确认页。
   assert.equal(guardConsume(g, capturedOld), false);
   assert.equal(g.pending?.request_id, "req-new");
+});
+
+// ---------------- 同一个 RP 的重复登录不该重复表态（2026-11-16） ----------------
+
+test("预勾只取「上次允许过 ∩ 本次请求」——不跨应用、不越过请求", () => {
+  assert.deepEqual(rememberedScopes(["friends.read"], ["friends.read"]), ["friends.read"]);
+  // 本次没请求的那一项不许预勾（否则会送出用户这次没要的数据）
+  assert.deepEqual(rememberedScopes(["friends.read"], ["events.metadata"]), []);
+  // 空/缺省 ⇒ 全关（首次授权仍然是「默认全关、逐项点头」）
+  assert.deepEqual(rememberedScopes([], ["friends.read"]), []);
+  assert.deepEqual(rememberedScopes(null, ["friends.read"]), []);
+  assert.deepEqual(rememberedScopes(undefined, undefined), []);
 });

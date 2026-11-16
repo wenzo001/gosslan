@@ -125,6 +125,11 @@ pub struct DeviceAuthPrompt {
     pub requested_claims: Vec<String>,
     /// 本次事务请求的交付范围（**默认全关**：前端要逐项让用户勾，不预勾）。
     pub requested_scopes: Vec<String>,
+    /// **同一个 RP 上次**被用户点头允许过的 scope（记忆，2026-11-16）。
+    ///
+    /// 只用来给确认页**预勾**（省掉重复表态），不改变「不勾就不给」；
+    /// 新 RP / 首次授权仍然是「默认全关、逐项点头」。
+    pub remembered_scopes: Vec<String>,
     /// 过期时间（Unix ms）。
     pub expires_at_ms: i64,
     /// 昵称是否默认勾选（恒 false：最小披露，用户主动允许才共享）。
@@ -174,6 +179,8 @@ pub struct PendingDeviceAuth {
     pub rp_origin: String,
     pub expires_at_ms: i64,
     pub generation: u64,
+    /// **同一个 RP 上次**被允许过的 scope（记忆）：确认页预勾用（见 `DeviceAuthPrompt`）。
+    pub remembered_scopes: Vec<String>,
     /// 本事务的**幂等键**（插入时生成一次，随事务持久化在内存态，重试全程复用）。
     /// 为什么：断言 `jti` 与回写 `Idempotency-Key` 都必须跨重试稳定，否则网络重试会被 RP
     /// 当成两次不同决策（重复登记公钥 / 重复建会话）。放在 pending 上，prepare/sign/post
@@ -211,6 +218,7 @@ impl PendingDeviceAuth {
             account_hint: self.request.account_hint.clone(),
             requested_claims: self.request.requested_claims.clone(),
             requested_scopes: self.request.requested_scopes.clone(),
+            remembered_scopes: self.remembered_scopes.clone(),
             expires_at_ms: self.expires_at_ms,
             nickname_default: false,
         }

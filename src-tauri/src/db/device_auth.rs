@@ -76,6 +76,61 @@ pub fn delete_pending_idempotency(conn: &Connection, pending_key: &str) -> Resul
     crate::db::delete_setting(conn, &idempotency_setting_key(pending_key))
 }
 
+// ---------------- 「上次允许了什么」的记忆（按 RP，2026-11-16） ----------------
+//
+// ## 它记的是什么、不是什么
+//
+// **记**：同一个 RP 上一次被用户**点头允许过**的交付范围（scope）。
+// **不记**：任何授权本身 —— 每一笔事务的授权仍然是「这一次点头才算数」。
+//
+// ## 为什么需要
+//
+// 用户 2026-11-16：「快捷登录一定要简单，不要让用户在界面上操作很多」。
+// 审计发现：同一 RP 再次登录时，因为 scope **默认全关且不记忆**，用户要重新勾一遍
+// （1~3 次点击）才能点「批准」—— 同一个应用、同一批数据，每次都要重新表态。
+//
+// ## 边界（安全侧）
+//
+// - 只影响**勾选的默认状态**，不改变「不勾就不给」；
+// - 只在**同一个 RP** 生效（键含 rp_origin）⇒ 换个应用不会继承；
+// - 首次仍然「默认全关、逐项点头」⇒ 新的一次授权永远不会被默认掉；
+// - 撤销该 RP 的授权 ⇒ 这条记忆一起删掉。
+//
+// ## 存哪
+//
+// `settings` 表（键值对）—— **不动表结构**（SQLite schema 属 Frozen Core）。
+
+/// 记忆的键前缀（后面拼 rp_origin）。
+pub const GRANT_MEMORY_PREFIX: &str = "device_auth_grant:";
+
+/// 该 RP 的记忆键。
+pub fn grant_memory_key(rp_origin: &str) -> String {
+    format!("{GRANT_MEMORY_PREFIX}{rp_origin}")
+}
+
+/// 读该 RP 上次被允许的 scope 列表（读失败上抛，不折叠成「没允许过」）。
+pub fn load_grant_memory(conn: &Connection, rp_origin: &str) -> Result<Vec<String>> {
+    let Some(raw) = crate::db::get_setting_checked(conn, &grant_memory_key(rp_origin))? else {
+        return Ok(Vec::new());
+    };
+    Ok(serde_json::from_str::<Vec<String>>(&raw).unwrap_or_default())
+}
+
+/// 记住该 RP 这次被允许的 scope（空列表 = 清掉记忆）。
+pub fn save_grant_memory(conn: &Connection, rp_origin: &str, scopes: &[String]) -> Result<()> {
+    let key = grant_memory_key(rp_origin);
+    if scopes.is_empty() {
+        return crate::db::delete_setting(conn, &key);
+    }
+    let value = serde_json::to_string(scopes).unwrap_or_else(|_| "[]".into());
+    crate::db::set_setting(conn, &key, &value)
+}
+
+/// 清掉该 RP 的记忆（撤销授权时用）。
+pub fn clear_grant_memory(conn: &Connection, rp_origin: &str) -> Result<()> {
+    crate::db::delete_setting(conn, &grant_memory_key(rp_origin))
+}
+
 // ---------------- 外部应用设备认证绑定（2026-11-13，Phase 2） ----------------
 
 use crate::crypto;

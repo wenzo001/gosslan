@@ -18,6 +18,7 @@ import {
   deviceAuthSecondsLeft,
   disclosedClaims,
   grantedScopes,
+  rememberedScopes,
 } from "@/utils/deviceAuth";
 import { createInitScope } from "@/utils/initScope";
 import { t } from "@/i18n";
@@ -26,9 +27,15 @@ const store = useDeviceAuthStore();
 const app = useAppStore();
 const allowNickname = ref(false);
 const now = ref(Date.now());
-// 用户**实际勾选**的交付范围（scope）。**默认全关**：新事务到达时清空，
-// 不预勾 —— scope 必须用户点头才有。
+// 用户**实际勾选**的交付范围（scope）。
+//
+// **默认全关**：新事务到达时清空 —— scope 必须用户点头才有。
+// 例外：**同一个 RP 上次**点头允许过的几项会被**预勾**（记忆，2026-11-16）：
+// 用户要求「快捷登录要简单，不要让用户在界面上操作很多」⇒ 同一个应用不该每次
+// 都要求重新表态。预勾只影响**默认勾选状态**，用户随时能改；不勾就不给。
 const scopeChecks = ref<string[]>([]);
+/** 本次预勾了哪些（用来在页面上说明「沿用上次」）。 */
+const preCheckedScopes = ref<string[]>([]);
 
 // 订阅与定时器都交给 initScope 成对拆除（判据 ㊷：不许手工卸载句柄）。
 const scope = createInitScope();
@@ -36,7 +43,10 @@ onMounted(() => {
   void api.onDeviceAuthRequest((p) => {
     allowNickname.value = false;
     // 新事务 ⇒ 上一笔的勾选**不带过来**（scope 是本次事务的授权）。
-    scopeChecks.value = [];
+    // 但**同一个 RP 上次**允许过的会被预勾（记忆）⇒ 第二次登录只需点一次「批准」。
+    const remembered = rememberedScopes(p.remembered_scopes, p.requested_scopes);
+    preCheckedScopes.value = remembered;
+    scopeChecks.value = [...remembered];
     store.setPending(p);
   }).then((un) => scope.onDispose(un));
   // 清数据（clearAllData / resetAfterDataCleared 经后端广播 data-cleared）一并清掉确认页（#8）：
@@ -175,6 +185,14 @@ function onClose() {
         </div>
         <p class="mt-1 text-meta leading-relaxed text-[var(--gosslan-text-2)]">
           {{ t("deviceAuth.scopeHint") }}
+        </p>
+        <!-- 预勾说明：明写「沿用上次」，别让用户以为是自己刚勾的（可改）。 -->
+        <p
+          v-if="preCheckedScopes.length"
+          class="mt-1 text-meta leading-relaxed text-[var(--gosslan-text-2)]"
+          data-device-auth-remembered
+        >
+          {{ t("deviceAuth.scopeRememberedHint") }}
         </p>
       </div>
 
