@@ -9667,3 +9667,17 @@ test("「我的网络」：不画合成中转节点、页面名说清「本机�
     "中英文提示键都要在（公网中转与 Mesh 各一条）",
   );
 });
+
+test("输入框聚焦只用边框变色：不许加外圈/光晕（同一套标准）", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "..", "src", "style.css"), "utf8");
+  const rule = /\.gosslan-composer:focus-within\s*\{([^}]*)\}/.exec(css);
+  assert.ok(rule, "找不到输入框的聚焦规则（改名就重钉这条）");
+  const body = rule[1];
+  assert.match(body, /border-color:\s*var\(--gosslan-primary\)/, "聚焦时必须改边框颜色");
+  assert.ok(
+    !/box-shadow/.test(body),
+    "聚焦不许加外圈/光晕（用户 2026-11-16：太亮太夸张）—— 只改边框颜色，全应用一套标准",
+  );
+  // 空输入框点一下的那条选区带要抹掉
+  assert.match(css, /\.gosslan-composer-editor:empty::selection/, "空输入框的选区带没抹掉");
+});
