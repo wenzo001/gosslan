@@ -29,7 +29,7 @@ import type { MessageRecord } from "@/types";
 import type { ChatContext } from "./runtime";
 
 export function createNotificationsModule(ctx: ChatContext) {
-  const { app, activeConv, totalUnread, groups, myDeviceId, nicknameOf, groupTodoRows } = ctx.state;
+  const { app, activeConv, totalUnread, groups, myDeviceId, nicknameOf, groupTodoRows, conversations } = ctx.state;
   const { send, openConversation, locateMessageInConv } = ctx.api;
 
   let notifSeq = 1;
@@ -142,6 +142,24 @@ export function createNotificationsModule(ctx: ChatContext) {
    * `flushNotifications`（去抖合并后）调；强提醒在 `handleIncomingRemind`
    * （通知命令返回 sent=true 后）调。两处都不许直接写 api.requestAttention。
    */
+  /**
+   * 托盘图标被点 ⇒ 跳到**第一条未读**的会话（用户 2026-11-16）。
+   *
+   * 为什么要有：任务栏图标多的时候，用户是**看着闪的那个**点进去的 ⇒
+   * 期望是「直接看到那条新消息」，而不是「窗口开了，还要自己找哪条没读」。
+   */
+  function openFirstUnreadConversation() {
+    const first = conversations.value.find((c) => (c.unread ?? 0) > 0);
+    if (!first) return;
+    void openConversation(first.id);
+    activeConv.value = first.id;
+  }
+
+  /** 订阅托盘事件（由 store 的初始化调用一次）。 */
+  function subscribeTrayEvents(): Promise<() => void> {
+    return api.onTrayOpenUnread(() => openFirstUnreadConversation());
+  }
+
   function requestAttentionOnce(urgent: boolean) {
     if (app.isMobile) return; // 移动端没有任务栏/Dock 可闪（命令本身也是空实现）
     void api.requestAttention(urgent).catch(() => {
@@ -575,6 +593,8 @@ export function createNotificationsModule(ctx: ChatContext) {
     flushNotifications,
     requestAttentionOnce,
     pushUnreadBadge,
+    subscribeTrayEvents,
+    openFirstUnreadConversation,
     notifyBody,
     maybeNotify,
     showNudgeNotice,

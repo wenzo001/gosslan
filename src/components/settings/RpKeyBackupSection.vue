@@ -151,8 +151,10 @@ const addable = computed(() => preview.value?.added ?? 0);
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
-      <SecondaryBtn size="dense" shrink @click="openExport">{{ t("deviceAuth.backup.export") }}</SecondaryBtn>
-      <SecondaryBtn size="dense" shrink @click="pickImport">{{ t("deviceAuth.backup.import") }}</SecondaryBtn>
+      <!-- 平时就要看得出是按钮（用户 2026-11-16：「只有 hover 的时候才能看出是按钮」）：
+           dense 档的次要按钮底色透明 ⇒ 去掉 dense，用默认档（有描边、有底）。 -->
+      <SecondaryBtn shrink @click="openExport">{{ t("deviceAuth.backup.export") }}</SecondaryBtn>
+      <SecondaryBtn shrink @click="pickImport">{{ t("deviceAuth.backup.import") }}</SecondaryBtn>
     </div>
 
     <!-- 导出：口令两遍 -->

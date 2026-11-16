@@ -109,6 +109,12 @@ export const api = {
    */
   onDataCleared: (cb: () => void) => listen("data-cleared", () => cb()),
   /**
+   * 托盘图标被点（任务栏里闪的那个）⇒ **直接进第一条未读会话**。
+   *
+   * 用户 2026-11-16：「点击那个闪烁的图标，就是直接进入第一个信息就是未读的新新消息」。
+   */
+  onTrayOpenUnread: (cb: () => void) => listen("tray-open-unread", () => cb()),
+  /**
    * 只订阅 `message-received`（**窄**封装）。
    *
    * 给独立窗口用：群任务窗口只关心"我这个会话来了新消息"，不能跑 `bindEvents`（那是主窗口

@@ -1051,12 +1051,20 @@ test("点自己的头像会进入资料页（不是 return 掉）", () => {
     join(import.meta.dirname, "..", "components", "ChatWindow.vue"),
     "utf8",
   );
+  // 2026-11-16：这段逻辑抽到了 `composables/useOpenProfile.ts`（**全应用一个入口**，
+  // 免得别处只能层层 emit、于是「点了没反应」）⇒ 判据跟着搬。
   const fn = /function openSenderProfile\(senderId: string\) \{([\s\S]*?)\n\}/.exec(src);
   assert.ok(fn, "openSenderProfile 不见了（改名就重钉这条）");
-  const body = fn[1];
-  assert.ok(!/senderId === app\.device\?\.device_id\) return;/.test(body),
-    "自己那一支又被 return 掉了 ⇒ 点自己头像没反应");
-  assert.match(body, /senderId === app\.device\?\.device_id[\s\S]{0,240}?router\.push\(\{ name: app\.isMobile \? "profile" : "settings" \}\)/,
+  assert.match(fn[1], /openProfile\(senderId\)/, "ChatWindow 的头像没有走统一的那个入口");
+  const comp = readFileSync(
+    join(import.meta.dirname, "..", "composables", "useOpenProfile.ts"),
+    "utf8",
+  );
+  assert.ok(
+    !/id === app\.device\?\.device_id\) return;/.test(comp),
+    "自己那一支又被 return 掉了 ⇒ 点自己头像没反应",
+  );
+  assert.match(comp, /id === app\.device\?\.device_id[\s\S]{0,240}?router\.push\(\{ name: app\.isMobile \? "profile" : "settings" \}\)/,
     "自己那一支没有跳到资料页（移动端 profile / 桌面 settings）");
 });
 // 原生 <select> 已迁到 Reka。正控用**真实组件**注入，证明扫描器确实读的是模板：
@@ -5647,9 +5655,21 @@ test("聊天头像进入好友资料，且群内非好友有兜底", () => {
   const chat = readFileSync(join(import.meta.dirname, "..", "components", "ChatWindow.vue"), "utf8");
   assert.match(item, /emit\(['"]open-profile['"], message\.sender_id\)/, "消息头像没有上抛资料意图");
   assert.match(chat, /function openSenderProfile\(/, "ChatWindow 没有接头像资料");
-  assert.match(chat, /router\.push\(\{ name: "friend", params: \{ friendId: senderId \} \}\)/,
-    "头像没有进入通讯录同一个好友资料路由");
   assert.match(chat, /if \(isGroup\.value\) membersOpen\.value = true/, "群内非好友头像没有兜底");
+  // 好友资料路由现在住在统一入口里（2026-11-16 抽出 composable）。
+  const opener = readFileSync(
+    join(import.meta.dirname, "..", "composables", "useOpenProfile.ts"),
+    "utf8",
+  );
+  assert.match(opener, /router\.push\(\{ name: "friend", params: \{ friendId: id \} \}\)/,
+    "头像没有进入通讯录同一个好友资料路由");
+  // 全应用只有这一个入口：别的地方不许再自己写一份「跳资料」的逻辑。
+  const members = readFileSync(
+    join(import.meta.dirname, "..", "components", "GroupMemberPanel.vue"),
+    "utf8",
+  );
+  assert.match(members, /useOpenProfile\(\)/, "群成员面板没有用统一的那个入口（点了会没反应）");
+  assert.match(members, /@click="openProfile\(row\.id\)"/, "群成员的头像/名字点了没反应");
 });
 
 test("预览失败有 10 秒负缓存，避免群历史缺文件时重试风暴", () => {
