@@ -2113,6 +2113,10 @@ export const zhCN: MessageDict = {
 
 
   // ---- 网络拓扑（NetworkTopology）----
+  "bot.notifyTitle": "通知机器人",
+  "bot.notifyBody": "收到 {n} 条新通知（点开在设置里看）",
+  "bot.curlSecretPlaceholder": "发送密钥",
+  "bot.curlSampleBody": "构建完成",
   "bot.title": "通知机器人",
   "bot.footer": "外部系统（CI、脚本、服务器）可以往这儿发通知：一个机器人 = 一个外部消息入口。多个发送方可以共用同一个机器人。",
   "bot.privacy": "注意：通知服务会看到你收到的内容，并在网关离线期间暂存它。它是你自托管的服务，请只投递你愿意让它看到的消息。",

@@ -3,6 +3,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   BOT_MESSAGE_ALLOWED_TAGS,
   botMessageToHtml,
@@ -71,4 +73,52 @@ test("空正文渲染成空串（界面据此不画正文区）", () => {
   assert.equal(botMessageToHtml("", "markdown"), "");
   assert.equal(botMessageToHtml("   ", "markdown"), "");
   assert.equal(botMessageToHtml(null, "markdown"), "");
+});
+
+// ---------------- 后台轮询：通知要能自动进来（2026-11-16） ----------------
+
+test("机器人消息能自动进来：后端有轮询 worker，前端订阅它的刷新事件", () => {
+  // `src/utils` ⇒ 上两级是仓库根；`src` 是源码根。
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const srcRoot = join(repoRoot, "src");
+  const read = (p: string) => readFileSync(join(srcRoot, p), "utf8");
+
+  // ① 后端：worker 存在 + 已接线。
+  const bots = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
+  assert.ok(
+    bots.includes("pub fn spawn_bot_poller("),
+    "没有后台轮询 worker ⇒ 外部发的通知不会自动进来（用户得手动点「立即取件」）",
+  );
+  const lib = readFileSync(join(repoRoot, "src-tauri", "src", "lib.rs"), "utf8");
+  assert.ok(
+    lib.includes("commands::spawn_bot_poller(&state);"),
+    "轮询 worker 没在 setup 里启动",
+  );
+
+  // ② 前端：订阅事件 ⇒ 收件箱会刷新。
+  const api = read("api/index.ts");
+  assert.ok(
+    api.includes('listen<{ bot_id?: string; count?: number }>("bot-inbox-updated"'),
+    "前端没有订阅 bot-inbox-updated ⇒ 收件箱不会自动刷新",
+  );
+  const panel = read("components/settings/BotSection.vue");
+  assert.ok(
+    panel.includes("api.onBotInboxUpdated("),
+    "机器人面板没有订阅轮询事件",
+  );
+  assert.ok(
+    panel.includes("createInitScope()"),
+    "订阅↔卸载必须走 initScope（不许手工卸载句柄）",
+  );
+
+  // ③ 系统通知只给摘要，不放正文（外部内容不可信）。
+  const notif = read("stores/chat/notifications.ts");
+  assert.ok(
+    notif.includes('t("bot.notifyBody", { n: count })'),
+    "系统通知必须走「只给条数」的摘要文案",
+  );
+  assert.ok(
+    !notif.includes("entry.text"),
+    "系统通知里不许带机器人正文（正文是外部来的不可信内容）",
+  );
 });

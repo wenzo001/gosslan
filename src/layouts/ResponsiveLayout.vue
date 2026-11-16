@@ -10,7 +10,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEventListener } from "@vueuse/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { api, APP_ACTION, bindMenuEvents, emitAction, NAVIGATE_TO_CONTACTS, onAction } from "@/api";
+import { api, APP_ACTION, bindMenuEvents, emitAction, NAVIGATE_TO_BOTS, NAVIGATE_TO_CONTACTS, onAction } from "@/api";
 import { launchAuxWindow, useWindowOpening } from "@/composables/useWindowLauncher";
 import { useAuxWindowFailureReport } from "@/composables/useAuxWindowFailureReport";
 import { useShortcuts } from "@/composables/useShortcuts";
@@ -607,6 +607,23 @@ function onNavigateToContacts() {
   void router.push({ name: "contacts" });
 }
 
+/**
+ * 通知点击跳转：机器人消息 → 打开设置里的「关于」（机器人面板在那儿）。
+ *
+ * 为什么走设置而不是会话：机器人消息落在**收件箱**，没有会话 id 可路由。
+ * 桌面端设置是独立窗口 ⇒ 先把窗口拉起来再定位分区；窗口开不出来时回落到应用内。
+ */
+function onNavigateToBots() {
+  if (app.isMobile) {
+    void router.push({ name: "settings-section", params: { key: "about" } });
+    return;
+  }
+  // 桌面端设置是**独立窗口** ⇒ 复用 `openSettings()`（它已走 launchAuxWindow 的
+  // 单飞 + 防抖；这里再自己写一份就成了第二处裸调用 ⇒ 连点会开两次窗）。
+  // ⚠️ 独立窗口没法定位到某个分区 ⇒ 那一格靠「设置 › 关于」里看得到机器人面板来兜。
+  openSettings();
+}
+
 // ---------------- 应用级动作：原生菜单与键盘快捷键共用 ----------------
 // macOS 的菜单栏（src-tauri/src/menu.rs）与下面的快捷键都只"发出意图"，
 // 真正的动作在这里执行 —— 保证两条路径行为完全一致。
@@ -809,6 +826,7 @@ onMounted(() => {
   // mitt 不自动清理，而菜单那 4 条 `listen()` 要等一次 IPC 往返 ⇒ 两半都登记进 initScope。
   // 手写句柄漏的是后半：往返回来时本轮已拆，`unlistenMenu` 还停在 null ⇒ 4 条监听永久挂着。
   appActionScope.onDispose(onAction(NAVIGATE_TO_CONTACTS, onNavigateToContacts));
+  appActionScope.onDispose(onAction(NAVIGATE_TO_BOTS, onNavigateToBots));
   appActionScope.onDispose(onAction(APP_ACTION.openSettings, openSettings));
   appActionScope.onDispose(onAction(APP_ACTION.addFriend, onAddFriendAction));
   appActionScope.onDispose(onAction(APP_ACTION.openLogs, openLogs));

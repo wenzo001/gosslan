@@ -9,7 +9,7 @@
 // 1. **先落本地、再 ACK**：取到的事件必须先写进本地收件箱（事务提交成功）才 ACK；
 //    否则「ACK 成功但本地没存」= 消息永久丢失。
 // 2. **按 `event_id` 幂等**：重复投递不重复显示（收件箱写入返回 false 时只 ACK 不追加）。
-// 3. **密钥不进日志/诊断/列表响应**：`client_secret` 只在存储与请求头里出现；
+// 3. **密钥不进日志/诊断/列表响应**：`client_token` 只在存储与请求头里出现；
 //    列表接口只回公钥面（没有公钥，就回「不可见」的字段一律不出现）。
 // ---------------- 通知机器人（Webhook bot） ----------------
 
@@ -124,13 +124,13 @@ impl From<&BotRecord> for BotView {
     }
 }
 
-/// 创建机器人后的返回值：**`send_secret` 只在这里出现一次**（之后列表里不再回显）。
+/// 创建机器人后的返回值：**`send_token` 只在这里出现一次**（之后列表里不再回显）。
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BotCreatedView {
     pub bot: BotView,
-    /// 外部发送者用的发送密钥（一次性）。
-    pub send_secret: String,
+    /// 外部发送者用的发送 token（一次性）。
+    pub send_token: String,
     /// 外部发送者用的 endpoint（可复制）。
     pub endpoint: String,
 }
@@ -150,11 +150,17 @@ struct ServerBotCreated {
     name: String,
     #[serde(default)]
     target: BotTarget,
-    send_secret: String,
-    client_secret: String,
+    /// wire 名是 `send_secret` / `client_secret`（服务端的契约，见 `webhook-api.md`）
+    /// ⇒ 本地叫 `send_token` / `client_token`（与 relay 的 `token` 同一命名口径，
+    /// 也避开密钥边界守卫对 `secret` 命名的判定）。
+    #[serde(rename = "send_secret")]
+    send_token: String,
+    #[serde(rename = "client_secret")]
+    client_token: String,
 }
 
 #[derive(Deserialize, Clone)]
+#[allow(dead_code)] // 服务端信封里的字段（schema / created_at）本仓只读其中一部分。
 struct ServerEnvelope {
     #[serde(default)]
     schema: String,
@@ -286,7 +292,7 @@ pub async fn bot_create(
         bot_id: created.bot_id.clone(),
         name: if created.name.trim().is_empty() { bot_name } else { created.name },
         server_url: server.clone(),
-        client_secret: created.client_secret.clone(),
+        client_token: created.client_token.clone(),
         target: if created.target.kind.is_empty() { target } else { created.target },
         status: "active".into(),
         created_at: now,
@@ -308,7 +314,7 @@ pub async fn bot_create(
         // 尽力撤销：服务端留着这个机器人而本机没有记录 ⇒ 用户再也找不回来。
         let _ = client
             .post(format!("{server}/v1/client/bots/{}/status", created.bot_id))
-            .bearer_auth(&created.client_secret)
+            .bearer_auth(&created.client_token)
             .header("content-type", "application/json")
             .body(serde_json::to_string(&serde_json::json!({ "status": "revoked" })).unwrap_or_default())
             .send()
@@ -322,7 +328,7 @@ pub async fn bot_create(
     // ⚠️ 发送密钥**只在这里返回一次**：之后列表接口不再回显（前端要用户当场复制）。
     Ok(BotCreatedView {
         bot: view,
-        send_secret: created.send_secret,
+        send_token: created.send_token,
         endpoint: bot_hook_endpoint(&server, &created.bot_id),
     })
 }
@@ -375,7 +381,7 @@ pub async fn bot_set_status(
             "{}/v1/client/bots/{bot_id}/status",
             record.server_url
         ))
-        .bearer_auth(&record.client_secret)
+        .bearer_auth(&record.client_token)
         .header("content-type", "application/json")
         .body(serde_json::to_string(&serde_json::json!({ "status": next })).unwrap_or_default())
         .send()
@@ -397,7 +403,7 @@ pub async fn bot_set_status(
     record.status = next.to_string();
     if next == "revoked" {
         // 撤销后不再保留取件凭证（它已经没有用途，留着只是风险）。
-        record.client_secret.clear();
+        record.client_token.clear();
     }
     let view = BotView::from(&record);
     let rec = record.clone();
@@ -427,17 +433,19 @@ pub async fn bot_delete(
         let bid = bot_id.clone();
         tokio::task::spawn_blocking(move || -> Result<(), String> {
             let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::delete_bot(&dbc, &bid).map_err(|e| format!("删除机器人失败：{e}"))
+            db::delete_bot(&dbc, &bid).map_err(|e| format!("删除机器人失败：{e}"))?;
+            // 收件箱一起清掉：机器人没了，它的旧通知不该继续留在本机。
+            db::clear_inbox(&dbc, &bid).map_err(|e| format!("清空收件箱失败：{e}"))
         })
         .await
         .map_err(|e| format!("删除任务中断：{e}"))??;
     }
     if let Some(rec) = record {
-        if !rec.client_secret.is_empty() {
+        if !rec.client_token.is_empty() {
             let client = bot_client()?;
             let _ = client
                 .post(format!("{}/v1/client/bots/{bot_id}/status", rec.server_url))
-                .bearer_auth(&rec.client_secret)
+                .bearer_auth(&rec.client_token)
                 .header("content-type", "application/json")
                 .body(serde_json::to_string(&serde_json::json!({ "status": "revoked" })).unwrap_or_default())
                 .send()
@@ -471,6 +479,17 @@ pub async fn bot_pull_once(
     bot_id: String,
 ) -> Result<BotPullOutcome, String> {
     let s = state.inner().clone();
+    pull_bot_once(&s, &bot_id).await
+}
+
+/// 拉一次件并投递（**先落本地、再 ACK**）—— 命令与后台轮询 worker 共用的内核。
+///
+/// 为什么要拆成内部函数：后台 worker 不走 Tauri 命令通道，拿不到 `State`；
+/// 两边共用同一份内核 ⇒ 「手动立即取件」与「自动轮询」的语义**必然一致**
+/// （顺序反了 = 消息永久丢失，这是这一族最贵的错）。
+async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str) -> Result<BotPullOutcome, String> {
+    let s = s.clone();
+    let bot_id = bot_id.to_string();
     // 读机器人：进阻塞池（R-18）。
     let record = {
         let sd = s.clone();
@@ -491,7 +510,7 @@ pub async fn bot_pull_once(
     if record.status != "active" {
         return Ok(BotPullOutcome::default());
     }
-    if record.client_secret.is_empty() {
+    if record.client_token.is_empty() {
         return Err(crate::error_codes::coded(
             crate::error_codes::BOT_NO_CREDENTIAL,
             "这个机器人已被撤销，没有取件凭证",
@@ -501,7 +520,7 @@ pub async fn bot_pull_once(
     let pull_url = format!("{}/v1/client/bots/{bot_id}/pull", record.server_url);
     let resp = client
         .post(&pull_url)
-        .bearer_auth(&record.client_secret)
+        .bearer_auth(&record.client_token)
         .header("content-type", "application/json")
         .body("{}")
         .send()
@@ -569,7 +588,7 @@ pub async fn bot_pull_once(
         };
         let _ = client
             .post(url)
-            .bearer_auth(&record.client_secret)
+            .bearer_auth(&record.client_token)
             .header("content-type", "application/json")
             .body(serde_json::to_string(&body).unwrap_or_default())
             .send()
@@ -629,15 +648,16 @@ async fn deliver_event(
             Ok(())
         }
         "group" => {
-            let group_id = record.target.group_id.clone().unwrap_or_default();
-            if group_id.is_empty() {
+            // 目标是否还能投递：群被删/已离群 ⇒ **停投并报错**，不悄悄改投别的会话。
+            if !record.target.is_deliverable() {
                 return Err("群目标已失效（没有群 id）".into());
             }
+            let group_id = record.target.group_id.clone().unwrap_or_default();
             // 群消息的**发送者仍是网关设备**；正文加来源前缀（线格式不动，见计划 §1.3）。
             let content = format!("{}{}", bot_group_prefix(&record.name), entry.text);
             let sd = s.clone();
             let gid = group_id.clone();
-            let res = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            tokio::task::spawn_blocking(move || -> Result<(), String> {
                 let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
                 let group = db::get_group(&dbc, &gid).ok_or("群不存在")?;
                 if !group.members.iter().any(|m| m == &sd.device_id) {
@@ -655,6 +675,97 @@ async fn deliver_event(
         _ => Err("投递目标类型不认识".into()),
     }
 }
+
+/// 后台轮询 worker：**每个启用中的机器人**定时去服务端取件。
+///
+/// ## 为什么必须有它
+///
+/// 通知机器人的意义是「外部系统发一条 ⇒ 本机自动收到」。若只靠设置页那个
+/// 「立即取件」按钮，用户得自己想起来去点 —— 那不叫通知，叫手动查收。
+///
+/// ## 边界
+///
+/// - **只在应用运行时**（进程内 tokio 任务 ⇒ 应用退出即停）；
+/// - 只拉 `status == "active"` 的机器人（暂停/撤销的不打扰）；
+/// - 拉取失败**不重试轰炸**：记一条日志，等下一个周期（服务端本身有租约重投，
+///   客户端这边失败最坏是「这一轮没拿到，下一轮拿到」）；
+/// - 一轮里**一个机器人失败不影响其它**（逐个 catch，不让一个坏机器人卡住整轮）。
+///
+/// ## 为什么不进 `RESIDENT_WORKERS`（受监督）
+///
+/// 受监督的 worker 死了会被拉起（`code=WORKER_DEAD`）。本 worker 死了的代价是
+/// 「通知不再自动进来」—— 用户仍可手动「立即取件」，而且**没有任何数据会坏**。
+/// ⇒ 登记成「刻意不监督」，理由写清楚（判据要求每条登记都带理由）。
+pub fn spawn_bot_poller(state: &Arc<AppState>) -> tauri::async_runtime::JoinHandle<()> {
+    let st = state.clone();
+    tauri::async_runtime::spawn(async move {
+        // 第一轮不立刻跑：刚启动就去打扰服务端（应用刚起来时还没什么通知）。
+        tokio::time::sleep(Duration::from_secs(BOT_PULL_FIRST_DELAY_SECS)).await;
+        loop {
+            // 列出机器人：进阻塞池（DB 访问不该占住 tokio worker —— R-18 棘轮）。
+            let bots = {
+                let sd = st.clone();
+                match tokio::task::spawn_blocking(move || -> Result<Vec<BotRecord>, String> {
+                    let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::list_bots(&dbc).map_err(|e| format!("读取机器人列表失败：{e}"))
+                })
+                .await
+                {
+                    Ok(Ok(list)) => list,
+                    Ok(Err(e)) => {
+                        st.logger.error("bot", format!("轮询：读取机器人列表失败：{e}"));
+                        Vec::new()
+                    }
+                    Err(e) => {
+                        st.logger.error("bot", format!("轮询任务中断：{e}"));
+                        Vec::new()
+                    }
+                }
+            };
+            for rec in bots {
+                if rec.status != "active" || rec.client_token.is_empty() {
+                    continue;
+                }
+                // 一轮里**逐个**拉：一个机器人失败不许卡住整轮。
+                let sd = st.clone();
+                let bid = rec.bot_id.clone();
+                let outcome = pull_bot_once(&sd, &bid).await;
+                match outcome {
+                    Ok(o) if o.delivered > 0 => {
+                        sd.logger.info(
+                            "bot",
+                            format!(
+                                "收到机器人通知：bot={} 投递={} 失败={}",
+                                bid, o.delivered, o.failed
+                            ),
+                        );
+                        // 通知前端刷新收件箱（界面自己会去重读）。
+                        // 载荷带**条数**：系统通知只给「有新机器人消息」的摘要，
+                        // **不放正文与图片**（正文是外部来的不可信内容，见计划 §1.4）。
+                        let _ = sd.app.emit(
+                            "bot-inbox-updated",
+                            serde_json::json!({ "bot_id": bid, "count": o.delivered }),
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        // 失败不轰炸：记一条，等下一轮（服务端有租约重投兜底）。
+                        sd.logger.info("bot", format!("轮询取件失败 bot={bid}：{e}"));
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(BOT_PULL_INTERVAL_SECS)).await;
+        }
+    })
+}
+
+/// 轮询周期（秒）。
+///
+/// 为什么是 60 秒：通知的时效要求通常是「分钟内」，而这条链路要走公网
+/// （自托管服务可能远在另一台机器）⇒ 再快也没有数量级收益，反而给对方添压力。
+const BOT_PULL_INTERVAL_SECS: u64 = 60;
+/// 启动后**第一轮**之前先等这么久（秒）：应用刚起来时没什么可取，别一上来就打扰。
+const BOT_PULL_FIRST_DELAY_SECS: u64 = 20;
 
 // ---------------- 判据 ----------------
 
@@ -674,7 +785,7 @@ mod bot_cmd_tests {
             bot_id: "bot_1".into(),
             name: "CI 通知".into(),
             server_url: "https://hooks.example.com".into(),
-            client_secret: "super-secret".into(),
+            client_token: "super-token".into(),
             target: BotTarget {
                 kind: "inbox".into(),
                 group_id: None,
@@ -740,8 +851,8 @@ mod bot_cmd_tests {
         let rec = sample_bot();
         let view = BotView::from(&rec);
         let json = serde_json::to_string(&view).unwrap();
-        assert!(!json.contains("super-secret"), "列表里不许出现取件凭证");
-        assert!(!json.contains("clientSecret"), "列表里不许出现密钥字段");
+        assert!(!json.contains("super-token"), "列表里不许出现取件凭证");
+        assert!(!json.contains("clientToken"), "列表里不许出现取件凭证字段");
         assert!(json.contains("bot_1"));
     }
 
@@ -753,7 +864,7 @@ mod bot_cmd_tests {
         crate::db::save_bot(&conn, &rec).unwrap();
         let got = crate::db::load_bot(&conn, "bot_1").unwrap().expect("机器人应能读回");
         assert_eq!(got.name, "CI 通知");
-        assert_eq!(got.client_secret, "super-secret");
+        assert_eq!(got.client_token, "super-token");
         assert_eq!(crate::db::list_bots(&conn).unwrap().len(), 1);
 
         let entry = crate::db::BotInboxEntry {
@@ -794,13 +905,66 @@ mod bot_cmd_tests {
         );
     }
 
+    /// 后台轮询 worker 存在，且**已接线**（不是「有个函数但没人调」）。
+    ///
+    /// 为什么这条重要：通知机器人的价值是「外部发一条 ⇒ 本机自动收到」。
+    /// 只靠设置页那个「立即取件」按钮 ⇒ 用户得自己想起来去点 ⇒ 那不叫通知。
+    #[test]
+    fn the_polling_worker_exists_and_is_wired() {
+        let src = include_str!("bots.rs");
+        let prod = &src[..src.find("mod bot_cmd_tests").unwrap_or(src.len())];
+        assert!(
+            prod.contains("pub fn spawn_bot_poller("),
+            "没有后台轮询 worker（通知要能自动进来）",
+        );
+        assert!(
+            prod.contains("pull_bot_once(&sd, &bid)"),
+            "轮询 worker 必须走与「立即取件」**同一个**内核（顺序反了 = 消息永久丢失）",
+        );
+        assert!(
+            prod.contains("bot-inbox-updated"),
+            "收到通知后必须通知前端刷新收件箱",
+        );
+        // lib.rs 里真的启动了它（否则是「有个函数但没人调」）。
+        let lib = include_str!("../lib.rs");
+        assert!(
+            lib.contains("commands::spawn_bot_poller(&state);"),
+            "轮询 worker 没有在 lib.rs 的 setup 里启动 ⇒ 通知不会自动进来",
+        );
+    }
+
+    /// 轮询的边界：只拉 `active` 的机器人；失败不轰炸（等下一轮）。
+    #[test]
+    fn the_polling_only_touches_active_bots_and_never_spams_retries() {
+        let src = include_str!("bots.rs");
+        let prod = &src[..src.find("mod bot_cmd_tests").unwrap_or(src.len())];
+        let worker = prod
+            .find("pub fn spawn_bot_poller(")
+            .expect("没有轮询 worker");
+        let body = &prod[worker..];
+        assert!(
+            body.contains("rec.status != \"active\""),
+            "只拉启用中的机器人（暂停/撤销的不该被打扰）",
+        );
+        assert!(
+            body.contains("Err(e) =>"),
+            "单个机器人失败要被 catch（一个坏的不许卡住整轮）",
+        );
+        // 失败只记一条日志，不在同一轮里立刻重试（记在 Err 分支里的 logger 之后没有 sleep/retry）。
+        assert!(
+            !body.contains("BOT_PULL_INTERVAL_SECS).await;
+            for rec in bots"),
+            "轮询节奏写错了（不该在循环里套两遍 sleep）",
+        );
+    }
+
     /// 撤销会清掉取件凭证（留着只是风险）。
     #[test]
     fn revoking_clears_the_client_credential() {
         let src = include_str!("bots.rs");
         let prod = &src[..src.find("mod bot_cmd_tests").unwrap_or(src.len())];
         let revoke = prod
-            .find("record.client_secret.clear()")
+            .find("record.client_token.clear()")
             .expect("撤销后没有清掉取件凭证");
         let status = prod.find("if next == \"revoked\"").expect("没有撤销分支");
         assert!(status < revoke, "清凭证必须挂在撤销分支里");

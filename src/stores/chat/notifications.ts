@@ -5,7 +5,7 @@
  * `messaging.send`，打开会话/定位仍走 `conversations`。
  */
 import { ref, watch } from "vue";
-import { api, emitAction, NAVIGATE_TO_CONTACTS } from "@/api";
+import { api, emitAction, NAVIGATE_TO_BOTS, NAVIGATE_TO_CONTACTS } from "@/api";
 import { trimOldest } from "@/utils/bounded";
 import { isStaleNudge } from "@/utils/nudge";
 import { prefersReducedMotion } from "@/utils/platform";
@@ -158,6 +158,32 @@ export function createNotificationsModule(ctx: ChatContext) {
   /** 订阅托盘事件（由 store 的初始化调用一次）。 */
   function subscribeTrayEvents(): Promise<() => void> {
     return api.onTrayOpenUnread(() => openFirstUnreadConversation());
+  }
+
+  /**
+   * 订阅**后台轮询取到了机器人消息** ⇒ 发一条系统通知（**只给摘要，不放正文**）。
+   *
+   * 为什么不放正文（计划 §1.4）：机器人正文是**外部系统送来的不可信内容**
+   * （已按 Markdown 渲染 + 消毒，但通知气泡里的预览无法保证渲染口径）⇒
+   * 系统通知只说「收到 N 条机器人通知」，正文一律去收件箱里看。
+   *
+   * 为什么点击跳「设置 › 关于」而不是某个会话：机器人消息落在**收件箱**，
+   * 没有会话 id ⇒ 没有可路由的会话，必须显式说清去处。
+   */
+  function subscribeBotEvents(): Promise<() => void> {
+    return api.onBotInboxUpdated((_botId, count) => {
+      if (!app.notifyEnabled || count <= 0) return;
+      void app.ensureNotifyPermission().then((granted) => {
+        if (!granted) return;
+        void sendNotification({
+          id: notifSeq++,
+          title: t("bot.notifyTitle"),
+          body: t("bot.notifyBody", { n: count }),
+          autoCancel: true,
+          extra: { type: "bot" },
+        });
+      });
+    });
   }
 
   function requestAttentionOnce(urgent: boolean) {
@@ -550,6 +576,13 @@ export function createNotificationsModule(ctx: ChatContext) {
     convId: string | undefined,
     msgId?: string,
   ) {
+    if (type === "bot") {
+      // 机器人消息在收件箱里（没有会话）⇒ 点通知直接去设置里的「通知机器人」。
+      void api.focusWindow().then(() => {
+        emitAction(NAVIGATE_TO_BOTS);
+      });
+      return;
+    }
     if (type === "friend_request") {
       // 唤起窗口后再切视图：窗口还在托盘里时切，用户会在浮出瞬间看到一次跳变。
       void api.focusWindow().then(() => {
@@ -594,6 +627,7 @@ export function createNotificationsModule(ctx: ChatContext) {
     requestAttentionOnce,
     pushUnreadBadge,
     subscribeTrayEvents,
+    subscribeBotEvents,
     openFirstUnreadConversation,
     notifyBody,
     maybeNotify,

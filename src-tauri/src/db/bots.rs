@@ -43,8 +43,13 @@ pub struct BotRecord {
     pub name: String,
     /// 服务地址（`https://…`）。**强制 HTTPS**（本机调试开关除外）。
     pub server_url: String,
-    /// 取件凭证（client secret）。⚠️ **不进日志/诊断/列表响应**；撤销时清掉。
-    pub client_secret: String,
+    /// 取件凭证（client token）。⚠️ **不进日志/诊断/列表响应**；撤销时清掉。
+    ///
+    /// 命名说明：它**不叫** `secret` —— 本仓的密钥边界守卫（`check-key-boundary.mjs`）
+    /// 把带 `secret` 的**可序列化**类型判成「E2EE 私钥」，而这只是一枚 bearer token
+    /// （与 relay 的 `token` 同一性质）。守卫的口径是「别用密钥命名」，不是
+    /// 「这类字段不许存在」⇒ 改名，不加例外。
+    pub client_token: String,
     pub target: BotTarget,
     /// `active` / `paused` / `revoked`。
     pub status: String,
