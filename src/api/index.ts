@@ -2,7 +2,7 @@
 
 import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, DeviceAuthRevokeOutcome, RpBindingInfo, RpKeyExportSummary, RpKeyImportReport, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, SharePrompt, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
+import type { AppSettings, BotCreatedView, BotInboxEntry, BotPullOutcome, BotView, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, DeviceAuthRevokeOutcome, RpBindingInfo, RpKeyExportSummary, RpKeyImportReport, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, SharePrompt, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -108,6 +108,21 @@ export const api = {
    * 清除只发生在设置窗口的 store 里，主窗口是另一个 WebView，它的会话列表一条都没变。
    */
   onDataCleared: (cb: () => void) => listen("data-cleared", () => cb()),
+  // ---------------- 通知机器人（Webhook bot） ----------------
+  botCreate: (args: {
+    name: string;
+    targetKind: string;
+    targetGroupId?: string | null;
+    targetGroupName?: string | null;
+    serverUrl: string;
+    clientToken: string;
+  }) => invoke<BotCreatedView>("bot_create", args),
+  botList: () => invoke<BotView[]>("bot_list"),
+  botSetStatus: (botId: string, status: string) =>
+    invoke<BotView>("bot_set_status", { botId, status }),
+  botDelete: (botId: string) => invoke<void>("bot_delete", { botId }),
+  botInbox: (botId: string) => invoke<BotInboxEntry[]>("bot_inbox", { botId }),
+  botPullOnce: (botId: string) => invoke<BotPullOutcome>("bot_pull_once", { botId }),
   /**
    * 托盘图标被点（任务栏里闪的那个）⇒ **直接进第一条未读会话**。
    *

@@ -2714,6 +2714,10 @@ export const V_HTML_ALLOWED = [
   // 2026-10-29 更新说明改成 Markdown 渲染：输入来自网络清单，但先过 `marked` 再经
   // `DOMPurify` 白名单消毒（`utils/markdown.ts`）；这里是它唯一的 `v-html` 落点。
   "components/ui/MarkdownText.vue",
+  // 2026-11-16 通知机器人：外部系统投递的正文（可带 Markdown）。
+  // 输入先过 `utils/botMessage.ts`（marked 解析 + 丢弃 raw HTML + 危险协议链接被去掉），
+  // 再经 DOMPurify 白名单消毒；外部内容一律当**不可信输入**。
+  "components/settings/BotSection.vue",
 ] as const;
 
 /** 读出模板里每一处 `v-html` 的表达式与行号（只认静态写法，便于清单对账）。 */
