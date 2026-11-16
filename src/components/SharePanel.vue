@@ -223,7 +223,7 @@ async function onClose() {
         <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("shareToChat.editHint") }}</span>
         <textarea
           v-model="draft"
-          class="h-28 w-full resize-none rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-divider)] bg-[var(--gosslan-app-bg)] p-2.5 text-sm text-[var(--gosslan-text)] focus:border-[var(--gosslan-primary)] focus:outline-none"
+          class="h-28 w-full resize-none rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-app-bg)] p-2.5 text-sm text-[var(--gosslan-text)] focus:border-[var(--gosslan-primary)] focus:outline-none"
           :aria-label="t('shareToChat.editHint')"
           :maxlength="MAX_SHARE_TEXT_CHARS + 1"
         ></textarea>
@@ -245,7 +245,7 @@ async function onClose() {
         <input
           v-model="query"
           type="search"
-          class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-divider)] bg-[var(--gosslan-app-bg)] pl-8 pr-2.5 text-sm text-[var(--gosslan-text)] focus:border-[var(--gosslan-primary)] focus:outline-none"
+          class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-app-bg)] pl-8 pr-2.5 text-sm text-[var(--gosslan-text)] focus:border-[var(--gosslan-primary)] focus:outline-none"
           :placeholder="t('shareToChat.searchPlaceholder')"
           :aria-label="t('shareToChat.searchPlaceholder')"
         />

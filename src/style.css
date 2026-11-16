@@ -1371,8 +1371,14 @@ select:focus {
    （用户 2026-11-16：「点击的时候有一个灰色的背景，那个不需要」）。
    只在**空**的时候抹掉；有字时选中仍要有可见高亮（复制要看得见选中了什么）。
    `:empty` 覆盖真·空；`:has(> br:only-child)` 覆盖「空壳 + 一个 <br>」的形态。 */
+/* ⚠️ 只靠 `:empty` / `:has(> br:only-child)` 不够：编辑器里可能留着一个**空文本节点**
+   （既不是 `:empty`，也没有 `<br>`）⇒ 点一下时那一下的选区着色照样**闪一下**
+   （用户 2026-11-16 第二次反馈：「怎么还是有灰色的背景会闪一下」）。
+   ⇒ 真正的判据是**内容为空** ⇒ 由前端挂 `is-empty`（`!hasDraft`）⇒ 这里一并抹掉。
+   有字时不挂这个类 ⇒ 选中仍有可见高亮。 */
 .gosslan-composer-editor:empty::selection,
-.gosslan-composer-editor:has(> br:only-child)::selection {
+.gosslan-composer-editor:has(> br:only-child)::selection,
+.gosslan-composer-editor.is-empty::selection {
   background-color: transparent;
 }
 

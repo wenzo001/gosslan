@@ -1501,7 +1501,7 @@ async function onPaste(e: ClipboardEvent) {
           :autocapitalize="codeMode ? 'off' : 'sentences'"
           data-focus-ring-ok
           class="gosslan-composer-editor tap-safe min-h-7 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal whitespace-pre-wrap break-words outline-none"
-          :class="codeMode ? 'font-mono text-body' : ''"
+          :class="[codeMode ? 'font-mono text-body' : '', { 'is-empty': !hasDraft }]"
           :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
           @keydown="onKeydown"
           @compositionstart="onCompositionStart"
