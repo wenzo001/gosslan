@@ -1207,3 +1207,63 @@ export interface DeviceAuthOutcome {
    */
   rp_notified?: boolean;
 }
+
+/** ---------------- 通知机器人（Webhook bot） ---------------- */
+
+/** 投递目标：本机收件箱，或某个群（由网关设备代发）。 */
+export interface BotTarget {
+  kind: "inbox" | "group";
+  groupId?: string | null;
+  groupName?: string | null;
+}
+
+/** 机器人（外部系统 → 本机通知入口）。**列表里不含任何密钥。 */
+export interface BotView {
+  botId: string;
+  name: string;
+  serverUrl: string;
+  target: BotTarget;
+  /** `active` / `paused` / `revoked`。 */
+  status: string;
+  createdAt: number;
+  lastEventAt?: number | null;
+  lastError?: string | null;
+  pending: number;
+  failed: number;
+}
+
+/** 创建机器人后的返回值：**发送密钥只在这里出现一次**。 */
+export interface BotCreatedView {
+  bot: BotView;
+  sendSecret: string;
+  endpoint: string;
+}
+
+/** 机器人消息附件（图片）。 */
+export interface BotImage {
+  attachmentId: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  sha256: string;
+}
+
+/** 收件箱里的一条机器人消息。 */
+export interface BotInboxEntry {
+  eventId: string;
+  text: string;
+  /** `text` / `markdown`（决定怎么渲染）。 */
+  format: string;
+  source: string;
+  images: BotImage[];
+  receivedAt: number;
+  /** `received` / `published` / `failed`。 */
+  state: string;
+}
+
+/** 一次取件的计数。 */
+export interface BotPullOutcome {
+  pulled: number;
+  delivered: number;
+  failed: number;
+}

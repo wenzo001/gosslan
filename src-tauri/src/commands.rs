@@ -143,6 +143,8 @@ include!("commands/routed.rs");
 
 // ---- relay.rs ----
 include!("commands/relay.rs");
+// ---- bots.rs ----
+include!("commands/bots.rs");
 
 // ---- external_links.rs ----
 include!("commands/external_links.rs");

@@ -266,6 +266,28 @@ pub const RELAY_TOKEN_TOO_LONG: &str = "RELAY_TOKEN_TOO_LONG";
 pub const RELAY_ENDPOINT_FORMAT_INVALID: &str = "RELAY_ENDPOINT_FORMAT_INVALID";
 /// 中继：设置页读配置失败（地址/口令两处共用一个码，human 带底层原因）。
 pub const RELAY_CONFIG_READ_FAILED: &str = "RELAY_CONFIG_READ_FAILED";
+/// 通知机器人：服务地址不合法（必须 HTTPS；回环除外）。
+pub const BOT_SERVER_INVALID: &str = "BOT_SERVER_INVALID";
+/// 通知机器人：没起名字。
+pub const BOT_NAME_REQUIRED: &str = "BOT_NAME_REQUIRED";
+/// 通知机器人：没填客户端令牌。
+pub const BOT_CLIENT_TOKEN_REQUIRED: &str = "BOT_CLIENT_TOKEN_REQUIRED";
+/// 通知机器人：投递目标不合法（只支持 inbox / group）。
+pub const BOT_TARGET_INVALID: &str = "BOT_TARGET_INVALID";
+/// 通知机器人：状态值不合法。
+pub const BOT_BAD_STATUS: &str = "BOT_BAD_STATUS";
+/// 通知机器人：注册失败（服务端拒绝或返回无法解析）。
+pub const BOT_CREATE_FAILED: &str = "BOT_CREATE_FAILED";
+/// 通知机器人：改状态失败。
+pub const BOT_STATUS_FAILED: &str = "BOT_STATUS_FAILED";
+/// 通知机器人：取件失败。
+pub const BOT_PULL_FAILED: &str = "BOT_PULL_FAILED";
+/// 通知机器人：HTTP 客户端起不来。
+pub const BOT_HTTP_FAILED: &str = "BOT_HTTP_FAILED";
+/// 通知机器人：找不到这个机器人。
+pub const BOT_NOT_FOUND: &str = "BOT_NOT_FOUND";
+/// 通知机器人：没有取件凭证（已撤销）。
+pub const BOT_NO_CREDENTIAL: &str = "BOT_NO_CREDENTIAL";
 /// 跨网段端点：地址格式既不是 ip 也不是 ip:port。
 pub const ROUTED_ENDPOINT_FORMAT_INVALID: &str = "ROUTED_ENDPOINT_FORMAT_INVALID";
 /// 跨网段端点：填了 IPv6（当前监听只支持 IPv4）。

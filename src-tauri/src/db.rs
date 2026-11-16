@@ -1573,6 +1573,7 @@ include!("db/recalls.rs");
 include!("db/group_history.rs");
 include!("db/todo_tags.rs");
 include!("db/device_auth.rs");
+include!("db/bots.rs");
 
 #[cfg(test)]
 mod cascade_tests;

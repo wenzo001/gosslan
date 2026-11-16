@@ -158,9 +158,14 @@ export default {
       // 它是「外部调用方递东西进本机」的又一条入口，与 `share.rs` 同一条红线。
       // `rp_key_store.rs`（RP 绑定私钥的**平台密钥库**：Windows DPAPI / Android Keystore）
       // 也归这里：它直接持/搬 RP 私钥（信封就是私钥的容器），与 `rp_key_backup.rs` 同一族。
+      // `db/bots.rs`（通知机器人的本地存储：settings 表里的机器人清单 + 收件箱）与
+      // `commands/bots.rs`（注册/取件/投递的命令层）也归这里：通知机器人是**第三类**
+      // 「外部调用方递东西进本机」的入口（设备认证=外部登录、分享=外部内容、机器人=外部通知），
+      // 与前两者同一条红线（外部来的东西必须经用户可见的路径，且不许伪造身份）。
       paths: ["src-tauri/src/device_auth.rs", "src-tauri/src/device_auth", "src-tauri/src/share.rs",
         "src-tauri/src/rp_key_backup.rs", "src-tauri/src/commands/rp_key_backup.rs",
-        "src-tauri/src/incoming_share.rs", "src-tauri/src/rp_key_store.rs", "src-tauri/src/rp_key_store"],
+        "src-tauri/src/incoming_share.rs", "src-tauri/src/rp_key_store.rs", "src-tauri/src/rp_key_store",
+        "src-tauri/src/db/bots.rs", "src-tauri/src/commands/bots.rs"],
       invariants: [],
       activeHome: "src-tauri/src/device_auth.rs", // 单家：协议核心；命令在装配层、绑定表在 persistence、UI 在 presentation
       enforce: false,
