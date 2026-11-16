@@ -251,8 +251,12 @@ export interface NeighborhoodLayout {
   points: Map<string, { x: number; y: number }>;
   /** 节点是否按窄屏（竖屏扇形）布局。 */
   narrow: boolean;
-  /** 图上最多能放多少个设备（超出的只在列表里）—— 保证最外一行也不出画布。 */
+  /** 当前档位容量（k×k）—— 图上最多能放这么多设备。 */
   maxNodes: number;
+  /** 当前档位（每边格数）。 */
+  tier: number;
+  /** 格子边长（像素）—— 渲染据此缩放节点半径、稀疏标签。 */
+  cell: number;
 }
 
 /**
@@ -277,40 +281,50 @@ export function layoutNeighborhood(
   const others = nodes
     .filter((n) => !n.self)
     .sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
+  const n = others.length;
 
   // 本机锚点：宽屏在左侧中部、窄屏在底部中央（**观察端点**，不是网络中心）。
   const ax = narrow ? 0 : -(w / 2 - margin);
   const ay = narrow ? h / 2 - margin : 0;
 
-  // 「邻域云」用**网格**排布，不用圆弧。
-  //
-  // 为什么不用圆弧（2026-11-16 review 实测）：圆弧在宽画布上只占一条**窄带**
-  // （x 从 -404 到 -155，右边三分之二空着），而且环半径一大就**溢出画布**
-  // （1440×900 时算到 y=488 > 可见区 450 ⇒ 节点被画到屏幕外、点不到）。
-  // 网格两向都填得满，且每个格子的位置**只由画布尺寸决定** ⇒ 稳定、不溢出。
-  const cols = narrow ? 2 : 4;
+  // 网格的**档位**：k×k 个格子。档位按数量取阶梯 ⇒
+  //   · 同一档内，新节点只占下一个格子 ⇒ **老节点一个像素都不动**；
+  //   · 跨档才重排（格子变小以塞下更多节点）—— 这是**有理由**的重排，不是抖动。
+  // 档位阶梯刻意取稀（4→6→8→10→12→16→20→24→32→40→48→64）：
+  // 常规量级（50~100）落在 10~12 档，极限量级（500~1000）落在 32~40 档。
+  const TIERS = [4, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 64];
+  const k = TIERS.find((t) => t * t >= n) ?? TIERS[TIERS.length - 1];
+
+  // 云的可用区域：宽屏在本机右侧、窄屏在本机上方。
   const availW = Math.max(w - margin * 2, 160);
   const availH = Math.max(h - margin * 2, 160);
-  const gapFromSelf = narrow ? 96 : 118;
-  // 列距：云从本机右侧一路铺到画布右缘（不留空地）。
-  const cellX = Math.max(narrow ? 74 : 96, (availW - gapFromSelf) / Math.max(1, cols - 1 || 1));
-  const cellY = narrow ? 84 : Math.min(96, Math.max(72, (availH / 2) * 0.5));
-  // 行数上限：保证**最外一行也在可见区内**（超出的设备只在列表里，见下）。
-  const maxRows = Math.max(1, Math.floor(availH / 2 / cellY) + 1);
-  const maxNodes = cols * maxRows;
+  const gapFromSelf = narrow ? 90 : 110;
+  const cloudW = narrow ? availW : Math.max(availW - gapFromSelf, 120);
+  const cloudH = narrow ? Math.max(availH - gapFromSelf, 120) : availH;
+  const cellX = cloudW / k;
+  const cellY = cloudH / k;
+  const cloudCx = narrow ? ax : ax + gapFromSelf + cloudW / 2;
+  const cloudCy = narrow ? ay - gapFromSelf - cloudH / 2 : ay;
 
   const points = new Map<string, { x: number; y: number }>();
   if (self) points.set(self.id, { x: ax, y: ay });
-  others.forEach((n, i) => {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    // 行交替向上/向下 ⇒ 头几行也居中，不偏向一侧；老节点的位置只由 (col,row) 决定。
+  others.forEach((node, i) => {
+    const col = i % k;
+    const row = Math.floor(i / k);
+    // 行交替向上/向下 ⇒ 头几行也居中，不偏向一侧。
     const rowOffset = row === 0 ? 0 : Math.ceil(row / 2) * (row % 2 === 1 ? 1 : -1);
-    const x = narrow
-      ? ax + (col - (cols - 1) / 2) * cellX
-      : ax + gapFromSelf + col * cellX;
-    const y = narrow ? ay - gapFromSelf - row * cellY : ay + rowOffset * cellY;
-    points.set(n.id, { x, y });
+    const x = cloudCx + (col - (k - 1) / 2) * cellX;
+    const y = cloudCy + rowOffset * cellY;
+    points.set(node.id, { x, y });
   });
-  return { anchor: { x: ax, y: ay }, points, narrow, maxNodes };
+  return {
+    anchor: { x: ax, y: ay },
+    points,
+    narrow,
+    /** 图上最多能放多少个设备（= 档位容量）；放得下的都在图上，不截断。 */
+    maxNodes: k * k,
+    /** 当前档位（格子边长）—— 渲染据此缩放节点半径、稀疏标签。 */
+    tier: k,
+    cell: Math.min(cellX, cellY),
+  };
 }
