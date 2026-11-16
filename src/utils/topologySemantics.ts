@@ -328,3 +328,54 @@ export function layoutNeighborhood(
     cell: Math.min(cellX, cellY),
   };
 }
+
+/** 用户拖拽后的坐标覆盖（阶段 2）。key = 节点 id，value = 画布坐标。 */
+export type TopologyLayoutOverride = Record<string, { x: number; y: number }>;
+
+/**
+ * 把**用户拖拽过的节点**覆盖到默认布局上（阶段 2 第 2、3 条）。
+ *
+ * 三条规矩：
+ * - **只有被拖拽过的节点**才用覆盖坐标 ⇒ 新节点仍按默认槽位出现，老节点没拖过就仍稳定；
+ * - 本机（self）**不允许被拖** —— 它是观察端点，拖走会让整张图失去参照；
+ * - 覆盖坐标**不参与碰撞**：用户是故意把节点放那儿的，自动解碰撞等于跟他抢（方案明确
+ *   「用户相机归属」，同一口径）；新节点若正好压上去，交给用户自己拖开。
+ *
+ * 返回**新 Map**（不改输入）—— 纯函数，便于单测与反向对照。
+ */
+export function applyLayoutOverride(
+  layout: NeighborhoodLayout,
+  overrides: TopologyLayoutOverride | null | undefined,
+  selfId: string,
+): Map<string, { x: number; y: number }> {
+  const out = new Map(layout.points);
+  if (!overrides) return out;
+  for (const [id, p] of Object.entries(overrides)) {
+    if (id === selfId || !out.has(id)) continue;
+    if (!Number.isFinite(p?.x) || !Number.isFinite(p?.y)) continue;
+    // 防止手改 settings 塞进一个天文数字（画到屏幕外等于节点消失）。
+    if (Math.abs(p.x) > 100_000 || Math.abs(p.y) > 100_000) continue;
+    out.set(id, { x: p.x, y: p.y });
+  }
+  return out;
+}
+
+/** 序列化的形状校验：只接受 `{"id":{"x":number,"y":number},…}`（阶段 2 存储层用）。 */
+export function parseLayoutOverride(raw: string | null | undefined): TopologyLayoutOverride {
+  if (!raw) return {};
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    const out: TopologyLayoutOverride = {};
+    for (const [id, p] of Object.entries(v as Record<string, unknown>)) {
+      if (!p || typeof p !== "object") continue;
+      const q = p as Record<string, unknown>;
+      if (typeof q.x !== "number" || typeof q.y !== "number") continue;
+      if (!Number.isFinite(q.x) || !Number.isFinite(q.y)) continue;
+      out[id] = { x: q.x, y: q.y };
+    }
+    return out;
+  } catch {
+    return {}; // 手改坏了的 JSON ⇒ 当没有覆盖（不炸开页面）
+  }
+}

@@ -145,6 +145,8 @@ include!("commands/routed.rs");
 include!("commands/relay.rs");
 // ---- bots.rs ----
 include!("commands/bots.rs");
+// ---- topology.rs ----
+include!("commands/topology.rs");
 
 // ---- external_links.rs ----
 include!("commands/external_links.rs");

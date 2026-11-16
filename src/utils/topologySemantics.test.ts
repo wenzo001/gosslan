@@ -9,6 +9,8 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   buildTopologyList,
   buildTopologyPeers,
@@ -18,6 +20,8 @@ import {
   needsIntermediateNotice,
   pathKindOf,
   pathLabelKey,
+  applyLayoutOverride,
+  parseLayoutOverride,
   type TopologyInput,
 } from "./topologySemantics.ts";
 
@@ -311,5 +315,82 @@ test("邻域布局：50~100 是常规量级、500~1000 是极限量级，都要�
       // 格子越小 ⇒ 节点半径要跟着缩（否则密集档位互相压死）。
       assert.ok(l.cell > 0, "格子尺寸必须现算");
     }
+  }
+});
+
+test("拖拽覆盖：只有拖过的节点换坐标，新节点仍按默认槽位", () => {
+  const layout = layoutNeighborhood(
+    [
+      { id: "__self__", ts: 0, self: true },
+      { id: "a", ts: 1 },
+      { id: "b", ts: 2 },
+    ],
+    1000,
+    600,
+  );
+  const bDefault = layout.points.get("b")!;
+  const applied = applyLayoutOverride(layout, { a: { x: 123, y: -45 } }, "__self__");
+  assert.deepEqual(applied.get("a"), { x: 123, y: -45 }, "拖过的节点用覆盖坐标");
+  assert.deepEqual(applied.get("b"), bDefault, "没拖过的节点不动");
+  assert.deepEqual(applied.get("__self__"), layout.anchor, "本机不许被拖走");
+});
+
+test("拖拽覆盖：不存在/本机/天文数字/坏 JSON 全部丢弃，不炸开页面", () => {
+  const layout = layoutNeighborhood(
+    [{ id: "__self__", ts: 0, self: true }, { id: "a", ts: 1 }],
+    1000,
+    600,
+  );
+  const applied = applyLayoutOverride(
+    layout,
+    {
+      ghost: { x: 1, y: 2 },
+      __self__: { x: 999, y: 999 },
+      a: { x: 1e9, y: 0 },
+    },
+    "__self__",
+  );
+  assert.deepEqual(applied.get("__self__"), layout.anchor, "本机仍不许被拖");
+  assert.equal(applied.has("ghost"), false, "不存在的节点不许凭空出现");
+  assert.deepEqual(applied.get("a"), layout.points.get("a"), "天文数字不许把节点画到屏幕外");
+  assert.deepEqual(parseLayoutOverride("not json"), {});
+  assert.deepEqual(parseLayoutOverride('{"a":{"x":"1","y":2}}'), {}, "坐标必须是数字");
+  assert.deepEqual(parseLayoutOverride('{"a":{"x":null,"y":2}}'), {});
+  assert.deepEqual(parseLayoutOverride(null), {});
+  assert.deepEqual(parseLayoutOverride('{"a":{"x":12,"y":-8}}'), { a: { x: 12, y: -8 } });
+});
+
+test("阶段 2 接线：拖拽位置能落 settings 表、能恢复默认（不进网络协议）", () => {
+  const root = join(import.meta.dirname, "..", "..");
+  const read = (p: string) => readFileSync(join(root, p), "utf8");
+
+  // ① 后端：三个命令 + settings 表（不动 schema）+ 不进网络协议。
+  const cmd = read("src-tauri/src/commands/topology.rs");
+  for (const name of ["topology_layout_load", "topology_layout_save", "topology_layout_reset"]) {
+    assert.ok(cmd.includes(`fn ${name}(`), `后端缺命令 ${name}`);
+  }
+  assert.ok(cmd.includes('TOPOLOGY_LAYOUT_KEY: &str = "topology_layout_v1"'), "偏好键没带版本号");
+  assert.ok(cmd.includes("get_setting_checked("), "读偏好必须区分「读失败」和「没存过」");
+  assert.ok(cmd.includes("spawn_blocking("), "DB 访问必须进阻塞池");
+
+  // ② 前端：加载 → 覆盖 → 拖拽保存 → 恢复默认。
+  const page = read("src/components/NetworkTopology.vue");
+  assert.ok(page.includes("api.topologyLayoutLoad()"), "首帧不加载用户拖过的位置");
+  assert.ok(page.includes("applyLayoutOverride("), "布局没应用拖拽覆盖");
+  assert.ok(page.includes("api.topologyLayoutSave("), "拖拽后没落盘");
+  assert.ok(page.includes("api.topologyLayoutReset()"), "没有恢复默认布局");
+  assert.ok(
+    /t\(['"]topology\.layoutResetHint['"]\)/.test(page),
+    "恢复按钮没有可读名（title + aria-label）",
+  );
+
+  // ③ 不进网络协议：mesh / protocol 模块里不许出现布局偏好键（它是本机呈现偏好）。
+  const mesh = read("src-tauri/src/mesh/manager.rs");
+  const proto = read("src-tauri/src/protocol.rs");
+  for (const [name, src] of [["mesh", mesh], ["protocol", proto]] as const) {
+    assert.ok(
+      !src.includes("TOPOLOGY_LAYOUT_KEY") && !src.includes("topology_layout"),
+      `布局偏好泄漏进了 ${name} 模块（它会跟着网络协议走）`,
+    );
   }
 });

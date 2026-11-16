@@ -200,6 +200,9 @@ commands::todo_image_size_tests::rejection_names_the_limit
 commands::todo_priority_tests::legacy_payload_without_priority_reads_medium
 commands::todo_priority_tests::priority_defaults_to_medium
 commands::todo_priority_tests::unknown_priority_is_rejected
+commands::topology_layout_tests::all_layout_commands_are_worker_bound
+commands::topology_layout_tests::the_command_layer_does_not_parse_json
+commands::topology_layout_tests::the_layout_key_is_versioned
 content::model::tests::fail_reason_separates_retryable_from_terminal
 content::model::tests::status_round_trips_and_classifies
 content::policy::tests::a_cancelled_receive_is_rejected_and_never_requeued

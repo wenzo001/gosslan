@@ -40,6 +40,8 @@ import { detailText } from "@/composables/useErrorText";
 import {
   buildTopologyList,
   buildTopologyPeers,
+  applyLayoutOverride,
+  parseLayoutOverride,
   filterTopologyList,
   layoutNeighborhood,
   needsIntermediateNotice,
@@ -352,14 +354,58 @@ function nodeAt(ev: PointerEvent): TopoNode | null {
 
 function onHostPointerDown(ev: PointerEvent) {
   pointerDownAt = ev.button === 0 ? { x: ev.clientX, y: ev.clientY } : null;
+  // 命中节点 ⇒ 这一拖是**拖节点**（不是平移画布）；本机不许拖（它是观察端点）。
+  draggingNode = ev.button === 0 ? nodeAt(ev) : null;
+  if (draggingNode?.kind === "self") draggingNode = null;
+  dragMoved = false;
+}
+
+function graphPointOf(ev: PointerEvent): { x: number; y: number } | null {
+  const el = host.value;
+  if (!el || !graph) return null;
+  const r = el.getBoundingClientRect();
+  return graph.screen2GraphCoords(ev.clientX - r.left, ev.clientY - r.top);
 }
 
 function onHostPointerMove(ev: PointerEvent) {
-  // 按住拖超过 6px = 平移画布 ⇒ 相机从此归用户（数据刷新不再自动归位）。
-  if (pointerDownAt && Math.hypot(ev.clientX - pointerDownAt.x, ev.clientY - pointerDownAt.y) > 6) {
-    userAdjustedCamera = true;
+  const moved = pointerDownAt && Math.hypot(ev.clientX - pointerDownAt.x, ev.clientY - pointerDownAt.y) > 6;
+  if (draggingNode && moved) {
+    // 拖节点：直接改坐标并钉住（fx/fy）—— 不触发相机归用户。
+    const pt = graphPointOf(ev);
+    if (pt) {
+      dragMoved = true;
+      draggingNode.fx = pt.x;
+      draggingNode.fy = pt.y;
+      draggingNode.x = pt.x;
+      draggingNode.y = pt.y;
+      // ForceGraph 自带 rAF 重绘循环：fx/fy 改了下一帧就生效，无需手动 refresh。
+    }
+    return;
   }
+  // 按住空白拖超过 6px = 平移画布 ⇒ 相机从此归用户（数据刷新不再自动归位）。
+  if (moved) userAdjustedCamera = true;
   if (host.value) host.value.style.cursor = nodeAt(ev) ? "pointer" : "";
+}
+
+/** 保存拖拽后的布局（失败不炸页面，给一条可见提示）。 */
+async function persistLayout() {
+  try {
+    await api.topologyLayoutSave(JSON.stringify(layoutOverrides.value));
+  } catch (e) {
+    app.toastError(e, t("topology.layoutSaveFailed"));
+  }
+}
+
+/** 恢复默认布局：清掉偏好并重排。 */
+async function resetLayout() {
+  try {
+    await api.topologyLayoutReset();
+    layoutOverrides.value = {};
+    syncGraph(true);
+    app.toast(t("topology.layoutResetDone"), "success");
+  } catch (e) {
+    app.toastError(e, t("topology.layoutResetFailed"));
+  }
 }
 
 function onHostWheel() {
@@ -373,7 +419,21 @@ function onHostTouchStart(ev: TouchEvent) {
 function onHostPointerUp(ev: PointerEvent) {
   const down = pointerDownAt;
   pointerDownAt = null;
+  const dragged = draggingNode;
+  draggingNode = null;
   if (!down || ev.button !== 0) return;
+  if (dragged) {
+    if (dragMoved) {
+      // 落盘：只记这一个节点的最终坐标（不依赖 pointermove 的中间态）。
+      layoutOverrides.value = {
+        ...layoutOverrides.value,
+        [dragged.id]: { x: dragged.x ?? 0, y: dragged.y ?? 0 },
+      };
+      void persistLayout();
+    }
+    dragMoved = false;
+    return;
+  }
   if (Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > 6) return;
   selectedId.value = nodeAt(ev)?.id ?? null;
 }
@@ -449,8 +509,10 @@ function applyLayout(nodes: TopoNode[], w: number, h: number) {
     w,
     h,
   );
+  // 用户拖过的节点用覆盖坐标（阶段 2）；没拖过的仍走确定性分档网格。
+  const points = applyLayoutOverride(l, layoutOverrides.value, SELF_ID);
   for (const n of nodes) {
-    const p = l.points.get(n.id);
+    const p = points.get(n.id);
     if (!p) continue;
     n.fx = p.x;
     n.fy = p.y;
@@ -471,6 +533,17 @@ function applyLayout(nodes: TopoNode[], w: number, h: number) {
 /** 节点对象按 id **持久化**：graphData 重算时复用同一对象（只改字段），d3 就不会
  *  重新初始化坐标 —— 这是"增量更新、老节点不大动"的根基。 */
 const nodeStore = new Map<string, TopoNode>();
+
+/**
+ * 用户拖拽过的节点坐标（阶段 2）。**只存覆盖**，不存整张图 ——
+ * 新节点仍按确定性分档网格出现，老节点没拖过就仍稳定。
+ * 落盘走 settings 表（本机偏好，**不进网络协议**）。
+ */
+const layoutOverrides = ref<Record<string, { x: number; y: number }>>({});
+/** 当前正在拖的节点（null = 拖的是画布）。 */
+let draggingNode: TopoNode | null = null;
+/** 拖拽中是否真的移动过（>6px）—— 用来区分「点节点」和「拖节点」。 */
+let dragMoved = false;
 
 /** 当前节点半径（随档位自适应）。 */
 const nodeRadius = ref(11);
@@ -586,6 +659,16 @@ function sizeGraphToHost() {
 }
 
 onMounted(() => {
+  // 先加载用户拖拽过的节点坐标（本机偏好，settings 表）—— 必须在 buildGraph 之前，
+  // 否则首帧会用默认布局，加载完再跳一次（用户会看到节点"闪一下"）。
+  void api.topologyLayoutLoad().then((raw) => {
+    const parsed = parseLayoutOverride(raw);
+    if (Object.keys(parsed).length === 0) return;
+    layoutOverrides.value = parsed;
+    syncGraph(true);
+  }).catch(() => {
+    /* 读不到偏好就走默认布局（不影响主流程） */
+  });
   buildGraph();
   sizeGraphToHost();
   boundHost = host.value;
@@ -686,6 +769,17 @@ const selectedRole = computed(() => {
           {{ t(v === "graph" ? "topology.view.graph" : "topology.view.list") }}
         </button>
       </div>
+      <!-- 恢复默认布局（阶段 2）：只清本机偏好，不动任何数据/协议。 -->
+      <button
+        v-if="view === 'graph'"
+        type="button"
+        class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2 py-1 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        :title="t('topology.layoutResetHint')"
+        :aria-label="t('topology.layoutResetHint')"
+        @click="resetLayout"
+      >
+        {{ t("topology.layoutReset") }}
+      </button>
       <button
         class="tap-safe flex h-9 w-9 items-center justify-center rounded-[var(--gosslan-radius-md)] transition hover:bg-[var(--gosslan-hover)]"
         :aria-label="t('topology.refresh')"
