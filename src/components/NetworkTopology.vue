@@ -1,13 +1,28 @@
 <script setup lang="ts">
 /**
- * 网络拓扑（自中心图）：自己居中，直连节点一圈；公网中转 / Mesh 中转的节点挂在
- * 合成中枢下；好友边标注真实 `hop`。
+ * 「我的网络」（本机邻域图）：**本机是观察端点**，不是网络中心。
  *
- * 数据口径（2026-11-10 用户拍板）：后端只提供「每个节点到本机的最佳链路类型」
- * （`Peer.link`）与好友会话的 `path/hop`（`get_conv_link`），**不提供其他节点之间的边**。
- * 因此本视图不画虚构的 P2P 连线：中转一律归到中枢节点，路径未知的 hop 只作标注。
+ * ## 与旧版的差别（2026-11-16，按网络拓扑可视化方案阶段 1 改）
+ *
+ * 旧版把「合成的公网中转 / Mesh 中枢」画成图上的**节点**，于是整张图读成
+ * 「中心设备带一圈节点」—— 那是中心化误读。现在：
+ *
+ * 1. **没有合成节点**：relay / mesh 的对端**就是那个 peer 自己**，边上标路径类型；
+ *    中转设备与中间节点身份**不可见** ⇒ 只给文字提示，不画假节点；
+ * 2. **本机在侧边（宽屏）/ 底部（窄屏）锚点**，节点向另一侧展开成扇形 ——
+ *    「我的观察视角」，不是「本机在中心路由全网」；
+ * 3. **路径类型分开**：LAN / 路由 IP / 蓝牙 / 公网中转 / Mesh 多跳 各有各的标签与线型；
+ * 4. **未知显式保留**：没有链路证据就是「已发现未建链」，不是离线、不是零跳；
+ * 5. **图与列表同源**：同一份语义数据（`src/utils/topologySemantics.ts`），
+ *    列表另有筛选与最后更新时间 —— 图给形状，列表给可读与可操作。
+ *
+ * ## 不变量（方案 §产品表达原则）
+ *
+ * - 图里**只有**「本机 → Peer」的边：后端没有远端 peer-peer 边，本页也不推断；
+ * - 稳定坐标 + 相机归用户：刷新不夺走视角、不让老节点跳位；
+ * - 图例、颜色、线型、图标**各自独立**表达路径含义（不靠颜色当唯一信号）。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useMediaQuery } from "@vueuse/core";
 import ForceGraph from "force-graph";
 import Icon from "@/components/ui/Icon.vue";
@@ -22,6 +37,17 @@ import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { detailText } from "@/composables/useErrorText";
+import {
+  buildTopologyList,
+  buildTopologyPeers,
+  filterTopologyList,
+  layoutNeighborhood,
+  needsIntermediateNotice,
+  pathLabelKey,
+  type PathKind,
+  type TopologyFilter,
+  type TopologyListItem,
+} from "@/utils/topologySemantics";
 import type { Friend, LinkState, Peer } from "@/types";
 
 const emit = defineEmits<{
@@ -33,8 +59,6 @@ const app = useAppStore();
 const chat = useChatStore();
 
 const SELF_ID = "__self__";
-const HUB_RELAY = "__hub_relay__";
-const HUB_MESH = "__hub_mesh__";
 
 /** reduce 档只淡入淡出：滑动位移交还给系统偏好（判据见 design-guidelines §11.3.7）。
  *  用媒体查询的**响应式**读数 —— 会话中途开/关"减弱动态"也要跟着换档。 */
@@ -43,16 +67,19 @@ const panelTransition = computed(() => (prefersReducedMotion.value ? "topo-panel
 
 interface TopoNode {
   id: string;
-  kind: "self" | "friend" | "peer" | "hub";
-  /** first_seen（缺省 0）：放射布局的**插入序** —— 新节点追加在队尾，老节点不动。 */
+  /** `self` = 本机（观察端点）；`friend` / `peer` = 设备节点。
+   *  ⚠️ **没有 `hub`**：合成中转节点已被移除（方案阶段 1 第 1 条）——
+   *  中转是**路径类型**，不是设备。 */
+  kind: "self" | "friend" | "peer";
+  /** first_seen（缺省 0）：布局的**插入序** —— 新节点追加在队尾，老节点不动。 */
   ts?: number;
   label: string;
   avatar?: string | null;
   deviceType?: string;
-  link?: string | null;
+  /** 本机到它的**当前选路**类型（`unknown` = 没有关系证据）。 */
+  pathKind?: PathKind;
   hop?: number;
   rtt?: number | null;
-  hub?: "relay" | "mesh";
   x?: number;
   y?: number;
   vx?: number;
@@ -64,13 +91,22 @@ interface TopoNode {
 interface TopoLink {
   source: string;
   target: string;
-  kind: "lan" | "routed" | "bluetooth" | "relay" | "mesh" | "unknown";
+  kind: PathKind;
   hop?: number;
 }
 
 const convLinks = ref<Record<string, LinkState>>({});
 const linksLoading = ref(false);
 const selectedId = ref<string | null>(null);
+/** 图 / 列表 双视图（方案 §交互：图与列表是**等价入口**，小屏与读屏用户走列表）。 */
+const VIEWS = ["graph", "list"] as const;
+const view = ref<(typeof VIEWS)[number]>("graph");
+/** 列表筛选（**只影响呈现，不改数据**）。 */
+const listFilter = ref<TopologyFilter>("all");
+/** 路径摘要的解释是否展开（摘要卡点开说明「这是路径类型，不是本机控制中心」）。 */
+const summaryOpen = ref(false);
+/** 最后一次**成功**刷新的时刻（数据时间；陈旧状态据此判断）。 */
+const updatedAt = ref<number | null>(null);
 const cooldown = ref<Record<string, number>>({});
 const host = ref<HTMLElement | null>(null);
 let graph: ForceGraph<TopoNode, TopoLink> | null = null;
@@ -95,17 +131,23 @@ const outgoingByPeer = computed(
 );
 const pendingFrom = computed(() => new Set(chat.pendingRequests.map((r) => r.from)));
 
-function linkText(link?: string | null, hop?: number): string {
-  if (link === "lan") return t("topology.link.lan");
-  if (link === "routed") return t("topology.link.routed");
-  if (link === "bluetooth") return t("topology.link.bluetooth");
-  if (link === "relay") return t("topology.link.relay");
-  if (hop && hop > 0) return t("topology.link.hop", { n: hop });
-  return t("topology.link.unknown");
+function linkText(kind?: PathKind | null, hop?: number): string {
+  const k = kind ?? "unknown";
+  const key = pathLabelKey(k, hop);
+  return k === "mesh" ? t(key, { n: hop ?? 0 }) : t(key);
 }
 
 /** 纯数据拼装：以 self 为中心；relay 与 hop>0 各挂一个合成中枢。
  *  只产出**规格**（不含坐标）—— 坐标由 buildGraphData 的确定性放射布局给。 */
+const topologyInput = computed(() => ({
+  peers: chat.peers,
+  friends: chat.friends,
+  convLinks: convLinks.value,
+}));
+const topoPeers = computed(() => buildTopologyPeers(topologyInput.value));
+
+/** 图的节点与边：**只有**「本机 → Peer」**（后端没有远端 peer-peer 边，本页也不推断）。
+ *  relay / mesh 的对端就是那个 peer 自己 —— **没有合成中转节点**。 */
 const topoSpec = computed<{ nodes: TopoNode[]; links: TopoLink[] }>(() => {
   const nodes: TopoNode[] = [
     {
@@ -117,58 +159,44 @@ const topoSpec = computed<{ nodes: TopoNode[]; links: TopoLink[] }>(() => {
     },
   ];
   const links: TopoLink[] = [];
-  let relayCount = 0;
-  let meshCount = 0;
-  for (const peer of chat.peers) {
-    const friend = friendById.value.get(peer.device_id);
-    const conv = convLinks.value[peer.device_id];
-    const hop = conv?.hop ?? 0;
-    const link: TopoLink["kind"] =
-      peer.link === "lan" || peer.link === "routed" || peer.link === "bluetooth"
-        ? peer.link
-        : peer.link === "relay"
-          ? "relay"
-          : hop > 0
-            ? "mesh"
-            : "unknown";
-    const node: TopoNode = {
-      id: peer.device_id,
-      kind: friend ? "friend" : "peer",
-      label: peer.nickname || friend?.nickname || peer.device_id.slice(0, 12),
-      avatar: peer.avatar ?? friend?.avatar ?? null,
-      deviceType: peer.device_type || friend?.device_type,
-      link: peer.link ?? null,
-      hop,
-      rtt: peer.rtt_ms,
-      ts: peer.first_seen ?? peer.last_seen ?? 0,
-    };
-    nodes.push(node);
-    if (link === "relay" || link === "mesh") {
-      const hubId = link === "relay" ? HUB_RELAY : HUB_MESH;
-      if (!nodes.some((n) => n.id === hubId)) {
-        nodes.push({
-          id: hubId,
-          kind: "hub",
-          label: link === "relay" ? t("topology.hub.relay") : t("topology.hub.mesh"),
-          hub: link,
-        });
-        links.push({ source: SELF_ID, target: hubId, kind: link });
-      }
-      links.push({ source: hubId, target: peer.device_id, kind: link, hop });
-      if (link === "relay") relayCount += 1;
-      else meshCount += 1;
-    } else {
-      links.push({ source: SELF_ID, target: peer.device_id, kind: link });
-    }
+  for (const p of topoPeers.value.peers) {
+    nodes.push({
+      id: p.id,
+      kind: p.isFriend ? "friend" : "peer",
+      label: p.label,
+      avatar: p.avatar,
+      deviceType: p.deviceType,
+      pathKind: p.pathKind,
+      hop: p.hop,
+      rtt: p.rttMs ?? undefined,
+      ts: p.firstSeen,
+    });
+    links.push({ source: SELF_ID, target: p.id, kind: p.pathKind, hop: p.hop || undefined });
   }
   return { nodes, links };
 });
 const stats = computed(() => ({
-  online: chat.peers.length,
-  friends: onlineFriends.value.length,
-  relay: topoSpec.value.links.filter((l) => l.kind === "relay" && l.target !== HUB_RELAY).length,
-  mesh: topoSpec.value.links.filter((l) => l.kind === "mesh" && l.target !== HUB_MESH).length,
+  online: topoPeers.value.summary.observed,
+  friends: topoPeers.value.summary.friends,
+  relay: topoPeers.value.summary.relayed,
+  mesh: topoPeers.value.summary.mesh,
 }));
+
+/** 列表条目：在线设备 + 离线好友（**同源**：与图共用 `topologyInput`）。 */
+const listItems = computed<TopologyListItem[]>(
+  () => filterTopologyList(buildTopologyList(topologyInput.value), listFilter.value),
+);
+/** 数据是否可能已过期（最近一次刷新失败 ⇒ 保留上次成功视图但要说明）。 */
+const stale = computed(() => loadError.value !== null);
+
+function updatedAtText(): string {
+  if (!updatedAt.value) return t("topology.never");
+  const d = new Date(updatedAt.value);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return t("topology.updatedAt", { time: `${hh}:${mm}:${ss}` });
+}
 
 const selectedNode = computed(() => {
   if (!selectedId.value) return null;
@@ -229,36 +257,21 @@ function drawNode(node: TopoNode, ctx: CanvasRenderingContext2D, scale: number) 
   // 节点几何**全部除以 scale**：屏幕上恒为设计尺寸（18/12/11px），不随自动缩放膨胀 ——
   // 否则只有一个节点时 self 会被画成 ~144px 大圆，把空态提示压在身上（2026-11-11 用户实报）。
   const s = Math.max(Number(scale) || 1, 0.1);
-  const r = (node.kind === "self" ? 18 : node.kind === "hub" ? 12 : 11) / s;
+  const r = (node.kind === "self" ? 18 : 11) / s;
   const x = node.x ?? 0;
   const y = node.y ?? 0;
   ctx.save();
-  if (node.kind === "hub") {
-    ctx.fillStyle = "rgba(245,158,11,.16)";
-    ctx.strokeStyle = linkStyle[node.hub === "mesh" ? "mesh" : "relay"].color;
-    ctx.lineWidth = 1.4 / s;
-    ctx.beginPath();
-    ctx.arc(x, y, r + 3 / s, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = p.warn;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#fff";
-    ctx.font = `600 ${10 / s}px sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(node.hub === "relay" ? "⇄" : "⌁", x, y + 0.5 / s);
-  } else {
+  {
     if (node.kind === "self") {
-      const glow = ctx.createRadialGradient(x, y, r * 0.6, x, y, r * 2.2);
-      glow.addColorStop(0, "rgba(59,130,246,.35)");
-      glow.addColorStop(1, "rgba(59,130,246,0)");
-      ctx.fillStyle = glow;
+      // 本机 = **观察端点**：一圈描边标出「这是我在看」，不再用那团中心光晕
+      // （光晕读起来像「中心枢纽」—— 方案 §产品表达原则第 1 条）。
+      ctx.strokeStyle = p.primary;
+      ctx.lineWidth = 2 / s;
+      ctx.setLineDash([3 / s, 3 / s]);
       ctx.beginPath();
-      ctx.arc(x, y, r * 2.2, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.arc(x, y, r + 5 / s, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
     ctx.fillStyle = node.kind === "friend" ? p.primary : node.kind === "peer" ? p.text2 : p.primary;
     ctx.beginPath();
@@ -280,16 +293,10 @@ function drawNode(node: TopoNode, ctx: CanvasRenderingContext2D, scale: number) 
   ctx.font = `500 ${10 / scale}px sans-serif`;
   ctx.fillStyle = p.text;
   ctx.fillText(clip(node.label, 10), x, labelY);
-  if (node.kind !== "hub" && node.kind !== "self") {
+  if (node.kind !== "self") {
     ctx.font = `${9 / scale}px sans-serif`;
-    ctx.fillStyle = linkStyle[
-      (node.link === "lan" || node.link === "routed" || node.link === "bluetooth" || node.link === "relay")
-        ? node.link
-        : node.hop && node.hop > 0
-          ? "mesh"
-          : "unknown"
-    ].color;
-    ctx.fillText(linkText(node.link, node.hop), x, labelY + 12 / scale);
+    ctx.fillStyle = linkStyle[node.pathKind ?? "unknown"].color;
+    ctx.fillText(linkText(node.pathKind, node.hop), x, labelY + 12 / scale);
   }
   ctx.restore();
 }
@@ -313,7 +320,7 @@ function clip(s: string, n: number): string {
 let pointerDownAt: { x: number; y: number } | null = null;
 
 function hitRadius(node: TopoNode, k: number): number {
-  return (node.kind === "self" ? 22 : node.kind === "hub" ? 16 : 15) / (k || 1);
+  return (node.kind === "self" ? 24 : 15) / (k || 1);
 }
 
 function nodeAt(ev: PointerEvent): TopoNode | null {
@@ -398,6 +405,8 @@ async function refreshAll() {
     loadError.value = detailText(friends.reason, { log: true });
   }
   await refreshLinks();
+  // 数据时间：**只有成功**才更新（失败时旧视图要标「可能已过期」，不能装作是新的）。
+  if (!loadError.value) updatedAt.value = Date.now();
 }
 
 function addFriend(peerId: string) {
@@ -419,85 +428,26 @@ function addFriend(peerId: string) {
 }
 
 /**
- * 确定性**放射布局**（2026-11-11 用户：去中心化网络用力导向画不直观、刷新还大幅重排）。
- * 本图天然是"星的星"（深度 ≤2）：self 居中，直连节点与两个中枢均匀占第一圈，
- * 中枢的孩子在第二圈、以中枢角为中心的扇区内 —— 每条边都是短的放射线。
- * 所有节点 fx/fy 钉死 ⇒ 没有力导向动画；新增节点只在自己的槽位出现，
- * 老节点最多因同组均分角度挪一小步；相机完全归用户，永不自动重置。
+ * 邻域布局：**本机是观察端点**（宽屏在左、窄屏在底），设备节点向另一侧展开成扇形。
+ *
+ * 坐标由纯函数 `layoutNeighborhood` 算（`src/utils/topologySemantics.ts`）——
+ * 那里有判据钉着三件事：本机在锚点上、扇形朝另一侧、新节点加入时老节点不动。
+ * 这里只负责把算出来的坐标钉到节点对象上（fx/fy 钉死 ⇒ 没有力模拟动画）。
  */
-function layoutRadial(nodes: TopoNode[], links: TopoLink[], w: number, h: number) {
-  const minDim = Math.max(Math.min(w, h), 260);
-  let r2 = minDim / 2 - 48;
-  let r1 = Math.max(96, Math.min(170, minDim / 3.1));
-  r1 = Math.min(r1, r2 - 56);
-  r2 = Math.max(r2, r1 + 56);
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const self = byId.get(SELF_ID);
-  if (self) { self.fx = 0; self.fy = 0; self.x = 0; self.y = 0; }
-
-  // 中枢固定角（公网中转在上、Mesh 在下）；既有孩子的偏移角**不随新增变化** ——
-  // 插入稳定是新节点"就地出现、老节点不动"的前提。
-  const hubBase: Record<string, number> = { relay: -Math.PI / 2, mesh: Math.PI / 2 };
-  const hubs = nodes
-    .filter((n) => n.kind === "hub")
-    .sort((a, b) => (a.hub === "relay" ? 0 : 1) - (b.hub === "relay" ? 0 : 1));
-  const childrenByHub = new Map<string, TopoNode[]>();
-  for (const l of links) {
-    if (l.kind !== "relay" && l.kind !== "mesh") continue;
-    const child = byId.get(l.target);
-    if (child) {
-      const arr = childrenByHub.get(l.source) ?? [];
-      arr.push(child);
-      childrenByHub.set(l.source, arr);
-    }
+function applyLayout(nodes: TopoNode[], w: number, h: number) {
+  const l = layoutNeighborhood(
+    nodes.map((n) => ({ id: n.id, ts: n.ts ?? 0, self: n.kind === "self" })),
+    w,
+    h,
+  );
+  for (const n of nodes) {
+    const p = l.points.get(n.id);
+    if (!p) continue;
+    n.fx = p.x;
+    n.fy = p.y;
+    n.x = p.x;
+    n.y = p.y;
   }
-  for (const arr of childrenByHub.values()) {
-    arr.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0) || a.id.localeCompare(b.id));
-  }
-
-  const exclusions: { a: number; half: number }[] = [];
-  for (const hub of hubs) {
-    const a0 = hubBase[hub.hub ?? "relay"] ?? 0;
-    hub.fx = Math.cos(a0) * r1;
-    hub.fy = Math.sin(a0) * r1;
-    hub.x = hub.fx;
-    hub.y = hub.fy;
-    const kids = childrenByHub.get(hub.id) ?? [];
-    const half = Math.min(1.25, 0.3 + kids.length * 0.17);
-    exclusions.push({ a: a0, half: half + 0.14 });
-    kids.forEach((c, j) => {
-      // 0 → 正下；之后左右交替外扩（0, +0.34, −0.34, +0.68, …）：插入只追加新偏移
-      const order = j === 0 ? 0 : Math.ceil(j / 2) * (j % 2 === 1 ? 1 : -1);
-      const ca = a0 + order * 0.34;
-      c.fx = Math.cos(ca) * r2;
-      c.fy = Math.sin(ca) * r2;
-      c.x = c.fx;
-      c.y = c.fy;
-    });
-  }
-
-  // 直连叶子：固定步距顺时针走，**跳过中枢扇区**。角度只前进不重排 ⇒
-  // 新增叶子追加在队尾，既有叶子一像素都不动。
-  // ⚠️ 中枢的孩子**不算叶子** —— 否则它们先被摆上 ring1、又被中枢循环摆到 ring2，
-  // 谁后写谁生效，结构就乱了。
-  const childIds = new Set([...childrenByHub.values()].flat().map((c) => c.id));
-  const leaves = nodes
-    .filter((n) => (n.kind === "friend" || n.kind === "peer") && !childIds.has(n.id))
-    .sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0) || a.id.localeCompare(b.id));
-  const step = (Math.PI * 2) / 12;
-  const angDiff = (a: number, b: number) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
-  let a = Math.PI / 2 + 0.6;
-  leaves.forEach((leaf, i) => {
-    let guard = 0;
-    while (guard++ < 64 && exclusions.some((e) => Math.abs(angDiff(a, e.a)) < e.half)) a += step;
-    // 奇偶双半径：相邻叶子径向错开一档，标签不再横向叠在一起（桌面/移动都松一格）。
-    const rr = i % 2 === 1 ? r1 * 0.82 : r1;
-    leaf.fx = Math.cos(a) * rr;
-    leaf.fy = Math.sin(a) * rr;
-    leaf.x = leaf.fx;
-    leaf.y = leaf.fy;
-    a += step;
-  });
 }
 
 /** 节点对象按 id **持久化**：graphData 重算时复用同一对象（只改字段），d3 就不会
@@ -522,7 +472,7 @@ function buildGraphData(): { nodes: TopoNode[]; links: TopoLink[] } {
     if (!spec.nodes.some((sp) => sp.id === id)) nodeStore.delete(id);
   }
   const links = spec.links.map((l) => ({ ...l }));
-  layoutRadial(nodes, links, w, h);
+  applyLayout(nodes, w, h);
   return { nodes, links };
 }
 
@@ -589,6 +539,14 @@ watch(
   },
 );
 watch(convLinks, () => syncGraph());
+// 切回「图」时画布尺寸才恢复（列表视图下它是隐藏的）⇒ 必须重排一次，
+// 否则节点坐标还是列表期间那个尺寸算出来的。
+watch(view, async (v) => {
+  if (v !== "graph") return;
+  await nextTick();
+  sizeGraphToHost();
+  syncGraph(true);
+});
 
 function sizeGraphToHost() {
   const el = host.value;
@@ -644,7 +602,6 @@ const selectedRole = computed(() => {
   const n = selectedNode.value;
   if (!n) return "";
   if (n.kind === "self") return t("topology.role.self");
-  if (n.kind === "hub") return t("topology.role.hub");
   return n.kind === "friend" ? t("topology.role.friend") : t("topology.role.peer");
 });
 </script>
@@ -668,12 +625,38 @@ const selectedRole = computed(() => {
       </button>
       <div class="min-w-0 flex-1">
         <div class="truncate text-title font-medium" :title="t('topology.title')">{{ t("topology.title") }}</div>
-        <div class="truncate text-caption text-[var(--gosslan-text-2)]" data-topo-stats :title="`${t('topology.online', { n: stats.online })} · ${t('topology.friends', { n: stats.friends })}`">
+        <div class="truncate text-caption text-[var(--gosslan-text-2)]" data-topo-subtitle :title="t('topology.subtitle')">{{ t("topology.subtitle") }}</div>
+        <div
+          class="truncate text-caption text-[var(--gosslan-text-2)]"
+          data-topo-stats
+          :class="stale ? 'text-[var(--gosslan-warning-ink)]' : ''"
+          :title="`${t('topology.online', { n: stats.online })} · ${t('topology.friends', { n: stats.friends })}`"
+        >
           {{ t("topology.online", { n: stats.online }) }} ·
-          {{ t("topology.friends", { n: stats.friends }) }}
-          <span v-if="stats.relay"> · {{ t("topology.relayed", { n: stats.relay }) }}</span>
-          <span v-if="stats.mesh"> · {{ t("topology.mesh", { n: stats.mesh }) }}</span>
+          {{ t("topology.friends", { n: stats.friends }) }} ·
+          <span>{{ stale ? t("topology.stale") : updatedAtText() }}</span>
         </div>
+      </div>
+      <!-- 图 / 列表：等价入口（方案 §交互：小屏、键盘与读屏用户走列表）。 -->
+      <div
+        class="flex shrink-0 items-center gap-0.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-0.5"
+        role="tablist"
+        :aria-label="t('topology.view.label')"
+      >
+        <button
+          v-for="v in VIEWS"
+          :key="v"
+          type="button"
+          role="tab"
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-1 text-caption transition"
+          :class="view === v
+            ? 'bg-[var(--gosslan-primary-soft)] text-[var(--gosslan-primary)]'
+            : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          :aria-selected="view === v"
+          @click="view = v"
+        >
+          {{ t(v === "graph" ? "topology.view.graph" : "topology.view.list") }}
+        </button>
       </div>
       <button
         class="tap-safe flex h-9 w-9 items-center justify-center rounded-[var(--gosslan-radius-md)] transition hover:bg-[var(--gosslan-hover)]"
@@ -686,15 +669,103 @@ const selectedRole = computed(() => {
     </header>
 
     <div class="relative min-h-0 flex-1">
-      <div ref="host" class="absolute inset-0"></div>
+      <!-- 图区（切到列表时用 v-show 保留画布，尺寸变化由 watcher 重排）。 -->
+      <div v-show="view === 'graph'" ref="host" class="absolute inset-0"></div>
 
-      <!-- 图例 -->
-      <div data-topo-legend class="pointer-events-none absolute bottom-3 left-3 flex flex-col gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[color-mix(in_srgb,var(--gosslan-panel)_88%,transparent)] px-2.5 py-2 text-caption text-[var(--gosslan-text-2)] backdrop-blur-sm">
+      <!-- 列表视图：与图**同源**（同一份语义数据），加筛选与可执行动作。 -->
+      <div v-if="view === 'list'" class="absolute inset-0 overflow-y-auto p-3" data-topo-list>
+        <div class="mb-2 flex flex-wrap items-center gap-1.5">
+          <button
+            v-for="f in (['all', 'friends', 'offline'] as const)"
+            :key="f"
+            type="button"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] border px-2 py-1 text-caption transition"
+            :class="listFilter === f
+              ? 'border-[var(--gosslan-primary)] text-[var(--gosslan-primary)]'
+              : 'border-[var(--gosslan-border)] text-[var(--gosslan-text-2)]'"
+            :aria-pressed="listFilter === f"
+            @click="listFilter = f"
+          >
+            {{ t(f === "all" ? "topology.filter.all" : f === "friends" ? "topology.filter.friends" : "topology.filter.offline") }}
+          </button>
+        </div>
+        <ul class="flex flex-col gap-1">
+          <li
+            v-for="item in listItems"
+            :key="item.id"
+            class="flex items-center gap-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-2"
+          >
+            <AvatarBox class="h-9 w-9 shrink-0" :id="item.id" :src="item.avatar" />
+            <div class="min-w-0 flex-1">
+              <div class="truncate text-body" :title="item.label">{{ item.label }}</div>
+              <div
+                class="truncate text-caption text-[var(--gosslan-text-2)]"
+                :title="`${item.isFriend ? t('topology.role.friend') : t('topology.role.peer')} · ${item.offline ? t('topology.offlineState') : linkText(item.pathKind, item.hop)}`"
+              >
+                {{ item.isFriend ? t("topology.role.friend") : t("topology.role.peer") }} ·
+                <span :class="item.offline ? 'opacity-70' : ''">
+                  {{ item.offline ? t("topology.offlineState") : linkText(item.pathKind, item.hop) }}
+                </span>
+              </div>
+            </div>
+            <PrimaryBtn v-if="item.isFriend && !item.offline" size="dense" @click="emit('open-chat', item.id)">
+              {{ t("topology.action.chat") }}
+            </PrimaryBtn>
+            <SecondaryBtn
+              v-else-if="!item.isFriend && !item.offline"
+              size="dense"
+              :disabled="reqSent(item.id) || cooling(item.id)"
+              @click="addFriend(item.id)"
+            >
+              {{ reqPending(item.id)
+                ? t("topology.action.accept")
+                : reqSent(item.id)
+                  ? t("topology.action.requested")
+                  : t("topology.action.add") }}
+            </SecondaryBtn>
+          </li>
+        </ul>
+        <p v-if="listItems.length === 0" class="mt-6 text-center text-caption text-[var(--gosslan-text-2)]">
+          {{ t("topology.list.empty") }}
+        </p>
+      </div>
+
+      <!-- 路径摘要（**图外**）：公网中转 / Mesh 是**路径类型**，不是设备清单；
+           展开后说明「中间节点当前不可见」与「这不是本机控制中心」。 -->
+      <div
+        v-if="view === 'graph'"
+        class="absolute left-3 top-3 max-w-[260px] rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[color-mix(in_srgb,var(--gosslan-panel)_88%,transparent)] px-2.5 py-2 text-caption text-[var(--gosslan-text-2)] backdrop-blur-sm"
+        data-topo-summary
+      >
+        <button type="button" class="flex w-full items-center gap-1.5 text-left" :aria-expanded="summaryOpen" @click="summaryOpen = !summaryOpen">
+          <Icon :name="summaryOpen ? 'chevron-down' : 'chevron-right'" class="h-3 w-3 shrink-0" />
+          <span>{{ t("topology.summary.title") }}</span>
+        </button>
+        <div class="mt-1 flex flex-col gap-0.5">
+          <span v-if="stats.relay">{{ t("topology.summary.relay", { n: stats.relay }) }}</span>
+          <span v-if="stats.mesh">{{ t("topology.summary.mesh", { n: stats.mesh }) }}</span>
+          <span v-if="!stats.relay && !stats.mesh">{{ t("topology.summary.none") }}</span>
+        </div>
+        <p v-if="summaryOpen" class="mt-1.5 leading-relaxed">
+          {{ t("topology.summary.explain") }}
+        </p>
+      </div>
+
+      <!-- 图例：节点种类 + 路径类型（**没有「中转节点」这一项** —— 中转不是设备）。
+           线型与文案都在，颜色只是辅助（不靠颜色当唯一信号）。 -->
+      <div
+        v-if="view === 'graph'"
+        data-topo-legend
+        class="pointer-events-none absolute bottom-3 left-3 grid grid-cols-2 gap-x-3 gap-y-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[color-mix(in_srgb,var(--gosslan-panel)_88%,transparent)] px-2.5 py-2 text-caption text-[var(--gosslan-text-2)] backdrop-blur-sm"
+      >
+        <span class="flex items-center gap-1.5"><i class="inline-block h-2.5 w-2.5 rounded-full border border-dashed border-[var(--gosslan-primary)]"></i>{{ t("topology.legend.self") }}</span>
         <span class="flex items-center gap-1.5"><i class="inline-block h-2.5 w-2.5 rounded-full bg-[var(--gosslan-primary)]"></i>{{ t("topology.legend.friend") }}</span>
         <span class="flex items-center gap-1.5"><i class="inline-block h-2.5 w-2.5 rounded-full bg-[var(--gosslan-text-2)]"></i>{{ t("topology.legend.peer") }}</span>
-        <span class="flex items-center gap-1.5"><i class="inline-block h-2.5 w-2.5 rounded-full bg-[var(--gosslan-warning)]"></i>{{ t("topology.legend.hub") }}</span>
-        <span class="flex items-center gap-1.5"><i class="inline-block h-0.5 w-4 bg-[var(--gosslan-primary)]"></i>{{ t("topology.legend.direct") }}</span>
-        <span class="flex items-center gap-1.5"><i class="inline-block h-0.5 w-4 border-t border-dashed border-[var(--gosslan-warning)]"></i>{{ t("topology.legend.relay") }}</span>
+        <span class="flex items-center gap-1.5"><i class="inline-block h-0.5 w-4 bg-[var(--gosslan-primary)]"></i>{{ t("topology.link.lan") }}</span>
+        <span class="flex items-center gap-1.5"><i class="inline-block h-0.5 w-4 border-t border-dashed border-[var(--gosslan-text-2)]"></i>{{ t("topology.link.routed") }}</span>
+        <span class="flex items-center gap-1.5"><i class="inline-block h-0.5 w-4 border-t border-dotted border-[var(--gosslan-warning)]"></i>{{ t("topology.link.bluetooth") }}</span>
+        <span class="flex items-center gap-1.5"><i class="inline-block h-0.5 w-4 border-t border-dashed border-[var(--gosslan-warning)]"></i>{{ t("topology.link.relay") }}</span>
+        <span class="flex items-center gap-1.5"><i class="inline-block h-0.5 w-4 border-t border-dashed border-[var(--gosslan-text-2)]"></i>{{ t("topology.link.hop", { n: 2 }) }}</span>
       </div>
 
       <!-- 空态/失败态：失败优先 —— 名单读不到时说"读不到 + 重试"（INV-P36 同族），
@@ -738,15 +809,7 @@ const selectedRole = computed(() => {
         >
           <div class="p-4">
             <div class="flex items-start gap-3">
-              <AvatarBox
-                v-if="selectedNode.kind !== 'hub'"
-                class="h-12 w-12"
-                :id="selectedNode.id"
-                :src="selectedNode.avatar"
-              />
-              <div v-else class="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--gosslan-warning-soft)] text-[var(--gosslan-warning-ink)]">
-                <Icon name="network" class="h-5 w-5" />
-              </div>
+              <AvatarBox class="h-12 w-12" :id="selectedNode.id" :src="selectedNode.avatar" />
               <div class="min-w-0 flex-1">
                 <div class="truncate text-body font-medium" :title="selectedNode.label">{{ selectedNode.label }}</div>
                 <div class="text-caption text-[var(--gosslan-text-2)]" data-topo-role>{{ selectedRole }}</div>
@@ -761,15 +824,25 @@ const selectedRole = computed(() => {
             </div>
 
             <dl v-if="selectedNode.kind === 'friend' && selectedFriend" class="mt-3 space-y-1.5 text-caption">
-              <div class="flex justify-between gap-3"><dt class="text-[var(--gosslan-text-2)]">{{ t("topology.field.link") }}</dt><dd>{{ linkText(selectedPeer?.link, selectedNode.hop) }}</dd></div>
+              <div class="flex justify-between gap-3"><dt class="text-[var(--gosslan-text-2)]">{{ t("topology.field.link") }}</dt><dd>{{ linkText(selectedNode.pathKind, selectedNode.hop) }}</dd></div>
               <div v-if="selectedPeer?.rtt_ms != null" class="flex justify-between gap-3"><dt class="text-[var(--gosslan-text-2)]">{{ t("topology.field.rtt") }}</dt><dd>{{ selectedPeer.rtt_ms }} ms</dd></div>
               <div class="flex justify-between gap-3"><dt class="text-[var(--gosslan-text-2)]">{{ t("topology.field.device") }}</dt><dd class="truncate" :title="selectedFriend.device_type || selectedNode.deviceType || '—'">{{ selectedFriend.device_type || selectedNode.deviceType || "—" }}</dd></div>
               <div v-if="selectedFriend.peer_app_version" class="flex justify-between gap-3"><dt class="text-[var(--gosslan-text-2)]">{{ t("topology.field.version") }}</dt><dd>{{ selectedFriend.peer_app_version }}</dd></div>
             </dl>
 
-            <p v-if="selectedNode.kind === 'hub'" class="mt-3 text-caption leading-relaxed text-[var(--gosslan-text-2)]">
-              {{ selectedNode.hub === "relay" ? t("topology.hub.relayHint") : t("topology.hub.meshHint") }}
+            <!-- 公网中转 / Mesh 多跳：**中间节点身份当前不可见**（后端只给跳数）——
+                 说出来，免得「看不见中转」被当成「没有中转」。 -->
+            <p
+              v-if="selectedNode.kind !== 'self' && needsIntermediateNotice(selectedNode.pathKind ?? 'unknown')"
+              class="mt-3 text-caption leading-relaxed text-[var(--gosslan-text-2)]"
+              data-topo-intermediate
+            >
+              {{ selectedNode.pathKind === "relay" ? t("topology.relayHint") : t("topology.meshHint") }}
             </p>
+            <div class="mt-3 flex justify-between gap-3 text-caption">
+              <dt class="text-[var(--gosslan-text-2)]">{{ t("topology.field.updated") }}</dt>
+              <dd :class="stale ? 'text-[var(--gosslan-warning-ink)]' : ''">{{ stale ? t("topology.stale") : updatedAtText() }}</dd>
+            </div>
 
             <div class="mt-4 flex gap-2">
               <PrimaryBtn v-if="selectedNode.kind === 'friend'" class="flex-1" @click="emit('open-chat', selectedNode.id)">

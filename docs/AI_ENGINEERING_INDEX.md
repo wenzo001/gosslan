@@ -32,6 +32,8 @@
 | `docs/notes/platform-keychain-free-path-2026-11-15.md` | **平台密钥库的免费路径与三平台成本表（决策稿，未实现）** —— 纠正「卡在付费证书」的口径：**只有 macOS 需要签名**，Windows（DPAPI）与 Android（Keystore）零成本即可做；macOS 用**免费 Apple Development 证书**即可让 Keychain 的 DR 稳定（不再每次弹授权框），付费的 Developer Program 买的是公证与分发；另给「维持现状 + 导出/恢复」「口令派生加密文件」两条零成本替代路径，以及迁移的三步硬约束（写新 → 验签成功 → 才删旧；密钥库不可用时拒绝签名，绝不回落明文） |
 | `docs/notes/rp-key-export-recovery-design-2026-11-15.md` | **已按本文实现（客户端）**：RP 绑定密钥的导出/恢复 —— 文件格式 v1（Argon2id + XChaCha20-Poly1305、头部作 AAD 防降级）、冲突矩阵（不覆盖不同公钥、不复活已撤销）、原子性、与平台密钥库迁移的**先后顺序**（先密钥库 → 再导出 → 最后抹明文）、10 条验收判据 |
 | `docs/notes/app-name-and-searchability-2026-11-15.md` | 应用名（中文「小院儿」/ 英文 Gosslan）的**七处资源清单**与各平台可搜索性：Mac/Windows 两个名字都能搜到（机制不同），Android/iOS 是单值标签做不到、以及为什么不采用「第二图标」与「中英混排名」 |
+| `docs/notes/network-topology-visualization-plan-2026-11-16.md` | 网络拓扑可视化改进方案：现有放射布局与去中心化目标的冲突、当前数据能证明/不能证明的关系、邻域图到真实 Mesh 图的分阶段交付、状态边界与验收清单（**阶段 0/1 已实施**，见下一条） |
+| `docs/notes/network-topology-semantics-2026-11-16.md` | 「我的网络」的**语义表 / 现有字段覆盖表 / 「不可推断关系」清单**（阶段 0 交付物）：每种线的数据来源与禁止暗示、今天**给不了**的字段（远端 peer-peer 边、中间节点身份、边的观测时间）、前端不许做的九件事；阶段 1 的落地对照表 |
 | `docs/notes/external-app-device-auth-design-2026-11-13.md` | 设备快捷认证/绑定的**设计稿**（2026-11-13 草案，正文保留当时的方案与取舍）：威胁模型、事务与绑定状态机、claim 最小披露、双方案对比与分阶段计划。**现状读活契约那一份**；本稿已按原地实现，头部的状态横幅写明这条边界 |
 | `docs/notes/external-auth-integration-contract-2026-11-14.md` | 外部 RP 集成的**活契约**：术语口径、三层状态机及当前差距、双边撤销、密钥保护、外链/深链边界、RP mock 的限制、错误码口径、版本化约定、可勾选的发布准入清单（未验收项一律 `NOT RUN`） |
 | `docs/notes/external-integration-guide-2026-11-14.md` | **给外部接入方看的**接入指南：设备快捷认证（元数据/事务/决策回写字段表、JWS 断言校验步骤、幂等与撤销）与分享到会话（`gosslan://share?…` 参数与限额、用户确认语义、不支持清单）、**没有签名包时的两条粘贴自测入口**、接入自测清单、**错误码与用户可见文案附录**、NOT RUN 边界 |

@@ -9590,3 +9590,60 @@ test("预览手势接线：起点与当前位置分家、手势挂在图片区�
   assert.notEqual(backOnImg, src, "锚点没命中：img 上的 dblclick 绑定变了");
   assert.ok(!handlersOnStage(backOnImg), "把 pointerdown 加回 img 必须判红（黑边又滑不动）");
 });
+
+// ---------------- 「我的网络」：本机是观察端点，不是网络中心 ----------------
+//
+// 网络拓扑可视化方案（docs/notes/network-topology-visualization-plan-2026-11-16.md）
+// 阶段 1 的硬要求：去掉「合成中转节点是真实设备」的表达、页面名说清「本机观察」、
+// 图与列表同源、路径类型分开表达。判据按**源码形状**钉，防回退。
+
+test("「我的网络」：不画合成中转节点、页面名说清「本机观察」、图与列表同源", () => {
+  const root = join(import.meta.dirname, "..");
+  const read = (p: string) => readFileSync(join(root, p), "utf8");
+  const page = read("components/NetworkTopology.vue");
+
+  // ① 合成中转节点不许回到图上：中转是**路径类型**，不是设备。
+  assert.ok(
+    !/HUB_RELAY|HUB_MESH|kind:\s*"hub"/.test(page),
+    "合成中转节点不许回��图上（那会被读成真实设备）",
+  );
+  assert.ok(!page.includes("topology.hub."), "旧的中枢文案不许再用");
+  // ② 布局必须走语义层的邻域布局（本机在侧边/底部锚点，不是中心）。
+  assert.ok(
+    page.includes("layoutNeighborhood("),
+    "布局必须走语义层的邻域布局（本机是观察端点）",
+  );
+  assert.ok(
+    !page.includes("layoutRadial("),
+    "旧的自中心放射布局不许复活（那读成「本机在中心路由全网」）",
+  );
+  // ③ 图与列表必须同源（同一份语义数据）。
+  assert.ok(
+    page.includes("buildTopologyPeers(") && page.includes("buildTopologyList("),
+    "图与列表必须共用语义层的同一份输入",
+  );
+  // ④ 页面名与副标题：中文说「我的网络」+「从这台设备观察」；
+  //    英文不许再用 "Network map/topology"（那是全网图的意思）。
+  const zh = read("i18n/locales/zh-cn.ts");
+  const en = read("i18n/locales/en-us.ts");
+  assert.ok(zh.includes('"topology.title": "我的网络"'), "中文页面名应是「我的网络」");
+  assert.ok(
+    zh.includes('"topology.subtitle": "从这台设备观察到的网络关系"'),
+    "中文副标题必须说明「从这台设备观察」",
+  );
+  assert.ok(en.includes('"topology.title": "My Network"'), "英文页面名应是 My Network");
+  assert.ok(
+    !en.includes('"topology.title": "Network map"') &&
+      !en.includes('"topology.title": "Network Topology"'),
+    "英文页面名不许再叫 Network map/topology（那是全网图）",
+  );
+  // ⑤ 「中间节点当前不可见」必须说给用户听（relay / mesh 两处提示都在）。
+  assert.ok(
+    page.includes("needsIntermediateNotice("),
+    "relay / mesh 必须显式提示「中间节点当前不可见」",
+  );
+  assert.ok(
+    zh.includes('"topology.relayHint"') && zh.includes('"topology.meshHint"'),
+    "中英文提示键都要在（公网中转与 Mesh 各一条）",
+  );
+});
