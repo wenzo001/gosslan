@@ -1360,13 +1360,20 @@ select:focus {
 
 /* 消息输入框：编辑区是卡片里一块透明矩形，焦点提示画在**卡片边框**上（1px 内描边），
    编辑区自己仍然不画外框。 */
+/* 输入框聚焦：**全应用一套标准** —— 只改边框颜色，不加外圈、不加光晕。
+   为什么（用户 2026-11-16）：2px 内环 + 一圈光晕看着太夸张、太亮。
+   其它输入框本来就只有 `focus:border-[var(--gosslan-primary)]` ⇒ 这里回到同一口径。 */
 .gosslan-composer:focus-within {
   border-color: var(--gosslan-primary);
-  /* 原来只有 1px 内描边 ⇒ 看着像「一条灰线横在那儿」（用户 2026-11-16）。
-     改成 2px 内环 + 一圈淡光晕：明确的聚焦指示（无障碍也更好认）。 */
-  box-shadow:
-    inset 0 0 0 2px var(--gosslan-primary),
-    0 0 0 3px var(--gosslan-primary-ring);
+}
+
+/* 空输入框点一下 ⇒ 浏览器会选中那个空段落 ⇒ 出现一条灰紫的**选区带**
+   （用户 2026-11-16：「点击的时候有一个灰色的背景，那个不需要」）。
+   只在**空**的时候抹掉；有字时选中仍要有可见高亮（复制要看得见选中了什么）。
+   `:empty` 覆盖真·空；`:has(> br:only-child)` 覆盖「空壳 + 一个 <br>」的形态。 */
+.gosslan-composer-editor:empty::selection,
+.gosslan-composer-editor:has(> br:only-child)::selection {
+  background-color: transparent;
 }
 
 /* 输入框自增高：高度值由 JS 写 inline px，这里只负责把「撑高 / 回落」做成短过渡。
