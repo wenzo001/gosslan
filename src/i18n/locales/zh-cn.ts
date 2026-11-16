@@ -505,6 +505,9 @@ export const zhCN: MessageDict = {
   "settings.security.enabled": "已启用",
 
   // ---- 关于 ----
+  "group.member.viewProfile": "查看 {name} 的资料",
+  "settings.about.integrationDoc": "外部应用接入文档",
+  "settings.about.integrationDocHint": "想用第三方应用登录「小院儿」，或把内容分享到会话，按这篇指南接（登录 / 数据 / 分享三类可分开接，也可全接）。",
   "settings.about.fingerprint": "设备指纹",
   "settings.about.fingerprintCopy": "点击复制设备指纹",
   "settings.updates.title": "应用更新",

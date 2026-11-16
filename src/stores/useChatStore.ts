@@ -379,7 +379,9 @@ export const useChatStore = defineStore("chat", () => {
   Object.assign(apiRegistry, groupsModule);
   const mediaModule = createMediaModule(ctx);
   Object.assign(apiRegistry, mediaModule);
-  const { maybeNotify, ensureRemindChannel, handleIncomingNudge, handleIncomingRemind, routeNotificationClick, shakeSignal, nudgeNotice, notifMap, cancelNotificationTimers } = notificationsModule;
+  const { maybeNotify, ensureRemindChannel, handleIncomingNudge, handleIncomingRemind, routeNotificationClick, shakeSignal, nudgeNotice, notifMap, cancelNotificationTimers, subscribeTrayEvents } = notificationsModule;
+  // 托盘图标被点 ⇒ 跳第一条未读（用户 2026-11-16）。订阅在 store 初始化时做一次。
+  void subscribeTrayEvents();
   const { refreshUpdaterStatus, markResending, refreshTransfers, scheduleTransfersRepair, cancelTransfersRepairTimer } = taskCenterModule;
   const { convIdOfMessage, flushNow, enqueueMessage, send, resend, sendReminder, shakeConversation, confirmReminder, recallMessage, setMessageRender, getRenderLang, sendReaction, sendDmReaction, deleteMessages, onMessageRecalled, onMessageRenderChanged, PENDING_ACKS_MAX, getPending, pendingAcks } = messagingModule;
   const { refreshConversations, refreshGroups, resetAfterDataCleared, clearAllData, sendReadReceipt, chatViewerLooking, groupReaderIds, unreadJump, locateRequest, clearLocateRequest, locateInLoaded, locateMessageInConv, openConversation, loadMessages, refreshGroupDeliveries, clearHistoryError, loadMoreMessages, onGroupRead, onGroupHistoryProgress, syncGroupHistoryNow, cancelGroupHistory, deleteConversation, setConversationPinned, historyLoadErrors } = conversationsModule;

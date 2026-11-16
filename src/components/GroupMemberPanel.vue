@@ -21,7 +21,9 @@ import { MAX_ANNOUNCEMENT_CHARS, MAX_GROUP_NAME_CHARS } from "@/utils/validation
 import CharCounter from "@/components/ui/CharCounter.vue";
 import type { Friend } from "@/types";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
+import { useOpenProfile } from "@/composables/useOpenProfile";
 
+const { openProfile } = useOpenProfile();
 const props = defineProps<{
   open: boolean;
   groupId: string | null;
@@ -387,7 +389,13 @@ async function confirmAction() {
           class="flex items-center gap-2.5 rounded-[var(--gosslan-radius-md)] px-2 py-2"
           @contextmenu="onContextMenu(row, $event)"
         >
-          <div class="relative shrink-0">
+          <!-- 头像 / 名字 ⇒ 跳那个人的资料（用户 2026-11-16：点了要有反应） -->
+          <button
+            type="button"
+            class="relative shrink-0 rounded-full"
+            :aria-label="t('group.member.viewProfile', { name: row.name })"
+            @click="openProfile(row.id)"
+          >
             <AvatarBox
               class="h-9 w-9"
               :class="!row.online ? 'grayscale opacity-70' : ''"
@@ -397,11 +405,20 @@ async function confirmAction() {
             <span
               class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
               :class="row.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
+              aria-hidden="true"
             ></span>
-          </div>
+          </button>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-1.5">
-              <span class="truncate text-sm font-medium" :title="row.name">{{ row.name }}</span>
+              <button
+                type="button"
+                class="truncate text-left text-sm font-medium hover:underline"
+                :title="row.name"
+                :aria-label="t('group.member.viewProfile', { name: row.name })"
+                @click="openProfile(row.id)"
+              >
+                {{ row.name }}
+              </button>
               <Icon name="crown" v-if="group.creator === row.id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" :title="t('group.owner')" />
               <Icon name="shield" v-else-if="group.admins.includes(row.id)" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-primary)]" :title="t('group.admin')" />
               <span v-if="row.id === myId" class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("group.me") }}</span>

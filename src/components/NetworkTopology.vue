@@ -650,16 +650,19 @@ const selectedRole = computed(() => {
       </button>
       <div class="min-w-0 flex-1">
         <div class="truncate text-title font-medium" :title="t('topology.title')">{{ t("topology.title") }}</div>
-        <div class="truncate text-caption text-[var(--gosslan-text-2)]" data-topo-subtitle :title="t('topology.subtitle')">{{ t("topology.subtitle") }}</div>
+        <!-- 头部原来三行（标题 / 副标题 / 统计）挤成一团（用户 2026-11-16）⇒
+             收成**两行**：第二行「副标题 + 统计 + 时间」并排，窄屏只留副标题。 -->
         <div
-          class="truncate text-caption text-[var(--gosslan-text-2)]"
+          class="flex min-w-0 items-baseline gap-x-2 text-caption text-[var(--gosslan-text-2)]"
           data-topo-stats
           :class="stale ? 'text-[var(--gosslan-warning-ink)]' : ''"
           :title="`${t('topology.online', { n: stats.online })} · ${t('topology.friends', { n: stats.friends })}`"
         >
-          {{ t("topology.online", { n: stats.online }) }} ·
-          {{ t("topology.friends", { n: stats.friends }) }} ·
-          <span>{{ stale ? t("topology.stale") : updatedAtText() }}</span>
+          <span class="truncate" data-topo-subtitle :title="t('topology.subtitle')">{{ t("topology.subtitle") }}</span>
+          <span class="hidden shrink-0 sm:inline">·</span>
+          <span class="hidden shrink-0 sm:inline">{{ t("topology.online", { n: stats.online }) }} · {{ t("topology.friends", { n: stats.friends }) }}</span>
+          <span class="shrink-0">·</span>
+          <span class="shrink-0">{{ stale ? t("topology.stale") : updatedAtText() }}</span>
         </div>
       </div>
       <!-- 图 / 列表：等价入口（方案 §交互：小屏、键盘与读屏用户走列表）。 -->

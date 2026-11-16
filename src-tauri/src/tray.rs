@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tauri::{
     menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
 
 /// 主窗口标签（tauri.conf.json 中定义）。
@@ -612,6 +612,10 @@ fn build_tray<R: tauri::Runtime>(
             } = event
             {
                 show_main_window(tray.app_handle());
+                // 任务栏里闪的那个图标被点 ⇒ 前端**直接跳到第一条未读会话**
+                // （用户 2026-11-16：「点击那个闪烁的图标，就是直接进入第一个未读的新消息」）。
+                // 事件不带数据：前端自己知道哪条没读。
+                let _ = tray.app_handle().emit("tray-open-unread", ());
             }
         });
 

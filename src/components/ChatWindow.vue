@@ -19,6 +19,7 @@ import { dropPointToCss } from "@/utils/dropPoint";
 import { useAppStore } from "@/stores/useAppStore";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import { useChatStore } from "@/stores/useChatStore";
+import { useOpenProfile } from "@/composables/useOpenProfile";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import MessageItem from "@/components/MessageItem.vue";
@@ -760,26 +761,20 @@ let taskFocusSeq = 0;
  * 点消息头像：好友 → 与通讯录同一个 `/contacts/:friendId` 资料页；
  * 群里还没加好友的成员没有好友资料，退到群成员面板（那里有名字/在线/管理入口）。
  */
-function openSenderProfile(senderId: string) {
-  if (!senderId) return;
-  /**
-   * 点**自己的**头像 → 自己的资料页（用户 2026-10-23）。原来这里直接 return（点了没反应）。
-   * 移动端是下钻路由（`profile` 覆盖层，返回落回聊天）；桌面端的「资料」就是设置第一项，
-   * 走 `settings` 路由（`ResponsiveLayout` 用同一份 SettingsPanel 打开，窗口开不出来时回落应用内）。
-   */
-  if (senderId === app.device?.device_id) {
-    void router.push({ name: app.isMobile ? "profile" : "settings" });
-    return;
-  }
-  if (!chat.friends.some((f) => f.device_id === senderId)) {
+/**
+ * 点消息头像 / 人员列表里的头像或名字 ⇒ 跳到那个人的资料。
+ *
+ * 逻辑已抽到 `composables/useOpenProfile.ts`（**全应用一个入口**）：
+ * 别人要用不必再一层层 `emit("open-profile")` 往上接 ⇒ 不会再有「点了没反应」的地方。
+ */
+const { openProfile } = useOpenProfile({
+  // 对方不是好友 ⇒ 群里打开群成员面板（单聊里由 composable 如实说一句）
+  onUnknown: () => {
     if (isGroup.value) membersOpen.value = true;
-    // 单聊里对方已不在通讯录（被删除/尚未重新加回）：资料页没有可读的好友行。
-    // 旧行为是直接 return，用户点了头像完全没反应；现在如实说一句。
-    else app.toast(t("chat.header.profileUnavailable"), "info");
-    return;
-  }
-  if (app.isMobile) app.mobileView = "chat";
-  void router.push({ name: "friend", params: { friendId: senderId } });
+  },
+});
+function openSenderProfile(senderId: string) {
+  openProfile(senderId);
 }
 
 function openTasks(todoId?: string, mode: "detail" | "highlight" = "detail") {

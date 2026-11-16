@@ -505,6 +505,9 @@ export const enUS: MessageDict = {
   "settings.security.enabled": "Enabled",
 
   // ---- About ----
+  "group.member.viewProfile": "View {name}'s profile",
+  "settings.about.integrationDoc": "External app integration guide",
+  "settings.about.integrationDocHint": "To sign in from a third-party app, or share content into a conversation, follow this guide (login / data / share can be integrated separately or together).",
   "settings.about.fingerprint": "Device Fingerprint",
   "settings.about.fingerprintCopy": "Click to copy the device ID",
   "settings.updates.title": "App Updates",

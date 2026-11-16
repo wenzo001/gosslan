@@ -317,11 +317,13 @@ function stateText(state: GroupFileEntry["local_state"]): string {
         :title="t('group.files.empty')"
       />
 
-      <div v-else class="gosslan-scroll max-h-80 space-y-0.5 overflow-y-auto">
+      <!-- 列表间距：原来 0.5（2px）挤成一坨（用户 2026-11-16）⇒ 放宽到 1（4px），
+           行内留白也松一格，扫起来一眼能分清哪一行。 -->
+      <div v-else class="gosslan-scroll max-h-80 space-y-1 overflow-y-auto">
         <div
           v-for="f in files"
           :key="f.transfer_id"
-          class="flex items-center gap-2.5 rounded-[var(--gosslan-radius-md)] px-2 py-2 transition"
+          class="flex items-center gap-3 rounded-[var(--gosslan-radius-md)] px-2.5 py-2.5 transition"
           :class="f.local_path ? 'cursor-pointer hover:bg-[var(--gosslan-hover)]' : ''"
           :role="f.local_path ? 'button' : undefined"
           :tabindex="f.local_path ? 0 : undefined"
