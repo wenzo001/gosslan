@@ -30,7 +30,7 @@ SQLite schema 属 Frozen Core ⇒ **一律走 `settings` 表**（键值对）：
 - `event_id` 唯一 ⇒ 收件箱按 `event_id` 幂等（重复投递不重复显示）。
 - 收件箱**只在本机**（不跨设备同步、不进好友关系）。
 
-### 1.2 命令（`src-tauri/src/commands/bots.rs`）
+### 1.2 命令（将来新增的机器人命令模块，落在 `src-tauri/src/commands/` 下）
 
 | 命令 | 做什么 | 关键约束 |
 |---|---|---|
