@@ -2134,6 +2134,7 @@ export const zhCN: MessageDict = {
   "topology.summary.relay": "公网中转路径 {n} 条",
   "topology.summary.mesh": "经 Mesh 可达 {n} 个",
   "topology.summary.none": "当前没有中转路径",
+  "topology.summary.moreInList": "另有 {n} 个设备放不下，在列表里看",
   "topology.summary.explain": "公网中转与 Mesh 转发都是**路径类型**，不是设备：本机看不到中转设备与中间节点的身份。这里列的是「本机当前观察到的路径」，不是全网拓扑。",
   "topology.legend.self": "本机（观察端点）",
   "topology.legend.friend": "好友",

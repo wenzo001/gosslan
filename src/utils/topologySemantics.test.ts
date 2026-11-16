@@ -233,3 +233,45 @@ test("邻域布局：同环节点不重叠（最小间距大于节点直径）",
     }
   }
 });
+
+test("邻域布局：节点不许溢出画布，且放不下的要有上限", () => {
+  // 2026-11-16 review 实测：旧圆弧布局在 1440×900 上算到 y=488（可见区只到 450）
+  // ⇒ 节点被画到屏幕外、点不到。现在改成网格云，并给出 maxNodes 上限。
+  for (const [w, h] of [[1000, 600], [1440, 900], [390, 780]] as const) {
+    const l = layoutNeighborhood(
+      [
+        { id: "__self__", ts: 0, self: true },
+        ...Array.from({ length: 60 }, (_, i) => ({ id: `p${i}`, ts: i + 1 })),
+      ],
+      w,
+      h,
+    );
+    // 只把**放得下的那些**画出来 ⇒ 每一个都必须落在可见区内。
+    const peerIds = [...l.points.keys()].filter((id) => id !== "__self__").slice(0, l.maxNodes);
+    for (const id of peerIds) {
+      const p = l.points.get(id)!;
+      assert.ok(
+        p.x >= -w / 2 && p.x <= w / 2 && p.y >= -h / 2 && p.y <= h / 2,
+        `${id} 超出画布（${w}x${h}）：(${p.x.toFixed(0)}, ${p.y.toFixed(0)})`,
+      );
+    }
+    assert.ok(l.maxNodes > 0, "maxNodes 必须有值（组件据此把放不下的设备留在列表里）");
+  }
+});
+
+test("邻域布局：网格云铺满可用区域（不留大块空白）", () => {
+  const l = layoutNeighborhood(
+    [
+      { id: "__self__", ts: 0, self: true },
+      ...Array.from({ length: 12 }, (_, i) => ({ id: `p${i}`, ts: i + 1 })),
+    ],
+    1000,
+    600,
+  );
+  const xs = [...l.points.values()].map((p) => p.x);
+  const used = Math.max(...xs) - Math.min(...xs);
+  assert.ok(
+    used > 600,
+    `1000 宽的画布上设备只占了 ${used.toFixed(0)}px ⇒ 大片留白（review 实测的旧毛病）`,
+  );
+});

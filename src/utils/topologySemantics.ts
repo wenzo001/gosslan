@@ -251,6 +251,8 @@ export interface NeighborhoodLayout {
   points: Map<string, { x: number; y: number }>;
   /** 节点是否按窄屏（竖屏扇形）布局。 */
   narrow: boolean;
+  /** 图上最多能放多少个设备（超出的只在列表里）—— 保证最外一行也不出画布。 */
+  maxNodes: number;
 }
 
 /**
@@ -270,43 +272,45 @@ export function layoutNeighborhood(
   h: number,
 ): NeighborhoodLayout {
   const narrow = w < 768;
-  const minDim = Math.max(Math.min(w, h), 260);
   const margin = narrow ? 64 : 96;
-  const perRing = narrow ? 5 : 8;
-  const span = narrow ? 2.4 : 2.1; // 弧度（总张角）
-  const step = span / perRing;
-  const base = narrow ? -Math.PI / 2 : 0; // 扇形朝向：窄屏向上、宽屏向右
-
   const self = nodes.find((n) => n.self);
   const others = nodes
     .filter((n) => !n.self)
     .sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
 
+  // 本机锚点：宽屏在左侧中部、窄屏在底部中央（**观察端点**，不是网络中心）。
   const ax = narrow ? 0 : -(w / 2 - margin);
   const ay = narrow ? h / 2 - margin : 0;
 
-  const availW = Math.max(w - margin * 2, 120);
-  const availH = Math.max(h - margin * 2, 120);
-  const r0 = narrow
-    ? Math.max(96, Math.min(minDim * 0.34, availH * 0.55))
-    : Math.max(130, Math.min(minDim * 0.46, availW * 0.62));
-  const ringStep = r0 * (narrow ? 0.44 : 0.36);
-
-  // 每环的角度槽：0, +Δ, −Δ, +2Δ, −2Δ, …（头几个也居中）
-  const offsets: number[] = [];
-  for (let k = 0; offsets.length < perRing; k += 1) {
-    offsets.push(k * step);
-    if (k > 0) offsets.push(-k * step);
-  }
+  // 「邻域云」用**网格**排布，不用圆弧。
+  //
+  // 为什么不用圆弧（2026-11-16 review 实测）：圆弧在宽画布上只占一条**窄带**
+  // （x 从 -404 到 -155，右边三分之二空着），而且环半径一大就**溢出画布**
+  // （1440×900 时算到 y=488 > 可见区 450 ⇒ 节点被画到屏幕外、点不到）。
+  // 网格两向都填得满，且每个格子的位置**只由画布尺寸决定** ⇒ 稳定、不溢出。
+  const cols = narrow ? 2 : 4;
+  const availW = Math.max(w - margin * 2, 160);
+  const availH = Math.max(h - margin * 2, 160);
+  const gapFromSelf = narrow ? 96 : 118;
+  // 列距：云从本机右侧一路铺到画布右缘（不留空地）。
+  const cellX = Math.max(narrow ? 74 : 96, (availW - gapFromSelf) / Math.max(1, cols - 1 || 1));
+  const cellY = narrow ? 84 : Math.min(96, Math.max(72, (availH / 2) * 0.5));
+  // 行数上限：保证**最外一行也在可见区内**（超出的设备只在列表里，见下）。
+  const maxRows = Math.max(1, Math.floor(availH / 2 / cellY) + 1);
+  const maxNodes = cols * maxRows;
 
   const points = new Map<string, { x: number; y: number }>();
   if (self) points.set(self.id, { x: ax, y: ay });
   others.forEach((n, i) => {
-    const ring = Math.floor(i / perRing);
-    const slot = i % perRing;
-    const r = r0 + ring * ringStep;
-    const a = base + (offsets[slot] ?? 0);
-    points.set(n.id, { x: ax + Math.cos(a) * r, y: ay + Math.sin(a) * r });
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    // 行交替向上/向下 ⇒ 头几行也居中，不偏向一侧；老节点的位置只由 (col,row) 决定。
+    const rowOffset = row === 0 ? 0 : Math.ceil(row / 2) * (row % 2 === 1 ? 1 : -1);
+    const x = narrow
+      ? ax + (col - (cols - 1) / 2) * cellX
+      : ax + gapFromSelf + col * cellX;
+    const y = narrow ? ay - gapFromSelf - row * cellY : ay + rowOffset * cellY;
+    points.set(n.id, { x, y });
   });
-  return { anchor: { x: ax, y: ay }, points, narrow };
+  return { anchor: { x: ax, y: ay }, points, narrow, maxNodes };
 }

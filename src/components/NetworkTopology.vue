@@ -454,11 +454,24 @@ function applyLayout(nodes: TopoNode[], w: number, h: number) {
  *  重新初始化坐标 —— 这是"增量更新、老节点不大动"的根基。 */
 const nodeStore = new Map<string, TopoNode>();
 
+/** 图上实际放得下的设备数（超出的只在列表里 —— 方案 §超多节点：有界渲染）。 */
+const shownPeerCount = ref(0);
+
 function buildGraphData(): { nodes: TopoNode[]; links: TopoLink[] } {
   const spec = topoSpec.value;
   const w = host.value?.clientWidth ?? 800;
   const h = host.value?.clientHeight ?? 600;
-  const nodes = spec.nodes.map((sp) => {
+  // 先按**全部**节点算一次布局，只为拿 maxNodes（图上放不下多少个）——
+  // 放不下的设备留在列表里，不进画布（否则会被画到屏幕外、点不到）。
+  const probe = layoutNeighborhood(
+    spec.nodes.map((n) => ({ id: n.id, ts: n.ts ?? 0, self: n.kind === "self" })),
+    w,
+    h,
+  );
+  const peerIds = spec.nodes.filter((n) => n.kind !== "self").map((n) => n.id);
+  const keep = new Set([SELF_ID, ...peerIds.slice(0, probe.maxNodes)]);
+  shownPeerCount.value = Math.min(peerIds.length, probe.maxNodes);
+  const nodes = spec.nodes.filter((sp) => keep.has(sp.id)).map((sp) => {
     let n = nodeStore.get(sp.id);
     if (!n) {
       n = sp;
@@ -469,9 +482,9 @@ function buildGraphData(): { nodes: TopoNode[]; links: TopoLink[] } {
     return n;
   });
   for (const id of [...nodeStore.keys()]) {
-    if (!spec.nodes.some((sp) => sp.id === id)) nodeStore.delete(id);
+    if (!keep.has(id)) nodeStore.delete(id);
   }
-  const links = spec.links.map((l) => ({ ...l }));
+  const links = spec.links.filter((l) => keep.has(l.source) && keep.has(l.target)).map((l) => ({ ...l }));
   applyLayout(nodes, w, h);
   return { nodes, links };
 }
@@ -748,6 +761,11 @@ const selectedRole = computed(() => {
         </div>
         <p v-if="summaryOpen" class="mt-1.5 leading-relaxed">
           {{ t("topology.summary.explain") }}
+        </p>
+        <!-- 图上放不下的设备（超多节点）：说清楚它们在哪，不假装不存在。 -->
+        <p v-if="stats.online > shownPeerCount" class="mt-1 leading-relaxed" data-topo-overflow>
+          {{ t("topology.summary.moreInList", { n: stats.online - shownPeerCount }) }}
+          <button type="button" class="ml-1 underline" @click="view = 'list'">{{ t("topology.view.list") }}</button>
         </p>
       </div>
 
