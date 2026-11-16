@@ -128,3 +128,58 @@ export function findUnnamedImages(src: string): LabelIssue[] {
   }
   return out.sort((a, b) => a.line - b.line);
 }
+
+// ---------------- Tab 顺序：正数 tabindex 会破坏自然顺序 ----------------
+//
+// 背景（2026-11-16 全量无障碍扫描）：`tabindex="1"`（及任何正数）把元素提到
+// 所有 `tabindex="0"` 元素**之前**，且顺序按数值排 —— 一旦有人加了一个，
+// 整个页面的 Tab 顺序就不等于视觉顺序，读屏/键盘用户会在页面上"跳来跳去"。
+// 负数是合法的（`-1` = 可程序聚焦但不在 Tab 序列里），`0` 是默认值。
+//
+// 判据只扫模板里**字面写死的正整数**；动态 `:tabindex="expr"` 不判（表达式可能是
+// `-1`，也可能是条件值，机械判不出）—— 这类留给人工。
+const POSITIVE_TABINDEX_RE = /(?::|v-bind:)?tabindex\s*=\s*"(?:'([0-9]+)'|([0-9]+))"/g;
+
+/** 检查 .vue 源码里有没有正数 tabindex；空数组 = 通过。 */
+export function findPositiveTabindex(src: string): LabelIssue[] {
+  if (src.includes(A11Y_LABEL_OPT_OUT)) return [];
+  const tmpl = extractTopLevelTemplate(src);
+  if (!tmpl) return [];
+  const { body, baseLine } = tmpl;
+  const out: LabelIssue[] = [];
+  for (const m of body.matchAll(POSITIVE_TABINDEX_RE)) {
+    const n = Number(m[1] ?? m[2]);
+    if (n > 0) out.push(locator(body, baseLine, m.index ?? 0, m[0]));
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- 可点击的非交互元素必须有键盘出口 ----------------
+//
+// 背景（2026-11-16 全量无障碍扫描）：`<div @click="…">` / `<span @click="…">`
+// 是典型的"鼠标能用、键盘点不到"—— 它不在 Tab 序列里，也没有 Enter/Space 处理。
+// 正确做法有两条：① 换成真 `<button>`/`<a>`（首选）；② 保留 div 但补齐
+// `role="button"` + `tabindex="0"` + `@keydown`。
+//
+// 判据刻意保守（避免把「点击整行但内部已有真按钮」误报）：
+//   —— 只看开标签上**直接**带 `@click` 的非交互元素；
+//   —— 开标签上有 `role` / `tabindex` / `@keydown` / `@keyup` 任一即算有出口；
+//   —— 组件标签（首字母大写）不判 —— 那是自定义组件的事件，内部自己负责。
+const CLICKABLE_NONINTERACTIVE_RE = /<(div|span|li|p|section|tr|img)\b((?:"[^"]*"|'[^']*'|[^>"'])*?)\/?>/gs;
+const HAS_KEYBOARD_EXIT = /(?::|v-bind:)?role\s*=|:?tabindex\s*=|@keydown|@keyup|@keypress/i;
+
+/** 检查 .vue 源码里"可点击但无键盘出口"的非交互元素；空数组 = 通过。 */
+export function findClickableWithoutKeyboard(src: string): LabelIssue[] {
+  if (src.includes(A11Y_LABEL_OPT_OUT)) return [];
+  const tmpl = extractTopLevelTemplate(src);
+  if (!tmpl) return [];
+  const { body, baseLine } = tmpl;
+  const out: LabelIssue[] = [];
+  for (const m of body.matchAll(CLICKABLE_NONINTERACTIVE_RE)) {
+    const attrs = m[2] ?? "";
+    if (!/@click\s*=/.test(attrs)) continue;
+    if (HAS_KEYBOARD_EXIT.test(attrs)) continue;
+    out.push(locator(body, baseLine, m.index ?? 0, m[0]));
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
