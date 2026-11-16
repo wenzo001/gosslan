@@ -134,10 +134,23 @@ test("前端：确认页默认全关，且只把勾选的交出去", () => {
     /const scopeChecks = ref<string\[\]>\(\[\]\);/,
     "scope 勾选初始必须为空（默认全关，不预勾）",
   );
+  // 2026-11-16：同一 RP 的**重复登录**不该每次重新表态 ⇒ 新事务到达时按
+  // 「**上次允许过 ∩ 本次请求**」预勾（没有记忆时仍是全关）。
+  // 三条边界由 `deviceAuth.test.ts` 的纯函数判据钉住（不跨应用、不越过请求、默认全关）。
   assert.match(
     comp,
-    /scopeChecks\.value = \[\];/,
-    "新事务到达时必须清空上一笔的勾选（scope 是本次事务的授权）",
+    /scopeChecks\.value = \[\.\.\.remembered\];/,
+    "新事务到达时必须按「上次允许过 ∩ 本次请求」预勾（同一 RP 的重复登录只点一次批准）",
+  );
+  assert.match(
+    comp,
+    /rememberedScopes\(p\.remembered_scopes, p\.requested_scopes\)/,
+    "预勾必须走 rememberedScopes（记忆 ∩ 请求），不能直接用记忆",
+  );
+  assert.match(
+    comp,
+    /data-device-auth-remembered/,
+    "预勾时必须在页面上明写「沿用上次」（别让用户以为是自己刚勾的）",
   );
   assert.match(
     comp,
