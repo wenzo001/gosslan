@@ -35,6 +35,15 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 
+async function copy(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    app.toast(t("bot.copyDone"), "success");
+  } catch (e) {
+    app.toastError(e, t("bot.copyFailed"));
+  }
+}
+
 // 用户可编辑名字 / 头像（2026-11-17）：名字落 BotRecord，头像落 SVG data URL；
 // 个人机器人的会话行同步更新，列表里立刻看得见。
 const editing = ref(false);
@@ -164,12 +173,12 @@ async function remove() {
         <SecondaryBtn v-if="!editing" size="dense" @click="editing = true">{{ t("bot.action.editProfile") }}</SecondaryBtn>
       </div>
       <!-- 唯一 ID：创建时生成、之后不可改（改名/头像/地址都不动它）—— 会话与去重都靠它。 -->
-      <div class="mt-3 flex items-center gap-2 border-t border-[var(--gosslan-divider)] pt-2">
-        <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("bot.field.id") }}</span>
-        <code
-          class="min-w-0 flex-1 select-text truncate font-mono text-caption text-[var(--gosslan-text)]"
-          :title="bot.botId"
-        >{{ bot.botId }}</code>
+      <div class="mt-3 space-y-1.5 border-t border-[var(--gosslan-divider)] pt-2">
+        <code class="block select-text truncate font-mono text-caption" :title="bot.botId">{{ t("bot.idLine", { id: bot.botId }) }}</code>
+        <div class="flex items-center gap-2">
+          <code class="min-w-0 flex-1 break-all font-mono text-meta text-[var(--gosslan-text-2)]" :title="bot.publishUrl">{{ bot.publishUrl }}</code>
+          <SecondaryBtn size="dense" shrink :aria-label="t('bot.copyEndpoint')" @click="copy(bot.publishUrl)">{{ t("bot.copyShort") }}</SecondaryBtn>
+        </div>
       </div>
       </div>
 

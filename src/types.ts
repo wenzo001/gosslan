@@ -1226,6 +1226,8 @@ export interface BotView {
   scope: string;
   /** 免打扰：只影响系统通知/任务栏闪烁，不影响进会话与未读角标。 */
   doNotDisturb: boolean;
+  /** 外部发通知的完整 URL（资料页展示/复制）。 */
+  publishUrl: string;
   /** 用户可编辑的头像（SVG data URL）；空 = 用 botId 种子默认脸。 */
   avatar?: string | null;
   target: BotTarget;

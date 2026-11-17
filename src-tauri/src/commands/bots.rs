@@ -112,6 +112,8 @@ pub struct BotView {
     pub server_url: String,
     pub scope: String,
     pub do_not_disturb: bool,
+    /// 外部发通知的完整 URL（资料页展示/复制用）。
+    pub publish_url: String,
     /// 用户可编辑的头像（SVG data URL；空 = 种子默认脸）。
     pub avatar: String,
     pub target: BotTarget,
@@ -133,6 +135,7 @@ impl From<&BotRecord> for BotView {
                 if r.target.kind == "group" { "group".into() } else { "personal".into() }
             } else { r.scope.clone() },
             do_not_disturb: r.do_not_disturb,
+            publish_url: r.publish_url.clone(),
             avatar: r.avatar.clone(),
             target: r.target.clone(),
             status: r.status.clone(),
@@ -355,6 +358,11 @@ pub async fn bot_create(
         scope: scope_norm.to_string(),
         do_not_disturb: do_not_disturb.unwrap_or(false),
         avatar: String::new(), // 默认种子脸；用户可在详情页改
+        publish_url: if created.publish_url.is_empty() {
+            bot_hook_endpoint(&server, &created.send_token)
+        } else {
+            format!("{}{}", server, created.publish_url)
+        },
         server_url: server.clone(),
         client_token: created.client_token.clone(),
         target: if created.target.kind.is_empty() { target } else { created.target },
@@ -1155,6 +1163,7 @@ mod bot_cmd_tests {
             scope: "personal".into(),
             do_not_disturb: false,
             avatar: String::new(),
+            publish_url: "https://hooks.example.com/publish/token".into(),
             server_url: "https://hooks.example.com".into(),
             client_token: "super-token".into(),
             target: BotTarget {
