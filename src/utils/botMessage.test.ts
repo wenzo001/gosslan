@@ -215,13 +215,15 @@ test("v6 收尾：机器人消息必须 emit 到聊天窗口，且中文正文�
     personal.includes('emit("message-received"'),
     "机器人消息落库后必须 emit message-received —— 否则已打开的聊天窗口不显示新消息（要手动切走再切回）",
   );
+  // 审计 v6 P1：消息体存全文（服务端已限 8192 字节），不能在落库时截断 ——
+  // 否则用户永远看不到长通知全文（此前截 240 字且没有全文入口）。
   assert.ok(
-    !personal.includes("&e.text[..PERSONAL_PREVIEW_MAX]"),
-    "正文截断用字节下标会落在 UTF-8 中文字符中间 ⇒ panic，后台 worker 整轮取件中断",
+    !personal.includes("PERSONAL_PREVIEW_MAX"),
+    "不许在落库时截断正文（全文不可达）：预览交给 UI 的 line-clamp",
   );
   assert.ok(
-    personal.includes(".chars().take(PERSONAL_PREVIEW_MAX)"),
-    "必须按字符截断中文正文",
+    personal.includes("let content: String = e.text.clone()"),
+    "机器人消息必须存全文",
   );
 
   // 前端：机器人消息不能走普通消息的通知/回执（否则正文泄漏 + 双通知 + 白发给假设备）。

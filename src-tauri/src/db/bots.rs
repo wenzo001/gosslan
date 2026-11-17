@@ -115,6 +115,41 @@ pub fn save_bot(conn: &Connection, rec: &BotRecord) -> Result<()> {
     crate::db::set_setting(conn, &bot_key(&rec.bot_id), &value)
 }
 
+/// 字段级设置免打扰（审计 v6 P2）：持锁读改写，不与轮询统计互相覆盖。
+pub fn set_bot_dnd(conn: &Connection, bot_id: &str, enabled: bool) -> Result<Option<BotRecord>> {
+    let Some(mut rec) = load_bot(conn, bot_id)? else { return Ok(None) };
+    rec.do_not_disturb = enabled;
+    save_bot(conn, &rec)?;
+    Ok(Some(rec))
+}
+
+/// 字段级更新轮询统计（审计 v6 P2）：**在同一把锁内**读最新记录 → 只改统计字段 → 写回。
+///
+/// 为什么不能让调用方 `load_bot` → 改 → `save_bot`：那两步之间隔着网络 await，
+/// 用户可能刚改了 DND / 状态，旧快照整条写回会把新值覆盖（真丢用户设置）。
+pub fn update_bot_poll_stats(
+    conn: &Connection,
+    bot_id: &str,
+    pulled: u32,
+    failed: u32,
+    last_event_at: Option<i64>,
+    last_error: Option<String>,
+) -> Result<()> {
+    let mut rec = match load_bot(conn, bot_id)? {
+        Some(r) => r,
+        None => return Ok(()), // 机器人已被删除 ⇒ 不再回写（否则会把删掉的 resurrect）
+    };
+    rec.pending = 0;
+    rec.failed = failed;
+    // 只有本轮真取到事件才推进「最近收到」——没事件不该刷新时间（审计 P2）。
+    if let Some(ts) = last_event_at {
+        rec.last_event_at = Some(ts);
+    }
+    rec.last_error = last_error;
+    let _ = pulled; // 计数由调用方记日志，记录里只留 failed / last_error
+    save_bot(conn, &rec)
+}
+
 /// 读一个机器人。
 pub fn load_bot(conn: &Connection, bot_id: &str) -> Result<Option<BotRecord>> {
     let Some(raw) = crate::db::get_setting_checked(conn, &bot_key(bot_id))? else {
@@ -170,10 +205,12 @@ pub fn append_inbox(conn: &Connection, bot_id: &str, entry: &BotInboxEntry) -> R
     if list.iter().any(|e| e.event_id == entry.event_id) {
         return Ok(false);
     }
-    list.push(entry.clone());
+    // ⚠️ 列表是**新在前**（见 load_inbox 的 sort+reverse）⇒ 新事件必须插到**头部**。
+    // 审计 v6 P1：此前 push 到末尾后 truncate 会把**刚到的新事件**丢掉，
+    // 而保留的是最旧的 —— 与注释「丢最旧」完全相反。
+    list.insert(0, entry.clone());
     if list.len() > BOT_INBOX_MAX {
-        // 丢最旧的（列表已是新在前 ⇒ 保留前 BOT_INBOX_MAX 条）。
-        list.truncate(BOT_INBOX_MAX);
+        list.truncate(BOT_INBOX_MAX); // 尾部是最旧的 ⇒ 丢尾部
     }
     let value = serde_json::to_string(&list)
         .map_err(|e| rusqlite::Error::InvalidParameterName(format!("序列化收件箱失败：{e}")))?;
@@ -185,4 +222,95 @@ pub fn append_inbox(conn: &Connection, bot_id: &str, entry: &BotInboxEntry) -> R
 pub fn clear_inbox(conn: &Connection, bot_id: &str) -> Result<()> {
     crate::db::delete_setting(conn, &bot_inbox_key(bot_id))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod bot_inbox_order_tests {
+    use super::*;
+
+    fn conn() -> rusqlite::Connection {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )
+        .unwrap();
+        c
+    }
+
+    fn entry(id: &str, ts: i64) -> BotInboxEntry {
+        BotInboxEntry {
+            event_id: id.into(),
+            text: format!("text-{id}"),
+            format: "text".into(),
+            source: "".into(),
+            images: vec![],
+            received_at: ts,
+            state: "received".into(),
+        }
+    }
+
+    /// 审计 v6 P1：新事件必须保留，丢的是最旧的。
+    #[test]
+    fn newest_events_survive_truncation() {
+        let c = conn();
+        for i in 0..(BOT_INBOX_MAX + 5) {
+            assert!(append_inbox(&c, "b1", &entry(&format!("e{i}"), i as i64)).unwrap());
+        }
+        let list = load_inbox(&c, "b1").unwrap();
+        assert_eq!(list.len(), BOT_INBOX_MAX);
+        // 最新的必须在（之前 push 到末尾会被 truncate 掉）。
+        assert_eq!(list[0].event_id, format!("e{}", BOT_INBOX_MAX + 4));
+        assert_eq!(list[BOT_INBOX_MAX - 1].event_id, "e5");
+        // 最旧的 e0..e4 被丢。
+        assert!(!list.iter().any(|e| e.event_id == "e0"));
+    }
+
+    /// 重投必须幂等（去重窗口随最新 200 条保留）。
+    #[test]
+    fn redelivery_is_idempotent() {
+        let c = conn();
+        assert!(append_inbox(&c, "b1", &entry("dup", 1)).unwrap());
+        assert!(!append_inbox(&c, "b1", &entry("dup", 1)).unwrap(), "重投必须返回 false");
+        assert_eq!(load_inbox(&c, "b1").unwrap().len(), 1);
+    }
+}
+
+// ---------------- 已投递 event_id（群消息幂等） ----------------
+//
+// 审计 v6 P1：群消息没有 event_id 去重，ACK 丢失导致租约重投时**重复发群消息**。
+// 这里存一个固定上限的「最近已投递 id」集合（**只增不无限膨胀**：超过上限丢最旧的）。
+// 与 `bot_inbox:*` 分开：那个是可裁剪的展示历史，这个是幂等窗口，不能被展示裁剪影响。
+
+/// 群消息投递去重窗口（条）。服务端租约 60s、队列 TTL 7 天；200 条对单群足够，
+/// 且每条 id 32 字节 ⇒ 单 bot 上限约 10 KiB，不会膨胀。
+pub const DELIVERED_IDS_MAX: usize = 200;
+
+fn delivered_key(bot_id: &str) -> String {
+    format!("bot_delivered:{bot_id}")
+}
+
+/// 这个 event 是否已经投递过。
+pub fn was_delivered(conn: &Connection, bot_id: &str, event_id: &str) -> Result<bool> {
+    let Some(raw) = crate::db::get_setting_checked(conn, &delivered_key(bot_id))? else {
+        return Ok(false);
+    };
+    let ids: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+    Ok(ids.iter().any(|i| i == event_id))
+}
+
+/// 记一条已投递 event（幂等；固定窗口丢最旧）。返回 true = 新记的。
+pub fn mark_delivered(conn: &Connection, bot_id: &str, event_id: &str) -> Result<bool> {
+    let mut ids: Vec<String> = match crate::db::get_setting_checked(conn, &delivered_key(bot_id))? {
+        Some(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    if ids.iter().any(|i| i == event_id) {
+        return Ok(false);
+    }
+    ids.insert(0, event_id.to_string()); // 新在前
+    ids.truncate(DELIVERED_IDS_MAX); // 丢最旧
+    let value = serde_json::to_string(&ids)
+        .map_err(|e| rusqlite::Error::InvalidParameterName(format!("序列化投递去重失败：{e}")))?;
+    crate::db::set_setting(conn, &delivered_key(bot_id), &value)?;
+    Ok(true)
 }
