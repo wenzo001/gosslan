@@ -2,6 +2,12 @@
 
 > 日期：2026-11-14
 > 状态：活契约 + 就绪度清单；随实现演进更新
+>
+> **2026-11-17 变更（v6.1.0）**：① `issuer` / metadata 端点 / 授权与分享深链
+> **支持 HTTP**（含 `http://IP:端口` / localhost），端点是「与 issuer 同协议同源」，
+> 不再强制 HTTPS；② 确认页**默认全勾、一键允许**（此前是默认全关 + 同 RP 记忆预勾）。
+> 给接入方看的完整说明以 [`external-integration-guide-2026-11-14.md`](external-integration-guide-2026-11-14.md)
+> 顶部的 2026-11-17 更新块为准。
 > 范围：外部 RP 设备绑定/快捷认证、外链窗口、认证/分享深链、网页到聊天的分享
 
 ## 1. 文档定位
@@ -56,13 +62,13 @@
 - 断言时效：断言有效期常量仍只约束签名本身；事务 TTL 由上面的本地兜底与 RP `expires_at` 共同决定。
 - `/share` 深链：解析 + 内联闭环均已落地（面板、会话选择、显式发送、粘贴兜底都已接线，见 §6）。**定向分享已接**（`to` + `to_kind` 预填目标、目标不存在整笔拒、分享回执可选）。仍**没有**：受控 `share_request`（缺 RP 端点）、文件分享，见 §11。
 - **数据交付（`sync` 动作）**：已接（客户端侧，2026-11-15 裁决后落地）。scope 只有 `friends.read` 与
-  `events.metadata` 两项，**默认全关、由用户在确认页逐项勾选**。
-  ⚠️ **授权本身只对本次事务有效（不落库）**；但 2026-11-16 起多了一条**默认勾选状态**的记忆：
-  **按 RP** 记住「上次你点头允许过哪几项」⇒ 同一个 RP 再来时预勾并**明写「沿用上次，可改」**
-  （用户要求「快捷登录要简单，不要让用户在界面上操作很多」）。
-  三条边界：只影响默认勾选状态（**不勾就不给**）、只认同一个 RP（换应用不继承）、
-  **首次仍是全关逐项点头**、撤销授权后记忆一起清掉。详见
-  [`external-integration-ux-audit-2026-11-16.md`](external-integration-ux-audit-2026-11-16.md) §2。
+  `events.metadata` 两项。
+  **2026-11-17 起：请求的 scope 默认全勾、用户点一次「允许」即完成**
+  （用户要求「对方接入，点击弹出应用，用户直接确认就行」）。
+  ⚠️ 一键允许**不是无条件授权**：交付集合仍是 `grantedScopes(本次请求 ∩ 实际勾选 ∩ allowlist)`，
+  页面明列将同步什么，用户可逐项取消后才点允许。
+  **授权本身只对本次事务有效（不落库）**；2026-11-16 的「按 RP 记忆预勾」机制已被
+  2026-11-17 的全勾策略取代（详见接入指南顶部更新块）。
   交付数据随决策回写发出，形状见接入指南 §1.10：**消息正文不外送、好友只给 device_id + 昵称、
   用户没勾的 scope 连键都没有**。事件除元信息外还带**通知性两位**（`mentions_me` = @ 了我吗、
   `notifies` = 会弹通知吗）—— 供第三方页面显示「你有一条 @ 你的消息」而不必外送正文。**不做后台推送**（交付只在用户当场批准时发生一次）。
@@ -89,7 +95,8 @@
 - **撤销双边语义**
   - 要求：本地撤销与 RP 侧公钥撤销分别定义；失败可重试，并给出最终一致性状态；撤销后旧 key 立即不能登录。
   - 当前状态：**客户端侧已具备**（2026-11-15 落地），RP 侧仍需生产实现。
-    - metadata 增加可选字段 `revocation_endpoint`（**给了就必须 HTTPS 且与 issuer 同源**，跨域或 http 一律拒）。
+    - metadata 增加可选字段 `revocation_endpoint`（**给了就必须与 issuer 同协议同源**；
+      2026-11-17 起 issuer 是 http 时端点也可是 http，跨协议/跨域仍一律拒）。
       空串 = 该 RP 没提供 ⇒ 客户端只做本地撤销，与旧行为一致，**不是失败**。
     - 撤销顺序：**先本地、后通知**。本地撤销立即生效；通知失败只体现为 `rp_notified=false`，
       绝不回滚本地撤销（否则网络不通时会出现「点了撤销却还是已授权」）。
@@ -153,7 +160,8 @@
 - 深链现状：`src-tauri/tauri.conf.json` 注册 desktop `gosslan` scheme。`src-tauri/src/device_auth.rs`
   的 `parse_authorize_link` 只认 `/authorize/<ref>` 与 `gosslan://authorize/...?origin=...`；
   分享侧已接线：`src-tauri/src/share.rs::parse_share_intent` 认**内联**（`gosslan://share?url=…`、
-  `https://<站点>/share?url=…`）与**受控引用**（`/share/<ref>`，本期只解析不解析内容）两种形态，
+  `https://<站点>/share?url=…`、`http://<站点>:<端口>/share?url=…`，2026-11-17 起支持 http）
+  与**受控引用**（`/share/<ref>`，本期只解析不解析内容）两种形态，
   并由 `commands/external_share.rs::route_deep_link` 在**一个地方**把深链分派给分享或授权
   （三处调用点：单实例转发 / `on_open_url` / 冷启动 argv）。HTTPS App Link 的域名关联仍只有
   骨架文件（`docs/link-handoff/`），真机关联 `NOT RUN`。
@@ -287,7 +295,7 @@
 | 系统分享目标（从别的应用分享到本应用） | **要做，先 macOS / Windows** | **读取端已实现，平台写入端未实现**：协议 + 读取端 + 两份骨架已交（`incoming_share.rs` + `commands/external_share.rs` 的扫描 + 设计稿 §6）；macOS 需要 Share Extension（Xcode target，本仓构建不出）、Windows 需要 MSIX share target，两者都要签名打包与真机验证 |
 | 双边撤销 | **做，先定契约再实现** | **已实现（客户端侧）**：metadata 加可选 `revocation_endpoint`（HTTPS 同源）、撤销先本地后通知、通知带 `Idempotency-Key`、体只回 `{client_id, kid}`；结果由 `rp_notified` 分四态呈现，通知失败可**重发**。判据 `deviceAuthRevokeWiring.test.ts` + Rust 单测。RP 侧作废与最终一致性仍需生产实现（见 §4） |
 | RP 私钥保护 | **上平台密钥库** | 未实现。要求与迁移顺序见 §5；成本口径与免费路径见 [`platform-keychain-free-path-2026-11-15.md`](platform-keychain-free-path-2026-11-15.md)（只有 macOS 需签名，且免费证书即可） |
-| 开放接口：好友同步 / 定向分享 / 事件交付 | **要做**（scope 逐项授权，默认全关） | **已实现（客户端侧）**（2026-11-15 裁决后落地，设计稿 [`open-extension-api-design-2026-11-15.md`](open-extension-api-design-2026-11-15.md)）：`sync` 动作 + `friends.read` / `events.metadata` 两个 scope、确认页逐项勾选（默认全关）、决策回写体带可选 `data`（形状：**没有正文、没有公钥、没勾的连键都没有**）、scope 只对本次事务有效（**不落库**）；定向分享（`to` / `to_kind` 预填 + 目标 fail-closed + 可选回执）。**注意**：`friends.read` 只给好友列表 ⇒ RP 拿不到群列表，「一键发到某个群」需要 RP 另行知道 `group:<群 id>` |
+| 开放接口：好友同步 / 定向分享 / 事件交付 | **要做**（scope 一键允许，2026-11-17 起默认全勾可取消） | **已实现（客户端侧）**（2026-11-15 裁决后落地，设计稿 [`open-extension-api-design-2026-11-15.md`](open-extension-api-design-2026-11-15.md)）：`sync` 动作 + `friends.read` / `events.metadata` 两个 scope、确认页一键允许（2026-11-17 起请求项默认全勾、可逐项取消）、决策回写体带可选 `data`（形状：**没有正文、没有公钥、没勾的连键都没有**）、scope 只对本次事务有效（**不落库**）；定向分享（`to` / `to_kind` 预填 + 目标 fail-closed + 可选回执）。**注意**：`friends.read` 只给好友列表 ⇒ RP 拿不到群列表，「一键发到某个群」需要 RP 另行知道 `group:<群 id>` |
 | 导出 / 恢复绑定密钥 | **要做**（口令加密单文件；不做云备份、不导出 P2P 密钥） | **已实现（客户端）**：`rp_key_backup.rs` + 三条命令 + 设置页区块；判据 `rpKeyBackupWiring.test.ts` 与 Rust 单测。设计稿：[`rp-key-export-recovery-design-2026-11-15.md`](rp-key-export-recovery-design-2026-11-15.md)。**顺序硬约束**：导出能力必须先于「抹掉 SQLite 明文 seed」可用 |
 
 已实现的那几条（多选、导出/恢复、双边撤销的客户端侧、系统分享目标的**读取端**、**数据交付与定向分享的客户端侧**）
