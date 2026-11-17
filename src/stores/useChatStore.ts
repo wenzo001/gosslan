@@ -431,6 +431,17 @@ export const useChatStore = defineStore("chat", () => {
       cancelNotificationTimers();
       cancelTransfersRepairTimer();
     });
+    // v7.1：群机器人管理指令（白名单在 Rust 侧已校验）—— 用既有群任务链路执行。
+    void api.onBotGroupAction(async (a) => {
+      if (a.type !== "create_todo" || !a.groupId) return;
+      try {
+        await api.sendGroupTodo(a.groupId, t("bot.groupTaskTitle", { name: a.botName, title: a.title }), []);
+      } catch (e) {
+        // 失败不留静默：toast 让用户知道机器人指令没执行成。
+        app.toastError(e, t("bot.groupActionFailed"));
+      }
+    }).then((un) => scope.onDispose(un));
+
     bindEvents({
       onPeers: (p) => {
         // 这个事件最多每秒 3 次：不比对就直接换表，等于每 333ms 把整屏消息行重画一遍

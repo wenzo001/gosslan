@@ -251,6 +251,7 @@ fn prompt_carries_requested_scopes() {
         generation: 1,
         idempotency_key: "idem-1".into(),
         remembered_scopes: Vec::new(),
+        remembered_nickname: false,
     };
     p.request.action = "sync".into();
     p.request.requested_scopes = vec!["friends.read".into()];

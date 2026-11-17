@@ -258,3 +258,35 @@ test("v7 孤儿消息兜底：删除/撤销写墓碑，轮询时清掉服务端�
   assert.ok(rust.includes("purge_tombstoned_events("), "轮询没清孤儿消息");
   assert.ok(rust.includes("/ack/"), "孤儿消息必须 ACK 丢弃（不是只拉不算）");
 });
+
+test("v7.1 群机器人管理能力：白名单仅建任务，危险操作不可达，身份仍是本机代发", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
+  const store = readFileSync(join(repoRoot, "src", "stores", "useChatStore.ts"), "utf8");
+
+  // 白名单只有 create_todo（公告/危险操作不在首版）
+  assert.ok(rust.includes('kind == "create_todo"'), "群机器人 action 白名单缺 create_todo");
+  for (const danger of ["remove_member", "appoint_admin", "transfer_owner", "dissolve_group"]) {
+    assert.ok(!rust.includes(`"${danger}"`), `危险操作 ${danger} 不该在机器人 action 路径里`);
+  }
+  // 双重校验：管理员 + 群存在
+  assert.ok(rust.includes("g.is_manager(&s.device_id)"), "执行 action 前没复核管理员权限");
+  // 机器人代发：仍走既有 send_group_payload（线格式不动）
+  assert.ok(rust.includes("send_group_payload("), "群消息没走既有群发送链路（线格式会被改）");
+  // 前端只执行白名单 type，且走既有 sendGroupTodo
+  assert.ok(store.includes('a.type !== "create_todo"'), "前端没挡住非白名单 action");
+  assert.ok(store.includes("api.sendGroupTodo("), "前端没用既有群任务命令");
+});
+
+test("v7.1 昵称共享选择按 RP 缓存（同一应用记住上次）", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const auth = readFileSync(join(repoRoot, "src-tauri", "src", "device_auth.rs"), "utf8");
+  const cmd = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "device_auth.rs"), "utf8");
+  const db = readFileSync(join(repoRoot, "src-tauri", "src", "db", "device_auth.rs"), "utf8");
+  const comp = readFileSync(join(repoRoot, "src", "components", "DeviceAuthConfirmModal.vue"), "utf8");
+
+  assert.ok(db.includes("save_nickname_memory("), "缺昵称记忆存储");
+  assert.ok(cmd.includes("save_nickname_memory("), "批准时没记住昵称选择");
+  assert.ok(auth.includes("nickname_default: self.remembered_nickname"), "prompt 没带回记忆值");
+  assert.ok(comp.includes("allowNickname.value = p.nickname_default"), "确认页没用记忆值初始化开关");
+});

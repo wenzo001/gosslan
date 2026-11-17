@@ -39,7 +39,9 @@ const preCheckedScopes = ref<string[]>([]);
 const scope = createInitScope();
 onMounted(() => {
   void api.onDeviceAuthRequest((p) => {
-    allowNickname.value = false;
+    // 同一 RP 上次的选择缓存（用户 2026-11-17）：后端 prompt.nickname_default
+    // 就是记忆值；首次授权仍是 false（最小披露），用户随时可改。
+    allowNickname.value = p.nickname_default;
     // 新事务 ⇒ 上一笔的勾选**不带过来**（scope 是本次事务的授权）。
     // 但**同一个 RP 上次**允许过的会被预勾（记忆）⇒ 第二次登录只需点一次「批准」。
     // 用户 2026-11-17：「对方接入，点击弹出应用，用户直接确认就行」⇒

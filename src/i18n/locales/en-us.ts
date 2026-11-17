@@ -2088,6 +2088,8 @@ export const enUS: MessageDict = {
   "bot.notFound": "This bot no longer exists",
   "bot.listFailed": "Could not load bots",
   "bot.group.listTitle": "Group bots (tap to manage)",
+  "bot.groupTaskTitle": "[{name}] {title}",
+  "bot.groupActionFailed": "Could not run the bot group action",
   "bot.notifyTitle": "Bot notification",
   "bot.notifyBody": "Received {n} bot notification(s)",
   "bot.createFailed": "Could not create the bot",

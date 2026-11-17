@@ -131,6 +131,26 @@ pub fn clear_grant_memory(conn: &Connection, rp_origin: &str) -> Result<()> {
     crate::db::delete_setting(conn, &grant_memory_key(rp_origin))
 }
 
+// ---- 共享昵称的记忆（用户 2026-11-17：同一应用记住上次的选择） ----
+
+fn nickname_memory_key(rp_origin: &str) -> String {
+    format!("device_auth_nickname_memory:{rp_origin}")
+}
+
+/// 该 RP 上次用户是否允许共享昵称（默认 false = 不共享）。
+pub fn load_nickname_memory(conn: &Connection, rp_origin: &str) -> Result<bool> {
+    let Some(raw) = crate::db::get_setting_checked(conn, &nickname_memory_key(rp_origin))? else {
+        return Ok(false);
+    };
+    Ok(raw == "1")
+}
+
+/// 记住该 RP 上次是否允许共享昵称。
+pub fn save_nickname_memory(conn: &Connection, rp_origin: &str, allowed: bool) -> Result<()> {
+    crate::db::set_setting(conn, &nickname_memory_key(rp_origin), if allowed { "1" } else { "0" })
+}
+
+
 // ---------------- 外部应用设备认证绑定（2026-11-13，Phase 2） ----------------
 
 use crate::crypto;
