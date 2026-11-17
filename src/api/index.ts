@@ -127,8 +127,12 @@ export const api = {
   botSetDnd: (botId: string, enabled: boolean) =>
     invoke<BotView>("bot_set_dnd", { botId, enabled }),
   /** 用户编辑机器人名字 / 头像（头像传 SVG data URL；传 null 表示不改）。 */
-  botSetProfile: (botId: string, name: string, avatar: string | null) =>
-    invoke<BotView>("bot_set_profile", { botId, name, avatar }),
+  botSetProfile: (
+    botId: string,
+    name: string,
+    avatar: string | null,
+    serverUrl: string | null,
+  ) => invoke<BotView>("bot_set_profile", { botId, name, avatar, serverUrl }),
   // ---------------- 「我的网络」布局偏好（阶段 2） ----------------
   topologyLayoutLoad: () => invoke<string>("topology_layout_load"),
   topologyLayoutSave: (raw: string) => invoke<void>("topology_layout_save", { raw }),

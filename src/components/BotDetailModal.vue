@@ -10,6 +10,8 @@ import { computed, ref, watch } from "vue";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { t } from "@/i18n";
+import { MAX_BOT_NAME_CHARS } from "@/utils/validation";
+import CharCounter from "@/components/ui/CharCounter.vue";
 import type { BotView } from "@/types";
 import BaseModal from "@/components/BaseModal.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
@@ -38,6 +40,7 @@ const app = useAppStore();
 const editing = ref(false);
 const editName = ref("");
 const editAvatar = ref<string | null>(null);
+const editServerUrl = ref("");
 const avatarDialogOpen = ref(false);
 const savingProfile = ref(false);
 watch(
@@ -46,6 +49,7 @@ watch(
     editing.value = false;
     editName.value = b?.name ?? "";
     editAvatar.value = b?.avatar ?? null;
+    editServerUrl.value = b?.serverUrl ?? "";
   },
   { immediate: true },
 );
@@ -64,7 +68,12 @@ async function saveProfile() {
   if (!props.bot || savingProfile.value) return;
   savingProfile.value = true;
   try {
-    const updated = await api.botSetProfile(props.bot.botId, editName.value, editAvatar.value);
+    const updated = await api.botSetProfile(
+      props.bot.botId,
+      editName.value,
+      editAvatar.value,
+      editServerUrl.value.trim() || null,
+    );
     emit("changed", updated);
     editing.value = false;
     app.toast(t("bot.profileSaved"), "success");
@@ -143,15 +152,25 @@ async function remove() {
 <template>
   <BaseModal :open="open" :title="t('bot.detail.title')" width="max-w-md" @close="emit('close')">
     <div v-if="bot" class="space-y-3">
-      <div class="flex items-center gap-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] p-[var(--gosslan-card-pad)]">
-        <AvatarBox class="h-10 w-10 shrink-0" :id="bot.botId" :src="bot.avatar" />
+      <div class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] p-[var(--gosslan-card-pad)]">
+      <div class="flex items-center gap-3">
+        <AvatarBox class="h-12 w-12 shrink-0 ring-2 ring-[var(--gosslan-primary)]" :id="`bot:${bot.botId}`" :src="bot.avatar" />
         <div class="min-w-0 flex-1">
           <div class="truncate text-title font-medium" :title="bot.name">{{ bot.name }}</div>
           <div class="mt-0.5 truncate text-caption text-[var(--gosslan-text-2)]" :title="`${bot.scope} · ${bot.serverUrl}`">
             {{ bot.scope === "group" ? t("bot.target.group") : t("bot.target.inbox") }} · {{ statusText }}
           </div>
         </div>
-        <SecondaryBtn size="dense" @click="editing = !editing">{{ t("bot.action.editProfile") }}</SecondaryBtn>
+        <SecondaryBtn v-if="!editing" size="dense" @click="editing = true">{{ t("bot.action.editProfile") }}</SecondaryBtn>
+      </div>
+      <!-- 唯一 ID：创建时生成、之后不可改（改名/头像/地址都不动它）—— 会话与去重都靠它。 -->
+      <div class="mt-3 flex items-center gap-2 border-t border-[var(--gosslan-divider)] pt-2">
+        <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("bot.field.id") }}</span>
+        <code
+          class="min-w-0 flex-1 select-text truncate font-mono text-caption text-[var(--gosslan-text)]"
+          :title="bot.botId"
+        >{{ bot.botId }}</code>
+      </div>
       </div>
 
       <!-- 名字 / 头像编辑（用户 2026-11-17）：不改 server / token，不涉及线格式。 -->
@@ -161,12 +180,23 @@ async function remove() {
           <input
             v-model="editName"
             type="text"
+            :maxlength="MAX_BOT_NAME_CHARS"
             class="mt-1 h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-bg)] px-3 text-body text-[var(--gosslan-text)]"
             :aria-label="t('bot.field.name')"
           />
+          <CharCounter :text="editName" :max="MAX_BOT_NAME_CHARS" />
+        </label>
+        <label class="block">
+          <span class="text-caption text-[var(--gosslan-text-2)]">{{ t("bot.field.server") }}</span>
+          <input
+            v-model="editServerUrl"
+            type="url"
+            class="mt-1 h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-bg)] px-3 text-body text-[var(--gosslan-text)]"
+            :aria-label="t('bot.field.server')"
+          />
         </label>
         <div class="flex items-center gap-2">
-          <AvatarBox class="h-10 w-10 shrink-0" :id="bot.botId" :src="editAvatar" />
+          <AvatarBox class="h-10 w-10 shrink-0" :id="`bot:${bot.botId}`" :src="editAvatar" />
           <SecondaryBtn size="dense" @click="avatarDialogOpen = true">{{ t("bot.action.pickAvatar") }}</SecondaryBtn>
         </div>
         <div class="flex flex-wrap gap-2">

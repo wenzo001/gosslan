@@ -24,6 +24,8 @@ import { computed, ref, watch } from "vue";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { t } from "@/i18n";
+import { MAX_BOT_NAME_CHARS } from "@/utils/validation";
+import CharCounter from "@/components/ui/CharCounter.vue";
 import type { BotCreatedView } from "@/types";
 import BaseModal from "@/components/BaseModal.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
@@ -175,9 +177,11 @@ async function submit() {
         <input
           id="bot-name"
           v-model="name"
+          :maxlength="MAX_BOT_NAME_CHARS"
           class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-2.5 text-body outline-none transition focus:border-[var(--gosslan-primary)]"
           :placeholder="t('bot.field.namePlaceholder')"
         />
+        <CharCounter :text="name" :max="MAX_BOT_NAME_CHARS" />
       </div>
       <div v-if="isGroup" class="text-meta text-[var(--gosslan-text-2)]">
         {{ t("bot.wizard.groupTargetValue", { group: groupName || groupId || "" }) }}

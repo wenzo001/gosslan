@@ -14,6 +14,8 @@ import * as z from "zod/mini";
 import { charCount } from "./text.ts";
 
 export const MAX_GROUP_NAME_CHARS = 40;
+/** 机器人名字（Rust `commands/bots.rs::MAX_BOT_NAME_CHARS`）。 */
+export const MAX_BOT_NAME_CHARS = 60;
 export const MAX_NICKNAME_CHARS = 40;
 
 /**

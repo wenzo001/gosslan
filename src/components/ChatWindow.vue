@@ -197,6 +197,8 @@ onBeforeUnmount(() => saveScrollPosition(chat.activeConv));
 
 const conv = computed(() => chat.activeConversation);
 const isGroup = computed(() => chat.activeConv?.startsWith("group:") ?? false);
+/** 机器人会话是单向通知：用户不能在聊天里回消息 ⇒ 整块输入框不渲染。 */
+const isBotChat = computed(() => chat.activeConv?.startsWith("bot:") ?? false);
 /** 自聊：会话 id 就是本机 device_id（后端 `send_message` 自聊分流写入 `conv_id = me`）。 */
 const isSelfChat = computed(() => chat.activeConv === app.device?.device_id);
 /**
@@ -671,7 +673,7 @@ const composerShell = ref<HTMLElement | null>(null);
 const composerH = ref(0);
 let composerShellRO: ResizeObserver | null = null;
 onMounted(() => {
-  if (!composerShell.value) return;
+  if (!composerShell.value) { composerH.value = 0; return; }
   const sync = () => {
     composerH.value = Math.ceil(composerShell.value?.getBoundingClientRect().height ?? 0);
   };
@@ -2104,7 +2106,11 @@ function retryHistory() {
         :retry-label="t('common.retry')"
         @retry="retryMessages"
       />
-      <StateBlock v-else-if="messages.length === 0" kind="empty" :title="t('chat.empty')" />
+      <StateBlock
+        v-else-if="messages.length === 0"
+        kind="empty"
+        :title="isBotChat ? t('bot.emptyChat') : t('chat.empty')"
+      />
       <ErrorBoundary v-else>
         <VirtualList
           ref="listRef"
@@ -2226,6 +2232,7 @@ function retryHistory() {
          2026-11-07 用户口径：「像这种有内边距的，有滚动条、没有滚动条应该是一样的宽度」——
          这条外壳的宽度也只由 `inset-x-0` 决定，不随滚动条出现而变。 -->
     <div
+      v-if="!isBotChat"
       ref="composerShell"
       data-composer-shell
       class="ambient-canvas-child absolute inset-x-0 bottom-0 z-20 bg-transparent px-4 pt-2"

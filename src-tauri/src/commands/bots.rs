@@ -526,9 +526,10 @@ pub async fn bot_set_profile(
     bot_id: String,
     name: String,
     avatar: Option<String>,
+    server_url: Option<String>,
 ) -> Result<BotView, String> {
     let s = state.inner().clone();
-    let clean_name: String = name.trim().chars().take(60).collect();
+    let clean_name: String = name.trim().chars().take(BOT_NAME_MAX).collect();
     if clean_name.is_empty() {
         return Err(crate::error_codes::coded(
             crate::error_codes::BOT_TARGET_INVALID,
@@ -544,6 +545,14 @@ pub async fn bot_set_profile(
         rec.name = clean_name;
         if let Some(a) = avatar {
             rec.avatar = a.chars().take(8192).collect();
+        }
+        // 地址也可改（用户 2026-11-17）：同样走标准 URL 校验，拒 userinfo/query/fragment。
+        // ⚠️ 换服务地址不等于迁移 token —— 新服务上得先建同名机器人，否则取件会 401；
+        //    bot_id 创建后**永不改变**（它是会话 id 的一部分，改了会丢历史）。
+        if let Some(u) = server_url {
+            if !u.trim().is_empty() {
+                rec.server_url = normalize_bot_server(&u)?;
+            }
         }
         db::save_bot(&dbc, &rec).map_err(|e| format!("保存机器人资料失败：{e}"))?;
         if rec.target.kind != "group" {

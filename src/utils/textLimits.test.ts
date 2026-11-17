@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 
 import {
   MAX_ANNOUNCEMENT_CHARS,
+  MAX_BOT_NAME_CHARS,
   MAX_GROUP_NAME_CHARS,
   MAX_LIST_FILTER_KEYWORD_CHARS,
   MAX_NICKNAME_CHARS,
@@ -39,10 +40,11 @@ function rustConst(relPath: string, name: string): number {
   return Number(m[1].replace(/_/g, ""));
 }
 
-test("前端长度常量与 Rust 侧主人数值相等（七条，现读两边）", () => {
+test("前端长度常量与 Rust 侧主人数值相等（八条，现读两边）", () => {
   const pairs: Array<[string, number, string, string]> = [
     ["MAX_GROUP_NAME_CHARS", MAX_GROUP_NAME_CHARS, "src/commands.rs", "MAX_GROUP_NAME_LEN"],
     ["MAX_NICKNAME_CHARS", MAX_NICKNAME_CHARS, "src/commands.rs", "MAX_NICKNAME_LEN"],
+    ["MAX_BOT_NAME_CHARS", MAX_BOT_NAME_CHARS, "src/commands/bots.rs", "BOT_NAME_MAX"],
     ["MAX_SEARCH_KEYWORD_CHARS", MAX_SEARCH_KEYWORD_CHARS, "src/commands.rs", "MAX_SEARCH_LEN"],
     [
       "MAX_ANNOUNCEMENT_CHARS",
@@ -98,6 +100,7 @@ test("生产模板里不许再有手抄的 maxlength 数字（分母现扫，白
   const allowed = new Set([
     "MAX_GROUP_NAME_CHARS",
     "MAX_NICKNAME_CHARS",
+    "MAX_BOT_NAME_CHARS",
     "MAX_SEARCH_KEYWORD_CHARS",
     "MAX_ANNOUNCEMENT_CHARS",
     "MAX_LIST_FILTER_KEYWORD_CHARS",

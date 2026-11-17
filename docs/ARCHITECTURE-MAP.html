@@ -808,7 +808,7 @@ const CMDS = [
   ["bot_delete", "device-auth", "bot_id str", "()|err"],
   ["bot_pull_once", "device-auth", "bot_id str", "BotPullOutcome|err"],
   ["bot_set_dnd", "device-auth", "bot_id str; enabled bool", "BotView|err"],
-  ["bot_set_profile", "device-auth", "bot_id str; name str; avatar str|null", "BotView|err"],
+  ["bot_set_profile", "device-auth", "bot_id str; name str; avatar str|null; server_url str|null", "BotView|err"],
   ["topology_layout_load", "presentation", "", "str（JSON）|err"],
   ["topology_layout_save", "presentation", "raw str（JSON）", "()|err"],
   ["topology_layout_reset", "presentation", "", "()|err"],
