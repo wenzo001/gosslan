@@ -1032,6 +1032,7 @@ pub fn run() {
             commands::bot_pull_once,
             commands::bot_set_dnd,
             commands::bot_set_profile,
+            commands::bot_get_publish_url,
             commands::topology_layout_load,
             commands::topology_layout_save,
             commands::topology_layout_reset,
