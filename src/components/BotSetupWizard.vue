@@ -49,7 +49,6 @@ const emit = defineEmits<{
 const app = useAppStore();
 const name = ref("");
 const serverUrl = ref("");
-const clientToken = ref("");
 const busy = ref(false);
 const created = ref<BotCreatedView | null>(null);
 const showToken = ref(true);
@@ -60,7 +59,6 @@ const canSubmit = computed(
     !busy.value &&
     !!name.value.trim() &&
     !!serverUrl.value.trim() &&
-    !!clientToken.value.trim() &&
     (!isGroup.value || !!props.groupId),
 );
 
@@ -71,7 +69,6 @@ watch(
     if (v) return;
     name.value = "";
     serverUrl.value = "";
-    clientToken.value = "";
     created.value = null;
     showToken.value = true;
     busy.value = false;
@@ -110,7 +107,6 @@ async function submit() {
       targetGroupId: isGroup.value ? props.groupId : null,
       targetGroupName: isGroup.value ? props.groupName : null,
       serverUrl: serverUrl.value.trim(),
-      clientToken: clientToken.value.trim(),
       doNotDisturb: false,
     });
     created.value = result;
@@ -174,6 +170,8 @@ async function submit() {
     <!-- 创建表单 -->
     <div v-else class="space-y-3">
       <p class="text-meta leading-relaxed text-[var(--gosslan-text-2)]">{{ t("bot.wizard.intro") }}</p>
+      <p class="text-caption text-[var(--gosslan-primary)]">{{ t("bot.wizard.urlOnlyHint") }}</p>
+      <p class="text-caption text-[var(--gosslan-primary)]">{{ t("bot.wizard.urlOnlyHint") }}</p>
       <div>
         <label class="mb-1 block text-caption text-[var(--gosslan-text-2)]" for="bot-name">{{ t("bot.field.name") }}</label>
         <input
@@ -195,17 +193,7 @@ async function submit() {
           :placeholder="t('bot.field.serverPlaceholder')"
         />
       </div>
-      <div>
-        <label class="mb-1 block text-caption text-[var(--gosslan-text-2)]" for="bot-token">{{ t("bot.field.token") }}</label>
-        <input
-          id="bot-token"
-          v-model="clientToken"
-          type="password"
-          class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-2.5 text-body outline-none transition focus:border-[var(--gosslan-primary)]"
-          :placeholder="t('bot.field.tokenPlaceholder')"
-        />
-      </div>
-      <div class="flex justify-end gap-2 pt-1">
+<div class="flex justify-end gap-2 pt-1">
         <SecondaryBtn @click="emit('close')">{{ t("common.cancel") }}</SecondaryBtn>
         <PrimaryBtn :disabled="!canSubmit" @click="submit">{{ t("bot.create") }}</PrimaryBtn>
       </div>

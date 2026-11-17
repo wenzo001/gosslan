@@ -1,5 +1,21 @@
 # 通知机器人：部署与使用（简明版）
 
+> **2026-11-17 v7 简化（当前版本）**：一个进程、复用 59994、认证放 URL、
+> GET/POST/PUT 都能发。**服务端完整说明见 `gosslan-relay-server/README-v7-notify.md`**。
+>
+> 最快上手：
+> ```bash
+> pm2 start ecosystem.config.cjs        # 只有一个进程
+> curl "http://服务器:59994/publish/<创建时给的 send_token>?text=构建完成"
+> ```
+> 未取走的通知服务端留 **7 天**，人离线也不会丢；上线后客户端自动取件。
+> 群机器人消息是真群消息，之后进群的人从群历史同步拿到。
+>
+> ⚠️ v7 安全性低（token 在 URL、明文存储、无幂等/租约），适合可信网络；
+> 公网请放 HTTPS 反代并脱敏日志。v6 协议已删除，旧机器人需重建。
+>
+> 下面 v6 段落仅作历史参考，**不要再按它部署**。
+
 > 面向部署者。目标：**5 分钟跑通**。版本 6.0.0+。
 > 完整契约见 `gosslan-relay-server/webhook-api.md`；给发送方的接入说明见
 > `docs/notes/webhook-bot-integration-guide-2026-11-16.md`。

@@ -116,8 +116,6 @@ export const api = {
     targetGroupId?: string | null;
     targetGroupName?: string | null;
     serverUrl: string;
-    /** 服务端级引导令牌（WEBHOOK_CLIENT_TOKEN）—— bot 自己的密钥由服务端生成。 */
-    clientToken: string;
     doNotDisturb?: boolean;
   }) => invoke<BotCreatedView>("bot_create", args),
   botList: () => invoke<BotView[]>("bot_list"),

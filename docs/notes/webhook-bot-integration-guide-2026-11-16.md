@@ -1,5 +1,15 @@
 # Webhook 通知机器人接入指南（给发送方）
 
+> **2026-11-17 v7 简化（当前协议）**：认证 token 在 URL、GET/POST/PUT 都能发，
+> 一条 curl 完成；服务端单进程复用 59994。
+> **完整接入说明见 `gosslan-relay-server/README-v7-notify.md`**，最快示例：
+>
+> ```bash
+> curl "http://服务器:59994/publish/<send_token>?text=构建完成&title=CI"
+> ```
+>
+> 旧 v6 的 `/v1/hooks/...` + Authorization 头协议**已删除**，下面 v6 段落仅供历史参考。
+
 > 读者：**要往 Gosslan 发通知的外部系统**（CI、监控、构建脚本、工单系统……）。
 > 你不需要装 Gosslan、不需要懂它的协议 —— 只要会发一个 HTTP POST。
 >
