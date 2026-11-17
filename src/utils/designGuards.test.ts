@@ -5665,7 +5665,13 @@ test("群成员弹窗只有一层滚动（成员列表不再自造 max-h + overf
 test("聊天头像进入好友资料，且群内非好友有兜底", () => {
   const item = readFileSync(join(import.meta.dirname, "..", "components", "MessageItem.vue"), "utf8");
   const chat = readFileSync(join(import.meta.dirname, "..", "components", "ChatWindow.vue"), "utf8");
-  assert.match(item, /emit\(['"]open-profile['"], message\.sender_id\)/, "消息头像没有上抛资料意图");
+  // 机器人消息传 `bot:<botId>`（openSenderProfile 认这个前缀并打开机器人详情），
+  // 其余仍传 message.sender_id —— 意图仍是唯一一个 open-profile。
+  assert.match(
+    item,
+    /emit\(['"]open-profile['"], botSender \? botSender\.id : message\.sender_id\)/,
+    "消息头像没有上抛资料意图",
+  );
   assert.match(chat, /function openSenderProfile\(/, "ChatWindow 没有接头像资料");
   assert.match(chat, /if \(isGroup\.value\) membersOpen\.value = true/, "群内非好友头像没有兜底");
   // 好友资料路由现在住在统一入口里（2026-11-16 抽出 composable）。

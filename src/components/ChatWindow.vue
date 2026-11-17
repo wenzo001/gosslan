@@ -22,6 +22,8 @@ import { useChatStore } from "@/stores/useChatStore";
 import { useOpenProfile } from "@/composables/useOpenProfile";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { listen } from "@tauri-apps/api/event";
+import { createInitScope } from "@/utils/initScope";
 import MessageItem from "@/components/MessageItem.vue";
 import BotDetailModal from "@/components/BotDetailModal.vue";
 import VirtualList from "@/components/VirtualList.vue";
@@ -66,7 +68,6 @@ import {
   type AnnounceSeenMap,
 } from "@/utils/announcementDismiss";
 import type { BotView, LinkState, MessageRecord, MsgKind, TodoFocusRequest } from "@/types";
-import { createInitScope } from "@/utils/initScope";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
 
@@ -586,6 +587,7 @@ function estimateHeight(m: MessageRecord, index?: number): number {
     messages: messages.value,
     isGroup: isGroup.value,
     selfId: app.device?.device_id,
+    senderKeyOf,
     fontSize: app.chatStyle.fontSize,
     // 任务卡片的实时尺寸（面板里补的图/描述）——与渲染端读同一张折叠表。
     todoLive: (todoId) => {
@@ -707,9 +709,47 @@ function onMemberProfile(id: string) {
 }
 const filesOpen = ref(false);
 const tasksOpen = ref(false);
+/**
+ * 群机器人代发消息的展示身份（用户 2026-11-17）。
+ *
+ * 机器人以「本机身份」入线（线格式不动），正文带 `【机器人名】` 前缀。这里按前缀 +
+ * 本群机器人列表还原出机器人身份，交给 MessageItem 渲染成「对方」：气泡靠左、
+ * 头像与昵称用机器人的。识别不到就原样退回（不会把普通消息误判）。
+ */
+const groupBots = ref<BotView[]>([]);
+function botSenderOf(m: MessageRecord): { id: string; name: string; avatar: string | null } | null {
+  if (!isGroup.value || m.sender_id !== app.device?.device_id) return null;
+  const mt = /^【([^】]{1,60})】/.exec(m.content ?? "");
+  if (!mt) return null;
+  const name = mt[1].trim();
+  const b = groupBots.value.find((x) => x.name.trim() === name);
+  // id 用 `bot:<botId>`：没自定义头像时默认脸也按机器人种子出图，不会借用「我」的脸。
+  return b ? { id: `bot:${b.botId}`, name: b.name, avatar: b.avatar ?? null } : null;
+}
+
+
 const activeGroupId = computed(() =>
   isGroup.value && chat.activeConv ? chat.activeConv.slice(6) : null,
 );
+async function loadGroupBots() {
+  const gid = activeGroupId.value;
+  if (!gid) { groupBots.value = []; return; }
+  try {
+    const all = await api.botList();
+    groupBots.value = all.filter((b) => b.target?.kind === "group" && b.target?.groupId === gid);
+  } catch {
+    groupBots.value = [];
+  }
+}
+watch(activeGroupId, () => { void loadGroupBots(); }, { immediate: true });
+// 新建/改名机器人后要跟上：否则新机器人的消息仍按「自己」渲染（气泡回到右侧）。
+const botScope = createInitScope();
+onMounted(() => {
+  void listen("bot-inbox-updated", () => { void loadGroupBots(); })
+    .then((off) => botScope.onDispose(off))
+    .catch(() => {});
+});
+onBeforeUnmount(() => { botScope.dispose(); });
 /**
  * A 档（INV-P36）：已读名单读失败 ≠ 没人读过。失败时 `groupReads` 是空的 ⇒ 气泡上那一排绿勾
  * 会全部消失；消息本身照常显示，但**这一格必须说出来**，否则界面在用一次 IO 失败断言
@@ -1101,6 +1141,10 @@ const unreadIndex = computed(() => {
  * 这一条在连续消息组里的位置 —— 与 `messageHeight` 的估算共用 `messageKinds.groupSide`。
  * 渲染端只负责把这个结果交给 MessageItem（间距 / 圆角 / 是否显示身份信息都由它决定）。
  */
+/** 分组用的「发送者键」：机器人消息用它自己的 id，否则会和我自己的消息并成一组（丢头像/昵称）。 */
+function senderKeyOf(m: MessageRecord): string {
+  return botSenderOf(m)?.id ?? m.sender_id;
+}
 function groupSideAt(index: number) {
   const cur = messages.value[index];
   if (!cur) return "single" as const;
@@ -1109,10 +1153,10 @@ function groupSideAt(index: number) {
   const unread = unreadIndex.value;
   return groupSide({
     kind: cur.kind,
-    senderId: cur.sender_id,
+    senderId: senderKeyOf(cur),
     ts: cur.ts,
-    prev: prev ? { kind: prev.kind, senderId: prev.sender_id, ts: prev.ts } : null,
-    next: next ? { kind: next.kind, senderId: next.sender_id, ts: next.ts } : null,
+    prev: prev ? { kind: prev.kind, senderId: senderKeyOf(prev), ts: prev.ts } : null,
+    next: next ? { kind: next.kind, senderId: senderKeyOf(next), ts: next.ts } : null,
     breakAbove: shouldShowTimeDivider(cur.ts, prev?.ts) || index === unread,
     breakBelow: !!next && (shouldShowTimeDivider(next.ts, cur.ts) || index + 1 === unread),
   });
@@ -2140,7 +2184,8 @@ function retryHistory() {
             :prev="index > 0 ? messages[index - 1] : null"
             :is-group="isGroup"
             :group-side="groupSideAt(index)"
-            :sender-name="isGroup ? chat.nicknameOf(item.sender_id) : ''"
+            :sender-name="botSenderOf(item)?.name || (isGroup ? chat.nicknameOf(item.sender_id) : '')"
+            :bot-sender="botSenderOf(item)"
             :recaller-id="recallSources[item.msg_id]"
             :group-reader-ids="isGroup && activeGroupId ? chat.groupReaderIds(activeGroupId, item.ts) : EMPTY_STRING_LIST"
             :show-unread-divider="index === unreadIndex"

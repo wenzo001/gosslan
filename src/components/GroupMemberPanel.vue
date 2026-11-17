@@ -608,7 +608,7 @@ async function confirmAction() {
           :group-id="groupId"
           :group-name="group?.name ?? null"
           @close="botWizardOpen = false"
-          @created="() => { botWizardOpen = false; void loadGroupBots(); }"
+          @created="() => { void loadGroupBots(); }"
         />
         <!-- 本群机器人列表（点进去看配置/免打扰/删除） -->
         <div v-if="groupBots.length" class="space-y-1">

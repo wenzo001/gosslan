@@ -127,6 +127,11 @@ export interface EstimateContext {
    * 卡片真实高度变大、估算还停在旧值，虚拟列表就会按旧高度排布相邻消息（本文件顶部那条契约）。
    */
   todoLive?: (todoId: string) => TodoCardLiveMetrics | undefined;
+  /**
+   * 分组用的发送者键（默认 sender_id）。群机器人代发的消息 sender_id 是本机，
+   * 但渲染端按机器人身份另起一组（多一行昵称）—— 估高必须同口径，否则少估 18px。
+   */
+  senderKeyOf?: (m: MessageRecord) => string;
 }
 
 export interface TodoCardLiveMetrics {
@@ -251,12 +256,13 @@ export function estimateMessageHeight(
   const showDivider = shouldShowTimeDivider(m.ts, prev?.ts);
   const next = index != null ? (ctx.messages[index + 1] ?? null) : null;
   // 分割行会把「上一条 / 下一条」自然推开：组必须在这里断开，否则跨过一条通栏分割线还压平圆角。
+  const keyOf = ctx.senderKeyOf ?? ((x: MessageRecord) => x.sender_id);
   const side = groupSide({
     kind: m.kind,
-    senderId: m.sender_id,
+    senderId: keyOf(m),
     ts: m.ts,
-    prev: prev ? { kind: prev.kind, senderId: prev.sender_id, ts: prev.ts } : null,
-    next: next ? { kind: next.kind, senderId: next.sender_id, ts: next.ts } : null,
+    prev: prev ? { kind: prev.kind, senderId: keyOf(prev), ts: prev.ts } : null,
+    next: next ? { kind: next.kind, senderId: keyOf(next), ts: next.ts } : null,
     breakAbove: showDivider,
     breakBelow: next ? shouldShowTimeDivider(next.ts, m.ts) : false,
   });

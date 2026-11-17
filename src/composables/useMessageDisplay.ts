@@ -27,13 +27,20 @@ export function useMessageDisplay(opts: {
   isGroup: MaybeRefOrGetter<boolean>;
   /** 连续消息合并位置：群聊只在组首显示昵称（与估高端同一个判定）。 */
   groupSide?: MaybeRefOrGetter<MessageGroupSide>;
+  /**
+   * 强制按「对方」渲染（群机器人代发的消息：sender_id 是本机，但视觉上要像群成员）。
+   * 返回 true 时 mine 恒 false —— 气泡靠左、显示头像与昵称。
+   */
+  forceIncoming?: MaybeRefOrGetter<boolean>;
 }) {
   const app = useAppStore();
   const message = computed(() => toValue(opts.message));
   const prev = computed(() => toValue(opts.prev) ?? null);
   const isGroup = computed(() => toValue(opts.isGroup));
 
-  const mine = computed(() => message.value.sender_id === app.device?.device_id);
+  const mine = computed(
+    () => !toValue(opts.forceIncoming ?? false) && message.value.sender_id === app.device?.device_id,
+  );
 
   /** 我发的消息用我的样式；对方发的优先用对方广播的样式（未同步过则回退本机）。 */
   const preset = computed(() => {

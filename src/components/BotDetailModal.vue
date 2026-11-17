@@ -11,7 +11,6 @@ import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { t } from "@/i18n";
 import { MAX_BOT_NAME_CHARS } from "@/utils/validation";
-import { useClipboard } from "@/composables/useClipboard";
 import CharCounter from "@/components/ui/CharCounter.vue";
 import type { BotView } from "@/types";
 import BaseModal from "@/components/BaseModal.vue";
@@ -36,13 +35,30 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 
-const { copyContent } = useClipboard();
 /** 旧机器人创建时没存 publish_url ⇒ 打开详情时按 client_token 向服务端取回。 */
 const fetchedUrl = ref("");
 const publishUrl = computed(() => props.bot?.publishUrl || fetchedUrl.value);
+/** 双保险：Tauri WebView 里 navigator.clipboard 常被拒 ⇒ 失败就走 textarea + execCommand。 */
 async function copy(text: string) {
-  await copyContent("bot-publish-url", text); // VueUse legacy 回退，Tauri WebView 里也能复制
-  app.toast(t("bot.copyDone"), "success");
+  let ok = false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch { /* 落到下面的回退 */ }
+  if (!ok) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    document.body.removeChild(ta);
+  }
+  if (ok) app.toast(t("bot.copyDone"), "success");
+  else app.toastError(new Error("clipboard unavailable"), t("bot.copyFailed"));
 }
 
 // 用户可编辑名字 / 头像（2026-11-17）：名字落 BotRecord，头像落 SVG data URL；
@@ -181,9 +197,12 @@ async function remove() {
       </div>
       <!-- 唯一 ID：创建时生成、之后不可改（改名/头像/地址都不动它）—— 会话与去重都靠它。 -->
       <div class="mt-3 space-y-1.5 border-t border-[var(--gosslan-divider)] pt-2">
-        <code class="block select-text truncate font-mono text-caption" :title="bot.botId">{{ t("bot.idLine", { id: bot.botId }) }}</code>
-        <div class="flex items-center gap-2">
-          <code class="min-w-0 flex-1 break-all font-mono text-meta text-[var(--gosslan-text-2)]" :title="publishUrl">{{ publishUrl }}</code>
+        <div class="flex flex-nowrap items-center gap-2">
+          <code class="min-w-0 flex-1 select-text truncate font-mono text-caption" :title="bot.botId">{{ t("bot.idLine", { id: bot.botId }) }}</code>
+          <SecondaryBtn size="dense" shrink :aria-label="t('bot.copyEndpoint')" @click="copy(bot.botId)">{{ t("bot.copyShort") }}</SecondaryBtn>
+        </div>
+        <div class="flex flex-nowrap items-center gap-2">
+          <code class="min-w-0 flex-1 truncate font-mono text-meta text-[var(--gosslan-text-2)]" :title="publishUrl">{{ publishUrl }}</code>
           <SecondaryBtn size="dense" shrink :aria-label="t('bot.copyEndpoint')" @click="copy(publishUrl)">{{ t("bot.copyShort") }}</SecondaryBtn>
         </div>
       </div>
