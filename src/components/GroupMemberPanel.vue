@@ -27,7 +27,7 @@ import { api } from "@/api";
 import type { BotView } from "@/types";
 import { useOpenProfile } from "@/composables/useOpenProfile";
 
-// ⚠️ defineProps 必须在所有读取 props 的逻辑**之前**（v6 审计 P1）：
+// ⚠️ defineProps 必须在所有读取 props 的逻辑**之前**（审计 P1）：
 // 此前 watch(..., {immediate:true}) 在 defineProps 之前执行 ⇒ setup 期间 TDZ ReferenceError
 // ⇒ 整个群成员面板打不开。
 const props = defineProps<{
@@ -37,9 +37,9 @@ const props = defineProps<{
   tasksOpening?: boolean;
 }>();
 const { openProfile } = useOpenProfile();
-/** v6：群机器人向导（仅群主/管理员看得到入口，后端还会再挡一道）。 */
+/** 群机器人向导（仅群主/管理员看得到入口，后端还会再挡一道）。 */
 const botWizardOpen = ref(false);
-/** v6：本群机器人列表 + 详情弹窗（群主/管理员可点进去改配置/删除）。 */
+/** 本群机器人列表 + 详情弹窗（群主/管理员可点进去改配置/删除）。 */
 const groupBots = ref<BotView[]>([]);
 const botDetail = ref<BotView | null>(null);
 const botDetailOpen = ref(false);
@@ -559,7 +559,7 @@ async function confirmAction() {
             <Icon name="plus" class="h-4 w-4" />
             {{ t("group.addMember") }}
           </button>
-          <!-- v6：添加群机器人（同样只有群主/管理员能操作） -->
+          <!-- 添加群机器人（同样只有群主/管理员能操作） -->
           <button
             class="flex w-full items-center justify-center gap-1.5 rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-soft)] py-2 text-sm text-[var(--gosslan-primary)] transition hover:opacity-90"
             @click="botWizardOpen = true"
@@ -610,7 +610,7 @@ async function confirmAction() {
           @close="botWizardOpen = false"
           @created="() => { botWizardOpen = false; void loadGroupBots(); }"
         />
-        <!-- v6：本群机器人列表（点进去看配置/免打扰/删除） -->
+        <!-- 本群机器人列表（点进去看配置/免打扰/删除） -->
         <div v-if="groupBots.length" class="space-y-1">
           <div class="text-caption text-[var(--gosslan-text-2)]">{{ t("bot.group.listTitle") }}</div>
           <button

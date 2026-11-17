@@ -1,5 +1,5 @@
 <!--
-  通知机器人创建向导（v6，2026-11-16）。
+  通知机器人创建向导。
 
   两个入口共用本组件：
     · 个人机器人 —— 通讯录「添加」弹窗里的「添加机器人」按钮；
@@ -8,9 +8,9 @@
 
   ## 「配置简单」是怎么做到的
 
-  外部接入方要的只有三样：endpoint / send token / 发什么。
-  前两样由服务端创建时生成、本组件**一次性**展示并可复制（附 curl 示例）；
-  用户这里只填：名字 + 中转服务地址 + 服务端级引导令牌（WEBHOOK_CLIENT_TOKEN）。
+  外部接入方要的只有一条链接：endpoint 里已经带 send token，认证在 URL 路径里。
+  服务端创建时生成两把 token，本组件**一次性**展示 endpoint / send token 与 curl 示例；
+  用户这里只填：名字 + 通知服务地址（如 `http://服务器:59994`），不填任何令牌。
   群机器人连目标都不用选 —— scope 与目标群由入口传进来。
 
   ## 边界
@@ -79,13 +79,12 @@ const endpoint = computed(() => created.value?.endpoint ?? "");
 const sendToken = computed(() => created.value?.sendToken ?? "");
 const curlExample = computed(() => {
   if (!created.value) return "";
-  return (
-    `curl -X POST ${endpoint.value} \\\n` +
-    `  -H "Authorization: Bearer ${showToken.value ? sendToken.value : "<send-token>"}" \\\n` +
-    `  -H "Idempotency-Key: $(uuidgen)" \\\n` +
-    `  -H "Content-Type: application/json" \\\n` +
-    `  -d '{"text":"hello","format":"markdown"}'`
-  );
+  // 认证 token 就在 endpoint 的路径里，一条 curl 即可；GET/POST/PUT 服务端都收。
+  const url =
+    showToken.value || !sendToken.value
+      ? endpoint.value
+      : endpoint.value.replace(sendToken.value, "<send-token>");
+  return `curl "${url}?text=hello&title=CI"`;
 });
 
 async function copy(text: string) {

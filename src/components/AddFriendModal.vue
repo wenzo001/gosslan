@@ -29,7 +29,7 @@ const emit = defineEmits<{
   (e: "chat", peerId: string): void;
 }>();
 
-/** v6：从「加好友」这一入口创建**个人机器人**（像联系人一样进会话）。 */
+/** 从「加好友」这一入口创建**个人机器人**（像联系人一样进会话）。 */
 const botWizardOpen = ref(false);
 const app = useAppStore();
 const chat = useChatStore();
@@ -368,7 +368,7 @@ async function add(peerId: string) {
 
 <template>
   <BaseModal :open="open" :title="t('friend.add.title')" @close="emit('close')">
-    <!-- v6：添加机器人（本机假身份，像联系人一样进会话）—— 放在最上面，别让用户翻半天。 -->
+    <!-- 添加机器人（本机假身份，像联系人一样进会话）—— 放在最上面，别让用户翻半天。 -->
     <button
       type="button"
       class="mb-3 flex w-full items-center gap-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-soft)] px-3 py-2.5 text-left transition hover:opacity-90"

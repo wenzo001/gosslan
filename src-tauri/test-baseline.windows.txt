@@ -8,7 +8,7 @@ commands::bot_cmd_tests::group_bot_creation_checks_group_admin
 commands::bot_cmd_tests::group_prefix_marks_the_source_but_not_the_sender
 commands::bot_cmd_tests::personal_bots_never_enter_the_network_outbox
 commands::bot_cmd_tests::revoking_clears_the_client_credential
-commands::bot_cmd_tests::server_address_must_be_https_except_loopback
+commands::bot_cmd_tests::server_address_accepts_http_and_https
 commands::bot_cmd_tests::server_url_rejects_tricky_shapes
 commands::bot_cmd_tests::storage_round_trips_and_the_inbox_is_idempotent
 commands::bot_cmd_tests::the_ack_happens_after_the_local_delivery

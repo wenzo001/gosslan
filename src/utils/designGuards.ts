@@ -2714,7 +2714,7 @@ export const V_HTML_ALLOWED = [
   // 2026-10-29 更新说明改成 Markdown 渲染：输入来自网络清单，但先过 `marked` 再经
   // `DOMPurify` 白名单消毒（`utils/markdown.ts`）；这里是它唯一的 `v-html` 落点。
   "components/ui/MarkdownText.vue",
-  // 2026-11-16 v6：机器人消息在**会话气泡**里按 Markdown 渲染（同一份消毒器）。
+  // 2026-11-16 机器人消息在**会话气泡**里按 Markdown 渲染（同一份消毒器）。
   "components/message/MessageTextBubble.vue",
 ] as const;
 

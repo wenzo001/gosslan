@@ -173,7 +173,7 @@ export function createNotificationsModule(ctx: ChatContext) {
   function subscribeBotEvents(): Promise<() => void> {
     return api.onBotInboxUpdated((botId, count) => {
       if (!app.notifyEnabled || count <= 0) return;
-      // v6：免打扰只压**系统通知/任务栏闪烁**，不挡消息进会话与未读角标。
+      // 免打扰只压**系统通知/任务栏闪烁**，不挡消息进会话与未读角标。
       // 事件载荷带 bot_id ⇒ 查这个 bot 的 dnd（列表里不含密钥，安全）。
       void api.botList().then((bots) => {
         const self = bots.find((b) => b.botId === botId);

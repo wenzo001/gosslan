@@ -1,7 +1,7 @@
 // 职责边界：
 // - 通知机器人（Webhook bot）的**本地存储**：机器人清单 + 收件箱。
 //   一律走 `settings` 表（键值对）—— **不动 SQLite 表结构**（schema 属 Frozen Core）。
-//   设计依据见 `docs/notes/webhook-bot-client-plan-2026-11-16.md` §1.1。
+//   设计依据与部署/使用说明见 `docs/notify-bot-guide.md`。
 // ---------------- 通知机器人本地存储 ----------------
 
 use serde::{Deserialize, Serialize};
@@ -41,10 +41,10 @@ impl BotTarget {
 pub struct BotRecord {
     pub bot_id: String,
     pub name: String,
-    /// v6 作用域：`personal`（个人会话）或 `group`（群）。空串 = v5 老记录 ⇒ 读取时推导。
+    /// 作用域：`personal`（个人会话）或 `group`（群）。空串 = v5 老记录 ⇒ 读取时推导。
     #[serde(default)]
     pub scope: String,
-    /// v6：免打扰。默认关（每条通知都弹）。
+    /// 免打扰。默认关（每条通知都弹）。
     #[serde(default)]
     pub do_not_disturb: bool,
     /// 服务地址（`https://…`）。**强制 HTTPS**（本机调试开关除外）。
@@ -96,7 +96,7 @@ pub struct BotInboxEntry {
     pub received_at: i64,
     /// `received`（已落本机）/ `published`（群目标已发出）/ `failed`。
     pub state: String,
-    /// v7.1：群机器人管理指令（服务端透传，客户端白名单校验后才执行）。
+    /// 群机器人管理指令（服务端透传，客户端白名单校验后才执行）。
     #[serde(default)]
     pub action: Option<serde_json::Value>,
 }
@@ -118,7 +118,7 @@ pub fn save_bot(conn: &Connection, rec: &BotRecord) -> Result<()> {
     crate::db::set_setting(conn, &bot_key(&rec.bot_id), &value)
 }
 
-/// 字段级设置免打扰（审计 v6 P2）：持锁读改写，不与轮询统计互相覆盖。
+/// 字段级设置免打扰（审计）：持锁读改写，不与轮询统计互相覆盖。
 pub fn set_bot_dnd(conn: &Connection, bot_id: &str, enabled: bool) -> Result<Option<BotRecord>> {
     let Some(mut rec) = load_bot(conn, bot_id)? else { return Ok(None) };
     rec.do_not_disturb = enabled;
@@ -126,7 +126,7 @@ pub fn set_bot_dnd(conn: &Connection, bot_id: &str, enabled: bool) -> Result<Opt
     Ok(Some(rec))
 }
 
-/// 字段级更新轮询统计（审计 v6 P2）：**在同一把锁内**读最新记录 → 只改统计字段 → 写回。
+/// 字段级更新轮询统计（审计）：**在同一把锁内**读最新记录 → 只改统计字段 → 写回。
 ///
 /// 为什么不能让调用方 `load_bot` → 改 → `save_bot`：那两步之间隔着网络 await，
 /// 用户可能刚改了 DND / 状态，旧快照整条写回会把新值覆盖（真丢用户设置）。
@@ -209,7 +209,7 @@ pub fn append_inbox(conn: &Connection, bot_id: &str, entry: &BotInboxEntry) -> R
         return Ok(false);
     }
     // ⚠️ 列表是**新在前**（见 load_inbox 的 sort+reverse）⇒ 新事件必须插到**头部**。
-    // 审计 v6 P1：此前 push 到末尾后 truncate 会把**刚到的新事件**丢掉，
+    // 审计：此前 push 到末尾后 truncate 会把**刚到的新事件**丢掉，
     // 而保留的是最旧的 —— 与注释「丢最旧」完全相反。
     list.insert(0, entry.clone());
     if list.len() > BOT_INBOX_MAX {
@@ -253,7 +253,7 @@ mod bot_inbox_order_tests {
         }
     }
 
-    /// 审计 v6 P1：新事件必须保留，丢的是最旧的。
+    /// 审计：新事件必须保留，丢的是最旧的。
     #[test]
     fn newest_events_survive_truncation() {
         let c = conn();
@@ -281,7 +281,7 @@ mod bot_inbox_order_tests {
 
 // ---------------- 已投递 event_id（群消息幂等） ----------------
 //
-// 审计 v6 P1：群消息没有 event_id 去重，ACK 丢失导致租约重投时**重复发群消息**。
+// 审计：群消息没有 event_id 去重，ACK 丢失导致租约重投时**重复发群消息**。
 // 这里存一个固定上限的「最近已投递 id」集合（**只增不无限膨胀**：超过上限丢最旧的）。
 // 与 `bot_inbox:*` 分开：那个是可裁剪的展示历史，这个是幂等窗口，不能被展示裁剪影响。
 

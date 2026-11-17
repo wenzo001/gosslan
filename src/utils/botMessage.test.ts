@@ -119,9 +119,9 @@ test("机器人消息能自动进来：后端有轮询 worker，前端订阅它�
   );
 });
 
-// ---------------- v6 产品形态：像联系人一样 + 两处入口 + 设置里不再堆配置 ----------------
+// ---------------- 产品形态：像联系人一样 + 两处入口 + 设置里不再堆配置 ----------------
 
-test("v6：两处创建入口（加好友 / 群成员），设置里不再有机器人配置", () => {
+test("两处创建入口（加好友 / 群成员），设置里不再有机器人配置", () => {
   const repoRoot = join(import.meta.dirname, "..", "..");
   const srcRoot = join(repoRoot, "src");
   const read = (p: string) => readFileSync(join(srcRoot, p), "utf8");
@@ -156,7 +156,7 @@ test("v6：两处创建入口（加好友 / 群成员），设置里不再有机
   }
 });
 
-test("v6：详情页能看配置 / 免打扰 / 删除；点机器人头像能进详情", () => {
+test("详情页能看配置 / 免打扰 / 删除；点机器人头像能进详情", () => {
   const srcRoot = join(import.meta.dirname, "..");
   const read = (p: string) => readFileSync(join(srcRoot, p), "utf8");
 
@@ -179,7 +179,7 @@ test("v6：详情页能看配置 / 免打扰 / 删除；点机器人头像能进
   assert.ok(chat.includes("BotDetailModal"), "会话里没渲染机器人详情弹窗");
 });
 
-test("v6：机器人消息走本机假身份会话，但不写 outbox；正文按 Markdown 消毒渲染", () => {
+test("机器人消息走本机假身份会话，但不写 outbox；正文按 Markdown 消毒渲染", () => {
   const repoRoot = join(import.meta.dirname, "..", "..");
   const srcRoot = join(repoRoot, "src");
   const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
@@ -205,7 +205,7 @@ test("v6：机器人消息走本机假身份会话，但不写 outbox；正文�
   );
 });
 
-test("v6 收尾：机器人消息必须 emit 到聊天窗口，且中文正文截断不许 panic", () => {
+test("收尾：机器人消息必须 emit 到聊天窗口，且中文正文截断不许 panic", () => {
   const repoRoot = join(import.meta.dirname, "..", "..");
   const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
   const at = rust.indexOf('"inbox" | "personal" =>');
@@ -215,7 +215,7 @@ test("v6 收尾：机器人消息必须 emit 到聊天窗口，且中文正文�
     personal.includes('emit("message-received"'),
     "机器人消息落库后必须 emit message-received —— 否则已打开的聊天窗口不显示新消息（要手动切走再切回）",
   );
-  // 审计 v6 P1：消息体存全文（服务端已限 8192 字节），不能在落库时截断 ——
+  // 审计：消息体存全文（服务端已限 8192 字节），不能在落库时截断 ——
   // 否则用户永远看不到长通知全文（此前截 240 字且没有全文入口）。
   assert.ok(
     !personal.includes("PERSONAL_PREVIEW_MAX"),
@@ -241,7 +241,7 @@ test("v6 收尾：机器人消息必须 emit 到聊天窗口，且中文正文�
   );
 });
 
-test("v7 孤儿消息兜底：删除/撤销写墓碑，轮询时清掉服务端残留", () => {
+test("孤儿消息兜底：删除/撤销写墓碑，轮询时清掉服务端残留", () => {
   const repoRoot = join(import.meta.dirname, "..", "..");
   const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
   const db = readFileSync(join(repoRoot, "src-tauri", "src", "db", "bots.rs"), "utf8");
@@ -259,7 +259,7 @@ test("v7 孤儿消息兜底：删除/撤销写墓碑，轮询时清掉服务端�
   assert.ok(rust.includes("/ack/"), "孤儿消息必须 ACK 丢弃（不是只拉不算）");
 });
 
-test("v7.1 群机器人管理能力：白名单仅建任务，危险操作不可达，身份仍是本机代发", () => {
+test("群机器人管理能力：白名单仅建任务，危险操作不可达，身份仍是本机代发", () => {
   const repoRoot = join(import.meta.dirname, "..", "..");
   const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
   const store = readFileSync(join(repoRoot, "src", "stores", "useChatStore.ts"), "utf8");
@@ -278,7 +278,7 @@ test("v7.1 群机器人管理能力：白名单仅建任务，危险操作不可
   assert.ok(store.includes("api.sendGroupTodo("), "前端没用既有群任务命令");
 });
 
-test("v7.1 昵称共享选择按 RP 缓存（同一应用记住上次）", () => {
+test("昵称共享选择按 RP 缓存（同一应用记住上次）", () => {
   const repoRoot = join(import.meta.dirname, "..", "..");
   const auth = readFileSync(join(repoRoot, "src-tauri", "src", "device_auth.rs"), "utf8");
   const cmd = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "device_auth.rs"), "utf8");
