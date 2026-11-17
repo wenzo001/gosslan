@@ -127,30 +127,24 @@ test("后端：交付载荷没有正文、没有公钥（形状判据，不靠�
   );
 });
 
-test("前端：确认页默认全关，且只把勾选的交出去", () => {
+test("前端：确认页一键允许（请求项默认全勾，仍可取消），且只把勾选的交出去", () => {
   const comp = read(COMPONENT);
   assert.match(
     comp,
     /const scopeChecks = ref<string\[\]>\(\[\]\);/,
-    "scope 勾选初始必须为空（默认全关，不预勾）",
+    "初始为空（避免上一笔残留）；新事务到达时再按本次请求全勾",
   );
-  // 2026-11-16：同一 RP 的**重复登录**不该每次重新表态 ⇒ 新事务到达时按
-  // 「**上次允许过 ∩ 本次请求**」预勾（没有记忆时仍是全关）。
-  // 三条边界由 `deviceAuth.test.ts` 的纯函数判据钉住（不跨应用、不越过请求、默认全关）。
+  // 用户 2026-11-17：对方接入「点一下、弹应用、用户直接确认」⇒ 请求的 scope 默认全勾，
+  // 一次点击完成。仍是「用户实际勾选的」才交出去（可逐项取消），不是无条件全给。
   assert.match(
     comp,
-    /scopeChecks\.value = \[\.\.\.remembered\];/,
-    "新事务到达时必须按「上次允许过 ∩ 本次请求」预勾（同一 RP 的重复登录只点一次批准）",
-  );
-  assert.match(
-    comp,
-    /rememberedScopes\(p\.remembered_scopes, p\.requested_scopes\)/,
-    "预勾必须走 rememberedScopes（记忆 ∩ 请求），不能直接用记忆",
+    /scopeChecks\.value = \[\.\.\.p\.requested_scopes\];/,
+    "新事务到达必须按「本次请求」全勾（一键允许）；不是沿用上次的记忆",
   );
   assert.match(
     comp,
-    /data-device-auth-remembered/,
-    "预勾时必须在页面上明写「沿用上次」（别让用户以为是自己刚勾的）",
+    /data-device-auth-oneclick/,
+    "页面上必须明写「已全选、点允许即同步、可取消」，不能让用户不知情",
   );
   assert.match(
     comp,

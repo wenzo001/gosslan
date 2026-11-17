@@ -1,5 +1,16 @@
 # 外部接入指南：设备快捷认证 与 分享到会话（2026-11-14）
 
+> **2026-11-17 更新（v6.0.5+）**：① origin 与元数据端点**同时支持 HTTP 和 HTTPS**
+> （含 `http://IP:端口` / `http://localhost:端口`），用于对方接入与自测；
+> ② 确认页改为**一键允许**：申请的交付项默认全选，用户点一次「允许」即完成，
+> 页面明列将同步什么，仍可逐项取消；③ 同步范围 = 设备凭证（登录）+ 好友/群列表 +
+> 分享到会话，**不含机器人密钥**。
+>
+> ⚠️ **HTTP 的安全取舍（请务必读）**：HTTP 是明文，同一局域网/链路上的人可能看到
+> 设备凭证与好友/群列表。这是用户明确要求的接入便利取舍 —— **生产环境请务必用 HTTPS**；
+> HTTP 只建议用于本机/内网开发联调。客户端会强制「端点与 issuer 同协议同源」，
+> 不接受 https→http 降级或跨域。
+
 > 读者：**外部应用的开发者**（RP = relying party，要接入登录的那一方），不是本仓的维护者。
 > 维护者视角的取舍、现状与准入判据在
 > [`external-auth-integration-contract-2026-11-14.md`](external-auth-integration-contract-2026-11-14.md)。
@@ -86,27 +97,31 @@
 
 要点：
 
-- **第 2 步之后客户端只信任 HTTPS 同源元数据**，不跟随任何重定向。
+- **第 2 步之后客户端只信任「与深链同协议同源」的元数据**（HTTP 或 HTTPS，取决于
+  issuer），不跟随任何重定向；不接受 https→http 降级。
 - **第 5 步是唯一一次回写**。你在收到 2xx 之前不要建会话。
 - 客户端**不轮询**你的服务；登录结果由你的页面自己轮询（`poll_endpoint` 字段客户端只保留不使用）。
 
 ### 1.2 深链格式
 
-两种形态，二选一（都要求 HTTPS origin 合法：不带 userinfo / query / fragment / 端口除外）：
+两种形态，二选一（origin 支持 **http / https**，可带端口；不带 userinfo / query / fragment）：
 
 ```text
-gosslan://authorize/<request_id>?origin=https%3A%2F%2Fyour-app.example.com
+gosslan://authorize/<request_id>?origin=http%3A%2F%2F127.0.0.1%3A59995
+http://127.0.0.1:59995/authorize/<request_id>
 https://your-app.example.com/authorize/<request_id>
 ```
 
-- 第二种要生效，需要把 `https://your-app.example.com` 与 App 做域名关联
+- HTTP 形态用于自测/内网接入；第二种 HTTPS 要生效，需要把 `https://your-app.example.com`
+  与 App 做域名关联
   （Android App Links / iOS Universal Links）。关联文件的模板见 `docs/link-handoff/`。
 - `request_id` 是**不透明**的：客户端不解析，只原样带去 `request_endpoint`。
 - 系统没注册协议时（开发期构建、未签名包），把整条链接粘到设置页的「授权链接」里，见 §0.1。
 
 ### 1.3 元数据端点（`GET /.well-known/gosslan-device-auth`）
 
-必须与深链 origin **同源**，且必须是 HTTPS。字段：
+必须与深链 origin **同协议同源**（issuer 是 http ⇒ 端点也是同主机同端口的 http；
+issuer 是 https ⇒ 端点必须 https）。字段：
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
@@ -119,7 +134,7 @@ https://your-app.example.com/authorize/<request_id>
 | `poll_endpoint` | string | 否 | 浏览器轮询端点，客户端不使用（保留给契约完整） |
 | `supported_actions` | string[] | 是 | 至少含 `link` 与 `authenticate`；要申请数据交付再加 `sync`（见 §1.10） |
 | `supported_claims` | string[] | 是 | 只能是 `device_subject` / `device_public_key` / `nickname` |
-| `share_receipt_endpoint` | string | 否 | 分享回执端点（定向分享发完后回传结果，见 §2.7）。**HTTPS 且与 `issuer` 同源**；不给 = 分享后不回执（与旧行为一致，不是失败） |
+| `share_receipt_endpoint` | string | 否 | 分享回执端点（定向分享发完后回传结果，见 §2.7）。**与 `issuer` 同协议同源**；不给 = 分享后不回执（与旧行为一致，不是失败） |
 
 ### 1.4 事务端点（`GET <request_endpoint>`）
 
@@ -195,7 +210,7 @@ https://your-app.example.com/authorize/<request_id>
   （导出文件可复制）。
 - **双边撤销（可选启用）**：如果你的 metadata 里带 `revocation_endpoint`，客户端撤销时会**尽力**
   `POST` 一次到这个地址（头带 `Idempotency-Key`，体是 `{ client_id, kid }`），让你那边也能作废这把公钥。
-  - 端点必须 **HTTPS 且与 `issuer` 同源**，否则客户端直接拒（不会把撤销请求发去别处）。
+  - 端点必须 **与 `issuer` 同协议同源**，否则客户端直接拒（不会把撤销请求发去别处）。
   - 客户端**先本地撤销、再通知**：通知失败不会让本地撤销回滚，但你的服务端会**仍然认这把公钥**，
     所以你的校验流程里必须保留「撤销即拒」的开关，而不是只认签名。
   - 通知**不带私钥、不带断言** —— 你收到的是「客户端说这把 kid 该撤了」，不是「客户端证明它持有私钥」。
@@ -216,7 +231,7 @@ app.get("/.well-known/gosslan-device-auth", (req, res) => {
     issuer: "https://acme.example.com",
     request_endpoint: "https://acme.example.com/device-auth/requests/{request_id}",
     decision_endpoint: "https://acme.example.com/device-auth/decisions/{request_id}",
-    // 可选：给了客户端就会在撤销时通知你（必须 HTTPS 且与 issuer 同源）。
+    // 可选：给了客户端就会在撤销时通知你（必须与 issuer 同协议同源）。
     // 不给 = 客户端只做本地撤销，你这边照旧在账号页手动撤销。
     revocation_endpoint: "https://acme.example.com/device-auth/revoke",
     supported_actions: ["link", "authenticate"],
@@ -423,7 +438,7 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
    没申请这个 scope 时就拿不到 ⇒ 让用户自己在面板里选
    （群列表不在本次授权范围内）。所以「一键发到某个群」需要你另行知道 `group:<群 id>`；
    拿不到就让用户在面板里自己选群。
-5. **回执是可选的**：加 `receipt=<https 地址>`（必须 HTTPS，且与 `origin` 同源），
+5. **回执是可选的**：加 `receipt=<地址>`（必须与 `origin` 同协议同源），
    用户点完发送后客户端会 `POST` 一次 `{ share_id, status, sent, failed }`。
    回执**不含会话名、不含分享内容**。不写 `receipt` ⇒ 不回执（不是错误）。
 

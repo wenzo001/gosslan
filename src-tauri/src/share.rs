@@ -313,7 +313,7 @@ fn payload_from_query(parsed: &Url, origin_hint: Option<String>) -> Result<Share
     payload.to = to;
     payload.to_kind = to_kind;
 
-    // 回执地址：必须 HTTPS；给了来源就还要同源。
+    // 回执地址：用户 2026-11-17 放开 http（同协议同源即可，便于 http IP:端口 接入）。
     payload.receipt_endpoint = match clean(receipt) {
         Some(raw) => {
             let u = Url::parse(&raw).map_err(|_| {
@@ -322,14 +322,8 @@ fn payload_from_query(parsed: &Url, origin_hint: Option<String>) -> Result<Share
                     "回执地址格式不正确",
                 )
             })?;
-            if u.scheme() != "https" {
-                return Err(coded(
-                    error_codes::EXTERNAL_SHARE_BAD_CONTENT,
-                    "回执地址必须是 HTTPS",
-                ));
-            }
-            // 给了来源就要求同源：回执会把「发了几条」送到这个地址，
-            // 跨源等于让别处知道你的分享行为。
+            // 给了来源就要求**同协议同源**（origin() 已含 scheme）：回执会把
+            // 「发了几条」送到这个地址，跨协议/跨域等于让别处知道你的分享行为。
             if let Some(origin) = payload.claimed_origin.as_ref() {
                 let ou = Url::parse(origin).map_err(|_| {
                     coded(
@@ -340,7 +334,7 @@ fn payload_from_query(parsed: &Url, origin_hint: Option<String>) -> Result<Share
                 if ou.origin() != u.origin() {
                     return Err(coded(
                         error_codes::EXTERNAL_SHARE_BAD_CONTENT,
-                        "回执地址必须与来源同源",
+                        "回执地址必须与来源同协议同源",
                     ));
                 }
             }
@@ -380,13 +374,13 @@ pub fn payload_from_fields(
         }
     }
 
-    // 自称来源只认 HTTPS origin；给了但不合法就拒（不降级成「没给」，否则用户看到的是
-    // 一个没有来源线索的面板，却以为自己分享了来自那个站点的一页）。
+    // 自称来源支持 http/https origin（用户 2026-11-17 要求支持 http IP:端口 / localhost）；
+    // 给了但不合法就拒（不降级成「没给」，否则用户看到的是没有来源线索的面板）。
     let claimed_origin = match clean(claimed) {
         Some(raw) => Some(normalize_rp_origin(&raw).map_err(|_| {
             coded(
                 error_codes::EXTERNAL_SHARE_BAD_CONTENT,
-                "来源标识必须是 HTTPS 站点",
+                "来源标识必须是合法的 http/https 站点",
             )
         })?),
         None => origin_hint,
@@ -630,8 +624,20 @@ mod share_tests {
     fn unknown_params_are_ignored_but_bad_origin_is_not() {
         let ok = "gosslan://share?title=hi&utm=whatever&v=2";
         assert!(parse_share_intent(ok).is_ok(), "未知参数不该让整笔失败");
-        let bad = "gosslan://share?title=hi&origin=http%3A%2F%2Frp.example.com";
-        let err = parse_share_intent(bad).expect_err("http 来源必须拒");
+        // 用户 2026-11-17：http origin 也支持（http IP:端口 / localhost 接入）。
+        let http =
+            parse_share_intent("gosslan://share?title=hi&origin=http%3A%2F%2F127.0.0.1%3A59995")
+                .expect("http origin 现在应合法");
+        let ShareIntent::Inline(http_payload) = http else {
+            panic!("应是 inline 分享")
+        };
+        assert_eq!(
+            http_payload.claimed_origin.as_deref(),
+            Some("http://127.0.0.1:59995")
+        );
+        // 非法来源（userinfo / 缺 scheme）仍整笔拒。
+        let bad = "gosslan://share?title=hi&origin=https%3A%2F%2Fuser%40rp.example.com";
+        let err = parse_share_intent(bad).expect_err("带 userinfo 的来源必须拒");
         assert!(err.contains(error_codes::EXTERNAL_SHARE_BAD_CONTENT));
     }
 

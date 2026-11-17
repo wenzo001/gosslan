@@ -18,7 +18,6 @@ import {
   deviceAuthSecondsLeft,
   disclosedClaims,
   grantedScopes,
-  rememberedScopes,
 } from "@/utils/deviceAuth";
 import { createInitScope } from "@/utils/initScope";
 import { t } from "@/i18n";
@@ -29,10 +28,9 @@ const allowNickname = ref(false);
 const now = ref(Date.now());
 // 用户**实际勾选**的交付范围（scope）。
 //
-// **默认全关**：新事务到达时清空 —— scope 必须用户点头才有。
-// 例外：**同一个 RP 上次**点头允许过的几项会被**预勾**（记忆，2026-11-16）：
-// 用户要求「快捷登录要简单，不要让用户在界面上操作很多」⇒ 同一个应用不该每次
-// 都要求重新表态。预勾只影响**默认勾选状态**，用户随时能改；不勾就不给。
+// 用户 2026-11-17 进一步要求「一键允许」⇒ 新事务到达时**请求的 scope 全勾**，
+// 用户点一次「允许」即完成（清单在页面上明列，仍可逐项取消）。
+// 此前是「默认全关 + 同 RP 记忆预勾」（2026-11-16），现按用户最新决定简化。
 const scopeChecks = ref<string[]>([]);
 /** 本次预勾了哪些（用来在页面上说明「沿用上次」）。 */
 const preCheckedScopes = ref<string[]>([]);
@@ -44,9 +42,12 @@ onMounted(() => {
     allowNickname.value = false;
     // 新事务 ⇒ 上一笔的勾选**不带过来**（scope 是本次事务的授权）。
     // 但**同一个 RP 上次**允许过的会被预勾（记忆）⇒ 第二次登录只需点一次「批准」。
-    const remembered = rememberedScopes(p.remembered_scopes, p.requested_scopes);
-    preCheckedScopes.value = remembered;
-    scopeChecks.value = [...remembered];
+    // 用户 2026-11-17：「对方接入，点击弹出应用，用户直接确认就行」⇒
+    // 请求的 scope **默认全勾**，用户只需点一次「允许」。
+    // 风险由确认页的清单明示（将同步：设备凭证 / 好友列表 / 群列表 / 分享入口），
+    // 用户仍可逐项取消（toggle 保留）——一键是默认值，不是强制。
+    preCheckedScopes.value = [...p.requested_scopes];
+    scopeChecks.value = [...p.requested_scopes];
     store.setPending(p);
   }).then((un) => scope.onDispose(un));
   // 清数据（clearAllData / resetAfterDataCleared 经后端广播 data-cleared）一并清掉确认页（#8）：
@@ -167,7 +168,7 @@ function onClose() {
         </div>
       </div>
 
-      <!-- 交付范围（scope）：默认全关，逐项由用户点头。 -->
+      <!-- 交付范围（scope）：默认全勾（一键允许），用户仍可逐项取消。 -->
       <div v-if="requestedScopes.length">
         <div class="mb-1 text-caption text-[var(--gosslan-text-2)]">{{ t("deviceAuth.scopesLabel") }}</div>
         <div
@@ -184,15 +185,15 @@ function onClose() {
           <span class="text-meta text-[var(--gosslan-text-2)]">{{ scopeLabel(sc) }}</span>
         </div>
         <p class="mt-1 text-meta leading-relaxed text-[var(--gosslan-text-2)]">
-          {{ t("deviceAuth.scopeHint") }}
+          {{ t("deviceAuth.scopeHintOneClick") }}
         </p>
-        <!-- 预勾说明：明写「沿用上次」，别让用户以为是自己刚勾的（可改）。 -->
+        <!-- 一键允许说明：默认全勾，用户仍可逐项取消（用户 2026-11-17 决定）。 -->
         <p
           v-if="preCheckedScopes.length"
           class="mt-1 text-meta leading-relaxed text-[var(--gosslan-text-2)]"
-          data-device-auth-remembered
+          data-device-auth-oneclick
         >
-          {{ t("deviceAuth.scopeRememberedHint") }}
+          {{ t("deviceAuth.scopeHintOneClick") }}
         </p>
       </div>
 
