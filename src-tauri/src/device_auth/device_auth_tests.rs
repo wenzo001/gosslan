@@ -65,8 +65,21 @@ fn normalize_origin_https_only_and_strips_extras() {
         normalize_rp_origin("https://app.example.com:8443").unwrap(),
         "https://app.example.com:8443"
     );
-    // http 降级拒。
-    assert!(normalize_rp_origin("http://app.example.com").is_err());
+    // 用户 2026-11-17 明确要求：http IP:端口 / localhost 也要支持。
+    assert_eq!(
+        normalize_rp_origin("http://app.example.com").unwrap(),
+        "http://app.example.com"
+    );
+    assert_eq!(
+        normalize_rp_origin("http://127.0.0.1:59995").unwrap(),
+        "http://127.0.0.1:59995"
+    );
+    assert_eq!(
+        normalize_rp_origin("http://localhost:3000").unwrap(),
+        "http://localhost:3000"
+    );
+    // 非 http(s) 仍拒。
+    assert!(normalize_rp_origin("ftp://app.example.com").is_err());
     // userinfo / query / fragment 拒。
     assert!(normalize_rp_origin("https://user@app.example.com").is_err());
     assert!(normalize_rp_origin("https://app.example.com/?x=1").is_err());
@@ -86,14 +99,18 @@ fn parse_link_https_app_link_and_custom_scheme() {
     assert_eq!(b.rp_origin, ORIGIN);
     assert_eq!(b.request_ref, "req-abc");
 
-    // 坏 scheme / 缺 ref / 自定义 scheme 缺 origin / http origin 都拒。
+    // 用户 2026-11-17：http App Link 也支持（一键接入/自测场景）。
+    let c = parse_authorize_link("http://127.0.0.1:59995/authorize/req-http").unwrap();
+    assert_eq!(c.rp_origin, "http://127.0.0.1:59995");
+    // 坏 scheme / 缺 ref / 自定义 scheme 缺 origin 仍拒；gosslan scheme 的 origin 参数
+    // 也放开 http（与 App Link 同口径）。
+    let d =
+        parse_authorize_link("gosslan://authorize/req-http?origin=http%3A%2F%2F127.0.0.1%3A59995")
+            .unwrap();
+    assert_eq!(d.rp_origin, "http://127.0.0.1:59995");
     assert!(parse_authorize_link("javascript:alert(1)").is_err());
     assert!(parse_authorize_link("https://app.example.com/authorize/").is_err());
     assert!(parse_authorize_link("gosslan://authorize/req-abc").is_err());
-    assert!(parse_authorize_link(
-        "gosslan://authorize/req-abc?origin=http%3A%2F%2Fapp.example.com"
-    )
-    .is_err());
 }
 
 #[test]
@@ -521,12 +538,15 @@ fn parse_share_link_accepts_https_and_custom_scheme() {
     assert_eq!(c.rp_origin, "https://app.example.com:8443");
 }
 
-/// 反例：http 降级 / userinfo / 缺 origin / origin 降级 / 错误路径段 / 空 ref / 多余段 / 坏 scheme。
+/// 反例：userinfo / 缺 origin / 错误路径段 / 空 ref / 多余段 / 坏 scheme。
 #[test]
 fn parse_share_link_rejects_downgrade_userinfo_missing_origin_bad_path_empty_ref() {
-    // http 降级（两种形态）。
-    assert!(parse_share_link("http://app.example.com/share/ref").is_none());
-    assert!(parse_share_link("gosslan://share/ref?origin=http%3A%2F%2Fapp.example.com").is_none());
+    // 用户 2026-11-17：http IP:端口 / localhost 也支持（一键接入/自测场景）。
+    let http = parse_share_link("http://127.0.0.1:59995/share/ref").unwrap();
+    assert_eq!(http.rp_origin, "http://127.0.0.1:59995");
+    let custom =
+        parse_share_link("gosslan://share/ref?origin=http%3A%2F%2Flocalhost%3A3000").unwrap();
+    assert_eq!(custom.rp_origin, "http://localhost:3000");
     // userinfo。
     assert!(parse_share_link("https://user@app.example.com/share/ref").is_none());
     // 自定义 scheme 缺 origin / origin 带 query（规范化拒）。
@@ -545,4 +565,33 @@ fn parse_share_link_rejects_downgrade_userinfo_missing_origin_bad_path_empty_ref
     );
     assert!(parse_share_link("javascript:alert(1)").is_none());
     assert!(parse_share_link("").is_none());
+}
+
+/// 用户 2026-11-17：对方接入要支持 http IP:端口 / localhost。
+/// 正向：http issuer + 同协议同源端点 ⇒ 通过；反向：https 端点 / 跨域 ⇒ 拒。
+#[test]
+fn http_issuer_accepts_same_origin_http_endpoints_but_rejects_upgrade_or_cross_origin() {
+    let mut m = good_metadata();
+    m.issuer = "http://127.0.0.1:59995".into();
+    m.request_endpoint = "http://127.0.0.1:59995/api/requests/{request_id}".into();
+    m.decision_endpoint = "http://127.0.0.1:59995/api/decisions/{request_id}".into();
+    m.revocation_endpoint = "http://127.0.0.1:59995/api/revoke".into();
+    m.share_receipt_endpoint = "http://127.0.0.1:59995/api/receipt".into();
+    assert!(
+        validate_metadata(&m, "http://127.0.0.1:59995").is_ok(),
+        "http issuer + 同协议同源端点应通过（对方接入自测场景）"
+    );
+
+    // 同主机但不同端口 ⇒ 跨域，拒。
+    let mut bad = m.clone();
+    bad.request_endpoint = "http://127.0.0.1:59996/api/requests/{request_id}".into();
+    assert!(validate_metadata(&bad, "http://127.0.0.1:59995").is_err());
+
+    // 同主机同端口但换成 https ⇒ 跨协议，拒。
+    let mut bad = m.clone();
+    bad.decision_endpoint = "https://127.0.0.1:59995/api/decisions/{request_id}".into();
+    assert!(validate_metadata(&bad, "http://127.0.0.1:59995").is_err());
+
+    // issuer 是 http 但期望来源是 https ⇒ 不一致，拒。
+    assert!(validate_metadata(&m, "https://127.0.0.1:59995").is_err());
 }

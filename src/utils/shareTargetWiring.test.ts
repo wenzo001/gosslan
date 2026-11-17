@@ -27,9 +27,9 @@ test("后端：定向目标的形状与种类规则", () => {
   assert.match(rust, /MAX_TARGET_CHARS/, "没有目标长度上限");
   // 种类只有 peer / group：写死两个，不留「以后再说」的第三种。
   assert.match(rust, /kind != "peer" && kind != "group"/, "目标种类没有限制成 peer/group");
-  // 回执地址：HTTPS + 与来源同源。
-  assert.match(rust, /回执地址必须是 HTTPS/, "回执地址没有强制 HTTPS");
-  assert.match(rust, /回执地址必须与来源同源/, "回执地址没有要求与来源同源");
+  // 回执地址：用户 2026-11-17 放开 http ⇒ 与来源**同协议同源**（不再硬 HTTPS）。
+  assert.match(rust, /放开 http/, "文档没写明回执放开 http 的决定");
+  assert.match(rust, /回执地址必须与来源同协议同源/, "回执地址没有要求同协议同源");
 });
 
 test("后端：目标存在性 fail-closed（只认好友与已知群）", () => {

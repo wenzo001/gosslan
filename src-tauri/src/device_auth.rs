@@ -225,9 +225,13 @@ impl PendingDeviceAuth {
     }
 }
 
-/// 规范化 RP 来源：只接受 HTTPS，拒 userinfo/query/fragment，返回 `scheme://host[:port]`。
+/// 规范化 RP 来源：接受 **HTTPS 或 HTTP**（用户 2026-11-17 明确要求支持 http IP:端口 /
+/// localhost，方便对方接入与自测），拒 userinfo/query/fragment，返回 `scheme://host[:port]`。
 ///
-/// 比 `validate_external_url` 更严：RP 来源不允许 http 降级（设计文档 §6 callback 限制）。
+/// ⚠️ 安全边界：放行 HTTP 是**用户明确的产品决定**——外部应用可能拿到设备凭证与
+/// 好友/群列表，明文链路上有被窃取风险。故：① 仍拒绝 userinfo/query/fragment；
+/// ② 端点必须与 issuer **同 scheme 同源**（issuer 是 http 时端点也只许 http，
+///    不许 https→http 降级，也不许 http→https 跨域）；③ 生产部署仍应走 HTTPS。
 pub fn normalize_rp_origin(raw: &str) -> Result<String, String> {
     let parsed = Url::parse(raw.trim()).map_err(|_| {
         error_codes::coded(
@@ -235,10 +239,10 @@ pub fn normalize_rp_origin(raw: &str) -> Result<String, String> {
             "RP 来源网址格式不正确",
         )
     })?;
-    if parsed.scheme() != "https" {
+    if parsed.scheme() != "https" && parsed.scheme() != "http" {
         return Err(error_codes::coded(
             error_codes::DEVICE_AUTH_INVALID_ORIGIN,
-            "RP 来源必须是 HTTPS",
+            "RP 来源必须是 http 或 https",
         ));
     }
     let host = parsed.host_str().filter(|h| !h.is_empty()).ok_or_else(|| {
@@ -256,7 +260,7 @@ pub fn normalize_rp_origin(raw: &str) -> Result<String, String> {
             "RP 来源不许带 query/fragment",
         ));
     }
-    let mut origin = format!("https://{host}");
+    let mut origin = format!("{}://{host}", parsed.scheme());
     if let Some(port) = parsed.port() {
         origin.push_str(&format!(":{port}"));
     }
@@ -296,10 +300,12 @@ pub fn validate_metadata(meta: &RpMetadata, expected_origin: &str) -> Result<(),
                 "撤销端点网址格式不正确",
             )
         })?;
-        if u.scheme() != "https" || !same_origin(&u, &issuer_url) {
+        // same_origin 已比较 scheme：issuer 是 https ⇒ 端点必须 https；
+        // issuer 是 http（用户明确放开的接入场景）⇒ 端点也只许同 host:port 的 http。
+        if !same_origin(&u, &issuer_url) {
             return Err(error_codes::coded(
                 error_codes::DEVICE_AUTH_CROSS_ORIGIN,
-                "撤销端点必须与 issuer 同源且为 HTTPS",
+                "撤销端点必须与 issuer 同源且同协议",
             ));
         }
     }
@@ -313,10 +319,10 @@ pub fn validate_metadata(meta: &RpMetadata, expected_origin: &str) -> Result<(),
                 "分享回执端点网址格式不正确",
             )
         })?;
-        if u.scheme() != "https" || !same_origin(&u, &issuer_url) {
+        if !same_origin(&u, &issuer_url) {
             return Err(error_codes::coded(
                 error_codes::DEVICE_AUTH_CROSS_ORIGIN,
-                "分享回执端点必须与 issuer 同源且为 HTTPS",
+                "分享回执端点必须与 issuer 同源且同协议",
             ));
         }
     }
@@ -324,10 +330,10 @@ pub fn validate_metadata(meta: &RpMetadata, expected_origin: &str) -> Result<(),
         let u = Url::parse(endpoint).map_err(|_| {
             error_codes::coded(error_codes::DEVICE_AUTH_BAD_METADATA, "端点网址格式不正确")
         })?;
-        if u.scheme() != "https" || !same_origin(&u, &issuer_url) {
+        if !same_origin(&u, &issuer_url) {
             return Err(error_codes::coded(
                 error_codes::DEVICE_AUTH_CROSS_ORIGIN,
-                "端点必须与 issuer 同源且为 HTTPS",
+                "端点必须与 issuer 同源且同协议",
             ));
         }
     }
@@ -485,7 +491,8 @@ pub fn parse_authorize_link(raw: &str) -> Result<AuthorizeLink, String> {
         error_codes::coded(error_codes::DEVICE_AUTH_INVALID_LINK, "授权链接格式不正确")
     })?;
     let (origin, ref_seg) = match parsed.scheme() {
-        "https" => {
+        // http 与 https 同形（用户 2026-11-17 要求支持 http IP:端口 / localhost）。
+        "https" | "http" => {
             let origin = normalize_rp_origin(&parsed[..url::Position::AfterPort])?;
             let seg = parsed
                 .path_segments()
@@ -581,7 +588,7 @@ pub fn parse_share_link(raw: &str) -> Option<ShareLinkRef> {
         .map(|s| s.filter(|x| !x.is_empty()).map(str::to_string).collect())
         .unwrap_or_default();
     let (origin, share_ref) = match parsed.scheme() {
-        "https" => {
+        "https" | "http" => {
             let origin = normalize_rp_origin(&parsed[..url::Position::AfterPort]).ok()?;
             if segments.len() != 2 || segments[0] != "share" {
                 return None;
