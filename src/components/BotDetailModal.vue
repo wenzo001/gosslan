@@ -37,13 +37,14 @@ async function pullNow() {
     pulling.value = false;
   }
 }
-const statusText = computed(() =>
-  props.bot?.status === "active"
-    ? t("bot.status.active")
-    : props.bot?.status === "paused"
-      ? t("bot.status.paused")
-      : t("bot.status.revoked"),
-);
+const statusText = computed(() => {
+  switch (props.bot?.status) {
+    case "active": return t("bot.status.active");
+    case "paused": return t("bot.status.paused");
+    case "revoked": return t("bot.status.revoked");
+    default: return t("bot.status.unknown"); // 未知状态不假装成已撤销（兜底）
+  }
+});
 
 function timeText(ms?: number | null): string {
   if (!ms) return t("bot.never");
@@ -109,6 +110,14 @@ async function remove() {
           <dt>{{ t("bot.failedCount", { n: bot.failed }) }}</dt>
         </div>
       </dl>
+      <!-- 最近失败原因：没有它用户只知道「没收到」，不知道为什么（审计 P2）。 -->
+      <p
+        v-if="bot.lastError"
+        class="break-words rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-2.5 py-1.5 text-caption text-[var(--gosslan-text-2)]"
+        :title="bot.lastError"
+      >
+        {{ t("bot.lastErrorLine", { err: bot.lastError }) }}
+      </p>
 
       <label class="flex items-center justify-between gap-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-2">
         <span class="text-body">{{ t("bot.dnd") }}</span>
