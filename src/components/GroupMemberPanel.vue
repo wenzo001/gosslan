@@ -27,6 +27,15 @@ import { api } from "@/api";
 import type { BotView } from "@/types";
 import { useOpenProfile } from "@/composables/useOpenProfile";
 
+// ⚠️ defineProps 必须在所有读取 props 的逻辑**之前**（v6 审计 P1）：
+// 此前 watch(..., {immediate:true}) 在 defineProps 之前执行 ⇒ setup 期间 TDZ ReferenceError
+// ⇒ 整个群成员面板打不开。
+const props = defineProps<{
+  open: boolean;
+  groupId: string | null;
+  /** 群任务窗口正在打开（桌面端）：按钮要给出"这一下点到了"的反馈。 */
+  tasksOpening?: boolean;
+}>();
 const { openProfile } = useOpenProfile();
 /** v6：群机器人向导（仅群主/管理员看得到入口，后端还会再挡一道）。 */
 const botWizardOpen = ref(false);
@@ -49,12 +58,6 @@ function openBotDetail(bot: BotView) {
 }
 // 每次打开面板 / 创建完一个机器人都重读（配置可能刚变）。
 watch(() => props.open, (v) => { if (v) void loadGroupBots(); }, { immediate: true });
-const props = defineProps<{
-  open: boolean;
-  groupId: string | null;
-  /** 群任务窗口正在打开（桌面端）：按钮要给出"这一下点到了"的反馈。 */
-  tasksOpening?: boolean;
-}>();
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "open-tasks"): void;

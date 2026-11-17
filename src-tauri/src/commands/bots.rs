@@ -37,30 +37,40 @@ pub fn normalize_bot_server(input: &str) -> Result<String, String> {
             "请填写通知服务地址，例如 https://hooks.example.com",
         ));
     }
-    let Some(rest) = raw.strip_prefix("https://") else {
-        if let Some(rest) = raw.strip_prefix("http://") {
-            let host = rest.split('/').next().unwrap_or("");
-            let hostname = host.split(':').next().unwrap_or("");
-            if matches!(hostname, "127.0.0.1" | "localhost" | "::1" | "[::1]") {
-                return Ok(raw.trim_end_matches('/').to_string());
-            }
-            return Err(crate::error_codes::coded(
-                crate::error_codes::BOT_SERVER_INVALID,
-                "通知服务必须用 HTTPS（http:// 只允许本机 127.0.0.1 / localhost 联调）",
-            ));
-        }
+    // 审计 v6 P2：用**标准 URL parser**（此前是字符串 split，userinfo / 非法端口 /
+    // query / fragment 都能混过去，甚至 `https://user:pass@evil.com` 被当成合法）。
+    let parsed = url::Url::parse(raw).map_err(|_| {
+        crate::error_codes::coded(
+            crate::error_codes::BOT_SERVER_INVALID,
+            "通知服务地址不是合法 URL（要带 https://）",
+        )
+    })?;
+    let is_loopback = matches!(parsed.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
+        || parsed.host_str() == Some("[::1]");
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && is_loopback) {
         return Err(crate::error_codes::coded(
             crate::error_codes::BOT_SERVER_INVALID,
-            "通知服务地址应以 https:// 开头",
+            "通知服务必须用 HTTPS（http:// 只允许本机 127.0.0.1 / localhost 联调）",
         ));
-    };
-    if rest.split('/').next().unwrap_or("").is_empty() {
+    }
+    // 只接受「scheme://host[:port]」这一种形状 ⇒ 不接受 userinfo / query / fragment /
+    // 路径里带东西（服务端地址是根，endpoint 由客户端按 bot_id 拼）。
+    if !parsed.username().is_empty() || parsed.password().is_some()
+        || parsed.query().is_some() || parsed.fragment().is_some()
+        || parsed.path() != "/" {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::BOT_SERVER_INVALID,
+            "通知服务地址只能写 scheme://主机[:端口]（不要带路径 / 参数 / 账号密码）",
+        ));
+    }
+    if parsed.host_str().map(|h| h.is_empty()).unwrap_or(true) {
         return Err(crate::error_codes::coded(
             crate::error_codes::BOT_SERVER_INVALID,
             "通知服务地址缺少主机名",
         ));
     }
-    Ok(raw.trim_end_matches('/').to_string())
+    // Url::parse 会拒绝非法端口（>65535），这里拿 origin 作为归一化结果（去掉尾斜杠）。
+    Ok(parsed.origin().ascii_serialization())
 }
 
 /// 外部发送者用的 endpoint（给用户复制的那条）。
@@ -236,9 +246,17 @@ pub async fn bot_create(
             "请填写通知服务的客户端令牌（服务端 WEBHOOK_CLIENT_TOKEN）",
         ));
     }
+    // 审计 v6 P2：未知 scope **拒绝**，不能静默当成个人机器人
+    // （否则前端传错值会建出一个用户没预期的机器人）。
     let scope_norm = match scope.trim() {
         "group" => "group",
-        _ => "personal",
+        "personal" | "inbox" => "personal", // inbox = v5 旧名，兼容
+        _ => {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::BOT_TARGET_INVALID,
+                "机器人作用域只能是 personal（个人会话）或 group（群）",
+            ))
+        }
     };
     let target = match scope_norm {
         "personal" => BotTarget {
@@ -398,25 +416,18 @@ pub async fn bot_set_dnd(
     enabled: bool,
 ) -> Result<BotView, String> {
     let s = state.inner().clone();
-    let record = tokio::task::spawn_blocking({
-        let sd = s.clone();
-        let bid = bot_id.clone();
-        move || -> Result<Option<BotRecord>, String> {
-            let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::load_bot(&dbc, &bid).map_err(|e| format!("读取机器人失败：{e}"))
-        }
-    }).await.map_err(|e| format!("读取任务中断：{e}"))??;
-    let Some(mut record) = record else {
+    // 字段级更新：一次 spawn_blocking 内持锁读改写，不与轮询统计互相覆盖。
+    let bid = bot_id.clone();
+    let record = tokio::task::spawn_blocking(move || -> Result<Option<BotRecord>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::set_bot_dnd(&dbc, &bid, enabled).map_err(|e| format!("保存机器人失败：{e}"))
+    })
+    .await
+    .map_err(|e| format!("保存任务中断：{e}"))??;
+    let Some(record) = record else {
         return Err(crate::error_codes::coded(crate::error_codes::BOT_NOT_FOUND, "机器人不存在"));
     };
-    record.do_not_disturb = enabled;
-    let view = BotView::from(&record);
-    let rec = record.clone();
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::save_bot(&dbc, &rec).map_err(|e| format!("保存机器人失败：{e}"))
-    }).await.map_err(|e| format!("保存任务中断：{e}"))??;
-    Ok(view)
+    Ok(BotView::from(&record))
 }
 
 /// 暂停 / 恢复 / 撤销。
@@ -649,38 +660,57 @@ async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str) -> Result<BotPullOutcome
                 serde_json::json!({ "event_id": entry.event_id, "permanent": false, "error": "本地投递失败" }),
             )
         };
-        let _ = client
+        // ⚠️ 审计 v6 P1：ACK/NACK 的结果**不能吞掉**。
+        // 失败时服务端会认为没确认，租约到期重投 ⇒ 群消息可能重复、个人消息靠幂等兜住。
+        // 记一条日志并把 outcome 标记为「确认失败」，让上层日志/状态能看见。
+        match client
             .post(url)
             .bearer_auth(&record.client_token)
             .header("content-type", "application/json")
             .body(serde_json::to_string(&body).unwrap_or_default())
             .send()
-            .await;
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {}
+            Ok(resp) => {
+                outcome.failed += 1;
+                s.logger.info(
+                    "bot",
+                    format!(
+                        "event={} {} 被服务端拒绝（HTTP {}），将靠租约重投兜底",
+                        entry.event_id,
+                        if ok { "ACK" } else { "NACK" },
+                        resp.status()
+                    ),
+                );
+            }
+            Err(e) => {
+                outcome.failed += 1;
+                s.logger.info(
+                    "bot",
+                    format!("event={} {} 网络失败（{e}），将靠租约重投兜底", entry.event_id, if ok { "ACK" } else { "NACK" }),
+                );
+            }
+        }
     }
-    // 更新本机的「最近收到时间 / 待投递数 / 失败数」。
+    // 字段级回写统计（审计 v6 P2）：持锁读最新记录再改统计字段，
+    // 不覆盖期间用户改的 DND / 状态；没取到事件也不推进 last_event_at。
     {
-        let mut rec = record.clone();
-        rec.last_event_at = Some(db::now_ms());
-        rec.pending = 0;
-        rec.failed = outcome.failed;
-        rec.last_error = if outcome.failed > 0 {
-            Some(format!("{} 条投递失败", outcome.failed))
-        } else {
-            None
-        };
-        // 回写状态：进阻塞池（R-18）。写失败不影响本轮投递结果（下一轮会再写）。
         let sd = s.clone();
+        let bid = bot_id.clone();
+        let pulled = outcome.pulled;
+        let failed = outcome.failed;
+        let last_ev = if pulled > 0 { Some(db::now_ms()) } else { None };
+        let last_err = if failed > 0 { Some(format!("{failed} 条投递失败")) } else { None };
         let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
             let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::save_bot(&dbc, &rec).map_err(|e| format!("保存机器人状态失败：{e}"))
+            db::update_bot_poll_stats(&dbc, &bid, pulled, failed, last_ev, last_err)
+                .map_err(|e| format!("保存机器人统计失败：{e}"))
         })
         .await;
     }
     Ok(outcome)
 }
-
-/// 会话列表里机器人消息正文的摘要长度（完整正文仍在收件箱/详情里）。
-const PERSONAL_PREVIEW_MAX: usize = 240;
 
 /// 一次取件的计数。
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -700,6 +730,18 @@ async fn deliver_event(
     record: &BotRecord,
     entry: &BotInboxEntry,
 ) -> Result<(), String> {
+    // 审计 v6 P1：服务端契约写了 images，但客户端首版**没有**附件下载/校验/渲染链路。
+    // 不能假装支持（把 metadata 当图片），也不能 NACK（会无限重投）⇒
+    // 明确在正文里告知「图片未随通知送达」，并照常 ACK。
+    let mut normalized = entry.clone();
+    if !entry.images.is_empty() {
+        let n = entry.images.len();
+        normalized.text = format!(
+            "{}\n\n⚠️ 这条通知附带 {n} 张图片，当前版本**不支持图片通知**；请让发送方改用文字描述。",
+            entry.text
+        );
+    }
+    let entry = &normalized;
     match record.target.kind.as_str() {
         "inbox" | "personal" => {
             // v6：个人机器人 = 本机假身份会话。消息落 messages + 会话列表，
@@ -710,7 +752,12 @@ async fn deliver_event(
             let sd = s.clone();
             let emitted = tokio::task::spawn_blocking(move || -> Result<Option<crate::state::MessageRecord>, String> {
                 let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
-                if !db::append_inbox(&dbc, &bot_id, &e)
+                // ⚠️ 审计 v6 P1：去重标记、消息行、会话行必须**同一事务**。
+                // 此前 append_inbox 成功但消息写失败时，重投会命中「已去重」直接 ACK
+                // ⇒ 聊天消息永久缺失（用户永远看不到那条通知）。
+                let tx = dbc.unchecked_transaction()
+                    .map_err(|x| format!("开启机器人投递事务失败：{x}"))?;
+                if !db::append_inbox(&tx, &bot_id, &e)
                     .map_err(|x| format!("写入收件箱失败：{x}"))? { return Ok(None); }
                 let conv_id = format!("bot:{bot_id}");
                 // msg_id 前缀携带 format（messages 表 schema 属 Frozen Core 不能加列）：
@@ -721,17 +768,14 @@ async fn deliver_event(
                     format!("botmsg-{}", e.event_id)
                 };
                 let ts = e.received_at;
-                let seq: i64 = dbc.query_row(
+                let seq: i64 = tx.query_row(
                     "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conv_id = ?1",
                     rusqlite::params![conv_id], |r| r.get(0),
                 ).unwrap_or(1);
-                // ⚠️ 按**字符**截断，不能 `&str[..N]`（那是字节下标）——
-                // 中文一个字 3 字节，从第 240 字节切开会落在 UTF-8 码点中间 ⇒ panic，
-                // 而这在后台 worker 里等于整轮取件中断（用户什么都收不到）。
-                let content: String = if e.text.chars().count() > PERSONAL_PREVIEW_MAX {
-                    let head: String = e.text.chars().take(PERSONAL_PREVIEW_MAX).collect();
-                    format!("{head}…")
-                } else { e.text.clone() };
+                // 审计 v6 P1：消息体必须存**全文**（服务端已限 8192 字节），
+                // 会话列表的「显示几行」交给 UI 的 line-clamp —— 不能在落库时截断，
+                // 否则用户永远看不到全文（此前截 240 字且无全文入口）。
+                let content: String = e.text.clone();
                 let rec = crate::state::MessageRecord {
                     id: 0, msg_id: msg_id.clone(), conv_id: conv_id.clone(),
                     sender_id: conv_id.clone(), receiver_id: sd.device_id.clone(),
@@ -739,9 +783,11 @@ async fn deliver_event(
                     mention_targets: None, local_id: Some(msg_id), fail_code: None,
                 };
                 // ⚠️ 只写本地消息表，**不**写 outbox（Frozen Core 红线，勿加可靠发送队列）。
-                db::insert_message(&dbc, &rec).map_err(|x| format!("写入机器人消息失败：{x}"))?;
-                db::touch_conversation(&dbc, &conv_id, "single", &format!("{} · 机器人", bot_name), None, &rec.content, 1)
+                db::insert_message(&tx, &rec).map_err(|x| format!("写入机器人消息失败：{x}"))?;
+                db::touch_conversation(&tx, &conv_id, "single", &format!("{} · 机器人", bot_name), None, &rec.content, 1)
                     .map_err(|x| format!("更新机器人会话失败：{x}"))?;
+                // 三处全成功才提交 ⇒ 任何一步失败整体回滚，重投能重新走完整路径。
+                tx.commit().map_err(|x| format!("提交机器人投递事务失败：{x}"))?;
                 Ok(Some(rec))
             }).await.map_err(|x| format!("写入任务中断：{x}"))??;
             // ⚠️ 必须 emit `message-received`：**只有** `bot-inbox-updated` 的话消息虽然
@@ -754,6 +800,20 @@ async fn deliver_event(
             Ok(())
         }
         "group" => {
+            // 审计 v6 P1：群消息按 event_id 幂等 —— ACK 丢失导致租约重投时，
+            // 同一条不能重复发进群。去重记录**独立于可裁剪的 inbox**（固定 200 条窗口）。
+            let already = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::was_delivered(&dbc, &record.bot_id, &entry.event_id)
+                    .map_err(|x| format!("检查群消息去重失败：{x}"))?
+            };
+            if already {
+                s.logger.info(
+                    "bot",
+                    format!("群消息 event={} 已投递过，跳过重投", entry.event_id),
+                );
+                return Ok(());
+            }
             // 目标是否还能投递：群被删/已离群 ⇒ **停投并报错**，不悄悄改投别的会话。
             if !record.target.is_deliverable() {
                 return Err("群目标已失效（没有群 id）".into());
@@ -773,10 +833,29 @@ async fn deliver_event(
             })
             .await
             .map_err(|e| format!("校验群失败：{e}"))??;
-            send_group_payload(s, &group_id, "text", content, None, None, None)
+            let sent = send_group_payload(s, &group_id, "text", content, None, None, None)
                 .await
                 .map(|_| ())
-                .map_err(|e| format!("发进群失败：{e}"))
+                .map_err(|e| format!("发进群失败：{e}"));
+            if sent.is_ok() {
+                // **只在真发出去之后**记去重标记；失败不留标记 ⇒ 重投能重试。
+                let sd = s.clone();
+                let bid = record.bot_id.clone();
+                let eid = entry.event_id.clone();
+                let eid_for_log = eid.clone();
+                let marked = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                    let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::mark_delivered(&dbc, &bid, &eid)
+                        .map(|_| ())
+                        .map_err(|e| format!("记录群消息去重失败：{e}"))
+                })
+                .await;
+                if let Err(e) = marked {
+                    // 已发出但去重没记上 ⇒ 重申风险可观测（不能假装 exactly-once）。
+                    s.logger.error("bot", format!("event={eid_for_log} {e}：服务端重投可能重复发一条"));
+                }
+            }
+            sent
         }
         _ => Err("投递目标类型不认识".into()),
     }
@@ -908,6 +987,25 @@ mod bot_cmd_tests {
         }
     }
 
+    /// 审计 v6 P2：URL parser 必须挡住 userinfo / query / fragment / 非法端口 / 路径。
+    #[test]
+    fn server_url_rejects_tricky_shapes() {
+        for bad in [
+            "https://user:pass@hooks.example.com",     // userinfo（凭证会被塞进 URL）
+            "https://hooks.example.com?token=abc",     // query（密钥会进日志）
+            "https://hooks.example.com/#frag",         // fragment
+            "https://hooks.example.com:99999",         // 非法端口
+            "https://hooks.example.com/v1/hooks",      // 带路径（endpoint 由客户端拼）
+            "not-a-url",                                // 没 scheme
+            "ftp://hooks.example.com",                  // 不支持的协议
+        ] {
+            assert!(normalize_bot_server(bad).is_err(), "危险地址不该通过：{bad}");
+        }
+        // 合法带端口 / IPv6 回环仍要过
+        assert!(normalize_bot_server("https://hooks.example.com:8443").is_ok());
+        assert!(normalize_bot_server("http://[::1]:59995").is_ok());
+    }
+
     /// 服务地址**必须 HTTPS**（回环除外）：bot 密钥与消息正文不能明文过网。
     #[test]
     fn server_address_must_be_https_except_loopback() {
@@ -1037,7 +1135,10 @@ mod bot_cmd_tests {
         let src = include_str!("bots.rs");
         let prod = &src[..src.find("mod bot_cmd_tests").unwrap_or(src.len())];
         assert!(prod.contains("pub async fn bot_set_dnd("), "缺免打扰命令");
-        assert!(prod.contains("record.do_not_disturb = enabled"), "免打扰没写进记录");
+        assert!(
+            prod.contains("db::set_bot_dnd("),
+            "免打扰必须走字段级原子更新（同一把锁内读改写，不与轮询统计互相覆盖）",
+        );
     }
 
     /// 后台轮询 worker 存在，且**已接线**（不是「有个函数但没人调」）。
