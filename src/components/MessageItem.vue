@@ -156,8 +156,8 @@ async function refetchContent() {
 }
 
 /** 这条内容在统一状态里是否「未完成 / 校验失败」⇒ 文件卡片给「重新获取」。 */
-/** v6：机器人消息（`bot:` 会话）的外部正文按 Markdown 渲染，输入已消毒。 */
-/** v6：机器人消息（`bot:` 会话）的外部正文按 Markdown 渲染，输入已消毒。 */
+/** 机器人消息（`bot:` 会话）的外部正文按 Markdown 渲染，输入已消毒。 */
+/** 机器人消息（`bot:` 会话）的外部正文按 Markdown 渲染，输入已消毒。 */
 const isBotMessage = computed(() => props.message.conv_id.startsWith("bot:"));
 
 const retryableContent = computed(() => {

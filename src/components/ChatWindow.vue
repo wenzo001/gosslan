@@ -774,7 +774,7 @@ const { openProfile } = useOpenProfile({
     if (isGroup.value) membersOpen.value = true;
   },
 });
-/** v6：机器人详情（点机器人消息头像/会话里点机器人进这里，不是好友资料页）。 */
+/** 机器人详情（点机器人消息头像/会话里点机器人进这里，不是好友资料页）。 */
 const botDetail = ref<BotView | null>(null);
 const botDetailOpen = ref(false);
 
@@ -2459,7 +2459,7 @@ function retryHistory() {
 
     <!-- 图片相册预览（会话内全部图片，左右箭头 / 键盘 ←→ 切换） -->
 
-    <!-- v6：机器人详情（配置 / 免打扰 / 立即取件 / 删除）—— 点机器人消息头像进这里 -->
+    <!-- 机器人详情（配置 / 免打扰 / 立即取件 / 删除）—— 点机器人消息头像进这里 -->
     <BotDetailModal
       :open="botDetailOpen"
       :bot="botDetail"

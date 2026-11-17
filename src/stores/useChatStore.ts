@@ -431,7 +431,7 @@ export const useChatStore = defineStore("chat", () => {
       cancelNotificationTimers();
       cancelTransfersRepairTimer();
     });
-    // v7.1：群机器人管理指令（白名单在 Rust 侧已校验）—— 用既有群任务链路执行。
+    // 群机器人管理指令（白名单在 Rust 侧已校验）—— 用既有群任务链路执行。
     void api.onBotGroupAction(async (a) => {
       if (a.type !== "create_todo" || !a.groupId) return;
       try {
@@ -509,7 +509,7 @@ export const useChatStore = defineStore("chat", () => {
       },
       onMessage: (rec) => {
         enqueueMessage(rec);
-        // v6 机器人消息：conv_id = sender_id = `bot:<id>`（本机假身份）。
+        // 机器人消息：conv_id = sender_id = `bot:<id>`（本机假身份）。
         // · 只进内存队列让当前窗口显示新气泡；
         // · **不走 maybeNotify**：通知摘要由 `bot-inbox-updated` 那条专用链路管
         //   （只说 N 条、不放正文、遵守 dnd），这里再弹一次就等于正文泄漏 + 双通知；

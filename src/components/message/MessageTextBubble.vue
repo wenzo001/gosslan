@@ -22,11 +22,11 @@ const props = defineProps<{
   clamped: boolean;
   copied: boolean;
   /**
-   * v6：这条消息来自**通知机器人**（conv_id 以 `bot:` 开头）。外部正文按不可信处理：
+   * 这条消息来自**通知机器人**（conv_id 以 `bot:` 开头）。外部正文按不可信处理：
    * 用 `utils/botMessage.ts` 的 marked + DOMPurify 白名单渲染 Markdown。
    */
   isBot?: boolean;
-  /** v6：botmsg-md-* = Markdown 正文；其它机器人消息按纯文本（防止 # / * 被误解析）。 */
+  /** botmsg-md-* = Markdown 正文；其它机器人消息按纯文本（防止 # / * 被误解析）。 */
   msgId?: string;
   /** 自己的消息气泡尖角朝右、对方朝左，指向头像。 */
   mine: boolean;
@@ -211,7 +211,7 @@ async function openLink(href: string) {
          带引用头的完整原文，同一个气泡两条复制路径结果不一样。
          ⚠️ 不挂在气泡根上：根里还有「展开/复制」操作条和尖角，全选会把按钮文字也框进去。 -->
     <div ref="contentEl">
-      <!-- v6 机器人正文：Markdown（输入已在 renderBotMessage 里消毒）。 -->
+      <!-- 机器人正文：Markdown（输入已在 renderBotMessage 里消毒）。 -->
       <div
         v-if="isBot && msgId?.startsWith('botmsg-md-')"
         ref="bodyEl"

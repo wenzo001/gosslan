@@ -1,8 +1,8 @@
 // 职责边界：
 // - 通知机器人（Webhook bot）的**命令层**：注册 / 列表 / 状态 / 删除 / 取件 / 收件箱。
-//   服务端在独立仓库 `wenzo001/gosslan-relay-server`（`webhook.mjs`），接口契约见
-//   该仓库的 `webhook-api.md`；客户端实施计划见主仓
-//   `docs/notes/webhook-bot-client-plan-2026-11-16.md`。
+//   服务端在独立仓库 `wenzo001/gosslan-relay-server`（`server.mjs` + `notify.mjs`），
+//   部署与接口契约见该仓库 `README-v7-notify.md`；主仓的完整使用说明见
+//   `docs/notify-bot-guide.md`。
 //
 // ## 三条不可让步的顺序/边界（判据钉着）
 //
@@ -25,10 +25,10 @@ const BOT_NAME_MAX: usize = 60;
 
 // ---------------- 纯逻辑（可单测） ----------------
 
-/// 服务地址规范化：**强制 HTTPS**。
+/// 服务地址规范化：http / https 都接受（内网可按 IP 直连 59994）。
 ///
-/// 回环地址（127.0.0.1 / localhost / ::1）放行 `http://` —— 本机联调自托管服务时
-/// 常常还没配证书；但**任何非回环的 http:// 一律拒绝**（bot 密钥与消息正文会明文过网）。
+/// 服务端 59994 默认就是明文 HTTP，且通知服务的取舍是「可信网络 / 内网直连」，
+/// 因此 http 与 https 都接受；公网部署应由 nginx 反代终结 TLS（见使用说明）。
 pub fn normalize_bot_server(input: &str) -> Result<String, String> {
     let raw = input.trim();
     if raw.is_empty() {
@@ -37,20 +37,20 @@ pub fn normalize_bot_server(input: &str) -> Result<String, String> {
             "请填写通知服务地址，例如 http://你的服务器:59994",
         ));
     }
-    // 审计 v6 P2：用**标准 URL parser**（此前是字符串 split，userinfo / 非法端口 /
+    // 审计：用**标准 URL parser**（此前是字符串 split，userinfo / 非法端口 /
     // query / fragment 都能混过去，甚至 `https://user:pass@evil.com` 被当成合法）。
     let parsed = url::Url::parse(raw).map_err(|_| {
         crate::error_codes::coded(
             crate::error_codes::BOT_SERVER_INVALID,
-            "通知服务地址不是合法 URL（要带 https://）",
+            "通知服务地址不是合法 URL（要带 http:// 或 https://）",
         )
     })?;
-    let is_loopback = matches!(parsed.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
-        || parsed.host_str() == Some("[::1]");
-    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && is_loopback) {
+    // 只接受 http/https：服务端 59994 默认明文 HTTP，允许内网按 IP 直连；
+    // 公网部署要用 HTTPS 反代（见 `docs/notify-bot-guide.md`）。其它 scheme 一律拒绝。
+    if !matches!(parsed.scheme(), "http" | "https") {
         return Err(crate::error_codes::coded(
             crate::error_codes::BOT_SERVER_INVALID,
-            "通知服务必须用 HTTPS（http:// 只允许本机 127.0.0.1 / localhost 联调）",
+            "通知服务地址必须带 http:// 或 https://",
         ));
     }
     // 只接受「scheme://host[:port]」这一种形状 ⇒ 不接受 userinfo / query / fragment /
@@ -74,7 +74,7 @@ pub fn normalize_bot_server(input: &str) -> Result<String, String> {
 }
 
 /// 外部发送者用的 endpoint（给用户复制的那条）。
-/// 外部发送者用的 endpoint（v7：认证 token 就在 URL 路径里，一条 curl 可发）。
+/// 外部发送者用的 endpoint（认证 token 就在 URL 路径里，一条 curl 可发）。
 pub fn bot_hook_endpoint(server_url: &str, send_token: &str) -> String {
     format!("{}/publish/{send_token}", server_url.trim_end_matches('/'))
 }
@@ -161,7 +161,7 @@ fn bot_client() -> Result<reqwest::Client, String> {
         .map_err(|e| crate::error_codes::coded(crate::error_codes::BOT_HTTP_FAILED, format!("HTTP 客户端初始化失败：{e}")))
 }
 
-/// v7 极简协议：服务端只生成两把 token + publish_url（认证在 URL，不用 header）。
+/// 极简协议：服务端只生成两把 token + publish_url（认证在 URL，不用 header）。
 #[derive(Deserialize)]
 struct ServerBotCreated {
     #[serde(default)]
@@ -181,7 +181,7 @@ struct ServerBotCreated {
 struct ServerEnvelope {
     #[serde(default)]
     schema: String,
-    /// v7 字段名是 `id`，旧版是 `event_id` —— 两个都收（本地统一用 event_id）。
+    /// 字段名是 `id`，旧版是 `event_id` —— 两个都收（本地统一用 event_id）。
     #[serde(alias = "id")]
     event_id: String,
     #[serde(default)]
@@ -196,7 +196,7 @@ struct ServerEnvelope {
     images: Vec<BotImage>,
     #[serde(default)]
     created_at: String,
-    /// v7 群机器人管理指令（服务端只透传，白名单在客户端）。
+    /// 群机器人管理指令（服务端只透传，白名单在客户端）。
     #[serde(default)]
     action: Option<serde_json::Value>,
 }
@@ -228,7 +228,7 @@ fn server_error_text(body: &str) -> String {
 
 /// 注册一个机器人（客户端去服务端注册 ⇒ 拿一次性密钥 ⇒ 落本地）。
 #[tauri::command(async)]
-#[allow(clippy::too_many_arguments)] // v6：新增 scope / dnd 两个可选参数，参数面本来就是命令入口契约
+#[allow(clippy::too_many_arguments)] // 新增 scope / dnd 两个可选参数，参数面本来就是命令入口契约
 pub async fn bot_create(
     state: State<'_, Arc<AppState>>,
     name: String,
@@ -246,7 +246,7 @@ pub async fn bot_create(
             "请给机器人起个名字",
         ));
     }
-    // 审计 v6 P2：未知 scope **拒绝**，不能静默当成个人机器人
+    // 审计：未知 scope **拒绝**，不能静默当成个人机器人
     // （否则前端传错值会建出一个用户没预期的机器人）。
     let scope_norm = match scope.trim() {
         "group" => "group",
@@ -286,7 +286,7 @@ pub async fn bot_create(
         }
     };
 
-    // v6：群机器人只有群主/管理员能创建（前端隐藏不算权限，命令 fail-closed）。
+    // 群机器人只有群主/管理员能创建（前端隐藏不算权限，命令 fail-closed）。
     if scope_norm == "group" {
         let s = state.inner().clone();
         let gid = target.group_id.clone().unwrap_or_default();
@@ -307,7 +307,7 @@ pub async fn bot_create(
     }
 
     let client = bot_client()?;
-    // v7：`POST /v1/bots`，body 只带 name/scope/group_id —— 不需要引导令牌/请求头。
+    // `POST /v1/bots`，body 只带 name/scope/group_id —— 不需要引导令牌/请求头。
     let body = serde_json::to_string(&serde_json::json!({
         "name": bot_name,
         "scope": scope_norm,
@@ -341,7 +341,7 @@ pub async fn bot_create(
     })?;
 
     let now = db::now_ms();
-    // v7 服务端只给两把 token；bot_id 本地从 send_token 派生（稳定且唯一）。
+    // 服务端只给两把 token；bot_id 本地从 send_token 派生（稳定且唯一）。
     let bot_id = if created.bot_id.is_empty() {
         format!("bot_{}", created.send_token.chars().take(16).collect::<String>())
     } else { created.bot_id.clone() };
@@ -370,7 +370,7 @@ pub async fn bot_create(
     let persist = tokio::task::spawn_blocking(move || -> Result<(), String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::save_bot(&dbc, &record).map_err(|e| format!("保存机器人失败：{e}"))?;
-        // v6：个人机器人当场进会话列表（像联系人一样），哪怕还没收到第一条通知。
+        // 个人机器人当场进会话列表（像联系人一样），哪怕还没收到第一条通知。
         if let Some(cid) = conv_id_for_new {
             db::ensure_conversation(&dbc, &cid, "single", &format!("{} · 机器人", bot_name_for_conv), None)
                 .map_err(|e| format!("创建机器人会话失败：{e}"))?;
@@ -411,7 +411,7 @@ pub async fn bot_list(state: State<'_, Arc<AppState>>) -> Result<Vec<BotView>, S
     Ok(records.iter().map(BotView::from).collect())
 }
 
-/// v6：免打扰（只影响系统通知/任务栏闪烁，不影响进会话与未读角标）。
+/// 免打扰（只影响系统通知/任务栏闪烁，不影响进会话与未读角标）。
 #[tauri::command(async)]
 pub async fn bot_set_dnd(
     state: State<'_, Arc<AppState>>,
@@ -461,7 +461,7 @@ pub async fn bot_set_status(
             "机器人不存在",
         ));
     };
-    // v7 极简协议：服务端只有 DELETE（撤销）= hook 立即失效；
+    // 极简协议：服务端只有 DELETE（撤销）= hook 立即失效；
     // pause/resume 只是本机开关（轮询时不拉 paused 的机器人），不再问服务端。
     if next == "revoked" {
         let client = bot_client()?;
@@ -513,7 +513,7 @@ pub async fn bot_set_status(
 
 /// 删除机器人（**先远端撤销、成功后才清本地**）。
 ///
-/// 审计 v6 P2：此前「本地先删、远端撤销尽力而为并吞掉失败」⇒
+/// 审计：此前「本地先删、远端撤销尽力而为并吞掉失败」⇒
 /// 远端 token 可能仍有效（谁拿着旧 hook 还能发），而本地已经没有记录了，
 /// 用户既看不到也重试不了。现在顺序反过来：远端失败 ⇒ 报错 + 本地保留 ⇒ 可重试。
 #[tauri::command(async)]
@@ -624,7 +624,7 @@ async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str) -> Result<BotPullOutcome
         ));
     }
     let client = bot_client()?;
-    // v7：GET /pull/<client_token>，认证在 URL，不要 header/body。
+    // GET /pull/<client_token>，认证在 URL，不要 header/body。
     let pull_url = format!("{}/pull/{}", record.server_url, record.client_token);
     let resp = client
         .get(&pull_url)
@@ -679,7 +679,7 @@ async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str) -> Result<BotPullOutcome
         } else {
             outcome.delivered += 1;
         }
-        // v7 极简协议：只有投递成功才 `GET /ack/<client_token>/<event_id>`；
+        // 极简协议：只有投递成功才 `GET /ack/<client_token>/<event_id>`；
         // 失败**不 ack** ⇒ 服务端继续留存，下一轮还能取到（本地 event_id 幂等挡重复）。
         // 没有 nack / 租约 / 幂等键 —— 按用户 2026-11-17 的简化决定。
         if ok {
@@ -699,7 +699,7 @@ async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str) -> Result<BotPullOutcome
             }
         }
     }
-    // 字段级回写统计（审计 v6 P2）：持锁读最新记录再改统计字段，
+    // 字段级回写统计（审计）：持锁读最新记录再改统计字段，
     // 不覆盖期间用户改的 DND / 状态；没取到事件也不推进 last_event_at。
     {
         let sd = s.clone();
@@ -736,7 +736,7 @@ async fn deliver_event(
     record: &BotRecord,
     entry: &BotInboxEntry,
 ) -> Result<(), String> {
-    // 审计 v6 P1：服务端契约写了 images，但客户端首版**没有**附件下载/校验/渲染链路。
+    // 审计：服务端契约写了 images，但客户端首版**没有**附件下载/校验/渲染链路。
     // 不能假装支持（把 metadata 当图片），也不能 NACK（会无限重投）⇒
     // 明确在正文里告知「图片未随通知送达」，并照常 ACK。
     let mut normalized = entry.clone();
@@ -750,7 +750,7 @@ async fn deliver_event(
     let entry = &normalized;
     match record.target.kind.as_str() {
         "inbox" | "personal" => {
-            // v6：个人机器人 = 本机假身份会话。消息落 messages + 会话列表，
+            // 个人机器人 = 本机假身份会话。消息落 messages + 会话列表，
             // sender_id = conv_id = `bot:<id>` ⇒ **不写 outbox** ⇒ 不上网络、不跨设备。
             let bot_id = record.bot_id.clone();
             let bot_name = record.name.clone();
@@ -758,7 +758,7 @@ async fn deliver_event(
             let sd = s.clone();
             let emitted = tokio::task::spawn_blocking(move || -> Result<Option<crate::state::MessageRecord>, String> {
                 let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
-                // ⚠️ 审计 v6 P1：去重标记、消息行、会话行必须**同一事务**。
+                // ⚠️ 审计：去重标记、消息行、会话行必须**同一事务**。
                 // 此前 append_inbox 成功但消息写失败时，重投会命中「已去重」直接 ACK
                 // ⇒ 聊天消息永久缺失（用户永远看不到那条通知）。
                 let tx = dbc.unchecked_transaction()
@@ -778,7 +778,7 @@ async fn deliver_event(
                     "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conv_id = ?1",
                     rusqlite::params![conv_id], |r| r.get(0),
                 ).unwrap_or(1);
-                // 审计 v6 P1：消息体必须存**全文**（服务端已限 8192 字节），
+                // 审计：消息体必须存**全文**（服务端已限 8192 字节），
                 // 会话列表的「显示几行」交给 UI 的 line-clamp —— 不能在落库时截断，
                 // 否则用户永远看不到全文（此前截 240 字且无全文入口）。
                 let content: String = e.text.clone();
@@ -806,7 +806,7 @@ async fn deliver_event(
             Ok(())
         }
         "group" => {
-            // 审计 v6 P1：群消息按 event_id 幂等 —— ACK 丢失导致租约重投时，
+            // 审计：群消息按 event_id 幂等 —— ACK 丢失导致租约重投时，
             // 同一条不能重复发进群。去重记录**独立于可裁剪的 inbox**（固定 200 条窗口）。
             let already = {
                 let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -839,7 +839,7 @@ async fn deliver_event(
             })
             .await
             .map_err(|e| format!("校验群失败：{e}"))??;
-            // v7.1：白名单群管理指令（第三方通过 Webhook 正文 action 触发）。
+            // 白名单群管理指令（第三方通过 Webhook 正文 action 触发）。
             // 只认 create_todo；其它 type 一律**当普通通知处理**（不执行、不报错），
             // 杜绝构造 action 触达踢人/任免/转让等危险路径。
             if let Some(action) = entry.action.as_ref() {
@@ -899,7 +899,7 @@ async fn deliver_event(
     }
 }
 
-/// v7 孤儿消息兜底（用户 2026-11-17）：本机已删但服务端 token 还在时，
+/// 孤儿消息兜底（用户 2026-11-17）：本机已删但服务端 token 还在时，
 /// 第三方发给它的消息会在服务端积压 7 天没人取。这里用墓碑 token 把残留**全部 ACK 丢弃**
 /// （只删服务端队列，本机不投递不入队），清到空 ⇒ 墓碑自删。
 /// 返回本轮丢弃的条数。
@@ -1100,7 +1100,7 @@ mod bot_cmd_tests {
         }
     }
 
-    /// 审计 v6 P2：URL parser 必须挡住 userinfo / query / fragment / 非法端口 / 路径。
+    /// 审计：URL parser 必须挡住 userinfo / query / fragment / 非法端口 / 路径。
     #[test]
     fn server_url_rejects_tricky_shapes() {
         for bad in [
@@ -1116,27 +1116,32 @@ mod bot_cmd_tests {
         }
         // 合法带端口 / IPv6 回环仍要过
         assert!(normalize_bot_server("https://hooks.example.com:8443").is_ok());
-        assert!(normalize_bot_server("http://[::1]:59995").is_ok());
+        assert!(normalize_bot_server("http://[::1]:59994").is_ok());
     }
 
-    /// 服务地址**必须 HTTPS**（回环除外）：bot 密钥与消息正文不能明文过网。
+    /// 服务地址接受 http/https（内网可直连 IP）；危险形状仍一律拒绝。
     #[test]
-    fn server_address_must_be_https_except_loopback() {
+    fn server_address_accepts_http_and_https() {
         assert_eq!(
             normalize_bot_server("https://hooks.example.com/").unwrap(),
             "https://hooks.example.com"
         );
-        // 本机联调放行 http
+        // 回环 http 可直连
         assert_eq!(
-            normalize_bot_server("http://127.0.0.1:59995").unwrap(),
-            "http://127.0.0.1:59995"
+            normalize_bot_server("http://127.0.0.1:59994").unwrap(),
+            "http://127.0.0.1:59994"
         );
         assert_eq!(
-            normalize_bot_server("http://localhost:59995").unwrap(),
-            "http://localhost:59995"
+            normalize_bot_server("http://localhost:59994").unwrap(),
+            "http://localhost:59994"
         );
-        // 非回环的 http 一律拒
-        assert!(normalize_bot_server("http://hooks.example.com").is_err());
+        // 非回环 http（内网 IP:端口）也放行 —— 服务端 59994 默认就是明文 HTTP
+        assert_eq!(
+            normalize_bot_server("http://192.168.1.10:59994").unwrap(),
+            "http://192.168.1.10:59994"
+        );
+        // 但危险形状仍然拒绝
+        assert!(normalize_bot_server("ftp://hooks.example.com").is_err());
         // 缺协议 / 空 / 垃圾
         assert!(normalize_bot_server("").is_err());
         assert!(normalize_bot_server("hooks.example.com").is_err());
@@ -1146,7 +1151,7 @@ mod bot_cmd_tests {
     /// 外部发送者拿到的 endpoint 与状态取值。
     #[test]
     fn endpoint_and_status_normalization() {
-        // v7：认证在 URL 路径里，一条 curl 可发（GET/POST/PUT 都兼容）。
+        // 认证在 URL 路径里，一条 curl 可发（GET/POST/PUT 都兼容）。
         assert_eq!(
             bot_hook_endpoint("https://hooks.example.com/", "tok_x"),
             "https://hooks.example.com/publish/tok_x"
@@ -1219,7 +1224,7 @@ mod bot_cmd_tests {
             .expect("没有调用投递函数 ⇒ 事件被直接 ACK 掉了");
         let ack = prod
             .find("client.get(&ack_url)")
-            .expect("没有 v7 ACK 调用（GET /ack/<client_token>/<id>）");
+            .expect("没有 ACK 调用（GET /ack/<client_token>/<id>）");
         assert!(
             deliver < ack,
             "ACK 必须写在投递之后（先落本地、再 ACK）",

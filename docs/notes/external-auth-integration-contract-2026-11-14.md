@@ -3,7 +3,7 @@
 > 日期：2026-11-14
 > 状态：活契约 + 就绪度清单；随实现演进更新
 >
-> **2026-11-17 变更（v6.1.0）**：① `issuer` / metadata 端点 / 授权与分享深链
+> **2026-11-17 变更**：① `issuer` / metadata 端点 / 授权与分享深链
 > **支持 HTTP**（含 `http://IP:端口` / localhost），端点是「与 issuer 同协议同源」，
 > 不再强制 HTTPS；② 确认页**默认全勾、一键允许**（此前是默认全关 + 同 RP 记忆预勾）。
 > 给接入方看的完整说明以 [`external-integration-guide-2026-11-14.md`](external-integration-guide-2026-11-14.md)

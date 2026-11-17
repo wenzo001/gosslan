@@ -111,7 +111,7 @@ export const api = {
   // ---------------- 通知机器人（Webhook bot） ----------------
   botCreate: (args: {
     name: string;
-    /** v6：personal / group（旧的 inbox 兼容，后端归一到 personal）。 */
+    /** personal / group（旧的 inbox 兼容，后端归一到 personal）。 */
     scope: string;
     targetGroupId?: string | null;
     targetGroupName?: string | null;
@@ -123,7 +123,7 @@ export const api = {
     invoke<BotView>("bot_set_status", { botId, status }),
   botDelete: (botId: string) => invoke<void>("bot_delete", { botId }),
   botPullOnce: (botId: string) => invoke<BotPullOutcome>("bot_pull_once", { botId }),
-  /** v6：免打扰开关（只影响系统通知/任务栏，不影响会话未读）。 */
+  /** 免打扰开关（只影响系统通知/任务栏，不影响会话未读）。 */
   botSetDnd: (botId: string, enabled: boolean) =>
     invoke<BotView>("bot_set_dnd", { botId, enabled }),
   // ---------------- 「我的网络」布局偏好（阶段 2） ----------------
@@ -141,7 +141,7 @@ export const api = {
    *
    * 载荷 = bot_id；界面据此决定要不要重读那个机器人的收件箱。
    */
-  /** v7.1：群机器人的白名单群管理指令（如 create_todo）。 */
+  /** 群机器人的白名单群管理指令（如 create_todo）。 */
   onBotGroupAction: (cb: (a: { type: string; groupId: string; title: string; botName: string }) => void) =>
     listen<{ type: string; groupId: string; title: string; botName: string }>("bot-group-action", (e) => cb(e.payload)),
   onBotInboxUpdated: (cb: (botId: string, count: number) => void) =>
