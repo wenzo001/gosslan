@@ -524,6 +524,43 @@ pub async fn bot_set_status(
     Ok(view)
 }
 
+/// 取回机器人的发送链接（兼容旧记录：早期 BotRecord 没存 publish_url）。
+///
+/// 服务端按 client_token 能查回 send_token ⇒ 旧机器人不用撤销重建也能在详情页拿到链接。
+#[tauri::command(async)]
+pub async fn bot_get_publish_url(
+    state: State<'_, Arc<AppState>>,
+    bot_id: String,
+) -> Result<String, String> {
+    let s = state.inner().clone();
+    let bid = bot_id.clone();
+    let (server, client_token) = tokio::task::spawn_blocking(move || -> Result<(String, String), String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let rec = db::load_bot(&dbc, &bid)
+            .map_err(|e| format!("读取机器人失败：{e}"))?
+            .ok_or_else(|| crate::error_codes::coded(crate::error_codes::BOT_NOT_FOUND, "机器人不存在"))?;
+        Ok((rec.server_url, rec.client_token))
+    })
+    .await
+    .map_err(|e| format!("读取任务中断：{e}"))??;
+    if client_token.is_empty() {
+        return Err(crate::error_codes::coded(crate::error_codes::BOT_NO_CREDENTIAL, "这个机器人已被撤销"));
+    }
+    let client = bot_client()?;
+    let url = format!("{}/v1/bot/{}", server.trim_end_matches('/'), client_token);
+    let resp = client.get(&url).send().await.map_err(|e| format!("连不上通知服务：{e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("通知服务没找到这个机器人（HTTP {}）", resp.status()));
+    }
+    let body: serde_json::Value = serde_json::from_str(&resp.text().await.unwrap_or_default())
+        .map_err(|e| format!("解析通知服务响应失败：{e}"))?;
+    let path = body.get("publish_url").and_then(|v| v.as_str()).unwrap_or("");
+    if path.is_empty() {
+        return Err("通知服务没返回发送链接".into());
+    }
+    Ok(format!("{}{}", server.trim_end_matches('/'), path))
+}
+
 /// 用户编辑机器人名字 / 头像（2026-11-17）。
 ///
 /// 字段级更新：一次 `spawn_blocking` 内持锁读-改-写，不与轮询统计互相覆盖；

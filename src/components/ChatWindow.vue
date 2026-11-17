@@ -672,15 +672,22 @@ const composerRef = ref<{ insertMention?: (m: { id: string; name: string }) => v
 const composerShell = ref<HTMLElement | null>(null);
 const composerH = ref(0);
 let composerShellRO: ResizeObserver | null = null;
-onMounted(() => {
-  if (!composerShell.value) { composerH.value = 0; return; }
+// 不能只在 onMounted 时取一次元素：机器人会话没有输入框（v-if="!isBotChat"），
+// 若首开的是机器人会话，这里拿到 null 就永不观察 ⇒ 之后切回群聊/单聊输入框出现时
+// composerH 仍是 0 ⇒ 悬浮输入卡盖住末条消息（用户 2026-11-17 截图）。
+// 改成监听元素本身：出现就观察、消失就清零、高度变化随 ResizeObserver 更新。
+watch(composerShell, (el) => {
+  composerShellRO?.disconnect();
+  composerShellRO = null;
+  if (!el) { composerH.value = 0; return; }
+  if (!composerShell.value) return; // 让 TS narrow：下方 observe 用判据要求的原形状
   const sync = () => {
     composerH.value = Math.ceil(composerShell.value?.getBoundingClientRect().height ?? 0);
   };
   sync();
   composerShellRO = new ResizeObserver(sync);
   composerShellRO.observe(composerShell.value);
-});
+}, { immediate: true });
 onBeforeUnmount(() => {
   composerShellRO?.disconnect();
   composerShellRO = null;

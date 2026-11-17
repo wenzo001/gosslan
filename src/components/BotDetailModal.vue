@@ -11,6 +11,7 @@ import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { t } from "@/i18n";
 import { MAX_BOT_NAME_CHARS } from "@/utils/validation";
+import { useClipboard } from "@/composables/useClipboard";
 import CharCounter from "@/components/ui/CharCounter.vue";
 import type { BotView } from "@/types";
 import BaseModal from "@/components/BaseModal.vue";
@@ -35,13 +36,13 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 
+const { copyContent } = useClipboard();
+/** 旧机器人创建时没存 publish_url ⇒ 打开详情时按 client_token 向服务端取回。 */
+const fetchedUrl = ref("");
+const publishUrl = computed(() => props.bot?.publishUrl || fetchedUrl.value);
 async function copy(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    app.toast(t("bot.copyDone"), "success");
-  } catch (e) {
-    app.toastError(e, t("bot.copyFailed"));
-  }
+  await copyContent("bot-publish-url", text); // VueUse legacy 回退，Tauri WebView 里也能复制
+  app.toast(t("bot.copyDone"), "success");
 }
 
 // 用户可编辑名字 / 头像（2026-11-17）：名字落 BotRecord，头像落 SVG data URL；
@@ -59,6 +60,12 @@ watch(
     editName.value = b?.name ?? "";
     editAvatar.value = b?.avatar ?? null;
     editServerUrl.value = b?.serverUrl ?? "";
+    fetchedUrl.value = "";
+    if (b && !b.publishUrl) {
+      void api.botGetPublishUrl(b.botId).then((u) => { fetchedUrl.value = u; }).catch(() => {
+        // 取不回就保持空白，不假装成功；用户可撤销重建。
+      });
+    }
   },
   { immediate: true },
 );
@@ -176,8 +183,8 @@ async function remove() {
       <div class="mt-3 space-y-1.5 border-t border-[var(--gosslan-divider)] pt-2">
         <code class="block select-text truncate font-mono text-caption" :title="bot.botId">{{ t("bot.idLine", { id: bot.botId }) }}</code>
         <div class="flex items-center gap-2">
-          <code class="min-w-0 flex-1 break-all font-mono text-meta text-[var(--gosslan-text-2)]" :title="bot.publishUrl">{{ bot.publishUrl }}</code>
-          <SecondaryBtn size="dense" shrink :aria-label="t('bot.copyEndpoint')" @click="copy(bot.publishUrl)">{{ t("bot.copyShort") }}</SecondaryBtn>
+          <code class="min-w-0 flex-1 break-all font-mono text-meta text-[var(--gosslan-text-2)]" :title="publishUrl">{{ publishUrl }}</code>
+          <SecondaryBtn size="dense" shrink :aria-label="t('bot.copyEndpoint')" @click="copy(publishUrl)">{{ t("bot.copyShort") }}</SecondaryBtn>
         </div>
       </div>
       </div>

@@ -127,6 +127,8 @@ export const api = {
   botSetDnd: (botId: string, enabled: boolean) =>
     invoke<BotView>("bot_set_dnd", { botId, enabled }),
   /** 用户编辑机器人名字 / 头像（头像传 SVG data URL；传 null 表示不改）。 */
+  /** 取回发送链接（兼容旧机器人：创建时没存 publishUrl）。 */
+  botGetPublishUrl: (botId: string) => invoke<string>("bot_get_publish_url", { botId }),
   botSetProfile: (
     botId: string,
     name: string,
