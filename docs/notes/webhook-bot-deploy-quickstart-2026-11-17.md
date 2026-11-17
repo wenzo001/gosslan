@@ -33,6 +33,18 @@ WEBHOOK_DATA_DIR=./webhook-data \
 node webhook.mjs
 ```
 
+**可选的内存 / 可达性参数**（有默认值，一般不用改；含义见下表）：
+
+| 参数 | 默认 | 作用 |
+|---|---|---|
+| `WEBHOOK_QUEUE_TTL_MS` | 7 天 | **未送达**消息最多留多久；用户临时离线，上线后仍可取到，超期才丢弃（最终期限） |
+| `WEBHOOK_DONE_RETENTION_MS` | 1 小时 | 已送达/已过期的事件留多久后**物理删除**（连附件一起清）⇒ 内存/磁盘不膨胀 |
+| `WEBHOOK_MAX_EVENTS_TOTAL` | 10000 | 全服事件硬上限；到了**明确回 503（背压）**，不静默接收后丢失 |
+| `WEBHOOK_INDEX_TTL_MS` | 7 天 | 幂等索引 / 限流桶空闲淘汰，防 Map 无限增长 |
+| `WEBHOOK_QUEUE_DEPTH_PER_BOT` | 500 | 单个机器人的队列深度上限 |
+
+服务端每 60 秒自动清理一次（不需要客户端在线）。
+
 验证：`curl http://127.0.0.1:59995/healthz` 返回 `"ok":true`，
 且 `"storage_writable":true`。
 
@@ -97,6 +109,8 @@ curl -X POST 'https://hooks.example.com/v1/hooks/<bot_id>/messages' \
 | 外部发送报 401 | 发送密钥错了，或机器人被删除/撤销（重建一个） |
 | 外部发送报 403 | 机器人在详情里被暂停了，恢复即可 |
 | 收不到通知 | ① 看 `/healthz` 的 `queued` 是否 >0（是 ⇒ 客户端没在线/没到 60s 轮询）；② 客户端是否开着；③ 详情里点「立即取件」验证链路 |
+| 发通知返回 503 `server_queue_full` | 服务端事件达到硬上限（默认 10000），等定期清理或调大 `WEBHOOK_MAX_EVENTS_TOTAL`；**不会静默丢消息** |
+| 离线很久后上线，还能收到吗 | 能：未送达消息最多留 7 天（`WEBHOOK_QUEUE_TTL_MS`），租约到期自动重投；超 7 天才丢弃 |
 | 想换发送密钥 | 没有单独轮换：删除机器人重建（旧 hook 立即失效） |
 
 ## 5. 复跑自检

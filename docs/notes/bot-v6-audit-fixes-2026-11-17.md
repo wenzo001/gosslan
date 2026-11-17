@@ -26,7 +26,7 @@
 
 | 审计发现 | 修法 |
 |---|---|
-| 删除/撤销语义不一致 | 统一：撤销 = 服务端 revoke + 个人会话删除；删除同口径；确认文案写明 hook 立即失效且不可逆 |
+| 删除/撤销语义不一致 | **先远端撤销、成功后才清本地**：远端失败 ⇒ 报错 + 本地记录保留（可重试），杜绝「本地删了远端 hook 还有效」；删除个人机器人同时删会话，与 `set_status(revoked)` 同口径 |
 | 整条 BotRecord 读改写并发覆盖 | 新增字段级原子更新：`update_bot_poll_stats` / `set_bot_dnd`，**同一把锁内读-改-写**；轮询统计不再覆盖用户刚改的 DND/状态；没事件不推进 `last_event_at` |
 | URL 解析用字符串 split | 改用标准 `url::Url::parse`，拒绝 userinfo / query / fragment / 路径 / 非法端口 / 非 HTTPS（回环 http 例外）；新增 7 个反例测试 |
 | scope 未知值默认个人 | 只认 `personal` / `group` / 旧 `inbox`，其它**明确拒绝** |
