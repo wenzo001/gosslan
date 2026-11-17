@@ -26,6 +26,8 @@ const props = defineProps<{
    * 用 `utils/botMessage.ts` 的 marked + DOMPurify 白名单渲染 Markdown。
    */
   isBot?: boolean;
+  /** v6：botmsg-md-* = Markdown 正文；其它机器人消息按纯文本（防止 # / * 被误解析）。 */
+  msgId?: string;
   /** 自己的消息气泡尖角朝右、对方朝左，指向头像。 */
   mine: boolean;
   /** 群成员名列表：正文里的 @name 按此高亮（不传不高亮）。 */
@@ -211,13 +213,20 @@ async function openLink(href: string) {
     <div ref="contentEl">
       <!-- v6 机器人正文：Markdown（输入已在 renderBotMessage 里消毒）。 -->
       <div
-        v-if="isBot"
+        v-if="isBot && msgId?.startsWith('botmsg-md-')"
         ref="bodyEl"
         data-msg-body=""
         class="bot-message-body gosslan-selectable break-words"
         :style="{ wordBreak: 'break-word', ...clampStyle }"
         v-html="renderBotMessage(content, 'markdown')"
       ></div>
+      <div
+        v-else-if="isBot"
+        ref="bodyEl"
+        data-msg-body=""
+        class="gosslan-selectable whitespace-pre-wrap break-words"
+        :style="{ wordBreak: 'break-word', ...clampStyle }"
+      >{{ content }}</div>
       <div
         v-else
         ref="bodyEl"
