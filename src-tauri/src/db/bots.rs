@@ -60,6 +60,9 @@ pub struct BotRecord {
     /// （与 relay 的 `token` 同一性质）。守卫的口径是「别用密钥命名」，不是
     /// 「这类字段不许存在」⇒ 改名，不加例外。
     pub client_token: String,
+    /// 外部系统发通知用的完整 URL（创建时生成，等价于 endpoint）。
+    #[serde(default)]
+    pub publish_url: String,
     pub target: BotTarget,
     /// `active` / `paused` / `revoked`。
     pub status: String,
