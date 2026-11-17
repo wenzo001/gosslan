@@ -798,7 +798,7 @@ useEventListener(document, "click", closeFriendMenu);
           >
             <AvatarBox
               class="h-10 w-10 shrink-0 ring-2 ring-[var(--gosslan-primary)]"
-              :id="b.botId"
+              :id="`bot:${b.botId}`"
               :src="b.avatar"
             />
             <span class="min-w-0 flex-1 text-left">

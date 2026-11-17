@@ -58,6 +58,8 @@ const emit = defineEmits<{
   (e: "sync-history"): void;
 }>();
 
+/** 机器人是单向通知，没有「共享目录」（用户 2026-11-17）。 */
+const isBot = computed(() => props.conv?.id.startsWith("bot:") ?? false);
 const unreadOutside = computed(() => props.unreadTotal ?? 0);
 /** 蓝色徽标的数字。与会话列表那枚同源（`chat.openTodoByConv`），不在这再算一遍。 */
 const openTasks = computed(() => props.openTasks ?? 0);
@@ -210,7 +212,7 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
            而那个弹窗里本来就有改名输入框 + 保存按钮 ⇒ 同一件事两个入口、还多一枚图标。
            改名能力没有消失，只是不再在这里重复一次。 -->
       <button
-        v-if="!isGroup"
+        v-if="!isGroup && !isBot"
         class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         :title="t('chat.header.share')" :aria-label="t('chat.header.share')"
         @click="emit('open-share')"

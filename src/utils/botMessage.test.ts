@@ -327,3 +327,53 @@ test("机器人会话展示：无在线状态、头像常亮、通讯录可见�
   assert.ok(modal.includes('api.botSetProfile('), "详情页没有保存资料入口");
   assert.ok(modal.includes('AvatarPresetDialog'), "详情页没有头像选择器");
 });
+
+test("机器人会话是只读通知流：头像下 tag、无输入框/共享目录、专用空态", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const read = (p: string) => readFileSync(join(repoRoot, p), "utf8");
+  const item = read("src/components/conversation/ConversationListItem.vue");
+  const chat = read("src/components/ChatWindow.vue");
+  const header = read("src/components/chat/ChatHeader.vue");
+  const modal = read("src/components/BotDetailModal.vue");
+  const api = read("src/api/index.ts");
+  const rust = read("src-tauri/src/commands/bots.rs");
+
+  // tag 在头像下方，不再贴着名字（用户 2026-11-17）
+  assert.ok(item.includes('-bottom-1 left-1/2'), "机器人标记没移到头像下方");
+  assert.ok(!/ml-1[^>]*bot\.listBadge/.test(item), "名字后面还贴着机器人标记");
+  // 单向通知流：整块输入框（含「不是好友」提示）不渲染；共享目录也不渲染
+  assert.ok(chat.includes('v-if="!isBotChat"'), "机器人会话还渲染输入框外壳");
+  assert.ok(chat.includes('chat.activeConv?.startsWith("bot:")'), "没识别机器人会话");
+  assert.ok(header.includes('v-if="!isGroup && !isBot"'), "机器人会话还有共享目录入口");
+  // 空态兜底
+  assert.ok(chat.includes("isBotChat ? t('bot.emptyChat')"), "机器人空消息没有专用兜底文案");
+  // 资料编辑含地址（bot_id 创建后不可变）
+  assert.ok(rust.includes('server_url: Option<String>,') && rust.includes('rec.server_url = normalize_bot_server(&u)?;'), "地址编辑没做 URL 校验");
+  assert.ok(api.includes('serverUrl: string | null'), "API 没传地址");
+  assert.ok(modal.includes('editServerUrl.value.trim() || null'), "详情页没保存地址");
+});
+
+test("机器人会话是只读通知流：头像下 tag、无输入框/共享目录、专用空态", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const read = (p: string) => readFileSync(join(repoRoot, p), "utf8");
+  const item = read("src/components/conversation/ConversationListItem.vue");
+  const chat = read("src/components/ChatWindow.vue");
+  const header = read("src/components/chat/ChatHeader.vue");
+  const modal = read("src/components/BotDetailModal.vue");
+  const api = read("src/api/index.ts");
+  const rust = read("src-tauri/src/commands/bots.rs");
+
+  // tag 在头像下方，不再贴着名字（用户 2026-11-17）
+  assert.ok(item.includes('-bottom-1 left-1/2'), "机器人标记没移到头像下方");
+  assert.ok(!/ml-1[^>]*bot\.listBadge/.test(item), "名字后面还贴着机器人标记");
+  // 单向通知流：整块输入框（含「不是好友」提示）不渲染；共享目录也不渲染
+  assert.ok(chat.includes('v-if="!isBotChat"'), "机器人会话还渲染输入框外壳");
+  assert.ok(chat.includes('chat.activeConv?.startsWith("bot:")'), "没识别机器人会话");
+  assert.ok(header.includes('v-if="!isGroup && !isBot"'), "机器人会话还有共享目录入口");
+  // 空态兜底
+  assert.ok(chat.includes("isBotChat ? t('bot.emptyChat')"), "机器人空消息没有专用兜底文案");
+  // 资料编辑含地址（bot_id 创建后不可变）
+  assert.ok(rust.includes('server_url: Option<String>,') && rust.includes('rec.server_url = normalize_bot_server(&u)?;'), "地址编辑没做 URL 校验");
+  assert.ok(api.includes('serverUrl: string | null'), "API 没传地址");
+  assert.ok(modal.includes('editServerUrl.value.trim() || null'), "详情页没保存地址");
+});

@@ -184,9 +184,15 @@ const groupMembers = computed(() => {
         :id="conv.id"
         :src="conv.avatar"
       />
+      <!-- 机器人标识：放在头像下方（不贴名字），与常亮主色环一起构成专属样式。 -->
+      <span
+        v-if="isBot"
+        class="absolute -bottom-1 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-[var(--gosslan-primary-active)] px-1 text-micro leading-tight text-[var(--gosslan-on-primary)]"
+        :title="t('bot.listBadge')"
+      >{{ t("bot.listBadge") }}</span>
       <!-- 在线标识：群聊不显示；离线标灰半透 -->
       <span
-        v-if="online !== null"
+        v-if="online !== null && !isBot"
         class="absolute bottom-0 right-[-1px] h-2.5 w-2.5 rounded-full shadow-[0_0_0_2px_var(--gosslan-list)]"
         :class="online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
       ></span>
@@ -203,12 +209,6 @@ const groupMembers = computed(() => {
           :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'"
           :title="displayName"
         >
-          <!-- 机器人标识（用户 2026-11-17：列表上要有特殊样式）。 -->
-          <span
-            v-if="isBot"
-            class="ml-1 shrink-0 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-primary-soft)] px-1 text-micro text-[var(--gosslan-primary)]"
-            :title="t('bot.listBadge')"
-          >{{ t("bot.listBadge") }}</span>
           <!-- 置顶标识（微信同款位置：名字左侧）。纯本地偏好，对方不可见。 -->
           <Icon
             v-if="conv.pinned"
