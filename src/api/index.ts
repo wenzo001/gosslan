@@ -2,7 +2,7 @@
 
 import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, BotCreatedView, BotInboxEntry, BotPullOutcome, BotView, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, DeviceAuthRevokeOutcome, RpBindingInfo, RpKeyExportSummary, RpKeyImportReport, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, SharePrompt, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
+import type { AppSettings, BotCreatedView, BotPullOutcome, BotView, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, DeviceAuthRevokeOutcome, RpBindingInfo, RpKeyExportSummary, RpKeyImportReport, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, SharePrompt, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -111,18 +111,23 @@ export const api = {
   // ---------------- 通知机器人（Webhook bot） ----------------
   botCreate: (args: {
     name: string;
-    targetKind: string;
+    /** v6：personal / group（旧的 inbox 兼容，后端归一到 personal）。 */
+    scope: string;
     targetGroupId?: string | null;
     targetGroupName?: string | null;
     serverUrl: string;
+    /** 服务端级引导令牌（WEBHOOK_CLIENT_TOKEN）—— bot 自己的密钥由服务端生成。 */
     clientToken: string;
+    doNotDisturb?: boolean;
   }) => invoke<BotCreatedView>("bot_create", args),
   botList: () => invoke<BotView[]>("bot_list"),
   botSetStatus: (botId: string, status: string) =>
     invoke<BotView>("bot_set_status", { botId, status }),
   botDelete: (botId: string) => invoke<void>("bot_delete", { botId }),
-  botInbox: (botId: string) => invoke<BotInboxEntry[]>("bot_inbox", { botId }),
   botPullOnce: (botId: string) => invoke<BotPullOutcome>("bot_pull_once", { botId }),
+  /** v6：免打扰开关（只影响系统通知/任务栏，不影响会话未读）。 */
+  botSetDnd: (botId: string, enabled: boolean) =>
+    invoke<BotView>("bot_set_dnd", { botId, enabled }),
   // ---------------- 「我的网络」布局偏好（阶段 2） ----------------
   topologyLayoutLoad: () => invoke<string>("topology_layout_load"),
   topologyLayoutSave: (raw: string) => invoke<void>("topology_layout_save", { raw }),

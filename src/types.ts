@@ -1222,6 +1222,10 @@ export interface BotView {
   botId: string;
   name: string;
   serverUrl: string;
+  /** v6 作用域：personal（个人会话）/ group（群）。 */
+  scope: string;
+  /** v6 免打扰：只影响系统通知/任务栏闪烁，不影响进会话与未读角标。 */
+  doNotDisturb: boolean;
   target: BotTarget;
   /** `active` / `paused` / `revoked`。 */
   status: string;

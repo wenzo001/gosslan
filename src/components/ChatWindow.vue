@@ -23,6 +23,7 @@ import { useOpenProfile } from "@/composables/useOpenProfile";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import MessageItem from "@/components/MessageItem.vue";
+import BotDetailModal from "@/components/BotDetailModal.vue";
 import VirtualList from "@/components/VirtualList.vue";
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue";
 import GroupMemberPanel from "@/components/GroupMemberPanel.vue";
@@ -64,7 +65,7 @@ import {
   writeAnnounceSeen,
   type AnnounceSeenMap,
 } from "@/utils/announcementDismiss";
-import type { LinkState, MessageRecord, MsgKind, TodoFocusRequest } from "@/types";
+import type { BotView, LinkState, MessageRecord, MsgKind, TodoFocusRequest } from "@/types";
 import { createInitScope } from "@/utils/initScope";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
@@ -773,7 +774,26 @@ const { openProfile } = useOpenProfile({
     if (isGroup.value) membersOpen.value = true;
   },
 });
-function openSenderProfile(senderId: string) {
+/** v6：机器人详情（点机器人消息头像/会话里点机器人进这里，不是好友资料页）。 */
+const botDetail = ref<BotView | null>(null);
+const botDetailOpen = ref(false);
+
+async function openSenderProfile(senderId: string) {
+  // 机器人消息 sender_id = `bot:<bot_id>`（本机假身份，见 commands/bots.rs）。
+  // ⚠️ 必须先拦：否则会走 openProfile 的「不是好友」兜底 ⇒ 弹个没用的提示。
+  if (senderId.startsWith("bot:")) {
+    const botId = senderId.slice("bot:".length);
+    try {
+      const bots = await api.botList();
+      const found = bots.find((b) => b.botId === botId) ?? null;
+      botDetail.value = found;
+      botDetailOpen.value = !!found;
+      if (!found) app.toast(t("bot.notFound"), "info");
+    } catch (e) {
+      app.toastError(e, t("bot.listFailed"));
+    }
+    return;
+  }
   openProfile(senderId);
 }
 
@@ -2438,5 +2458,14 @@ function retryHistory() {
     />
 
     <!-- 图片相册预览（会话内全部图片，左右箭头 / 键盘 ←→ 切换） -->
+
+    <!-- v6：机器人详情（配置 / 免打扰 / 立即取件 / 删除）—— 点机器人消息头像进这里 -->
+    <BotDetailModal
+      :open="botDetailOpen"
+      :bot="botDetail"
+      @close="botDetailOpen = false"
+      @deleted="botDetailOpen = false; botDetail = null"
+      @changed="(b: BotView) => (botDetail = b)"
+    />
   </div>
 </template>

@@ -1,5 +1,8 @@
 # 通知机器人 v6 重构方案（2026-11-16）
 
+> **状态（2026-11-17）：v6 已实施**，对应版本 **6.0.0**。接入指南见
+> `docs/notes/webhook-bot-integration-guide-2026-11-16.md`。
+>
 > 用户诉求：机器人要像**联系人**一样在通讯录/会话里；个人 bot 从「加好友」入口创建，
 > 群 bot 从群成员面板由**群主/管理员**添加；创建时顺便配好全部（含中转地址与密钥），
 > 点机器人详情可看配置/密钥/删除；设置里不再堆机器人配置；服务端配合做到
@@ -62,8 +65,9 @@ pub struct BotRecord {
 1. **创建时服务端生成两把密钥**（现在已经是：`send_secret` / `client_secret`）⇒ UI
    不再让用户填密钥，只让用户填中转地址（或选预设）⇒「配置简单」。
 2. `target` 扩展为 `{ kind: "personal" | "group", group_id?: string }`（兼容旧 inbox/group）。
-3. **文本长度上限**：`WEBHOOK_MAX_TEXT_BYTES`（默认 8192）已存在；文档写清楚
-   Markdown 也算这个上限（按 UTF-8 字节）。
+3. **文本长度上限**：`WEBHOOK_MAX_TEXT_BYTES`（默认 8192 UTF-8 字节）已存在；
+   **超长按字节截断**（不报错）—— 对发送方更友好（不会因超长整条丢），也不会把
+   长度信息泄露给外部。Markdown 与纯文本同一把尺子。
 4. `format`: `text` | `markdown`（已有）；其他值回落 text。
 5. **撤销即失效**：`POST /v1/client/bots/:id/status {status:"revoked"}` ⇒ 旧 send_secret
    立刻 401（已有）。群 bot 删除走同一条。
@@ -111,7 +115,7 @@ pub struct BotRecord {
 | revoked | 不可逆，hook 立即 401 | 会话保留历史消息但不再收新消息 |
 
 **边界清单**：
-- 文本上限：8192 UTF-8 字节（含 Markdown），超限服务端 413；
+- 文本上限：8192 UTF-8 字节（含 Markdown），超长按字节截断（不报错）；
 - 图片：v6 首版仍走 `image[]` 附件（不改）；Markdown 里的远程图片不自动加载；
 - 免打扰：只影响系统通知/任务栏闪烁，**不影响进会话与未读角标**；
 - 群 bot 删除：只删该群的 hook，不影响其它群；个人 bot 删除：删会话 + hook 失效；

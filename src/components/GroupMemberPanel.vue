@@ -21,9 +21,34 @@ import { MAX_ANNOUNCEMENT_CHARS, MAX_GROUP_NAME_CHARS } from "@/utils/validation
 import CharCounter from "@/components/ui/CharCounter.vue";
 import type { Friend } from "@/types";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
+import BotSetupWizard from "@/components/BotSetupWizard.vue";
+import BotDetailModal from "@/components/BotDetailModal.vue";
+import { api } from "@/api";
+import type { BotView } from "@/types";
 import { useOpenProfile } from "@/composables/useOpenProfile";
 
 const { openProfile } = useOpenProfile();
+/** v6：群机器人向导（仅群主/管理员看得到入口，后端还会再挡一道）。 */
+const botWizardOpen = ref(false);
+/** v6：本群机器人列表 + 详情弹窗（群主/管理员可点进去改配置/删除）。 */
+const groupBots = ref<BotView[]>([]);
+const botDetail = ref<BotView | null>(null);
+const botDetailOpen = ref(false);
+
+async function loadGroupBots() {
+  try {
+    const all = await api.botList();
+    groupBots.value = all.filter((b) => b.scope === "group" && b.target.groupId === props.groupId);
+  } catch {
+    groupBots.value = [];
+  }
+}
+function openBotDetail(bot: BotView) {
+  botDetail.value = bot;
+  botDetailOpen.value = true;
+}
+// 每次打开面板 / 创建完一个机器人都重读（配置可能刚变）。
+watch(() => props.open, (v) => { if (v) void loadGroupBots(); }, { immediate: true });
 const props = defineProps<{
   open: boolean;
   groupId: string | null;
@@ -523,14 +548,23 @@ async function confirmAction() {
 
       <!-- 添加成员（群主/管理员）：切换出一列可选好友 -->
       <template v-if="canManage">
-        <button
-          v-if="!showAdd"
-          class="flex w-full items-center justify-center gap-1.5 rounded-[var(--gosslan-radius-lg)] border border-dashed border-[var(--gosslan-border)] py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="showAdd = true"
-        >
-          <Icon name="plus" class="h-4 w-4" />
-          {{ t("group.addMember") }}
-        </button>
+        <div v-if="!showAdd" class="space-y-2">
+          <button
+            class="flex w-full items-center justify-center gap-1.5 rounded-[var(--gosslan-radius-lg)] border border-dashed border-[var(--gosslan-border)] py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="showAdd = true"
+          >
+            <Icon name="plus" class="h-4 w-4" />
+            {{ t("group.addMember") }}
+          </button>
+          <!-- v6：添加群机器人（同样只有群主/管理员能操作） -->
+          <button
+            class="flex w-full items-center justify-center gap-1.5 rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-soft)] py-2 text-sm text-[var(--gosslan-primary)] transition hover:opacity-90"
+            @click="botWizardOpen = true"
+          >
+            <Icon name="sparkles" class="h-4 w-4" />
+            {{ t("bot.wizard.addGroup") }}
+          </button>
+        </div>
         <div v-else class="rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] p-2">
           <div class="mb-1 flex items-center justify-between px-1">
             <span class="text-xs font-medium text-[var(--gosslan-text-2)]">{{ t("group.selectFriends") }}</span>
@@ -564,7 +598,38 @@ async function confirmAction() {
             />
           </div>
         </div>
-      </template>
+      
+        <BotSetupWizard
+          :open="botWizardOpen"
+          scope="group"
+          :group-id="groupId"
+          :group-name="group?.name ?? null"
+          @close="botWizardOpen = false"
+          @created="() => { botWizardOpen = false; void loadGroupBots(); }"
+        />
+        <!-- v6：本群机器人列表（点进去看配置/免打扰/删除） -->
+        <div v-if="groupBots.length" class="space-y-1">
+          <div class="text-caption text-[var(--gosslan-text-2)]">{{ t("bot.group.listTitle") }}</div>
+          <button
+            v-for="b in groupBots"
+            :key="b.botId"
+            type="button"
+            class="tap-safe flex w-full items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1.5 text-left transition hover:bg-[var(--gosslan-hover)]"
+            @click="openBotDetail(b)"
+          >
+            <Icon name="sparkles" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-primary)]" />
+            <span class="min-w-0 flex-1 truncate" :title="b.name">{{ b.name }}</span>
+            <span class="text-caption text-[var(--gosslan-text-2)]">{{ b.status === "active" ? t("bot.status.active") : t("bot.status.paused") }}</span>
+          </button>
+        </div>
+        <BotDetailModal
+          :open="botDetailOpen"
+          :bot="botDetail"
+          @close="botDetailOpen = false"
+          @deleted="() => { botDetailOpen = false; botDetail = null; void loadGroupBots(); }"
+          @changed="(b: BotView) => { botDetail = b; void loadGroupBots(); }"
+        />
+</template>
 
       <!-- 退出群聊：群主须先转让后再退出（后端会拒绝群主直接退群） -->
       <button

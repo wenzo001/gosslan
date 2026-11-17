@@ -41,6 +41,12 @@ impl BotTarget {
 pub struct BotRecord {
     pub bot_id: String,
     pub name: String,
+    /// v6 作用域：`personal`（个人会话）或 `group`（群）。空串 = v5 老记录 ⇒ 读取时推导。
+    #[serde(default)]
+    pub scope: String,
+    /// v6：免打扰。默认关（每条通知都弹）。
+    #[serde(default)]
+    pub do_not_disturb: bool,
     /// 服务地址（`https://…`）。**强制 HTTPS**（本机调试开关除外）。
     pub server_url: String,
     /// 取件凭证（client token）。⚠️ **不进日志/诊断/列表响应**；撤销时清掉。
