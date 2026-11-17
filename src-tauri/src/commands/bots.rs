@@ -505,7 +505,11 @@ pub async fn bot_set_status(
     Ok(view)
 }
 
-/// 删除机器人（撤销 + 清本地记录与收件箱）。
+/// 删除机器人（**先远端撤销、成功后才清本地**）。
+///
+/// 审计 v6 P2：此前「本地先删、远端撤销尽力而为并吞掉失败」⇒
+/// 远端 token 可能仍有效（谁拿着旧 hook 还能发），而本地已经没有记录了，
+/// 用户既看不到也重试不了。现在顺序反过来：远端失败 ⇒ 报错 + 本地保留 ⇒ 可重试。
 #[tauri::command(async)]
 pub async fn bot_delete(
     state: State<'_, Arc<AppState>>,
@@ -516,31 +520,52 @@ pub async fn bot_delete(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::load_bot(&dbc, &bot_id).map_err(|e| format!("读取机器人失败：{e}"))?
     };
-    // 本地先清（本地清不掉就是真失败；服务端的撤销是尽力而为）。进阻塞池（R-18）。
-    {
-        let sd = s.clone();
-        let bid = bot_id.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), String> {
-            let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::delete_bot(&dbc, &bid).map_err(|e| format!("删除机器人失败：{e}"))?;
-            // 收件箱一起清掉：机器人没了，它的旧通知不该继续留在本机。
-            db::clear_inbox(&dbc, &bid).map_err(|e| format!("清空收件箱失败：{e}"))
-        })
-        .await
-        .map_err(|e| format!("删除任务中断：{e}"))??;
-    }
-    if let Some(rec) = record {
-        if !rec.client_token.is_empty() {
-            let client = bot_client()?;
-            let _ = client
-                .post(format!("{}/v1/client/bots/{bot_id}/status", rec.server_url))
-                .bearer_auth(&rec.client_token)
-                .header("content-type", "application/json")
-                .body(serde_json::to_string(&serde_json::json!({ "status": "revoked" })).unwrap_or_default())
-                .send()
-                .await;
+    let Some(rec) = record else {
+        return Err(crate::error_codes::coded(crate::error_codes::BOT_NOT_FOUND, "机器人不存在"));
+    };
+
+    // ① 先撤销远端（真正的「hook 失效」裁决方）。失败 ⇒ 报错，本地**不删**，可重试。
+    if !rec.client_token.is_empty() {
+        let client = bot_client()?;
+        let resp = client
+            .post(format!("{}/v1/client/bots/{bot_id}/status", rec.server_url))
+            .bearer_auth(&rec.client_token)
+            .header("content-type", "application/json")
+            .body(serde_json::to_string(&serde_json::json!({ "status": "revoked" })).unwrap_or_default())
+            .send()
+            .await
+            .map_err(|e| {
+                crate::error_codes::coded(
+                    crate::error_codes::BOT_STATUS_FAILED,
+                    format!("连不上通知服务，未能撤销 hook（本地记录已保留，可重试）：{e}"),
+                )
+            })?;
+        if !resp.status().is_success() {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::BOT_STATUS_FAILED,
+                format!(
+                    "通知服务拒绝了撤销（HTTP {}），本地记录已保留，可重试",
+                    resp.status()
+                ),
+            ));
         }
     }
+
+    // ② 远端确认撤销后才清本地：记录 + 收件箱 + 个人会话（与 set_status(revoked) 同口径）。
+    let is_personal = rec.target.kind != "group";
+    let sd = s.clone();
+    let bid = bot_id.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::delete_bot(&dbc, &bid).map_err(|e| format!("删除机器人失败：{e}"))?;
+        db::clear_inbox(&dbc, &bid).map_err(|e| format!("清空收件箱失败：{e}"))?;
+        if is_personal {
+            let _ = db::delete_conversation(&dbc, &format!("bot:{bid}"));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("删除任务中断：{e}"))??;
     Ok(())
 }
 
