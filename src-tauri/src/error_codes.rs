@@ -270,8 +270,6 @@ pub const RELAY_CONFIG_READ_FAILED: &str = "RELAY_CONFIG_READ_FAILED";
 pub const BOT_SERVER_INVALID: &str = "BOT_SERVER_INVALID";
 /// 通知机器人：没起名字。
 pub const BOT_NAME_REQUIRED: &str = "BOT_NAME_REQUIRED";
-/// 通知机器人：没填客户端令牌。
-pub const BOT_CLIENT_TOKEN_REQUIRED: &str = "BOT_CLIENT_TOKEN_REQUIRED";
 /// 通知机器人：投递目标不合法（只支持 inbox / group）。
 pub const BOT_TARGET_INVALID: &str = "BOT_TARGET_INVALID";
 /// 通知机器人：状态值不合法。

@@ -2064,12 +2064,13 @@ export const enUS: MessageDict = {
 
   // ---- Network topology ----
   "bot.wizard.groupTargetValue": "Deliver to group: {group}",
+  "bot.wizard.urlOnlyHint": "No token to fill in — just use the link after creation.",
+  "bot.wizard.intro": "Pick a name and the notification server URL (e.g. http://server:59994); tokens are generated for you and you get a ready-to-curl link.",
   "bot.wizard.addPersonal": "Add a bot",
   "bot.wizard.addPersonalHint": "Create a bot that receives notifications via Webhook (shows up like a contact)",
   "bot.wizard.addGroup": "Add group bot (Webhook)",
   "bot.wizard.personalTitle": "Add a bot",
   "bot.wizard.groupTitle": "Add a group bot",
-  "bot.wizard.intro": "Pick a name, enter the notification service URL and client token; the send endpoint and token are generated for you.",
   "bot.wizard.doneTitle": "Bot created",
   "bot.wizard.onceHint": "The send token is shown only once. Copy it to your sender now; it cannot be recovered.",
   "bot.wizard.curlTitle": "Send example (curl)",
@@ -2108,8 +2109,6 @@ export const enUS: MessageDict = {
   "bot.field.namePlaceholder": "e.g. CI notifications",
   "bot.field.server": "Notification service URL",
   "bot.field.serverPlaceholder": "https://hooks.example.com",
-  "bot.field.token": "Client token",
-  "bot.field.tokenPlaceholder": "the server WEBHOOK_CLIENT_TOKEN",
   "bot.target.inbox": "My inbox (recommended)",
   "bot.target.group": "A group (sent by this device)",
   "bot.status.active": "Running",

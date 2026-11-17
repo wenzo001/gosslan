@@ -74,8 +74,9 @@ pub fn normalize_bot_server(input: &str) -> Result<String, String> {
 }
 
 /// 外部发送者用的 endpoint（给用户复制的那条）。
-pub fn bot_hook_endpoint(server_url: &str, bot_id: &str) -> String {
-    format!("{}/v1/hooks/{bot_id}/messages", server_url.trim_end_matches('/'))
+/// 外部发送者用的 endpoint（v7：认证 token 就在 URL 路径里，一条 curl 可发）。
+pub fn bot_hook_endpoint(server_url: &str, send_token: &str) -> String {
+    format!("{}/publish/{send_token}", server_url.trim_end_matches('/'))
 }
 
 /// 群投递时的来源前缀（**发送者仍是网关设备**，只是加一个可见来源标记）。
@@ -160,19 +161,19 @@ fn bot_client() -> Result<reqwest::Client, String> {
         .map_err(|e| crate::error_codes::coded(crate::error_codes::BOT_HTTP_FAILED, format!("HTTP 客户端初始化失败：{e}")))
 }
 
+/// v7 极简协议：服务端只生成两把 token + publish_url（认证在 URL，不用 header）。
 #[derive(Deserialize)]
 struct ServerBotCreated {
+    #[serde(default)]
     bot_id: String,
+    #[serde(default)]
     name: String,
     #[serde(default)]
     target: BotTarget,
-    /// wire 名是 `send_secret` / `client_secret`（服务端的契约，见 `webhook-api.md`）
-    /// ⇒ 本地叫 `send_token` / `client_token`（与 relay 的 `token` 同一命名口径，
-    /// 也避开密钥边界守卫对 `secret` 命名的判定）。
-    #[serde(rename = "send_secret")]
     send_token: String,
-    #[serde(rename = "client_secret")]
     client_token: String,
+    #[serde(default)]
+    publish_url: String,
 }
 
 #[derive(Deserialize, Clone)]
@@ -180,9 +181,13 @@ struct ServerBotCreated {
 struct ServerEnvelope {
     #[serde(default)]
     schema: String,
+    /// v7 字段名是 `id`，旧版是 `event_id` —— 两个都收（本地统一用 event_id）。
+    #[serde(alias = "id")]
     event_id: String,
     #[serde(default)]
     text: String,
+    #[serde(default)]
+    title: String,
     #[serde(default)]
     format: String,
     #[serde(default)]
@@ -228,7 +233,6 @@ pub async fn bot_create(
     target_group_id: Option<String>,
     target_group_name: Option<String>,
     server_url: String,
-    client_token: Option<String>,
     do_not_disturb: Option<bool>,
 ) -> Result<BotCreatedView, String> {
     let server = normalize_bot_server(&server_url)?;
@@ -237,13 +241,6 @@ pub async fn bot_create(
         return Err(crate::error_codes::coded(
             crate::error_codes::BOT_NAME_REQUIRED,
             "请给机器人起个名字",
-        ));
-    }
-    let token = client_token.unwrap_or_default().trim().to_string();
-    if token.is_empty() {
-        return Err(crate::error_codes::coded(
-            crate::error_codes::BOT_CLIENT_TOKEN_REQUIRED,
-            "请填写通知服务的客户端令牌（服务端 WEBHOOK_CLIENT_TOKEN）",
         ));
     }
     // 审计 v6 P2：未知 scope **拒绝**，不能静默当成个人机器人
@@ -307,11 +304,14 @@ pub async fn bot_create(
     }
 
     let client = bot_client()?;
-    let body = serde_json::to_string(&serde_json::json!({ "name": bot_name, "target": target }))
-        .map_err(|e| format!("请求体序列化失败：{e}"))?;
+    // v7：`POST /v1/bots`，body 只带 name/scope/group_id —— 不需要引导令牌/请求头。
+    let body = serde_json::to_string(&serde_json::json!({
+        "name": bot_name,
+        "scope": scope_norm,
+        "group_id": target.group_id.clone().unwrap_or_default(),
+    })).map_err(|e| format!("请求体序列化失败：{e}"))?;
     let resp = client
-        .post(format!("{server}/v1/client/bots"))
-        .bearer_auth(&token)
+        .post(format!("{server}/v1/bots"))
         .header("content-type", "application/json")
         .body(body)
         .send()
@@ -338,8 +338,12 @@ pub async fn bot_create(
     })?;
 
     let now = db::now_ms();
+    // v7 服务端只给两把 token；bot_id 本地从 send_token 派生（稳定且唯一）。
+    let bot_id = if created.bot_id.is_empty() {
+        format!("bot_{}", created.send_token.chars().take(16).collect::<String>())
+    } else { created.bot_id.clone() };
     let record = BotRecord {
-        bot_id: created.bot_id.clone(),
+        bot_id: bot_id.clone(),
         name: if created.name.trim().is_empty() { bot_name } else { created.name },
         scope: scope_norm.to_string(),
         do_not_disturb: do_not_disturb.unwrap_or(false),
@@ -357,7 +361,7 @@ pub async fn bot_create(
     // 落库：写库失败 ⇒ 服务端那个机器人也一并撤销（别留一个孤儿机器人）。
     let s = state.inner().clone();
     let conv_id_for_new = if scope_norm == "personal" {
-        Some(format!("bot:{}", created.bot_id))
+        Some(format!("bot:{}", bot_id))
     } else { None };
     let bot_name_for_conv = record.name.clone();
     let persist = tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -374,13 +378,7 @@ pub async fn bot_create(
     .map_err(|e| format!("保存任务中断：{e}"))?;
     if let Err(e) = persist {
         // 尽力撤销：服务端留着这个机器人而本机没有记录 ⇒ 用户再也找不回来。
-        let _ = client
-            .post(format!("{server}/v1/client/bots/{}/status", created.bot_id))
-            .bearer_auth(&created.client_token)
-            .header("content-type", "application/json")
-            .body(serde_json::to_string(&serde_json::json!({ "status": "revoked" })).unwrap_or_default())
-            .send()
-            .await;
+        let _ = client.delete(format!("{server}/v1/bots/{bot_id}")).send().await;
         return Err(crate::error_codes::coded(
             crate::error_codes::BOT_CREATE_FAILED,
             e,
@@ -390,8 +388,10 @@ pub async fn bot_create(
     // ⚠️ 发送密钥**只在这里返回一次**：之后列表接口不再回显（前端要用户当场复制）。
     Ok(BotCreatedView {
         bot: view,
-        send_token: created.send_token,
-        endpoint: bot_hook_endpoint(&server, &created.bot_id),
+        send_token: created.send_token.clone(),
+        endpoint: if created.publish_url.is_empty() {
+            bot_hook_endpoint(&server, &created.send_token)
+        } else { format!("{}{}", server, created.publish_url) },
     })
 }
 
@@ -458,31 +458,26 @@ pub async fn bot_set_status(
             "机器人不存在",
         ));
     };
-    // 先问服务端（服务端才是**拒收**的裁决方；本机状态只是镜像）。
-    let client = bot_client()?;
-    let resp = client
-        .post(format!(
-            "{}/v1/client/bots/{bot_id}/status",
-            record.server_url
-        ))
-        .bearer_auth(&record.client_token)
-        .header("content-type", "application/json")
-        .body(serde_json::to_string(&serde_json::json!({ "status": next })).unwrap_or_default())
-        .send()
-        .await
-        .map_err(|e| {
-            crate::error_codes::coded(
+    // v7 极简协议：服务端只有 DELETE（撤销）= hook 立即失效；
+    // pause/resume 只是本机开关（轮询时不拉 paused 的机器人），不再问服务端。
+    if next == "revoked" {
+        let client = bot_client()?;
+        let resp = client
+            .delete(format!("{}/v1/bots/{bot_id}", record.server_url))
+            .send()
+            .await
+            .map_err(|e| {
+                crate::error_codes::coded(
+                    crate::error_codes::BOT_STATUS_FAILED,
+                    format!("连不上通知服务，撤销失败（本地已保留，可重试）：{e}"),
+                )
+            })?;
+        if !resp.status().is_success() {
+            return Err(crate::error_codes::coded(
                 crate::error_codes::BOT_STATUS_FAILED,
-                format!("连不上通知服务：{e}"),
-            )
-        })?;
-    let st = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if !st.is_success() {
-        return Err(crate::error_codes::coded(
-            crate::error_codes::BOT_STATUS_FAILED,
-            format!("服务端拒绝了这次状态变更（{st}）：{}", server_error_text(&text)),
-        ));
+                format!("服务端拒绝撤销（HTTP {}），本地已保留，可重试", resp.status()),
+            ));
+        }
     }
     record.status = next.to_string();
     if next == "revoked" {
@@ -528,10 +523,7 @@ pub async fn bot_delete(
     if !rec.client_token.is_empty() {
         let client = bot_client()?;
         let resp = client
-            .post(format!("{}/v1/client/bots/{bot_id}/status", rec.server_url))
-            .bearer_auth(&rec.client_token)
-            .header("content-type", "application/json")
-            .body(serde_json::to_string(&serde_json::json!({ "status": "revoked" })).unwrap_or_default())
+            .delete(format!("{}/v1/bots/{bot_id}", rec.server_url))
             .send()
             .await
             .map_err(|e| {
@@ -616,12 +608,10 @@ async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str) -> Result<BotPullOutcome
         ));
     }
     let client = bot_client()?;
-    let pull_url = format!("{}/v1/client/bots/{bot_id}/pull", record.server_url);
+    // v7：GET /pull/<client_token>，认证在 URL，不要 header/body。
+    let pull_url = format!("{}/pull/{}", record.server_url, record.client_token);
     let resp = client
-        .post(&pull_url)
-        .bearer_auth(&record.client_token)
-        .header("content-type", "application/json")
-        .body("{}")
+        .get(&pull_url)
         .send()
         .await
         .map_err(|e| {
@@ -672,49 +662,23 @@ async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str) -> Result<BotPullOutcome
         } else {
             outcome.delivered += 1;
         }
-        let ack_url = format!("{}/v1/client/bots/{bot_id}/ack", record.server_url);
-        let nack_url = format!("{}/v1/client/bots/{bot_id}/nack", record.server_url);
-        let (url, body) = if ok {
-            (
-                ack_url,
-                serde_json::json!({ "event_id": entry.event_id, "durable_receipt": entry.event_id }),
-            )
-        } else {
-            (
-                nack_url,
-                serde_json::json!({ "event_id": entry.event_id, "permanent": false, "error": "本地投递失败" }),
-            )
-        };
-        // ⚠️ 审计 v6 P1：ACK/NACK 的结果**不能吞掉**。
-        // 失败时服务端会认为没确认，租约到期重投 ⇒ 群消息可能重复、个人消息靠幂等兜住。
-        // 记一条日志并把 outcome 标记为「确认失败」，让上层日志/状态能看见。
-        match client
-            .post(url)
-            .bearer_auth(&record.client_token)
-            .header("content-type", "application/json")
-            .body(serde_json::to_string(&body).unwrap_or_default())
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => {}
-            Ok(resp) => {
-                outcome.failed += 1;
-                s.logger.info(
-                    "bot",
-                    format!(
-                        "event={} {} 被服务端拒绝（HTTP {}），将靠租约重投兜底",
-                        entry.event_id,
-                        if ok { "ACK" } else { "NACK" },
-                        resp.status()
-                    ),
-                );
-            }
-            Err(e) => {
-                outcome.failed += 1;
-                s.logger.info(
-                    "bot",
-                    format!("event={} {} 网络失败（{e}），将靠租约重投兜底", entry.event_id, if ok { "ACK" } else { "NACK" }),
-                );
+        // v7 极简协议：只有投递成功才 `GET /ack/<client_token>/<event_id>`；
+        // 失败**不 ack** ⇒ 服务端继续留存，下一轮还能取到（本地 event_id 幂等挡重复）。
+        // 没有 nack / 租约 / 幂等键 —— 按用户 2026-11-17 的简化决定。
+        if ok {
+            let ack_url = format!(
+                "{}/ack/{}/{}",
+                record.server_url, record.client_token, entry.event_id
+            );
+            match client.get(&ack_url).send().await {
+                Ok(resp) if resp.status().is_success() => {}
+                other => {
+                    // ack 失败不是灾难：服务端留存 ⇒ 下轮重投，本地幂等挡重复。
+                    s.logger.info(
+                        "bot",
+                        format!("event={} ack 未确认（{other:?}），下轮靠本地幂等兜底", entry.event_id),
+                    );
+                }
             }
         }
     }
@@ -1058,9 +1022,10 @@ mod bot_cmd_tests {
     /// 外部发送者拿到的 endpoint 与状态取值。
     #[test]
     fn endpoint_and_status_normalization() {
+        // v7：认证在 URL 路径里，一条 curl 可发（GET/POST/PUT 都兼容）。
         assert_eq!(
-            bot_hook_endpoint("https://hooks.example.com/", "bot_x"),
-            "https://hooks.example.com/v1/hooks/bot_x/messages"
+            bot_hook_endpoint("https://hooks.example.com/", "tok_x"),
+            "https://hooks.example.com/publish/tok_x"
         );
         assert_eq!(normalize_bot_status("active").unwrap(), "active");
         assert_eq!(normalize_bot_status("paused").unwrap(), "paused");
@@ -1128,8 +1093,8 @@ mod bot_cmd_tests {
             .find("deliver_event(&s, &record, &entry)")
             .expect("没有调用投递函数 ⇒ 事件被直接 ACK 掉了");
         let ack = prod
-            .find(".post(url)")
-            .expect("没有 ACK 调用");
+            .find("client.get(&ack_url)")
+            .expect("没有 v7 ACK 调用（GET /ack/<client_token>/<id>）");
         assert!(
             deliver < ack,
             "ACK 必须写在投递之后（先落本地、再 ACK）",

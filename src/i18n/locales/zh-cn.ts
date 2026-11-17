@@ -2113,12 +2113,13 @@ export const zhCN: MessageDict = {
 
   // ---- 网络拓扑（NetworkTopology）----
   "bot.wizard.groupTargetValue": "投递到群：{group}",
+  "bot.wizard.urlOnlyHint": "不用填任何令牌 —— 创建后拿到链接就能发通知。",
+  "bot.wizard.intro": "起个名字、填通知服务地址（如 http://服务器:59994）；密钥由服务端自动生成，创建后给你一条可直接 curl 的发送链接。",
   "bot.wizard.addPersonal": "添加机器人",
   "bot.wizard.addPersonalHint": "创建一个机器人，用 Webhook 接收通知（像联系人一样进会话）",
   "bot.wizard.addGroup": "添加群机器人（Webhook）",
   "bot.wizard.personalTitle": "添加机器人",
   "bot.wizard.groupTitle": "添加群机器人",
-  "bot.wizard.intro": "起个名字，填通知服务地址与客户端令牌；创建后会自动生成发送地址和密钥。",
   "bot.wizard.doneTitle": "机器人已创建",
   "bot.wizard.onceHint": "发送密钥只显示这一次。请立刻复制给发送方，之后无法找回。",
   "bot.wizard.curlTitle": "发送示例（curl）",
@@ -2157,8 +2158,6 @@ export const zhCN: MessageDict = {
   "bot.field.namePlaceholder": "例如 CI 通知",
   "bot.field.server": "通知服务地址",
   "bot.field.serverPlaceholder": "https://hooks.example.com",
-  "bot.field.token": "客户端令牌",
-  "bot.field.tokenPlaceholder": "服务端 WEBHOOK_CLIENT_TOKEN",
   "bot.target.inbox": "我的收件箱（推荐）",
   "bot.target.group": "某个群（由本机代发）",
   "bot.status.active": "运行中",
