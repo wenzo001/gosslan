@@ -1923,29 +1923,11 @@
       "size": 4172,
       "normalized_sha256": "f32ae0f33014eb54d7039f4d6d160da8146e4bc7f4d80340bcadc1aa244a8d71"
     },
-    "docs/notes/chat-scroll-audit-2026-10-25.md": {
-      "role": "index",
-      "sha256": "20c4b2c71cb01d90e5b5e5cbbf63ffa205f4d2751e0cdc9de9016c1c9b0aedc0",
-      "size": 22543,
-      "normalized_sha256": "20c4b2c71cb01d90e5b5e5cbbf63ffa205f4d2751e0cdc9de9016c1c9b0aedc0"
-    },
     "docs/notes/chat-scroll-audit-2026-10-27.md": {
       "role": "index",
       "sha256": "3d706dece03a6635044e18b8a20ba8c9f9334f2e9a49407f56d1a12cda6ccea6",
       "size": 46469,
       "normalized_sha256": "3d706dece03a6635044e18b8a20ba8c9f9334f2e9a49407f56d1a12cda6ccea6"
-    },
-    "docs/notes/chat-scroll-shake-2026-10-26.md": {
-      "role": "index",
-      "sha256": "964c6a2920bce7ccae5918951dccea54f8c47dbc3d2e8afce5461313798f8de6",
-      "size": 5699,
-      "normalized_sha256": "964c6a2920bce7ccae5918951dccea54f8c47dbc3d2e8afce5461313798f8de6"
-    },
-    "docs/notes/chat-scroll-whiteout-audit-2026-10-25.md": {
-      "role": "index",
-      "sha256": "90519fa498cc6a1934592df28f0b4bf63cc75edde378d4ccb5eeefff307f2b8c",
-      "size": 34901,
-      "normalized_sha256": "90519fa498cc6a1934592df28f0b4bf63cc75edde378d4ccb5eeefff307f2b8c"
     },
     "docs/notes/closedloop-audit-2026-10-26.md": {
       "role": "index",
@@ -2048,12 +2030,6 @@
       "sha256": "8221d9794792d3cc433f7e1693605efc38284c1ec640c8835528dec1a4a25ac6",
       "size": 32466,
       "normalized_sha256": "8221d9794792d3cc433f7e1693605efc38284c1ec640c8835528dec1a4a25ac6"
-    },
-    "docs/notes/feature-closure-34-handover-2026-11-14.md": {
-      "role": "index",
-      "sha256": "a0d54acc6c9eac5728ec299f6b7986e89f5812949ca5ecda34462bee853d82cf",
-      "size": 4249,
-      "normalized_sha256": "a0d54acc6c9eac5728ec299f6b7986e89f5812949ca5ecda34462bee853d82cf"
     },
     "docs/notes/feature-closure-async-audit-2026-11-13.md": {
       "role": "index",
@@ -2193,12 +2169,6 @@
       "size": 4312,
       "normalized_sha256": "a7ee2c525699aea0777adccca01423dd267b6b2a6a4bac1849d715fa64eca0ef"
     },
-    "docs/notes/ui-pulse-redesign/change-budget-acceptance-2026-11-08.md": {
-      "role": "index",
-      "sha256": "bbfa1db4dc57d29310c4bd95949fb21d81669b9d02a27aec787bc90186f7c206",
-      "size": 5100,
-      "normalized_sha256": "bbfa1db4dc57d29310c4bd95949fb21d81669b9d02a27aec787bc90186f7c206"
-    },
     "docs/notes/ui-pulse-redesign/decision-longpress-2026-11-07.md": {
       "role": "index",
       "sha256": "8926994aefb9b5da29973c38cc8dea9daa717e9756799e6635a9aca850fd6cc4",
@@ -2283,23 +2253,11 @@
       "size": 8063,
       "normalized_sha256": "293269c625a9ea460818de2ce8affef6d95d0a6e4186e6adddb8d6225d3a52b1"
     },
-    "docs/notes/zero-regression-execution-2026-11-02.md": {
-      "role": "index",
-      "sha256": "8230f4b121ac68a5111096a984597d8f43a385945f18307ec4c3be7dce01e074",
-      "size": 2932,
-      "normalized_sha256": "8230f4b121ac68a5111096a984597d8f43a385945f18307ec4c3be7dce01e074"
-    },
     "docs/protocol-invariants.md": {
       "role": "index",
       "sha256": "db36ac73135c28101028fdb8a846d1ec17ff98dcfa74b4515deaf9e071fe3b3c",
       "size": 153940,
       "normalized_sha256": "db36ac73135c28101028fdb8a846d1ec17ff98dcfa74b4515deaf9e071fe3b3c"
-    },
-    "docs/redesign-pulse/scope-and-stage1.md": {
-      "role": "index",
-      "sha256": "6b67bd9649cde2a0d18adec63d0850457f7cf403e55e70f7d84cf398a094e959",
-      "size": 27454,
-      "normalized_sha256": "6b67bd9649cde2a0d18adec63d0850457f7cf403e55e70f7d84cf398a094e959"
     },
     "docs/stability-roadmap.md": {
       "role": "index",

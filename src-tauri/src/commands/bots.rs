@@ -34,7 +34,7 @@ pub fn normalize_bot_server(input: &str) -> Result<String, String> {
     if raw.is_empty() {
         return Err(crate::error_codes::coded(
             crate::error_codes::BOT_SERVER_INVALID,
-            "请填写通知服务地址，例如 https://hooks.example.com",
+            "请填写通知服务地址，例如 http://你的服务器:59994",
         ));
     }
     // 审计 v6 P2：用**标准 URL parser**（此前是字符串 split，userinfo / 非法端口 /
@@ -480,6 +480,10 @@ pub async fn bot_set_status(
         }
     }
     record.status = next.to_string();
+    // 撤销：清 token 前先记墓碑 ⇒ 后台能清掉服务端残留的孤儿消息（本机再也不会拉这个 token）。
+    let tombstone = if next == "revoked" && !record.client_token.is_empty() {
+        Some((record.client_token.clone(), record.server_url.clone()))
+    } else { None };
     if next == "revoked" {
         // 撤销后不再保留取件凭证（它已经没有用途，留着只是风险）。
         record.client_token.clear();
@@ -492,6 +496,10 @@ pub async fn bot_set_status(
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::save_bot(&dbc, &rec).map_err(|e| format!("保存机器人状态失败：{e}"))?;
+        if let Some((token, url)) = tombstone {
+            db::add_bot_tombstone(&dbc, &token, &url)
+                .map_err(|e| format!("记录撤销墓碑失败：{e}"))?;
+        }
         if let Some(cid) = conv_to_drop { let _ = db::delete_conversation(&dbc, &cid); }
         Ok(())
     })
@@ -547,10 +555,15 @@ pub async fn bot_delete(
     let is_personal = rec.target.kind != "group";
     let sd = s.clone();
     let bid = bot_id.clone();
+    // 墓碑：万一删除前已有消息入队（或服务端清队列有延迟），记下 token 让后台清孤儿。
+    let tomb_token = rec.client_token.clone();
+    let tomb_url = rec.server_url.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
         db::delete_bot(&dbc, &bid).map_err(|e| format!("删除机器人失败：{e}"))?;
         db::clear_inbox(&dbc, &bid).map_err(|e| format!("清空收件箱失败：{e}"))?;
+        db::add_bot_tombstone(&dbc, &tomb_token, &tomb_url)
+            .map_err(|e| format!("记录删除墓碑失败：{e}"))?;
         if is_personal {
             let _ = db::delete_conversation(&dbc, &format!("bot:{bid}"));
         }
@@ -850,6 +863,63 @@ async fn deliver_event(
     }
 }
 
+/// v7 孤儿消息兜底（用户 2026-11-17）：本机已删但服务端 token 还在时，
+/// 第三方发给它的消息会在服务端积压 7 天没人取。这里用墓碑 token 把残留**全部 ACK 丢弃**
+/// （只删服务端队列，本机不投递不入队），清到空 ⇒ 墓碑自删。
+/// 返回本轮丢弃的条数。
+async fn purge_tombstoned_events(s: &Arc<AppState>) -> u32 {
+    let tombstones: Vec<db::BotTombstone> = {
+        let sd = s.clone();
+        match tokio::task::spawn_blocking(move || -> Result<Vec<db::BotTombstone>, String> {
+            let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::list_bot_tombstones(&dbc).map_err(|e| format!("读取墓碑失败：{e}"))
+        }).await {
+            Ok(Ok(v)) => v,
+            _ => return 0,
+        }
+    };
+    if tombstones.is_empty() { return 0; }
+    let Ok(client) = bot_client() else { return 0 };
+    let mut dropped = 0u32;
+    for t in tombstones {
+        let url = format!("{}/pull/{}", t.server_url.trim_end_matches('/'), t.client_token);
+        let events: Vec<serde_json::Value> = match client.get(&url).send().await {
+            Ok(r) if r.status().is_success() => {
+                let body: serde_json::Value = serde_json::from_str(&r.text().await.unwrap_or_default())
+                    .unwrap_or_default();
+                body.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default()
+            }
+            // 401 = 服务端 token 已被删（正常收敛）⇒ 墓碑可以清掉。
+            Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                let sd = s.clone(); let tok = t.client_token.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::remove_bot_tombstone(&dbc, &tok)
+                }).await;
+                continue;
+            }
+            _ => continue, // 网络抖动 ⇒ 下轮再试，不误删墓碑
+        };
+        for ev in &events {
+            let id = ev.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if id.is_empty() { continue; }
+            let ack = format!("{}/ack/{}/{}", t.server_url.trim_end_matches('/'), t.client_token, id);
+            if client.get(&ack).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
+                dropped += 1;
+            }
+        }
+        // 这个 token 已清空 ⇒ 删墓碑（下次不再拉）。
+        if events.is_empty() {
+            let sd = s.clone(); let tok = t.client_token.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::remove_bot_tombstone(&dbc, &tok)
+            }).await;
+        }
+    }
+    dropped
+}
+
 /// 后台轮询 worker：**每个启用中的机器人**定时去服务端取件。
 ///
 /// ## 为什么必须有它
@@ -896,6 +966,11 @@ pub fn spawn_bot_poller(state: &Arc<AppState>) -> tauri::async_runtime::JoinHand
                     }
                 }
             };
+            // 先清孤儿消息（本机已删但服务端残留的 token）——不让它们在服务端积压。
+            let purged = purge_tombstoned_events(&st).await;
+            if purged > 0 {
+                st.logger.info("bot", format!("已丢弃 {purged} 条已删除机器人的孤儿通知"));
+            }
             for rec in bots {
                 if rec.status != "active" || rec.client_token.is_empty() {
                     continue;
@@ -923,8 +998,21 @@ pub fn spawn_bot_poller(state: &Arc<AppState>) -> tauri::async_runtime::JoinHand
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        // 失败不轰炸：记一条，等下一轮（服务端有租约重投兜底）。
+                        // 失败不轰炸：日志 + 把原因写进 bot.last_error（详情可见）。
+                        // 否则用户只会「一直收不到」却不知道为什么（审计 P2）。
                         sd.logger.info("bot", format!("轮询取件失败 bot={bid}：{e}"));
+                        let sd2 = sd.clone();
+                        let bid2 = bid.clone();
+                        let reason = e.clone();
+                        let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                            let dbc = sd2.db.lock().unwrap_or_else(|x| x.into_inner());
+                            let mut rec = match db::load_bot(&dbc, &bid2) {
+                                Ok(Some(r)) => r,
+                                _ => return Ok(()),
+                            };
+                            rec.last_error = Some(reason.chars().take(200).collect());
+                            db::save_bot(&dbc, &rec).map_err(|x| format!("记录轮询错误失败：{x}"))
+                        }).await;
                     }
                 }
             }

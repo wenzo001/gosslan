@@ -314,3 +314,56 @@ pub fn mark_delivered(conn: &Connection, bot_id: &str, event_id: &str) -> Result
     crate::db::set_setting(conn, &delivered_key(bot_id), &value)?;
     Ok(true)
 }
+
+// ---------------- 已删除机器人的取件令牌墓碑（孤儿消息兜底） ----------------
+//
+// 场景（用户 2026-11-17）：本机删了机器人，但删除时服务端 DELETE 失败（离线/网络抖动）
+// ⇒ 服务端 token 还在 ⇒ 第三方还能发，消息在服务端积压 7 天没人取（无头消息）。
+// 解法：删除时把 client_token + server_url 存成墓碑；后台轮询时**也拉墓碑 token**，
+// 把服务端残留事件全部 ACK 丢弃（本机不投递不入队），清到空后墓碑自删。
+
+const TOMBSTONE_KEY: &str = "bot_tombstones";
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BotTombstone {
+    pub client_token: String,
+    pub server_url: String,
+    pub created_at: i64,
+}
+
+pub fn add_bot_tombstone(conn: &Connection, client_token: &str, server_url: &str) -> Result<()> {
+    if client_token.is_empty() { return Ok(()); }
+    let mut list: Vec<BotTombstone> = match crate::db::get_setting_checked(conn, TOMBSTONE_KEY)? {
+        Some(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    // 幂等：同一个 token 不重复记。上限 50（防手改膨胀），超了丢最旧。
+    if !list.iter().any(|t| t.client_token == client_token) {
+        list.insert(0, BotTombstone {
+            client_token: client_token.to_string(),
+            server_url: server_url.to_string(),
+            created_at: crate::db::now_ms(),
+        });
+        list.truncate(50);
+        let value = serde_json::to_string(&list)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(format!("序列化墓碑失败：{e}")))?;
+        crate::db::set_setting(conn, TOMBSTONE_KEY, &value)?;
+    }
+    Ok(())
+}
+
+pub fn list_bot_tombstones(conn: &Connection) -> Result<Vec<BotTombstone>> {
+    let Some(raw) = crate::db::get_setting_checked(conn, TOMBSTONE_KEY)? else { return Ok(vec![]) };
+    Ok(serde_json::from_str(&raw).unwrap_or_default())
+}
+
+pub fn remove_bot_tombstone(conn: &Connection, client_token: &str) -> Result<()> {
+    let mut list = list_bot_tombstones(conn)?;
+    let before = list.len();
+    list.retain(|t| t.client_token != client_token);
+    if list.len() == before { return Ok(()); }
+    let value = serde_json::to_string(&list)
+        .map_err(|e| rusqlite::Error::InvalidParameterName(format!("序列化墓碑失败：{e}")))?;
+    crate::db::set_setting(conn, TOMBSTONE_KEY, &value)
+}

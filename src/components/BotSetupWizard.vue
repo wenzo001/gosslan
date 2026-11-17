@@ -171,7 +171,6 @@ async function submit() {
     <div v-else class="space-y-3">
       <p class="text-meta leading-relaxed text-[var(--gosslan-text-2)]">{{ t("bot.wizard.intro") }}</p>
       <p class="text-caption text-[var(--gosslan-primary)]">{{ t("bot.wizard.urlOnlyHint") }}</p>
-      <p class="text-caption text-[var(--gosslan-primary)]">{{ t("bot.wizard.urlOnlyHint") }}</p>
       <div>
         <label class="mb-1 block text-caption text-[var(--gosslan-text-2)]" for="bot-name">{{ t("bot.field.name") }}</label>
         <input

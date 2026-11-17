@@ -240,3 +240,21 @@ test("v6 收尾：机器人消息必须 emit 到聊天窗口，且中文正文�
     "必须按 format 区分 Markdown / 纯文本渲染",
   );
 });
+
+test("v7 孤儿消息兜底：删除/撤销写墓碑，轮询时清掉服务端残留", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
+  const db = readFileSync(join(repoRoot, "src-tauri", "src", "db", "bots.rs"), "utf8");
+
+  // 墓碑存储存在且有上限（防膨胀）
+  assert.ok(db.includes("pub fn add_bot_tombstone("), "缺墓碑存储");
+  assert.ok(db.includes("list.truncate(50)"), "墓碑必须有上限（防膨胀）");
+  // 删除与撤销都写墓碑
+  const del = rust.slice(rust.indexOf("pub async fn bot_delete("), rust.indexOf("pub async fn bot_pull_once("));
+  assert.ok(del.includes("add_bot_tombstone("), "删除机器人没写墓碑 ⇒ 服务端残留会积压 7 天");
+  const status = rust.slice(rust.indexOf("pub async fn bot_set_status("), rust.indexOf("pub async fn bot_delete("));
+  assert.ok(status.includes("add_bot_tombstone("), "撤销机器人没写墓碑");
+  // 轮询里清孤儿（拉墓碑 token + ack 丢弃）
+  assert.ok(rust.includes("purge_tombstoned_events("), "轮询没清孤儿消息");
+  assert.ok(rust.includes("/ack/"), "孤儿消息必须 ACK 丢弃（不是只拉不算）");
+});
