@@ -290,3 +290,40 @@ test("昵称共享选择按 RP 缓存（同一应用记住上次）", () => {
   assert.ok(auth.includes("nickname_default: self.remembered_nickname"), "prompt 没带回记忆值");
   assert.ok(comp.includes("allowNickname.value = p.nickname_default"), "确认页没用记忆值初始化开关");
 });
+
+test("v7 撤销用 client_token（BotRecord 不存 send_token；服务端两种都收）", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
+
+  // BotRecord 没有 send_token 字段 ⇒ 客户端只能传一直持有的 client_token。
+  // 服务端「两种 token 都收」由 relay-server 的 notify-selftest.mjs 钉住（CI 只 checkout 本仓，
+  // 这里不能读外部仓路径 —— 本地绿 CI 红的经典坑）。
+  assert.ok(!rust.includes('/v1/bots/{bot_id}'), "还有用 bot_id 撤销 ⇒ 远端 404，删除失败");
+  assert.ok(rust.includes('format!("{server}/v1/bots/{}", created.client_token)'), "创建回滚没传 client_token");
+  assert.ok(rust.includes('format!("{}/v1/bots/{}", record.server_url, record.client_token)'), "撤销没传 client_token");
+  assert.ok(rust.includes('format!("{}/v1/bots/{}", rec.server_url, rec.client_token)'), "删除没传 client_token");
+});
+
+test("机器人会话展示：无在线状态、头像常亮、通讯录可见、资料可编辑", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const list = readFileSync(join(repoRoot, "src", "components", "ConversationList.vue"), "utf8");
+  const item = readFileSync(join(repoRoot, "src", "components", "conversation", "ConversationListItem.vue"), "utf8");
+  const modal = readFileSync(join(repoRoot, "src", "components", "BotDetailModal.vue"), "utf8");
+  const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
+  const db = readFileSync(join(repoRoot, "src-tauri", "src", "db", "bots.rs"), "utf8");
+
+  // 机器人不是设备 ⇒ isOnline 必须返回 null（不显示状态点、不灰头像 = 一直亮着）
+  assert.ok(list.includes('if (id.startsWith("bot:")) return null;'), "机器人还被当成离线设备");
+  // 会话行专属样式：主色环 + 列表标记
+  assert.ok(item.includes('isBot ? \'ring-2 ring-[var(--gosslan-primary)]\''), "机器人头像没有常亮专属样式");
+  assert.ok(item.includes('v-if="isBot"'), "机器人列表缺专属标记");
+  // 通讯录分组（点起来源 = api.botList）
+  assert.ok(/\.botList\(\)/.test(list), "通讯录没拉机器人列表");
+  assert.ok(list.includes('bot:${b.botId}'), "通讯录点击没打开机器人会话");
+  // 资料编辑：后端字段 + 命令 + 会话表同步；前端入口
+  assert.ok(db.includes('pub avatar: String,'), "BotRecord 缺 avatar 字段");
+  assert.ok(rust.includes('pub async fn bot_set_profile('), "缺机器人资料编辑命令");
+  assert.ok(rust.includes('db::update_conversation_profile('), "改名后没同步会话列表");
+  assert.ok(modal.includes('api.botSetProfile('), "详情页没有保存资料入口");
+  assert.ok(modal.includes('AvatarPresetDialog'), "详情页没有头像选择器");
+});

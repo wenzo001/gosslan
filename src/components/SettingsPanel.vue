@@ -15,9 +15,7 @@ import FilesSection from "@/components/settings/FilesSection.vue";
 import NetworkSection from "@/components/settings/NetworkSection.vue";
 import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
-import AuthorizedAppsSection from "@/components/settings/AuthorizedAppsSection.vue";
-import ExternalShareSection from "@/components/settings/ExternalShareSection.vue";
-import RpKeyBackupSection from "@/components/settings/RpKeyBackupSection.vue";
+import IntegrationsSection from "@/components/settings/IntegrationsSection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import { t } from "@/i18n";
@@ -69,6 +67,7 @@ const SECTION_COMPONENTS: Record<MobileSectionKey, any> = {
   notification: NotificationSection,
   network: NetworkSection,
   storageFiles: StorageSection,
+  integrations: IntegrationsSection,
   about: AboutSection,
   reset: ResetSection,
 };
@@ -142,7 +141,7 @@ function selectSection(key: string) {
  * 一级列表的分组结构：每组包含多个条目，每条对应一个二级页。
  *
  * 2026-10-25 用户最终口径（第 4 版）：
- *  - 四组：**通用 / 网络 / 文件与存储 / 关于**；
+ *  - 五组：**通用 / 网络 / 文件与存储 / 第三方接入 / 关于**（2026-11-17 拆出第三方）；
  *  - 「文件与存储」自己一组，装着存储、文件、重置与恢复（用户原话：
  *    「所有的文件与存储、重置清除列表、重置与恢复都在那个分类里」）；
  *  - 「安全」并入「关于」；桌面端与移动端共用这一套（`SettingsWindow` 同序）。
@@ -259,12 +258,11 @@ watch(
               <StorageSection :active="open" :reload-token="reloadToken" />
               <FilesSection :active="open" :reload-token="reloadToken" />
             </template>
+            <!-- 第三方接入（已授权应用 / 外部分享 / RP 密钥备份）独立成页，不再挤在关于里。 -->
+            <IntegrationsSection v-else-if="mobileNav === 'integrations'" />
             <!-- 安全并入关于：同一页里先安全、后关于（与桌面分组顺序一致）。 -->
             <template v-else-if="mobileNav === 'about'">
               <SecuritySection />
-              <AuthorizedAppsSection />
-              <ExternalShareSection />
-              <RpKeyBackupSection />
               <AboutSection @dev-open="devDiagOpen = true" />
             </template>
             <ResetSection v-else-if="mobileNav === 'reset'" @restored="reloadToken++" />
@@ -288,9 +286,7 @@ watch(
       <FilesSection :active="open" :reload-token="reloadToken" />
       <ResetSection @restored="reloadToken++" />
       <SecuritySection />
-      <AuthorizedAppsSection />
-      <ExternalShareSection />
-      <RpKeyBackupSection />
+      <IntegrationsSection />
       <AboutSection @dev-open="devDiagOpen = true" />
     </div>
   </BaseModal>

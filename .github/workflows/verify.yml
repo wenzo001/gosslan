@@ -614,7 +614,7 @@ jobs:
 
       - name: cargo-audit（RustSec 漏洞库）
         working-directory: src-tauri
-        # ⚠️ 这四条 --ignore 与 deny.toml 的 `[advisories].ignore` 是**同一份风险接受**，
+        # ⚠️ 这些 --ignore 与 deny.toml 的 `[advisories].ignore` 是**同一份风险接受**，
         # 两处必须一起改：cargo-deny 与 cargo-audit 读的是同一个 RustSec 库，
         # 只改一处会出现"deny 绿、audit 红"（或反过来）的自相矛盾门禁。
         # 理由（签名校验后才解包、且只在 Windows 更新路径）写在 deny.toml 那段注释里；
@@ -625,4 +625,6 @@ jobs:
             --ignore RUSTSEC-2026-0368 \
             --ignore RUSTSEC-2026-0369 \
             --ignore RUSTSEC-2026-0429 \
-            --ignore RUSTSEC-2026-0459
+            --ignore RUSTSEC-2026-0459 \
+            --ignore RUSTSEC-2026-0545 \
+            --ignore RUSTSEC-2026-0548

@@ -138,8 +138,11 @@ test("兜底：粘贴入口走同一条 begin_share，且两端设置页都挂�
   assert.match(store, /api\.shareHandleLink\(url\)/, "store 没调门面");
   assert.match(store, /pending\.value = p;/, "拿到结果后没打开面板 ⇒ 用户点完像没发生");
 
+  // 2026-11-17：粘贴入口随其他第三方设置收进「第三方接入」tab。
+  const integrations = read("src/components/settings/IntegrationsSection.vue");
+  assert.match(integrations, /<ExternalShareSection \/>/, "第三方接入页没挂粘贴入口");
   for (const surface of ["src/components/SettingsWindow.vue", "src/components/SettingsPanel.vue"]) {
-    assert.match(read(surface), /<ExternalShareSection \/>/, `${surface} 没挂粘贴入口`);
+    assert.match(read(surface), /<IntegrationsSection \/>/, `${surface} 没挂第三方接入 tab`);
   }
 
   const section = read("src/components/settings/ExternalShareSection.vue");

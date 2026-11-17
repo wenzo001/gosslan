@@ -31,9 +31,7 @@ import FilesSection from "@/components/settings/FilesSection.vue";
 import NetworkSection from "@/components/settings/NetworkSection.vue";
 import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
-import AuthorizedAppsSection from "@/components/settings/AuthorizedAppsSection.vue";
-import ExternalShareSection from "@/components/settings/ExternalShareSection.vue";
-import RpKeyBackupSection from "@/components/settings/RpKeyBackupSection.vue";
+import IntegrationsSection from "@/components/settings/IntegrationsSection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import Icon from "@/components/ui/Icon.vue";
@@ -56,6 +54,7 @@ const DESKTOP_ICONS: Record<DesktopIconKey, IconName> = {
   bell: "bell-ring",
   wifi: "wifi",
   storage: "hard-drive",
+  link: "link2",
   info: "info",
   rotate: "rotate-ccw",
 };
@@ -141,7 +140,7 @@ const devDiagOpen = ref(false);
 /** 导航项：图标 + 文案。`icon` 用组件引用，避免在模板里写一长串 v-if。 */
 /**
  * 导航项按 **iOS 设置的概念**排序（2026-09-12 用户反馈「分类不合理」后重排）：
- * 个人资料 → 通用 → 通知 → 外观 → 网络与连接 → 文件与共享 → 存储 → 隐私与安全 → 关于 → 重置。
+ * 个人资料 → 通用 → 通知 → 外观 → 网络与连接 → 文件与共享 → 存储 → 第三方接入 → 关于 → 重置。
  *
  * ⚠️ 教训：导航项的**标签必须与它打开的分区内容一致**。此前 `general` 这一项
  * 写着「通知」，点开却是「语言 + 通知 + 共享目录」—— 用户看到"通知里第一项是语言、
@@ -160,8 +159,10 @@ const devDiagOpen = ref(false);
  *   现在标签也用**条目名**（`settings.item.about` / `settings.group.reset`，与移动端列表同一批键），
  *   与各自分区内的第一组标题一一对应（`settingsStructure` 守卫钉住）。
  *
- * 2026-11-07 用户「3 可以」：桌面左栏 = **9 个分区，与移动端同名同序**
- * （个人资料 / 通用 / 外观 / 聊天气泡 / 通知 / 网络 / 文件与存储 / 关于 / 重置）。
+ * 2026-11-17：第三方接入（已授权应用 / 外部分享 / RP 密钥备份）从「关于」拆出独立 tab。
+ *
+ * 2026-11-07 用户「3 可以」：桌面左栏 = **10 个分区，与移动端同名同序**
+ * （个人资料 / 通用 / 外观 / 聊天气泡 / 通知 / 网络 / 文件与存储 / 第三方接入 / 关于 / 重置）。
  * 原「4 容器」归并层退役：每个导航项就是它自己那一页；桌面独有的「文件」与「安全」
  * 仍留在各自归属的页里（文件 → 文件与存储；安全 → 关于），不另立导航项。
  */
@@ -174,7 +175,7 @@ const navItems = computed<{ key: SectionKey; label: string; icon: IconName }[]>(
 );
 
 /**
- * 侧栏分组：9 项归到 3 个组标题下（画板左栏的视觉分段）。
+ * 侧栏分组：10 项归到 3 个组标题下（画板左栏的视觉分段）。
  * 分组只影响视觉，不改变任何一页的归属。
  */
 const NAV_GROUPS: { labelKey: string; keys: RouteSectionKey[] }[] = [
@@ -183,7 +184,7 @@ const NAV_GROUPS: { labelKey: string; keys: RouteSectionKey[] }[] = [
     keys: ["profile", "general", "appearance", "chatStyle", "notifications"],
   },
   { labelKey: "settings.window.group.data", keys: ["network", "storageFiles", "reset"] },
-  { labelKey: "settings.window.group.other", keys: ["about"] },
+  { labelKey: "settings.window.group.other", keys: ["integrations", "about"] },
 ];
 const navByKey = computed(() => new Map(navItems.value.map((item) => [item.key, item])));
 const navGroups = computed(() =>
@@ -205,6 +206,7 @@ const SECTION_DESC: Record<RouteSectionKey, string> = {
   storage: "settings.window.desc.storageFiles",
   storageFiles: "settings.window.desc.storageFiles",
   security: "settings.window.desc.about",
+  integrations: "settings.window.desc.integrations",
   about: "settings.window.desc.about",
   reset: "settings.window.desc.reset",
 };
@@ -280,7 +282,7 @@ useEventListener(window, "keydown", onKeydown);
          左内边距与右侧留白/箭头位置不匹配。这里导航项为纯文字+图标（无展开箭头），
          一旦将来加展开子项，用同一个 `pr-2.5` 承接箭头即可保持对称。 -->
     <nav class="glass-1 flex w-[var(--gosslan-settings-nav-w)] shrink-0 flex-col gap-3 border-r border-[var(--gosslan-divider)] px-2.5 py-[var(--gosslan-card-pad)]">
-      <!-- 桌面 9 分区导航不需要可见返回；⌘[ / Alt+← 键盘返回仍保留。 -->
+      <!-- 桌面 10 分区导航不需要可见返回；⌘[ / Alt+← 键盘返回仍保留。 -->
       <div v-for="group in navGroups" :key="group.labelKey">
         <p class="px-2.5 pb-1 text-micro text-[var(--gosslan-text-2)]">{{ t(group.labelKey) }}</p>
         <button
@@ -347,13 +349,12 @@ useEventListener(window, "keydown", onKeydown);
               <StorageSection :active="true" :reload-token="reloadToken" />
               <FilesSection :active="true" :reload-token="reloadToken" />
             </div>
+            <div v-else-if="section === 'integrations'" class="space-y-5">
+              <IntegrationsSection />
+            </div>
             <div v-else-if="section === 'about'" class="space-y-5">
               <!-- 安全并入关于（用户 2026-10-25：桌面不再单独一组）。 -->
               <SecuritySection />
-              <AuthorizedAppsSection />
-              <!-- 外部分享的粘贴兜底：与设备认证的粘贴入口对称，但分成两个组件。 -->
-              <ExternalShareSection />
-              <RpKeyBackupSection />
               <AboutSection @dev-open="devDiagOpen = true" />
             </div>
             <div v-else-if="section === 'reset'" class="space-y-5">

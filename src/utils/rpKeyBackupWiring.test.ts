@@ -51,8 +51,12 @@ test("前端：门面三条 + 组件经门面调用（不裸 invoke）", () => {
   assert.match(sec, /api\.deviceAuthApplyImport\(/, "确认后才写库");
   assert.doesNotMatch(sec, /\binvoke\(/, "组件里裸 invoke ⇒ 绕开错误口径与类型");
 
+  // 2026-11-17：第三方三块收进「第三方接入」tab，由 IntegrationsSection 聚合 ——
+  // 判据跟着分两层：聚合页必须挂这块，两个外壳都必须挂聚合页（拆任一层就红）。
+  const integrations = read("src/components/settings/IntegrationsSection.vue");
+  assert.match(integrations, /<RpKeyBackupSection \/>/, "第三方接入页没挂导出/恢复入口");
   for (const surface of ["src/components/SettingsWindow.vue", "src/components/SettingsPanel.vue"]) {
-    assert.match(read(surface), /<RpKeyBackupSection \/>/, `${surface} 没挂导出/恢复入口`);
+    assert.match(read(surface), /<IntegrationsSection \/>/, `${surface} 没挂第三方接入 tab`);
   }
 });
 

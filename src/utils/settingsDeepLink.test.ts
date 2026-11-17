@@ -33,7 +33,7 @@ const MOBILE_KEYS = MOBILE_SECTIONS.map((s) => s.key) as string[];
 const ROUTE_KEYS = [...ROUTE_SECTIONS] as string[];
 const DESKTOP_NAV_KEYS = DESKTOP_NAV.map((n) => n.key) as string[];
 
-/** 桌面深链落点：合法路由先按旧键表归位，再交给 9 分区导航。 */
+/** 桌面深链落点：合法路由先按旧键表归位，再交给 10 分区导航。 */
 const desktopLanding = (key: string): string => {
   const resolved = resolveDesktopRouteKey(key).key;
   return (DESKTOP_LEGACY_LANDING as Record<string, string>)[resolved] ?? resolved;
@@ -44,7 +44,7 @@ test("两端分区差异清单：共有 / 仅桌面 / 仅移动逐项固定", ()
   const desktopOnly = ROUTE_KEYS.filter((key) => !MOBILE_KEYS.includes(key));
   const mobileOnly = MOBILE_KEYS.filter((key) => !ROUTE_KEYS.includes(key));
 
-  assert.deepEqual(common, ["profile", "general", "appearance", "chatStyle", "network", "storageFiles", "about", "reset"]);
+  assert.deepEqual(common, ["profile", "general", "appearance", "chatStyle", "network", "storageFiles", "integrations", "about", "reset"]);
   // files / storage / security 是桌面仍在用的旧路由键，移动端用别名接住（不是死键）。
   assert.deepEqual(desktopOnly, ["notifications", "files", "storage", "security"]);
   // chatStyle 2026-11-07 起已是桌面共用路由，只剩单数 notification 是移动端专属。
@@ -151,7 +151,7 @@ test("两个外壳消费解析器、渲染全部落点并给出提示（不白�
       `SettingsPanel 缺 ${key} 的渲染分支`,
     );
   }
-  // 桌面 9 分区同理（导航键就是渲染键）。
+  // 桌面 10 分区同理（导航键就是渲染键）。
   for (const key of DESKTOP_NAV_KEYS) {
     assert.ok(
       win.includes(`section === '${key}'`) || win.includes(`section === "${key}"`),

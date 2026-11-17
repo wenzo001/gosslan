@@ -27,9 +27,10 @@ const srcDir = join(import.meta.dirname, "..");
 const read = (rel: string) => readFileSync(join(srcDir, rel), "utf8");
 
 /**
- * 9 个桌面分区 → 导航标签键 → 该页渲染的分区组件。
+ * 10 个桌面分区 → 导航标签键 → 该页渲染的分区组件。
  *
- * 2026-11-07（用户 11-06「3 可以」）：桌面从 4 容器改为 **9 分区双栏**，
+ * 2026-11-17：第三方设置从「关于」拆出独立分区（integrations），桌面从 9 分区变 10 分区。
+ * 2026-11-07（用户 11-06「3 可以」）：桌面从 4 容器改为分区双栏，
  * 与移动端同名同序。桌面独有的「文件」归在文件与存储页、「安全」归在关于页。
  */
 const EXPECTED = [
@@ -44,6 +45,12 @@ const EXPECTED = [
     labelKey: "settings.item.storageFiles",
     // 存储 + 文件同属这一页（重置单独一页）。
     components: ["StorageSection", "FilesSection"],
+  },
+  {
+    key: "integrations",
+    labelKey: "settings.item.integrations",
+    // 2026-11-17：三块第三方设置从关于拆出，由一个聚合组件渲染。
+    components: ["IntegrationsSection"],
   },
   {
     key: "about",
@@ -72,12 +79,12 @@ test("每个顶层导航项都渲染了它承诺的分区组件（标签即内�
   }
 });
 
-test("桌面左栏 = 9 个分区，与移动端同名同序（用户 11-06「3 可以」）", () => {
+test("桌面左栏 = 10 个分区，与移动端同名同序（用户 11-06「3 可以」）", () => {
   // 移动端 9 项的顺序；桌面复数 notifications 对应移动单数 notification。
   const desktopOrder = MOBILE_SECTIONS.map((s) =>
     s.key === "notification" ? "notifications" : s.key,
   );
-  assert.equal(DESKTOP_NAV.length, 9, `桌面导航应为 9 项，实际 ${DESKTOP_NAV.length}`);
+  assert.equal(DESKTOP_NAV.length, 10, `桌面导航应为 10 项，实际 ${DESKTOP_NAV.length}`);
   assert.deepEqual(
     DESKTOP_NAV.map((n) => n.key),
     desktopOrder,
@@ -94,12 +101,22 @@ test("桌面左栏 = 9 个分区，与移动端同名同序（用户 11-06「3 �
 test("每个设置分区组件都被两个外壳引用（没有孤儿分区）", () => {
   const win = read("components/SettingsWindow.vue");
   const panel = read("components/SettingsPanel.vue");
+  const integrations = read("components/settings/IntegrationsSection.vue");
+  // 2026-11-17：第三方三块被 IntegrationsSection 聚合成独立 tab —— 外壳只引用聚合组件，
+  // 判据改为查「聚合组件确实聚合了它们」，否则把一块漏掉仍会绿（非空转）。
+  const aggregated = ["AuthorizedAppsSection", "ExternalShareSection", "RpKeyBackupSection"];
   const files = readdirSync(join(srcDir, "components", "settings")).filter((f) => f.endsWith("Section.vue"));
   for (const f of files) {
     const name = f.replace(".vue", "");
+    if (aggregated.includes(name)) {
+      assert.ok(integrations.includes(name), `IntegrationsSection 未聚合 ${name}`);
+      continue;
+    }
     assert.ok(win.includes(name), `SettingsWindow 未引用 ${name}`);
     assert.ok(panel.includes(name), `SettingsPanel 未引用 ${name}`);
   }
+  assert.ok(win.includes("IntegrationsSection"), "SettingsWindow 未引用 IntegrationsSection");
+  assert.ok(panel.includes("IntegrationsSection"), "SettingsPanel 未引用 IntegrationsSection");
   // 反向：外壳引用的分区组件都必须真实存在（改文件名时不会留死引用）
   for (const item of EXPECTED) {
     for (const component of item.components) {
@@ -108,11 +125,11 @@ test("每个设置分区组件都被两个外壳引用（没有孤儿分区）",
   }
 });
 
-test("移动端一级列表与桌面同一套 4 类，且「文件与存储」装着存储/文件/重置", () => {
+test("移动端一级列表与桌面同一套 5 类，且「文件与存储」装着存储/文件/重置", () => {
   assert.deepEqual(
     MOBILE_GROUPS.map((g) => g.key),
-    ["general", "network", "storageFiles", "about"],
-    "移动端分组必须与桌面同序：通用 / 网络 / 文件与存储 / 关于",
+    ["general", "network", "storageFiles", "integrations", "about"],
+    "移动端分组必须与桌面同序：通用 / 网络 / 文件与存储 / 第三方接入 / 关于",
   );
   // 「文件与存储」组里必须有两条：文件与存储、重置与恢复（用户 2026-10-25）。
   const group = MOBILE_GROUPS.find((g) => g.key === "storageFiles");
@@ -216,6 +233,7 @@ const MOBILE_SECTIONS_GOLDEN = [
   { key: "notification", titleKey: "settings.item.notification", group: "general" },
   { key: "network", titleKey: "settings.item.network", group: "network" },
   { key: "storageFiles", titleKey: "settings.item.storageFiles", group: "storageFiles" },
+  { key: "integrations", titleKey: "settings.item.integrations", group: "integrations" },
   { key: "about", titleKey: "settings.item.about", group: "about" },
   { key: "reset", titleKey: "settings.item.reset", group: "storageFiles" },
 ] as const;
@@ -234,6 +252,7 @@ const MOBILE_GROUPS_GOLDEN = [
   },
   { key: "network", titleKey: "settings.item.network", items: ["network"] },
   { key: "storageFiles", titleKey: "settings.item.storageFiles", items: ["storageFiles", "reset"] },
+  { key: "integrations", titleKey: "settings.item.integrations", items: ["integrations"] },
   { key: "about", titleKey: "settings.item.about", items: ["about"] },
 ] as const;
 
@@ -245,6 +264,7 @@ const MOBILE_COMPONENTS_GOLDEN = {
   notification: "NotificationSection",
   network: "NetworkSection",
   storageFiles: "StorageSection",
+  integrations: "IntegrationsSection",
   about: "AboutSection",
   reset: "ResetSection",
 } as const;
@@ -257,6 +277,7 @@ const DESKTOP_NAV_GOLDEN = [
   { key: "notifications", labelKey: "settings.item.notification", iconKey: "bell" },
   { key: "network", labelKey: "settings.item.network", iconKey: "wifi" },
   { key: "storageFiles", labelKey: "settings.item.storageFiles", iconKey: "storage" },
+  { key: "integrations", labelKey: "settings.item.integrations", iconKey: "link" },
   { key: "about", labelKey: "settings.item.about", iconKey: "info" },
   { key: "reset", labelKey: "settings.item.reset", iconKey: "rotate" },
 ] as const;
@@ -272,6 +293,7 @@ const ROUTE_SECTIONS_GOLDEN = [
   "storage",
   "storageFiles",
   "security",
+  "integrations",
   "about",
   "reset",
 ] as const;
@@ -291,6 +313,7 @@ const DEEP_LINK_MATRIX = [
   { routeKey: "storage", routeValid: true, desktop: "storageFiles", mobile: "storageFiles" },
   { routeKey: "storageFiles", routeValid: true, desktop: "storageFiles", mobile: "storageFiles" },
   { routeKey: "security", routeValid: true, desktop: "about", mobile: "about" },
+  { routeKey: "integrations", routeValid: true, desktop: "integrations", mobile: "integrations" },
   { routeKey: "about", routeValid: true, desktop: "about", mobile: "about" },
   { routeKey: "reset", routeValid: true, desktop: "reset", mobile: "reset" },
   { routeKey: "notification", routeValid: false, desktop: "notifications", mobile: "notification" },

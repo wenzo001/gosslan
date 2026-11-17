@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 设置 → 安全：已授权的外部应用清单 + 逐项撤销（Phase 2）。
+ * 设置 → 第三方接入：已授权的外部应用清单 + 逐项撤销（Phase 2）。
  * 后端只回公钥面（无密钥）；撤销置本地撤销态，服务端解绑仍由 RP 账号页负责。
  */
 import { onMounted, ref } from "vue";

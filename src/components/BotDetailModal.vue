@@ -6,14 +6,23 @@
   ⚠️ send token **不在这里回显**（只在创建时给一次）；要换就走「撤销后重建」。
 -->
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { t } from "@/i18n";
 import type { BotView } from "@/types";
 import BaseModal from "@/components/BaseModal.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
-import { ref } from "vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
+import AvatarPresetDialog from "@/components/settings/AvatarPresetDialog.vue";
+import {
+  AVATAR_PAIRS,
+  avatarPresetDataUrl,
+  avatarSeedFor,
+  parseAvatarPreset,
+  type AvatarSeed,
+} from "@/utils/avatarSeed";
 
 const props = defineProps<{ open: boolean; bot: BotView | null }>();
 const emit = defineEmits<{
@@ -23,6 +32,49 @@ const emit = defineEmits<{
 }>();
 
 const app = useAppStore();
+
+// 用户可编辑名字 / 头像（2026-11-17）：名字落 BotRecord，头像落 SVG data URL；
+// 个人机器人的会话行同步更新，列表里立刻看得见。
+const editing = ref(false);
+const editName = ref("");
+const editAvatar = ref<string | null>(null);
+const avatarDialogOpen = ref(false);
+const savingProfile = ref(false);
+watch(
+  () => props.bot,
+  (b) => {
+    editing.value = false;
+    editName.value = b?.name ?? "";
+    editAvatar.value = b?.avatar ?? null;
+  },
+  { immediate: true },
+);
+function currentSeed(): AvatarSeed {
+  return (
+    parseAvatarPreset(editAvatar.value) ??
+    avatarSeedFor(props.bot?.botId ?? null) ??
+    AVATAR_PAIRS[0]
+  );
+}
+function applyAvatar(seed: AvatarSeed) {
+  editAvatar.value = avatarPresetDataUrl(seed);
+  avatarDialogOpen.value = false;
+}
+async function saveProfile() {
+  if (!props.bot || savingProfile.value) return;
+  savingProfile.value = true;
+  try {
+    const updated = await api.botSetProfile(props.bot.botId, editName.value, editAvatar.value);
+    emit("changed", updated);
+    editing.value = false;
+    app.toast(t("bot.profileSaved"), "success");
+  } catch (e) {
+    app.toastError(e, t("bot.profileFailed"));
+  } finally {
+    savingProfile.value = false;
+  }
+}
+
 const pulling = ref(false);
 async function pullNow() {
   if (!props.bot || pulling.value) return;
@@ -91,10 +143,35 @@ async function remove() {
 <template>
   <BaseModal :open="open" :title="t('bot.detail.title')" width="max-w-md" @close="emit('close')">
     <div v-if="bot" class="space-y-3">
-      <div class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] p-[var(--gosslan-card-pad)]">
-        <div class="truncate text-title font-medium" :title="bot.name">{{ bot.name }}</div>
-        <div class="mt-0.5 truncate text-caption text-[var(--gosslan-text-2)]" :title="`${bot.scope} · ${bot.serverUrl}`">
-          {{ bot.scope === "group" ? t("bot.target.group") : t("bot.target.inbox") }} · {{ statusText }}
+      <div class="flex items-center gap-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] p-[var(--gosslan-card-pad)]">
+        <AvatarBox class="h-10 w-10 shrink-0" :id="bot.botId" :src="bot.avatar" />
+        <div class="min-w-0 flex-1">
+          <div class="truncate text-title font-medium" :title="bot.name">{{ bot.name }}</div>
+          <div class="mt-0.5 truncate text-caption text-[var(--gosslan-text-2)]" :title="`${bot.scope} · ${bot.serverUrl}`">
+            {{ bot.scope === "group" ? t("bot.target.group") : t("bot.target.inbox") }} · {{ statusText }}
+          </div>
+        </div>
+        <SecondaryBtn size="dense" @click="editing = !editing">{{ t("bot.action.editProfile") }}</SecondaryBtn>
+      </div>
+
+      <!-- 名字 / 头像编辑（用户 2026-11-17）：不改 server / token，不涉及线格式。 -->
+      <div v-if="editing" class="space-y-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-[var(--gosslan-card-pad)]">
+        <label class="block">
+          <span class="text-caption text-[var(--gosslan-text-2)]">{{ t("bot.field.name") }}</span>
+          <input
+            v-model="editName"
+            type="text"
+            class="mt-1 h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-bg)] px-3 text-body text-[var(--gosslan-text)]"
+            :aria-label="t('bot.field.name')"
+          />
+        </label>
+        <div class="flex items-center gap-2">
+          <AvatarBox class="h-10 w-10 shrink-0" :id="bot.botId" :src="editAvatar" />
+          <SecondaryBtn size="dense" @click="avatarDialogOpen = true">{{ t("bot.action.pickAvatar") }}</SecondaryBtn>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <PrimaryBtn size="dense" :disabled="savingProfile || !editName.trim()" @click="saveProfile">{{ t("common.save") }}</PrimaryBtn>
+          <SecondaryBtn size="dense" @click="editing = false">{{ t("common.cancel") }}</SecondaryBtn>
         </div>
       </div>
       <dl class="space-y-1 text-caption">
@@ -136,5 +213,11 @@ async function remove() {
         <SecondaryBtn size="dense" class="text-[var(--gosslan-danger-ink)]" @click="remove">{{ t("bot.action.delete") }}</SecondaryBtn>
       </div>
     </div>
+    <AvatarPresetDialog
+      :open="avatarDialogOpen"
+      :initial="currentSeed()"
+      @close="avatarDialogOpen = false"
+      @apply="applyAvatar"
+    />
   </BaseModal>
 </template>
