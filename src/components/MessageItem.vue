@@ -1950,6 +1950,7 @@ async function copyFileToClipboard() {
                 v-if="message.kind === 'text'"
             :content="message.content"
             :is-bot="isBotMessage"
+            :msg-id="message.msg_id"
             :bubble-style="bubbleStyle"
             :card-style="cardStyle"
             :clamped="isLongText"

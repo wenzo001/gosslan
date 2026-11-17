@@ -498,6 +498,12 @@ export const useChatStore = defineStore("chat", () => {
       },
       onMessage: (rec) => {
         enqueueMessage(rec);
+        // v6 机器人消息：conv_id = sender_id = `bot:<id>`（本机假身份）。
+        // · 只进内存队列让当前窗口显示新气泡；
+        // · **不走 maybeNotify**：通知摘要由 `bot-inbox-updated` 那条专用链路管
+        //   （只说 N 条、不放正文、遵守 dnd），这里再弹一次就等于正文泄漏 + 双通知；
+        // · **不发已读回执**：`bot:<id>` 不是设备，debounceMarkRead 会白白发 IPC。
+        if (rec.conv_id.startsWith("bot:")) return;
         if (rec.kind === "remind") {
           const p = parseRemind(rec);
           if (p?.nudge) handleIncomingNudge(rec);

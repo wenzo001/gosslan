@@ -204,3 +204,37 @@ test("v6：机器人消息走本机假身份会话，但不写 outbox；正文�
     "消息行没有识别机器人会话",
   );
 });
+
+test("v6 收尾：机器人消息必须 emit 到聊天窗口，且中文正文截断不许 panic", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
+  const at = rust.indexOf('"inbox" | "personal" =>');
+  const personal = rust.slice(at, rust.indexOf('"group" =>', at));
+
+  assert.ok(
+    personal.includes('emit("message-received"'),
+    "机器人消息落库后必须 emit message-received —— 否则已打开的聊天窗口不显示新消息（要手动切走再切回）",
+  );
+  assert.ok(
+    !personal.includes("&e.text[..PERSONAL_PREVIEW_MAX]"),
+    "正文截断用字节下标会落在 UTF-8 中文字符中间 ⇒ panic，后台 worker 整轮取件中断",
+  );
+  assert.ok(
+    personal.includes(".chars().take(PERSONAL_PREVIEW_MAX)"),
+    "必须按字符截断中文正文",
+  );
+
+  // 前端：机器人消息不能走普通消息的通知/回执（否则正文泄漏 + 双通知 + 白发给假设备）。
+  const store = readFileSync(join(repoRoot, "src", "stores", "useChatStore.ts"), "utf8");
+  assert.ok(
+    /if \(rec\.conv_id\.startsWith\("bot:"\)\) return;/.test(store),
+    "前端 onMessage 必须把 bot: 消息挡在 maybeNotify/已读回执之外",
+  );
+
+  // format 分路：botmsg-md-* 才按 Markdown 渲染（纯文本的 # 不该被误解析）。
+  const bubble = readFileSync(join(repoRoot, "src", "components", "message", "MessageTextBubble.vue"), "utf8");
+  assert.ok(
+    bubble.includes("botmsg-md-"),
+    "必须按 format 区分 Markdown / 纯文本渲染",
+  );
+});

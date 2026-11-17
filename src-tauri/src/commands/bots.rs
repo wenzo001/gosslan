@@ -708,19 +708,29 @@ async fn deliver_event(
             let bot_name = record.name.clone();
             let e = entry.clone();
             let sd = s.clone();
-            tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let emitted = tokio::task::spawn_blocking(move || -> Result<Option<crate::state::MessageRecord>, String> {
                 let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
                 if !db::append_inbox(&dbc, &bot_id, &e)
-                    .map_err(|x| format!("写入收件箱失败：{x}"))? { return Ok(()); }
+                    .map_err(|x| format!("写入收件箱失败：{x}"))? { return Ok(None); }
                 let conv_id = format!("bot:{bot_id}");
-                let msg_id = format!("botmsg-{}", e.event_id);
+                // msg_id 前缀携带 format（messages 表 schema 属 Frozen Core 不能加列）：
+                // `botmsg-md-*` = Markdown 正文，其它 = 纯文本。前端据此选渲染方式。
+                let msg_id = if e.format == "markdown" {
+                    format!("botmsg-md-{}", e.event_id)
+                } else {
+                    format!("botmsg-{}", e.event_id)
+                };
                 let ts = e.received_at;
                 let seq: i64 = dbc.query_row(
                     "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conv_id = ?1",
                     rusqlite::params![conv_id], |r| r.get(0),
                 ).unwrap_or(1);
-                let content = if e.text.len() > PERSONAL_PREVIEW_MAX {
-                    format!("{}…", &e.text[..PERSONAL_PREVIEW_MAX])
+                // ⚠️ 按**字符**截断，不能 `&str[..N]`（那是字节下标）——
+                // 中文一个字 3 字节，从第 240 字节切开会落在 UTF-8 码点中间 ⇒ panic，
+                // 而这在后台 worker 里等于整轮取件中断（用户什么都收不到）。
+                let content: String = if e.text.chars().count() > PERSONAL_PREVIEW_MAX {
+                    let head: String = e.text.chars().take(PERSONAL_PREVIEW_MAX).collect();
+                    format!("{head}…")
                 } else { e.text.clone() };
                 let rec = crate::state::MessageRecord {
                     id: 0, msg_id: msg_id.clone(), conv_id: conv_id.clone(),
@@ -732,8 +742,15 @@ async fn deliver_event(
                 db::insert_message(&dbc, &rec).map_err(|x| format!("写入机器人消息失败：{x}"))?;
                 db::touch_conversation(&dbc, &conv_id, "single", &format!("{} · 机器人", bot_name), None, &rec.content, 1)
                     .map_err(|x| format!("更新机器人会话失败：{x}"))?;
-                Ok(())
+                Ok(Some(rec))
             }).await.map_err(|x| format!("写入任务中断：{x}"))??;
+            // ⚠️ 必须 emit `message-received`：**只有** `bot-inbox-updated` 的话消息虽然
+            // 落了库，已打开的聊天窗口不会插入新气泡（要手动切走再切回才看得到）。
+            // 载荷是完整的 MessageRecord（与正常入站消息同形）；前端 onMessage 只把它
+            // enqueue 进内存队列，不会重复写库。
+            if let Some(rec) = emitted {
+                let _ = s.app.emit("message-received", &rec);
+            }
             Ok(())
         }
         "group" => {
