@@ -47,6 +47,10 @@ pub struct BotRecord {
     /// 免打扰。默认关（每条通知都弹）。
     #[serde(default)]
     pub do_not_disturb: bool,
+    /// 用户自定义的机器人头像（SVG data URL）。空 = 用 bot_id 种子默认脸。
+    /// 与 name 一样可在详情页编辑（用户 2026-11-17）。
+    #[serde(default)]
+    pub avatar: String,
     /// 服务地址（`https://…`）。**强制 HTTPS**（本机调试开关除外）。
     pub server_url: String,
     /// 取件凭证（client token）。⚠️ **不进日志/诊断/列表响应**；撤销时清掉。

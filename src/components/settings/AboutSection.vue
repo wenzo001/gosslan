@@ -2,11 +2,7 @@
 import { computed, onMounted } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
-import Icon from "@/components/ui/Icon.vue";
 
-/** 外部应用接入指南的 GitHub 地址（开发者在「关于」里一键打开）。 */
-const INTEGRATION_DOC_URL =
-  "https://github.com/wenzo001/gosslan/blob/main/docs/notes/external-integration-guide-2026-11-14.md";
 import UpdatePanel from "@/components/settings/UpdatePanel.vue";
 import AndroidUpdatePanel from "@/components/settings/AndroidUpdatePanel.vue";
 import { useClipboard } from "@/composables/useClipboard";
@@ -100,24 +96,6 @@ async function onFingerprintTap() {
           {{ t("common.copied") }}
         </span>
       </div>
-    </div>
-    <!-- 接入文档：外部应用开发者看的就是这一篇（GitHub 上可直接打开）。
-         用户 2026-11-16：「关于里面什么已授权应用分享链接，那两个我都不知道是干什么的。
-         你直接把接入文档的 GitHub 地址写在这个关于里面，就是直接可以跳转的」。 -->
-    <div class="settings-card-row mt-3">
-      <div class="text-sm text-[var(--gosslan-text)]">{{ t("settings.about.integrationDoc") }}</div>
-      <div class="mt-0.5 text-meta leading-relaxed text-[var(--gosslan-text-2)]">
-        {{ t("settings.about.integrationDocHint") }}
-      </div>
-      <a
-        class="mt-1 inline-flex items-center gap-1 break-all text-meta text-[var(--gosslan-primary)] hover:underline"
-        :href="INTEGRATION_DOC_URL"
-        target="_blank"
-        rel="noopener noreferrer"
-      >
-        <span class="font-mono">{{ INTEGRATION_DOC_URL }}</span>
-        <Icon name="external-link" class="h-3 w-3 shrink-0" />
-      </a>
     </div>
   </SettingsGroup>
 

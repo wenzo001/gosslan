@@ -7,7 +7,7 @@
  * 三份键集本来就不等价，不能合并成一份：
  *  · 移动端有 `chatStyle` 与单数 `notification`；
  *  · 独立设置窗口路由有复数 `notifications`（`chatStyle` 2026-11-07 起也进了桌面路由）；
- *  · 桌面左栏 9 个分区（与移动端同名同序，原 4 容器的归并层已退役）。
+ *  · 桌面左栏 10 个分区（与移动端同名同序，原 4 容器的归并层已退役）。
  * 任何“看起来可以合并”的改动都必须先过 `settingsStructure.test.ts` 的深链矩阵。
  */
 
@@ -19,6 +19,7 @@ export type MobileSectionKey =
   | "notification"
   | "network"
   | "storageFiles"
+  | "integrations"
   | "about"
   | "reset";
 
@@ -33,6 +34,7 @@ export type RouteSectionKey =
   | "storage"
   | "storageFiles"
   | "security"
+  | "integrations"
   | "about"
   | "reset";
 
@@ -44,6 +46,7 @@ export type DesktopIconKey =
   | "bell"
   | "wifi"
   | "storage"
+  | "link"
   | "info"
   | "rotate";
 
@@ -56,6 +59,7 @@ export const MOBILE_SECTIONS = [
   { key: "notification", titleKey: "settings.item.notification", group: "general" },
   { key: "network", titleKey: "settings.item.network", group: "network" },
   { key: "storageFiles", titleKey: "settings.item.storageFiles", group: "storageFiles" },
+  { key: "integrations", titleKey: "settings.item.integrations", group: "integrations" },
   { key: "about", titleKey: "settings.item.about", group: "about" },
   { key: "reset", titleKey: "settings.item.reset", group: "storageFiles" },
 ] as const satisfies readonly {
@@ -78,6 +82,7 @@ export const MOBILE_GROUPS = [
   },
   { key: "network", titleKey: "settings.item.network", items: ["network"] },
   { key: "storageFiles", titleKey: "settings.item.storageFiles", items: ["storageFiles", "reset"] },
+  { key: "integrations", titleKey: "settings.item.integrations", items: ["integrations"] },
   { key: "about", titleKey: "settings.item.about", items: ["about"] },
 ] as const satisfies readonly {
   key: string;
@@ -126,6 +131,7 @@ export const DESKTOP_ROUTE_TITLE_BY_KEY: Record<RouteSectionKey, string> = {
   storage: "settings.item.storageFiles",
   storageFiles: "settings.item.storageFiles",
   security: "settings.item.about",
+  integrations: "settings.item.integrations",
   about: "settings.item.about",
   reset: "settings.item.reset",
 };
@@ -185,12 +191,13 @@ export const ROUTE_SECTIONS = [
   "storage",
   "storageFiles",
   "security",
+  "integrations",
   "about",
   "reset",
 ] as const satisfies readonly RouteSectionKey[];
 
 /**
- * 桌面左侧导航 = **9 个分区，与移动端同名同序**（用户 2026-11-06「3 可以」：
+ * 桌面左侧导航 = **10 个分区，与移动端同名同序**（用户 2026-11-06「3 可以」：
  * 设置 9 分区双栏，原 4 容器归并退役）。旧路由键（files / storage / security）
  * 仍合法，深链落到它们所属的那一页：files/storage → storageFiles，security → about。
  */
@@ -202,6 +209,7 @@ export const DESKTOP_NAV = [
   { key: "notifications", labelKey: "settings.item.notification", iconKey: "bell" },
   { key: "network", labelKey: "settings.item.network", iconKey: "wifi" },
   { key: "storageFiles", labelKey: "settings.item.storageFiles", iconKey: "storage" },
+  { key: "integrations", labelKey: "settings.item.integrations", iconKey: "link" },
   { key: "about", labelKey: "settings.item.about", iconKey: "info" },
   { key: "reset", labelKey: "settings.item.reset", iconKey: "rotate" },
 ] as const satisfies readonly {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 设置 → 关于（桌面「安全」区）：已授权应用的**导出 / 恢复**。
+ * 设置 → 第三方接入：已授权应用的**导出 / 恢复**。
  *
  * 设计稿：`docs/notes/rp-key-export-recovery-design-2026-11-15.md`。
  *

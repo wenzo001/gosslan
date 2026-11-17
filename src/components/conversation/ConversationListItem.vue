@@ -46,6 +46,9 @@ const app = useAppStore();
  * 「聊天列表我自己后面也加一个『我』，和好友列表同步」）。判据必须复用
  * `utils/selfChat.isSelfConversation`：仓库里那条测试明令各处不许再写一遍 `=== device_id`。
  */
+/** 机器人会话（`bot:<id>`，本机假身份）：无在线状态、头像常亮带主色环。 */
+const isBot = computed(() => props.conv.id.startsWith("bot:"));
+
 const selfSuffix = computed(() =>
   isSelfConversation({ id: props.conv.id }, app.device?.device_id) ? t("friend.selfSuffix") : "",
 );
@@ -174,7 +177,10 @@ const groupMembers = computed(() => {
       <AvatarBox
         v-else
         class="h-[var(--gosslan-row-avatar)] w-[var(--gosslan-row-avatar)]"
-        :class="online === false ? 'grayscale opacity-70' : ''"
+        :class="[
+          online === false ? 'grayscale opacity-70' : '',
+          isBot ? 'ring-2 ring-[var(--gosslan-primary)]' : '',
+        ]"
         :id="conv.id"
         :src="conv.avatar"
       />
@@ -197,6 +203,12 @@ const groupMembers = computed(() => {
           :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'"
           :title="displayName"
         >
+          <!-- 机器人标识（用户 2026-11-17：列表上要有特殊样式）。 -->
+          <span
+            v-if="isBot"
+            class="ml-1 shrink-0 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-primary-soft)] px-1 text-micro text-[var(--gosslan-primary)]"
+            :title="t('bot.listBadge')"
+          >{{ t("bot.listBadge") }}</span>
           <!-- 置顶标识（微信同款位置：名字左侧）。纯本地偏好，对方不可见。 -->
           <Icon
             v-if="conv.pinned"

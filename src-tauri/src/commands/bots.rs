@@ -19,7 +19,8 @@
 use crate::db::{BotImage, BotInboxEntry, BotRecord, BotTarget};
 
 /// 取件/注册用的 HTTP 超时（秒）。短一点：拉件是后台行为，卡住就下一轮。
-const BOT_HTTP_TIMEOUT_SECS: u64 = 20;
+/// 服务端长轮询最多挂 15s ⇒ HTTP 超时要留足余量（否则每次空轮都超时报错）。
+const BOT_HTTP_TIMEOUT_SECS: u64 = 25;
 /// 机器人名字上限（显示用）。
 const BOT_NAME_MAX: usize = 60;
 
@@ -111,6 +112,8 @@ pub struct BotView {
     pub server_url: String,
     pub scope: String,
     pub do_not_disturb: bool,
+    /// 用户可编辑的头像（SVG data URL；空 = 种子默认脸）。
+    pub avatar: String,
     pub target: BotTarget,
     pub status: String,
     pub created_at: i64,
@@ -130,6 +133,7 @@ impl From<&BotRecord> for BotView {
                 if r.target.kind == "group" { "group".into() } else { "personal".into() }
             } else { r.scope.clone() },
             do_not_disturb: r.do_not_disturb,
+            avatar: r.avatar.clone(),
             target: r.target.clone(),
             status: r.status.clone(),
             created_at: r.created_at,
@@ -350,6 +354,7 @@ pub async fn bot_create(
         name: if created.name.trim().is_empty() { bot_name } else { created.name },
         scope: scope_norm.to_string(),
         do_not_disturb: do_not_disturb.unwrap_or(false),
+        avatar: String::new(), // 默认种子脸；用户可在详情页改
         server_url: server.clone(),
         client_token: created.client_token.clone(),
         target: if created.target.kind.is_empty() { target } else { created.target },
@@ -381,7 +386,7 @@ pub async fn bot_create(
     .map_err(|e| format!("保存任务中断：{e}"))?;
     if let Err(e) = persist {
         // 尽力撤销：服务端留着这个机器人而本机没有记录 ⇒ 用户再也找不回来。
-        let _ = client.delete(format!("{server}/v1/bots/{bot_id}")).send().await;
+        let _ = client.delete(format!("{server}/v1/bots/{}", created.client_token)).send().await;
         return Err(crate::error_codes::coded(
             crate::error_codes::BOT_CREATE_FAILED,
             e,
@@ -466,7 +471,7 @@ pub async fn bot_set_status(
     if next == "revoked" {
         let client = bot_client()?;
         let resp = client
-            .delete(format!("{}/v1/bots/{bot_id}", record.server_url))
+            .delete(format!("{}/v1/bots/{}", record.server_url, record.client_token))
             .send()
             .await
             .map_err(|e| {
@@ -511,6 +516,52 @@ pub async fn bot_set_status(
     Ok(view)
 }
 
+/// 用户编辑机器人名字 / 头像（2026-11-17）。
+///
+/// 字段级更新：一次 `spawn_blocking` 内持锁读-改-写，不与轮询统计互相覆盖；
+/// 个人机器人同时更新会话表的名字/头像 ⇒ 会话列表立即跟着变（群机器人没有个人会话）。
+#[tauri::command(async)]
+pub async fn bot_set_profile(
+    state: State<'_, Arc<AppState>>,
+    bot_id: String,
+    name: String,
+    avatar: Option<String>,
+) -> Result<BotView, String> {
+    let s = state.inner().clone();
+    let clean_name: String = name.trim().chars().take(60).collect();
+    if clean_name.is_empty() {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::BOT_TARGET_INVALID,
+            "机器人名字不能为空",
+        ));
+    }
+    let bid = bot_id.clone();
+    let view = tokio::task::spawn_blocking(move || -> Result<BotView, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let mut rec = db::load_bot(&dbc, &bid)
+            .map_err(|e| format!("读取机器人失败：{e}"))?
+            .ok_or_else(|| crate::error_codes::coded(crate::error_codes::BOT_NOT_FOUND, "机器人不存在"))?;
+        rec.name = clean_name;
+        if let Some(a) = avatar {
+            rec.avatar = a.chars().take(8192).collect();
+        }
+        db::save_bot(&dbc, &rec).map_err(|e| format!("保存机器人资料失败：{e}"))?;
+        if rec.target.kind != "group" {
+            db::update_conversation_profile(
+                &dbc,
+                &format!("bot:{bid}"),
+                &rec.name,
+                if rec.avatar.is_empty() { None } else { Some(&rec.avatar) },
+            )
+            .map_err(|e| format!("更新机器人会话资料失败：{e}"))?;
+        }
+        Ok(BotView::from(&rec))
+    })
+    .await
+    .map_err(|e| format!("保存任务中断：{e}"))??;
+    Ok(view)
+}
+
 /// 删除机器人（**先远端撤销、成功后才清本地**）。
 ///
 /// 审计：此前「本地先删、远端撤销尽力而为并吞掉失败」⇒
@@ -534,7 +585,7 @@ pub async fn bot_delete(
     if !rec.client_token.is_empty() {
         let client = bot_client()?;
         let resp = client
-            .delete(format!("{}/v1/bots/{bot_id}", rec.server_url))
+            .delete(format!("{}/v1/bots/{}", rec.server_url, rec.client_token))
             .send()
             .await
             .map_err(|e| {
@@ -586,7 +637,7 @@ pub async fn bot_pull_once(
     bot_id: String,
 ) -> Result<BotPullOutcome, String> {
     let s = state.inner().clone();
-    pull_bot_once(&s, &bot_id).await
+    pull_bot_once(&s, &bot_id, 0).await // 手动「立即取件」不等待
 }
 
 /// 拉一次件并投递（**先落本地、再 ACK**）—— 命令与后台轮询 worker 共用的内核。
@@ -594,7 +645,7 @@ pub async fn bot_pull_once(
 /// 为什么要拆成内部函数：后台 worker 不走 Tauri 命令通道，拿不到 `State`；
 /// 两边共用同一份内核 ⇒ 「手动立即取件」与「自动轮询」的语义**必然一致**
 /// （顺序反了 = 消息永久丢失，这是这一族最贵的错）。
-async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str) -> Result<BotPullOutcome, String> {
+async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str, wait_secs: u64) -> Result<BotPullOutcome, String> {
     let s = s.clone();
     let bot_id = bot_id.to_string();
     // 读机器人：进阻塞池（R-18）。
@@ -624,8 +675,13 @@ async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str) -> Result<BotPullOutcome
         ));
     }
     let client = bot_client()?;
-    // GET /pull/<client_token>，认证在 URL，不要 header/body。
-    let pull_url = format!("{}/pull/{}", record.server_url, record.client_token);
+    // GET /pull/<client_token>?wait=N，认证在 URL，不要 header/body。
+    // 后台轮询传 15（长轮询：新消息一到立刻返回）；手动取件传 0（立即返回）。
+    let pull_url = if wait_secs > 0 {
+        format!("{}/pull/{}?wait={}", record.server_url, record.client_token, wait_secs)
+    } else {
+        format!("{}/pull/{}", record.server_url, record.client_token)
+    };
     let resp = client
         .get(&pull_url)
         .send()
@@ -1014,7 +1070,7 @@ pub fn spawn_bot_poller(state: &Arc<AppState>) -> tauri::async_runtime::JoinHand
                 // 一轮里**逐个**拉：一个机器人失败不许卡住整轮。
                 let sd = st.clone();
                 let bid = rec.bot_id.clone();
-                let outcome = pull_bot_once(&sd, &bid).await;
+                let outcome = pull_bot_once(&sd, &bid, BOT_LONG_POLL_SECS).await;
                 match outcome {
                     Ok(o) if o.delivered > 0 => {
                         sd.logger.info(
@@ -1057,11 +1113,16 @@ pub fn spawn_bot_poller(state: &Arc<AppState>) -> tauri::async_runtime::JoinHand
     })
 }
 
-/// 轮询周期（秒）。
+/// 长轮询等待上限（秒）：队列空时服务端挂起请求，新消息一到立即返回。
+const BOT_LONG_POLL_SECS: u64 = 15;
+
+/// 两轮之间的间隔（秒）。长轮询已把「消息到 → 客户端知道」压到秒级，
+/// 这里只需在长轮询返回后快速再挂下一轮（不是消息延迟的来源）。
 ///
-/// 为什么是 60 秒：通知的时效要求通常是「分钟内」，而这条链路要走公网
+/// 历史：此前是 60 秒纯轮询，用户报「curl 发了但收到很慢」⇒ 改长轮询 + 短间隔。
+/// 原 60 秒的理由（通知时效通常「分钟内」、链路走公网）已不再适用。
 /// （自托管服务可能远在另一台机器）⇒ 再快也没有数量级收益，反而给对方添压力。
-const BOT_PULL_INTERVAL_SECS: u64 = 60;
+const BOT_PULL_INTERVAL_SECS: u64 = 2;
 /// 启动后**第一轮**之前先等这么久（秒）：应用刚起来时没什么可取，别一上来就打扰。
 const BOT_PULL_FIRST_DELAY_SECS: u64 = 20;
 
@@ -1084,6 +1145,7 @@ mod bot_cmd_tests {
             name: "CI 通知".into(),
             scope: "personal".into(),
             do_not_disturb: false,
+            avatar: String::new(),
             server_url: "https://hooks.example.com".into(),
             client_token: "super-token".into(),
             target: BotTarget {
@@ -1274,8 +1336,26 @@ mod bot_cmd_tests {
             "没有后台轮询 worker（通知要能自动进来）",
         );
         assert!(
-            prod.contains("pull_bot_once(&sd, &bid)"),
+            prod.contains("pull_bot_once(&sd, &bid, BOT_LONG_POLL_SECS)"),
             "轮询 worker 必须走与「立即取件」**同一个**内核（顺序反了 = 消息永久丢失）",
+        );
+        // 2026-11-17：长轮询已接线 —— 服务端队列空时挂起，新消息立即唤醒返回。
+        // 拆掉任一环（URL 的 wait 参数 / 15s 上限 / 短间隔 / 超时余量）都会让「curl 收到很慢」复发。
+        assert!(
+            prod.contains("/pull/{}?wait={}"),
+            "后台取件没带 wait 参数 ⇒ 退回 60s 纯轮询，外部发通知要等很久",
+        );
+        assert!(
+            prod.contains("const BOT_LONG_POLL_SECS: u64 = 15;"),
+            "长轮询上限丢了（须小于服务端 15s 上限与客户端 HTTP 超时）",
+        );
+        assert!(
+            prod.contains("const BOT_PULL_INTERVAL_SECS: u64 = 2;"),
+            "长轮询返回后必须快速再挂下一轮，否则仍要空等 60s",
+        );
+        assert!(
+            prod.contains("const BOT_HTTP_TIMEOUT_SECS: u64 = 25;"),
+            "HTTP 超时必须大于长轮询等待上限，否则每轮空转都报超时",
         );
         assert!(
             prod.contains("bot-inbox-updated"),

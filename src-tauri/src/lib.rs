@@ -1031,6 +1031,7 @@ pub fn run() {
             commands::bot_delete,
             commands::bot_pull_once,
             commands::bot_set_dnd,
+            commands::bot_set_profile,
             commands::topology_layout_load,
             commands::topology_layout_save,
             commands::topology_layout_reset,

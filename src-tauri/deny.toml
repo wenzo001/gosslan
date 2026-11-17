@@ -48,12 +48,32 @@ unsound = "workspace"
 #   修复路径: libsqlite3-sys >= 0.39.0 / rusqlite >= 0.41（要求 Rust 1.89），是一次
 #   跨大版本升级，必须单独批次做全量回归 —— 不在 5.20.8 发布窗口内。
 #   移除条件: rusqlite 升到 0.41+（或改用系统 SQLite）时删除本条。
+#
+#   RUSTSEC-2026-0545（2026-11-17 CI 新出现，单独复核）：
+#   受影响 crate/版本: zip 4.6.1
+#   依赖链: tauri-plugin-updater 2.14.0 -> zip ^4（仅 Windows 自更新解包）。
+#   漏洞要点: WinZip AES（AE-1/AE-2）条目的 10 字节 HMAC 只在读完声明压缩长度后才校验；
+#             截断包会接受明文，AE-2 又无 CRC-32 ⇒ 改密文可改解密内容而不报错。
+#   可达性: 需 `aes-crypto` feature + 用密码读 AES 加密条目（by_name_decrypt）；
+#           本仓更新包由发布流程自己生成、不加密，tauri-plugin-updater 不走该路径。
+#   前置缓解: 更新包必须先过 tauri.conf.json 固定的 minisign 公钥验签。
+#   移除条件: 上游 tauri-plugin-updater stable 支持 zip >= 9.0.0 时删除本条。
+#   RUSTSEC-2026-0548（2026-11-17 CI 新出现，单独复核）：
+#   受影响 crate/版本: zip 4.6.1（同一依赖链）。
+#   漏洞要点: ZipStreamReader 按 local header 文件名解包、不与 central directory 比对；
+#             若一处用 ZipArchive 检查、另一处用 ZipStreamReader 解包，可写出检查未见的文件名。
+#   可达性: 本仓 updater 直接解包经 minisign 验签的官方包，不存在「校验 A 包、解包 B 包」
+#           或让用户提供任意 zip 的双 API 路径。
+#   前置缓解: 同上，minisign 验签是任何解包的前置条件。
+#   移除条件: 上游 stable 支持 zip >= 9.0.5 时删除本条。
 ignore = [
   { id = "RUSTSEC-2026-0367", reason = "zip 4.6.1 解包保留 SUID/SGID；仅在 minisign 校验通过后的 Windows 更新路径，上游 tauri-plugin-updater 未放开 zip 大版本" },
   { id = "RUSTSEC-2026-0368", reason = "zip 4.6.1 symlink 越界写；同上，签名校验通过后才解包，且路径仅在 Windows 自更新 asset 目录" },
   { id = "RUSTSEC-2026-0369", reason = "zip 4.6.1 经 symlink 继承 Unix 权限；同上，签名校验通过后才解包，待上游放开 zip >= 9 即删除本豁免" },
   { id = "RUSTSEC-2026-0429", reason = "zip 4.6.1；依赖链 tauri-plugin-updater 2.14.0 -> zip ^4；仅 Windows 自更新解包可达；更新包先过 minisign 验签且更新源固定官方 endpoint；上游 stable 支持 zip >= 9.0.0 时删除本条" },
   { id = "RUSTSEC-2026-0459", reason = "libsqlite3-sys 0.28.0 的 bundled SQLite<3.54；仅本地打开恶意 DB+页大小不同的 -wal 时触发，本应用只开自己的 AppData DB、无外部库导入；修复需 rusqlite 0.41/Rust 1.89，单独批次升级后删除本条" },
+  { id = "RUSTSEC-2026-0545", reason = "zip 4.6.1；依赖链 tauri-plugin-updater 2.14.0 -> zip ^4；需 aes-crypto feature + 密码读 AES 条目才可达，本仓更新包不加密且解包前必须过 minisign 验签；上游 stable 支持 zip >= 9.0.0 时删除本条" },
+  { id = "RUSTSEC-2026-0548", reason = "zip 4.6.1；ZipStreamReader 的 local/central header 名字不一致问题；本仓 updater 直接解包经 minisign 验签的官方包，无「校验 A 包、解包 B 包」的双 API 路径；上游 stable 支持 zip >= 9.0.5 时删除本条" },
 ]
 
 [licenses]

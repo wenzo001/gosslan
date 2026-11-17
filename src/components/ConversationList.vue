@@ -25,8 +25,9 @@ import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import SelfAvatar from "@/components/SelfAvatar.vue";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 import appMark from "@/assets/app-mark.png";
-import { APP_ACTION, onAction } from "@/api";
+import { api, APP_ACTION, onAction } from "@/api";
 import { groupByInitial } from "@/utils/nameGroup";
 import { isSelfConversation, selfFriendOf } from "@/utils/selfChat";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
@@ -38,7 +39,7 @@ import { dropPointToCss } from "@/utils/dropPoint";
 import { POPOVER_EDGE } from "@/utils/popoverBounds";
 import { useDropSend, type DropTarget } from "@/composables/useDropSend";
 import DropSendConfirm from "@/components/chat/DropSendConfirm.vue";
-import type { Conversation, Friend } from "@/types";
+import type { BotView, Conversation, Friend } from "@/types";
 // 主界面版本号：唯一数据源就是 package.json（与设置「关于」同一个 import），不许第二处手写。
 import { version } from "../../package.json";
 
@@ -298,9 +299,12 @@ onUnmounted(() => {
   dropScope.dispose();
 });
 
-/** 对端在线状态：群聊返回 null（无在线概念）；单聊查好友表。 */
+/** 对端在线状态：群聊/机器人返回 null（无在线概念）；单聊查好友表。 */
 function isOnline(id: string): boolean | null {
   if (id.startsWith("group:")) return null;
+  // 机器人不是设备，没有「在线/离线」（用户 2026-11-17）：传 null 才不显示状态点、
+  // 也不会把头像按离线灰掉 —— 机器人头像应当一直亮着。
+  if (id.startsWith("bot:")) return null;
   // 「和自己聊天」：自己不是一个"在线/离线"的对端 —— 传 null 才不显示状态点、
   // 也不会把头像按离线灰掉（`ConversationListItem` 把 null 定义为"不显示状态点"）。
   if (isSelfConversation({ id }, app.device?.device_id)) return null;
@@ -314,6 +318,25 @@ function isOnline(id: string): boolean | null {
  * 见 `useSearchKeyword` 注释）——所以这里就是纯粹地打开会话；
  * 从搜索结果跳转那一步由弹窗自己带着 msgId 调 `chat.locateMessageInConv`。
  */
+/** 机器人也进通讯录（用户 2026-11-17）：与好友同一入口，样式专属、点击直接开会话。 */
+const botContacts = ref<BotView[]>([]);
+onMounted(() => {
+  void api
+    .botList()
+    .then((list) => {
+      botContacts.value = list.filter((b) => b.status !== "revoked");
+    })
+    .catch(() => {
+      // 机器人列表拉取失败不该拖垮通讯录（好友仍正常显示）。
+    });
+});
+function openBotContact(b: BotView) {
+  const id = `bot:${b.botId}`;
+  if (app.isMobile) app.mobileView = "chat";
+  void chat.openConversation(id);
+  void router.push({ name: "conversation", params: { convId: id } });
+}
+
 async function openConv(conv: Conversation) {
   if (app.isMobile) app.mobileView = "chat";
   // 先同步写 activeConv（openConversation 第一行），再落路由：路由 watcher 看到已打开就跳过，
@@ -760,6 +783,30 @@ useEventListener(document, "click", closeFriendMenu);
             </span>
           </span>
         </button>
+        <!-- 机器人（用户 2026-11-17）：通讯录里单列一组，常亮头像 + 专属标记；点击开会话。 -->
+        <template v-if="!query.trim() && botContacts.length">
+          <div class="gosslan-sticky-veil sticky top-0 z-10 px-3 py-1 text-caption font-medium text-[var(--gosslan-text-2)]">
+            {{ t("bot.contactSection") }}
+          </div>
+          <button
+            v-for="b in botContacts"
+            :key="b.botId"
+            class="flex h-[56px] w-full cursor-pointer items-center gap-3 px-3 transition-colors"
+            :class="chat.activeConv === `bot:${b.botId}` ? 'bg-[var(--gosslan-list-active)]' : 'hover:bg-[var(--gosslan-list-hover)]'"
+            :aria-label="b.name"
+            @click="openBotContact(b)"
+          >
+            <AvatarBox
+              class="h-10 w-10 shrink-0 ring-2 ring-[var(--gosslan-primary)]"
+              :id="b.botId"
+              :src="b.avatar"
+            />
+            <span class="min-w-0 flex-1 text-left">
+              <span class="block truncate text-body leading-5 text-[var(--gosslan-text)]" :title="b.name">{{ b.name }}</span>
+              <span class="block truncate text-meta leading-5 text-[var(--gosslan-text-2)]" :title="t('bot.listBadge')">{{ t("bot.listBadge") }}</span>
+            </span>
+          </button>
+        </template>
         <!-- 自己（用户 2026-09-17）：不再做成钉在「新的朋友」下面的特殊行 ——
              它作为一条**伪好友**进 `filteredFriends` / `friendGroups`，与好友同一套
              渲染/排序/搜索/点击看资料的路径（见脚本里的 `selfFriend`）。 -->
