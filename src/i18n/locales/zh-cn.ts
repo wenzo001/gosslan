@@ -2137,6 +2137,8 @@ export const zhCN: MessageDict = {
   "bot.notFound": "这个机器人已不存在",
   "bot.listFailed": "读取机器人列表失败",
   "bot.group.listTitle": "本群机器人（点击管理）",
+  "bot.groupTaskTitle": "【{name}】{title}",
+  "bot.groupActionFailed": "群机器人的任务指令执行失败",
   "bot.notifyTitle": "机器人通知",
   "bot.notifyBody": "收到 {n} 条机器人通知",
   "bot.createFailed": "创建机器人失败",

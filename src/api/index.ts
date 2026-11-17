@@ -141,6 +141,9 @@ export const api = {
    *
    * 载荷 = bot_id；界面据此决定要不要重读那个机器人的收件箱。
    */
+  /** v7.1：群机器人的白名单群管理指令（如 create_todo）。 */
+  onBotGroupAction: (cb: (a: { type: string; groupId: string; title: string; botName: string }) => void) =>
+    listen<{ type: string; groupId: string; title: string; botName: string }>("bot-group-action", (e) => cb(e.payload)),
   onBotInboxUpdated: (cb: (botId: string, count: number) => void) =>
     listen<{ bot_id?: string; count?: number }>("bot-inbox-updated", (e) => {
       const p = (e.payload ?? {}) as { bot_id?: string; count?: number };

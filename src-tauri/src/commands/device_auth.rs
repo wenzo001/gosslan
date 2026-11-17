@@ -487,10 +487,13 @@ pub async fn handle_device_auth_link(app: &tauri::AppHandle, url: String) -> Res
     let key = da::pending_key(&link.rp_origin, &meta.client_id, &req.request_id);
     // 同一个 RP 上次被允许过什么（记忆）：确认页**预勾**用 ⇒ 第二次登录只点一次「批准」。
     // ⚠️ 读失败**上抛**（不折叠成「没允许过」）—— 读不到就不能保证预勾的是用户真的点头过的。
-    let remembered_scopes = {
+    let (remembered_scopes, remembered_nickname) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        crate::db::load_grant_memory(&dbc, &link.rp_origin)
-            .map_err(|e| format!("code=DEVICE_AUTH_GRANT_MEMORY_READ_FAILED：{e}"))?
+        let scopes = crate::db::load_grant_memory(&dbc, &link.rp_origin)
+            .map_err(|e| format!("code=DEVICE_AUTH_GRANT_MEMORY_READ_FAILED：{e}"))?;
+        let nickname = crate::db::load_nickname_memory(&dbc, &link.rp_origin)
+            .unwrap_or(false);
+        (scopes, nickname)
     };
     // 幂等键（jti）：**跨重启复用**（D1「jti 持久化重试复用」）。
     // 为什么必须落库：应用在用户点「同意」之前被关掉/重启过的话，用户重新点同一个链接时
@@ -528,6 +531,7 @@ pub async fn handle_device_auth_link(app: &tauri::AppHandle, url: String) -> Res
         expires_at_ms,
         generation,
         remembered_scopes,
+        remembered_nickname,
         // 每个事务生成一次（重启后复用同一个值）：prepare 的 jti 与 post 的 Idempotency-Key
         // 都读它 —— 见上面那段说明。
         idempotency_key,
@@ -827,6 +831,10 @@ pub async fn device_auth_approve(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = crate::db::save_grant_memory(&dbc, &rp_origin, &granted_scopes_for_memory) {
             eprintln!("[device-auth] code=DEVICE_AUTH_GRANT_MEMORY_SAVE_FAILED：{e}");
+        }
+        // 昵称选择同样按 RP 记住（用户 2026-11-17）：下次确认页按上次的选择预置。
+        if let Err(e) = crate::db::save_nickname_memory(&dbc, &rp_origin, allow_nickname) {
+            eprintln!("[device-auth] code=DEVICE_AUTH_NICKNAME_MEMORY_SAVE_FAILED：{e}");
         }
     }
 
@@ -1131,6 +1139,7 @@ mod device_auth_cmd_tests {
             expires_at_ms: 4_000_000_000_000, generation: 1,
             idempotency_key: "idempotency-key-for-test".into(),
             remembered_scopes: Vec::new(),
+            remembered_nickname: false,
         }
     }
 
@@ -1413,6 +1422,7 @@ mod device_auth_cmd_tests {
             expires_at_ms: 1_800_000_000_000,
             generation: 1,
             remembered_scopes: vec!["friends.read".into()],
+            remembered_nickname: false,
             idempotency_key: "idem".into(),
         };
         let prompt = pending.prompt();

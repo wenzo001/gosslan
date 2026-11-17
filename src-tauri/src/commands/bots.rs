@@ -196,6 +196,9 @@ struct ServerEnvelope {
     images: Vec<BotImage>,
     #[serde(default)]
     created_at: String,
+    /// v7 群机器人管理指令（服务端只透传，白名单在客户端）。
+    #[serde(default)]
+    action: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -662,6 +665,7 @@ async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str) -> Result<BotPullOutcome
             images: ev.images.clone(),
             received_at: db::now_ms(),
             state: "received".into(),
+            action: ev.action.clone(),
         };
         let delivered = deliver_event(&s, &record, &entry).await;
         // ② 落库/投递成功才 ACK；失败 ⇒ NACK（可重试）⇒ 服务端会在租约到期后重投。
@@ -835,6 +839,38 @@ async fn deliver_event(
             })
             .await
             .map_err(|e| format!("校验群失败：{e}"))??;
+            // v7.1：白名单群管理指令（第三方通过 Webhook 正文 action 触发）。
+            // 只认 create_todo；其它 type 一律**当普通通知处理**（不执行、不报错），
+            // 杜绝构造 action 触达踢人/任免/转让等危险路径。
+            if let Some(action) = entry.action.as_ref() {
+                let kind = action.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                if kind == "create_todo" {
+                    // 双重校验：机器人 scope=group + 本机仍是该群管理员（权限撤销后立即失效）。
+                    let permitted = {
+                        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                        match db::get_group(&dbc, &group_id) {
+                            Some(g) => g.is_manager(&s.device_id),
+                            None => false,
+                        }
+                    };
+                    if permitted {
+                        let title = action.get("title").and_then(|v| v.as_str())
+                            .filter(|t| !t.trim().is_empty())
+                            .map(|t| t.chars().take(120).collect::<String>())
+                            .unwrap_or_else(|| entry.text.chars().take(60).collect());
+                        // 发内部事件让前端调既有 send_group_todo（不复制建任务逻辑）。
+                        let _ = s.app.emit("bot-group-action", serde_json::json!({
+                            "type": "create_todo",
+                            "groupId": group_id,
+                            "title": title,
+                            "botName": record.name,
+                        }));
+                        s.logger.info("bot", format!("群机器人 {} 触发建任务：{title}", record.bot_id));
+                    } else {
+                        s.logger.info("bot", format!("群机器人 {} 的建任务被拒（已非管理员）", record.bot_id));
+                    }
+                }
+            }
             let sent = send_group_payload(s, &group_id, "text", content, None, None, None)
                 .await
                 .map(|_| ())
@@ -1159,6 +1195,7 @@ mod bot_cmd_tests {
             images: vec![],
             received_at: 1,
             state: "received".into(),
+            action: None,
         };
         assert!(crate::db::append_inbox(&conn, "bot_1", &entry).unwrap());
         // 重复投递（租约到期重投）⇒ 不重复显示

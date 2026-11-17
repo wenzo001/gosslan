@@ -96,6 +96,9 @@ pub struct BotInboxEntry {
     pub received_at: i64,
     /// `received`（已落本机）/ `published`（群目标已发出）/ `failed`。
     pub state: String,
+    /// v7.1：群机器人管理指令（服务端透传，客户端白名单校验后才执行）。
+    #[serde(default)]
+    pub action: Option<serde_json::Value>,
 }
 
 /// 机器人记录的键。
@@ -246,6 +249,7 @@ mod bot_inbox_order_tests {
             images: vec![],
             received_at: ts,
             state: "received".into(),
+            action: None,
         }
     }
 
