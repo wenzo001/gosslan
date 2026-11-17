@@ -1119,11 +1119,17 @@ test("v-html 只出现在构造即转义的三处；新增位置必须登记（�
       assert.equal(h.expr, "html", "更新说明只允许渲染 renderNotesMarkdown（marked + DOMPurify）的产物");
     } else if (h.file.endsWith("CodeBlock.vue")) {
       assert.equal(h.expr, "html", "代码块只允许渲染 hljs/escapeHtml 生成的 html");
-    } else if (h.file.endsWith("BotSection.vue")) {
+    } else if (h.file.endsWith("MessageTextBubble.vue")) {
       assert.equal(
         h.expr,
-        "renderBotMessage(m.text, 'markdown')",
-        "机器人正文只允许渲染 renderBotMessage 的产物（marked + DOMPurify 白名单，外部内容）",
+        "renderBotMessage(content, 'markdown')",
+        "机器人正文只允许渲染 renderBotMessage 的产物（marked + DOMPurify 白名单）",
+      );
+    } else if (h.file.endsWith("MessageTextBubble.vue")) {
+      assert.equal(
+        h.expr,
+        "renderBotMessage(content, 'markdown')",
+        "机器人正文只允许渲染 renderBotMessage 的产物（marked + DOMPurify 白名单）",
       );
     }
   }

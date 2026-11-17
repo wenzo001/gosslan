@@ -19,6 +19,8 @@ import AvatarBox from "@/components/ui/AvatarBox.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
+import BotSetupWizard from "@/components/BotSetupWizard.vue";
+import type { BotCreatedView } from "@/types";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{
@@ -27,6 +29,8 @@ const emit = defineEmits<{
   (e: "chat", peerId: string): void;
 }>();
 
+/** v6：从「加好友」这一入口创建**个人机器人**（像联系人一样进会话）。 */
+const botWizardOpen = ref(false);
 const app = useAppStore();
 const chat = useChatStore();
 const loading = ref(false);
@@ -364,6 +368,26 @@ async function add(peerId: string) {
 
 <template>
   <BaseModal :open="open" :title="t('friend.add.title')" @close="emit('close')">
+    <!-- v6：添加机器人（本机假身份，像联系人一样进会话）—— 放在最上面，别让用户翻半天。 -->
+    <button
+      type="button"
+      class="mb-3 flex w-full items-center gap-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-soft)] px-3 py-2.5 text-left transition hover:opacity-90"
+      @click="botWizardOpen = true"
+    >
+      <Icon name="sparkles" class="h-5 w-5 shrink-0 text-[var(--gosslan-primary)]" />
+      <span class="min-w-0 flex-1">
+        <span class="block text-body font-medium">{{ t("bot.wizard.addPersonal") }}</span>
+        <span class="block truncate text-caption text-[var(--gosslan-text-2)]" :title="t('bot.wizard.addPersonalHint')">{{ t("bot.wizard.addPersonalHint") }}</span>
+      </span>
+      <Icon name="chevron-right" class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
+    </button>
+    <BotSetupWizard
+      :open="botWizardOpen"
+      scope="personal"
+      @close="botWizardOpen = false"
+      @created="(_b: BotCreatedView) => {}"
+    />
+
     <StateBlock v-if="loading" kind="loading" compact :title="t('friend.add.scanning')" />
 
     <div v-else-if="chat.peers.length === 0" class="py-4">

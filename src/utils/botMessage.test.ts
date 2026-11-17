@@ -3,7 +3,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   BOT_MESSAGE_ALLOWED_TAGS,
@@ -101,14 +101,10 @@ test("机器人消息能自动进来：后端有轮询 worker，前端订阅它�
     api.includes('listen<{ bot_id?: string; count?: number }>("bot-inbox-updated"'),
     "前端没有订阅 bot-inbox-updated ⇒ 收件箱不会自动刷新",
   );
-  const panel = read("components/settings/BotSection.vue");
+  const wizard = read("components/BotSetupWizard.vue");
   assert.ok(
-    panel.includes("api.onBotInboxUpdated("),
-    "机器人面板没有订阅轮询事件",
-  );
-  assert.ok(
-    panel.includes("createInitScope()"),
-    "订阅↔卸载必须走 initScope（不许手工卸载句柄）",
+    wizard.includes("api.botCreate("),
+    "创建向导没有调 bot_create（配好就能发）",
   );
 
   // ③ 系统通知只给摘要，不放正文（外部内容不可信）。
@@ -120,5 +116,91 @@ test("机器人消息能自动进来：后端有轮询 worker，前端订阅它�
   assert.ok(
     !notif.includes("entry.text"),
     "系统通知里不许带机器人正文（正文是外部来的不可信内容）",
+  );
+});
+
+// ---------------- v6 产品形态：像联系人一样 + 两处入口 + 设置里不再堆配置 ----------------
+
+test("v6：两处创建入口（加好友 / 群成员），设置里不再有机器人配置", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const srcRoot = join(repoRoot, "src");
+  const read = (p: string) => readFileSync(join(srcRoot, p), "utf8");
+
+  // ① 加好友弹窗：个人机器人入口（创建时配好中转 + 密钥）。
+  const addFriend = read("components/AddFriendModal.vue");
+  assert.ok(
+    addFriend.includes('scope="personal"') && addFriend.includes("BotSetupWizard"),
+    "「加好友」弹窗没有「添加个人机器人」入口",
+  );
+  // ② 群成员面板：群机器人入口 + 权限门（只有群主/管理员看得到按钮）。
+  const members = read("components/GroupMemberPanel.vue");
+  assert.ok(
+    members.includes('scope="group"') && members.includes("botWizardOpen"),
+    "群成员面板没有「添加群机器人」入口",
+  );
+  // 模板里「添加群机器人」按钮必须落在 <template v-if="canManage"> 块内。
+  const btnAt = members.indexOf("botWizardOpen = true");
+  const lastManage = members.lastIndexOf('<template v-if="canManage">');
+  assert.ok(
+    btnAt > lastManage && lastManage >= 0,
+    "群机器人入口没有 canManage 权限门（必须只有群主/管理员能添加）",
+  );
+
+  // ③ 设置里不再堆机器人配置（BotSection 删除，两个外壳都不引）。
+  assert.ok(
+    !existsSync(join(srcRoot, "components", "settings", "BotSection.vue")),
+    "旧的设置页机器人面板还在（应该移到两处入口 + 详情）",
+  );
+  for (const shell of ["components/SettingsPanel.vue", "components/SettingsWindow.vue"]) {
+    assert.ok(!read(shell).includes("BotSection"), `${shell} 仍引用 BotSection`);
+  }
+});
+
+test("v6：详情页能看配置 / 免打扰 / 删除；点机器人头像能进详情", () => {
+  const srcRoot = join(import.meta.dirname, "..");
+  const read = (p: string) => readFileSync(join(srcRoot, p), "utf8");
+
+  const detail = read("components/BotDetailModal.vue");
+  for (const [needle, why] of [
+    ["api.botSetDnd(", "详情页没有免打扰开关"],
+    ["api.botDelete(", "详情页没有删除按钮"],
+    ["bot.deleteConfirm", "删除没有二次确认（删了 hook 立即失效且不可逆）"],
+    ["api.botPullOnce(", "详情页没有「立即取件」"],
+  ] as const) {
+    assert.ok(detail.includes(needle), why);
+  }
+
+  // 点机器人消息头像 ⇒ 详情（不是好友资料页）
+  const chat = read("components/ChatWindow.vue");
+  assert.ok(
+    chat.includes('senderId.startsWith("bot:")'),
+    "点机器人头像没有拦截 bot: 前缀（会错误地跳成好友资料页）",
+  );
+  assert.ok(chat.includes("BotDetailModal"), "会话里没渲染机器人详情弹窗");
+});
+
+test("v6：机器人消息走本机假身份会话，但不写 outbox；正文按 Markdown 消毒渲染", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const srcRoot = join(repoRoot, "src");
+  const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
+
+  // 个人 bot 落消息表但不进网络（Frozen Core 红线）。
+  assert.ok(rust.includes('format!("bot:{bot_id}")'), "个人机器人没有建 bot: 假身份会话");
+  const personalAt = rust.indexOf('"inbox" | "personal" =>');
+  assert.ok(personalAt > 0, "没有个人机器人投递分支");
+  const personal = rust.slice(personalAt, rust.indexOf('"group" =>', personalAt));
+  assert.ok(personal.includes("db::insert_message("), "机器人消息没落本机消息表");
+  assert.ok(!personal.includes("insert_message_and_outbox("), "机器人消息写了 outbox ⇒ 会跨设备同步（红线）");
+
+  // Markdown：走消毒器，绝不裸 v-html。
+  const bubble = readFileSync(join(srcRoot, "components", "message", "MessageTextBubble.vue"), "utf8");
+  assert.ok(
+    /v-html="renderBotMessage\(content, 'markdown'\)"/.test(bubble),
+    "机器人正文没有走消毒后的 Markdown 渲染",
+  );
+  const item = readFileSync(join(srcRoot, "components", "MessageItem.vue"), "utf8");
+  assert.ok(
+    item.includes('props.message.conv_id.startsWith("bot:")'),
+    "消息行没有识别机器人会话",
   );
 });

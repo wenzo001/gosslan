@@ -156,6 +156,10 @@ async function refetchContent() {
 }
 
 /** 这条内容在统一状态里是否「未完成 / 校验失败」⇒ 文件卡片给「重新获取」。 */
+/** v6：机器人消息（`bot:` 会话）的外部正文按 Markdown 渲染，输入已消毒。 */
+/** v6：机器人消息（`bot:` 会话）的外部正文按 Markdown 渲染，输入已消毒。 */
+const isBotMessage = computed(() => props.message.conv_id.startsWith("bot:"));
+
 const retryableContent = computed(() => {
   if (props.message.kind !== "file" && props.message.kind !== "image") return null;
   // 载荷解析走唯一一份 `utils/fileMeta`（此前这里又手写了一次 JSON.parse）
@@ -1945,6 +1949,7 @@ async function copyFileToClipboard() {
               <MessageTextBubble
                 v-if="message.kind === 'text'"
             :content="message.content"
+            :is-bot="isBotMessage"
             :bubble-style="bubbleStyle"
             :card-style="cardStyle"
             :clamped="isLongText"

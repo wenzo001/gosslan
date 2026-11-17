@@ -98,6 +98,8 @@ pub struct BotView {
     pub bot_id: String,
     pub name: String,
     pub server_url: String,
+    pub scope: String,
+    pub do_not_disturb: bool,
     pub target: BotTarget,
     pub status: String,
     pub created_at: i64,
@@ -113,6 +115,10 @@ impl From<&BotRecord> for BotView {
             bot_id: r.bot_id.clone(),
             name: r.name.clone(),
             server_url: r.server_url.clone(),
+            scope: if r.scope.is_empty() {
+                if r.target.kind == "group" { "group".into() } else { "personal".into() }
+            } else { r.scope.clone() },
+            do_not_disturb: r.do_not_disturb,
             target: r.target.clone(),
             status: r.status.clone(),
             created_at: r.created_at,
@@ -204,14 +210,16 @@ fn server_error_text(body: &str) -> String {
 
 /// 注册一个机器人（客户端去服务端注册 ⇒ 拿一次性密钥 ⇒ 落本地）。
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)] // v6：新增 scope / dnd 两个可选参数，参数面本来就是命令入口契约
 pub async fn bot_create(
     state: State<'_, Arc<AppState>>,
     name: String,
-    target_kind: String,
+    scope: String,
     target_group_id: Option<String>,
     target_group_name: Option<String>,
     server_url: String,
-    client_token: String,
+    client_token: Option<String>,
+    do_not_disturb: Option<bool>,
 ) -> Result<BotCreatedView, String> {
     let server = normalize_bot_server(&server_url)?;
     let bot_name: String = name.trim().chars().take(BOT_NAME_MAX).collect();
@@ -221,15 +229,19 @@ pub async fn bot_create(
             "请给机器人起个名字",
         ));
     }
-    let token = client_token.trim().to_string();
+    let token = client_token.unwrap_or_default().trim().to_string();
     if token.is_empty() {
         return Err(crate::error_codes::coded(
             crate::error_codes::BOT_CLIENT_TOKEN_REQUIRED,
             "请填写通知服务的客户端令牌（服务端 WEBHOOK_CLIENT_TOKEN）",
         ));
     }
-    let target = match target_kind.trim() {
-        "inbox" => BotTarget {
+    let scope_norm = match scope.trim() {
+        "group" => "group",
+        _ => "personal",
+    };
+    let target = match scope_norm {
+        "personal" => BotTarget {
             kind: "inbox".into(),
             group_id: None,
             group_name: None,
@@ -251,10 +263,30 @@ pub async fn bot_create(
         _ => {
             return Err(crate::error_codes::coded(
                 crate::error_codes::BOT_TARGET_INVALID,
-                "投递目标只支持本机收件箱（inbox）或群（group）",
+                "投递目标只支持 personal（个人会话）或 group（群）",
             ))
         }
     };
+
+    // v6：群机器人只有群主/管理员能创建（前端隐藏不算权限，命令 fail-closed）。
+    if scope_norm == "group" {
+        let s = state.inner().clone();
+        let gid = target.group_id.clone().unwrap_or_default();
+        let me = s.device_id.clone();
+        let allowed = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            let g = db::get_group(&dbc, &gid).ok_or("群不存在")?;
+            Ok(g.creator == me || g.admins.contains(&me))
+        })
+        .await
+        .map_err(|e| format!("权限检查中断：{e}"))??;
+        if !allowed {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::BOT_TARGET_INVALID,
+                "只有群主或管理员可以在群里添加机器人",
+            ));
+        }
+    }
 
     let client = bot_client()?;
     let body = serde_json::to_string(&serde_json::json!({ "name": bot_name, "target": target }))
@@ -291,6 +323,8 @@ pub async fn bot_create(
     let record = BotRecord {
         bot_id: created.bot_id.clone(),
         name: if created.name.trim().is_empty() { bot_name } else { created.name },
+        scope: scope_norm.to_string(),
+        do_not_disturb: do_not_disturb.unwrap_or(false),
         server_url: server.clone(),
         client_token: created.client_token.clone(),
         target: if created.target.kind.is_empty() { target } else { created.target },
@@ -304,9 +338,19 @@ pub async fn bot_create(
     let view = BotView::from(&record);
     // 落库：写库失败 ⇒ 服务端那个机器人也一并撤销（别留一个孤儿机器人）。
     let s = state.inner().clone();
+    let conv_id_for_new = if scope_norm == "personal" {
+        Some(format!("bot:{}", created.bot_id))
+    } else { None };
+    let bot_name_for_conv = record.name.clone();
     let persist = tokio::task::spawn_blocking(move || -> Result<(), String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::save_bot(&dbc, &record).map_err(|e| format!("保存机器人失败：{e}"))
+        db::save_bot(&dbc, &record).map_err(|e| format!("保存机器人失败：{e}"))?;
+        // v6：个人机器人当场进会话列表（像联系人一样），哪怕还没收到第一条通知。
+        if let Some(cid) = conv_id_for_new {
+            db::ensure_conversation(&dbc, &cid, "single", &format!("{} · 机器人", bot_name_for_conv), None)
+                .map_err(|e| format!("创建机器人会话失败：{e}"))?;
+        }
+        Ok(())
     })
     .await
     .map_err(|e| format!("保存任务中断：{e}"))?;
@@ -344,6 +388,35 @@ pub async fn bot_list(state: State<'_, Arc<AppState>>) -> Result<Vec<BotView>, S
     .await
     .map_err(|e| format!("读取任务中断：{e}"))??;
     Ok(records.iter().map(BotView::from).collect())
+}
+
+/// v6：免打扰（只影响系统通知/任务栏闪烁，不影响进会话与未读角标）。
+#[tauri::command(async)]
+pub async fn bot_set_dnd(
+    state: State<'_, Arc<AppState>>,
+    bot_id: String,
+    enabled: bool,
+) -> Result<BotView, String> {
+    let s = state.inner().clone();
+    let record = tokio::task::spawn_blocking({
+        let sd = s.clone();
+        let bid = bot_id.clone();
+        move || -> Result<Option<BotRecord>, String> {
+            let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::load_bot(&dbc, &bid).map_err(|e| format!("读取机器人失败：{e}"))
+        }
+    }).await.map_err(|e| format!("读取任务中断：{e}"))??;
+    let Some(mut record) = record else {
+        return Err(crate::error_codes::coded(crate::error_codes::BOT_NOT_FOUND, "机器人不存在"));
+    };
+    record.do_not_disturb = enabled;
+    let view = BotView::from(&record);
+    let rec = record.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::save_bot(&dbc, &rec).map_err(|e| format!("保存机器人失败：{e}"))
+    }).await.map_err(|e| format!("保存任务中断：{e}"))??;
+    Ok(view)
 }
 
 /// 暂停 / 恢复 / 撤销。
@@ -407,9 +480,14 @@ pub async fn bot_set_status(
     }
     let view = BotView::from(&record);
     let rec = record.clone();
+    let conv_to_drop = if next == "revoked" && rec.target.kind != "group" {
+        Some(format!("bot:{}", rec.bot_id))
+    } else { None };
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::save_bot(&dbc, &rec).map_err(|e| format!("保存机器人状态失败：{e}"))
+        db::save_bot(&dbc, &rec).map_err(|e| format!("保存机器人状态失败：{e}"))?;
+        if let Some(cid) = conv_to_drop { let _ = db::delete_conversation(&dbc, &cid); }
+        Ok(())
     })
     .await
     .map_err(|e| format!("保存任务中断：{e}"))??;
@@ -453,21 +531,6 @@ pub async fn bot_delete(
         }
     }
     Ok(())
-}
-
-/// 收件箱（某个机器人的消息列表，新的在前）。
-#[tauri::command(async)]
-pub async fn bot_inbox(
-    state: State<'_, Arc<AppState>>,
-    bot_id: String,
-) -> Result<Vec<BotInboxEntry>, String> {
-    let s = state.inner().clone();
-    tokio::task::spawn_blocking(move || -> Result<Vec<BotInboxEntry>, String> {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::load_inbox(&dbc, &bot_id).map_err(|e| format!("读取收件箱失败：{e}"))
-    })
-    .await
-    .map_err(|e| format!("读取任务中断：{e}"))?
 }
 
 /// 拉一次件并投递（**先落本地、再 ACK**）。
@@ -616,6 +679,9 @@ async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str) -> Result<BotPullOutcome
     Ok(outcome)
 }
 
+/// 会话列表里机器人消息正文的摘要长度（完整正文仍在收件箱/详情里）。
+const PERSONAL_PREVIEW_MAX: usize = 240;
+
 /// 一次取件的计数。
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
@@ -635,16 +701,39 @@ async fn deliver_event(
     entry: &BotInboxEntry,
 ) -> Result<(), String> {
     match record.target.kind.as_str() {
-        "inbox" => {
+        "inbox" | "personal" => {
+            // v6：个人机器人 = 本机假身份会话。消息落 messages + 会话列表，
+            // sender_id = conv_id = `bot:<id>` ⇒ **不写 outbox** ⇒ 不上网络、不跨设备。
             let bot_id = record.bot_id.clone();
+            let bot_name = record.name.clone();
             let e = entry.clone();
             let sd = s.clone();
-            tokio::task::spawn_blocking(move || -> Result<bool, String> {
+            tokio::task::spawn_blocking(move || -> Result<(), String> {
                 let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::append_inbox(&dbc, &bot_id, &e).map_err(|e| format!("写入收件箱失败：{e}"))
-            })
-            .await
-            .map_err(|e| format!("写入任务中断：{e}"))??;
+                if !db::append_inbox(&dbc, &bot_id, &e)
+                    .map_err(|x| format!("写入收件箱失败：{x}"))? { return Ok(()); }
+                let conv_id = format!("bot:{bot_id}");
+                let msg_id = format!("botmsg-{}", e.event_id);
+                let ts = e.received_at;
+                let seq: i64 = dbc.query_row(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conv_id = ?1",
+                    rusqlite::params![conv_id], |r| r.get(0),
+                ).unwrap_or(1);
+                let content = if e.text.len() > PERSONAL_PREVIEW_MAX {
+                    format!("{}…", &e.text[..PERSONAL_PREVIEW_MAX])
+                } else { e.text.clone() };
+                let rec = crate::state::MessageRecord {
+                    id: 0, msg_id: msg_id.clone(), conv_id: conv_id.clone(),
+                    sender_id: conv_id.clone(), receiver_id: sd.device_id.clone(),
+                    kind: "text".into(), content, ts, seq, status: "delivered".into(),
+                    mention_targets: None, local_id: Some(msg_id), fail_code: None,
+                };
+                // ⚠️ 只写本地消息表，**不**写 outbox（Frozen Core 红线，勿加可靠发送队列）。
+                db::insert_message(&dbc, &rec).map_err(|x| format!("写入机器人消息失败：{x}"))?;
+                db::touch_conversation(&dbc, &conv_id, "single", &format!("{} · 机器人", bot_name), None, &rec.content, 1)
+                    .map_err(|x| format!("更新机器人会话失败：{x}"))?;
+                Ok(())
+            }).await.map_err(|x| format!("写入任务中断：{x}"))??;
             Ok(())
         }
         "group" => {
@@ -784,6 +873,8 @@ mod bot_cmd_tests {
         BotRecord {
             bot_id: "bot_1".into(),
             name: "CI 通知".into(),
+            scope: "personal".into(),
+            do_not_disturb: false,
             server_url: "https://hooks.example.com".into(),
             client_token: "super-token".into(),
             target: BotTarget {
@@ -903,6 +994,33 @@ mod bot_cmd_tests {
             deliver < ack,
             "ACK 必须写在投递之后（先落本地、再 ACK）",
         );
+    }
+
+    #[test]
+    fn personal_bots_never_enter_the_network_outbox() {
+        let src = include_str!("bots.rs");
+        let prod = &src[..src.find("mod bot_cmd_tests").unwrap_or(src.len())];
+        let at = prod.find("\"inbox\" | \"personal\" =>").expect("没有个人投递分支");
+        let personal = &prod[at..];
+        assert!(personal.contains("db::insert_message"), "个人 bot 消息必须落本机 messages 表");
+        assert!(!personal.contains("insert_message_and_outbox"), "个人 bot 绝不能写 outbox（Frozen Core 红线）");
+        assert!(personal.contains("db::touch_conversation("), "个人 bot 必须有会话行");
+    }
+
+    #[test]
+    fn group_bot_creation_checks_group_admin() {
+        let src = include_str!("bots.rs");
+        let prod = &src[..src.find("mod bot_cmd_tests").unwrap_or(src.len())];
+        let at = prod.find("只有群主或管理员可以在群里添加机器人").expect("没有群权限校验");
+        assert!(prod[..at].contains("g.creator == me || g.admins.contains(&me)"), "群权限判定错了");
+    }
+
+    #[test]
+    fn dnd_is_a_local_preference_command() {
+        let src = include_str!("bots.rs");
+        let prod = &src[..src.find("mod bot_cmd_tests").unwrap_or(src.len())];
+        assert!(prod.contains("pub async fn bot_set_dnd("), "缺免打扰命令");
+        assert!(prod.contains("record.do_not_disturb = enabled"), "免打扰没写进记录");
     }
 
     /// 后台轮询 worker 存在，且**已接线**（不是「有个函数但没人调」）。

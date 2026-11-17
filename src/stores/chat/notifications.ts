@@ -171,8 +171,22 @@ export function createNotificationsModule(ctx: ChatContext) {
    * 没有会话 id ⇒ 没有可路由的会话，必须显式说清去处。
    */
   function subscribeBotEvents(): Promise<() => void> {
-    return api.onBotInboxUpdated((_botId, count) => {
+    return api.onBotInboxUpdated((botId, count) => {
       if (!app.notifyEnabled || count <= 0) return;
+      // v6：免打扰只压**系统通知/任务栏闪烁**，不挡消息进会话与未读角标。
+      // 事件载荷带 bot_id ⇒ 查这个 bot 的 dnd（列表里不含密钥，安全）。
+      void api.botList().then((bots) => {
+        const self = bots.find((b) => b.botId === botId);
+        if (self?.doNotDisturb) return;
+        void emitBotSystemNotice(count);
+      }).catch(() => {
+        // 查不到 bot（刚被删）⇒ 仍发摘要（消息确实到了，不该静默）。
+        void emitBotSystemNotice(count);
+      });
+    });
+  }
+
+  function emitBotSystemNotice(count: number) {
       void app.ensureNotifyPermission().then((granted) => {
         if (!granted) return;
         void sendNotification({
@@ -183,7 +197,6 @@ export function createNotificationsModule(ctx: ChatContext) {
           extra: { type: "bot" },
         });
       });
-    });
   }
 
   function requestAttentionOnce(urgent: boolean) {
