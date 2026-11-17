@@ -596,7 +596,14 @@ pub async fn bot_set_profile(
         //    bot_id 创建后**永不改变**（它是会话 id 的一部分，改了会丢历史）。
         if let Some(u) = server_url {
             if !u.trim().is_empty() {
-                rec.server_url = normalize_bot_server(&u)?;
+                let normalized = normalize_bot_server(&u)?;
+                // 链接联动（用户 2026-11-17）：换了服务地址，发送链接的 origin 也要跟着换，
+                // 否则详情页还显示旧域名、复制出去的地址连不上新服务。
+                if let Some(pos) = rec.publish_url.find("/publish/") {
+                    let path = rec.publish_url[pos..].to_string();
+                    rec.publish_url = format!("{}{}", normalized.trim_end_matches('/'), path);
+                }
+                rec.server_url = normalized;
             }
         }
         db::save_bot(&dbc, &rec).map_err(|e| format!("保存机器人资料失败：{e}"))?;

@@ -81,6 +81,11 @@ const props = withDefaults(
     showUnreadDivider?: boolean;
     /** 群聊发送者昵称（由父组件解析） */
     senderName?: string;
+    /**
+     * 群机器人代发的消息：以「对方」渲染（头像/昵称用机器人身份）。
+     * 机器人实际以本机身份入线（线格式不动），这里只改展示层。
+     */
+    botSender?: { id: string; name: string; avatar?: string | null } | null;
     /** 已读该群消息的成员 ID（由父组件按消息时间计算） */
     groupReaderIds?: string[];
     /** 正在闪烁定位的消息键（点击引用块跳转时高亮 1.6s） */
@@ -124,6 +129,7 @@ const props = withDefaults(
     canReact: false,
     showUnreadDivider: false,
     senderName: "",
+    botSender: null,
     groupReaderIds: () => EMPTY_STRING_LIST,
     highlightId: null,
     mentionNames: () => EMPTY_STRING_LIST,
@@ -212,6 +218,7 @@ const display = useMessageDisplay({
   prev: () => props.prev,
   isGroup: () => props.isGroup,
   groupSide: () => props.groupSide,
+  forceIncoming: () => !!props.botSender,
 });
 const {
   mine,
@@ -322,17 +329,19 @@ function copyOut(content: string): string {
  *  群聊由父组件传 nicknameOf 结果；单聊在此兜一把。
  *  ⚠️ 不再往后面接 `|| sender_id`：`chat.nicknameOf` 判不到时返回「未知成员 + id 后四位」，
  *  永远非空 —— 再接一次就是把第二条兜底写进第二个家（见 `utils/memberName.ts`）。 */
-const avatarName = computed(() =>
-  mine.value
+const avatarName = computed(() => {
+  if (props.botSender) return props.botSender.name;
+  return mine.value
     ? app.device?.nickname || ""
-    : props.senderName || chat.nicknameOf(props.message.sender_id),
-);
+    : props.senderName || chat.nicknameOf(props.message.sender_id);
+});
 /**
  * 头像：自己取本机；对端从好友/在线节点表取（peer 改资料后由 syncProfileFromPeers
  * 同步到 friends / peers，这里读到的就是最新头像）。没有头像就走 MessageAvatar 的
  * avatarSeed 默认块——同一个人（同一个设备 id）在单聊/群聊/消息列表永远同一张脸。
  */
 const avatarSrc = computed(() => {
+  if (props.botSender) return props.botSender.avatar ?? null;
   if (mine.value) return app.device?.avatar ?? null;
   return memberProfile(props.message.sender_id).avatar;
 });
@@ -1745,10 +1754,10 @@ async function copyFileToClipboard() {
           type="button"
           class="tap-safe shrink-0 rounded-[var(--gosslan-avatar-radius)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
           :aria-label="t('friend.openProfile', { name: avatarName })"
-          @click="emit('open-profile', message.sender_id)"
+          @click="emit('open-profile', botSender ? botSender.id : message.sender_id)"
         >
           <MessageAvatar
-            :id="message.sender_id"
+            :id="botSender ? botSender.id : message.sender_id"
             :name="avatarName"
             :avatar="avatarSrc"
             :size="'var(--gosslan-msg-avatar)'"
