@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * 全局动效守卫（2026-11-04 用户全局原则，见 docs/design-guidelines.md §11.3.7）：
@@ -16,7 +17,8 @@ import { join } from "node:path";
  * 反例自证：文件末尾把旧写法喂进同一个判定函数，必须报红。
  */
 
-const SRC = new URL("..", import.meta.url).pathname;
+// fileURLToPath：Windows 上 .pathname 是 "/D:/..."，fs 会解析成 "D:\D:\..." 假路径（POSIX 等价）。
+const SRC = fileURLToPath(new URL("..", import.meta.url));
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {

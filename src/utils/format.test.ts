@@ -28,7 +28,7 @@ test("字节格式化只有一个家：src 下不许再出现第二份实现（�
         walk(p);
       } else if (/\.(ts|vue)$/.test(e.name) && !e.name.endsWith(".test.ts")) {
         const src = fs.readFileSync(p, "utf8");
-        if (/function formatBytes\s*\(/.test(src)) hits.push(path.relative(root, p));
+        if (/function formatBytes\s*\(/.test(src)) hits.push(path.relative(root, p).replaceAll("\\", "/"));
       }
     }
   };

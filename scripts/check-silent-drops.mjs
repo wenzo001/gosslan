@@ -27,7 +27,7 @@ import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from "
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { stripRust, stripCfgTest } from "./check-panic-sites.mjs";
+import { stripRust, stripCfgTest, toBaselineKey } from "./check-panic-sites.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SRC = join(ROOT, "src-tauri", "src");
@@ -114,6 +114,13 @@ function runSelfTest() {
   }
   // 反控：普通 db 写不算硬零（否则硬零等于全表，改一处就红，没人会去清）
   assert.equal(analyzeSilentDrops(`fn f() { db::add_friend(c).ok(); }`).sites[0].hardZero, false);
+  // 基线键 posix 化自证（平台各证一半）：Windows 反斜杠必须转成 /，posix 必须恒等。
+  if (process.platform === "win32") {
+    assert.equal(toBaselineKey("a\\b\\c.rs"), "a/b/c.rs");
+    assert.equal(toBaselineKey("a/b.rs"), "a/b.rs");
+  } else {
+    assert.equal(toBaselineKey("a/b.rs"), "a/b.rs");
+  }
   console.log(`✓ 自检通过：${cases.length + 4} 条正反控`);
 }
 
@@ -127,7 +134,7 @@ function main() {
   const counts = {};
   const hardZero = [];
   for (const p of files) {
-    const rel = p.slice(SRC.length + 1);
+    const rel = toBaselineKey(p.slice(SRC.length + 1));
     const { count, sites } = analyzeSilentDrops(readFileSync(p, "utf8"));
     if (count > 0) counts[rel] = count;
     for (const s of sites) {
@@ -152,7 +159,7 @@ function main() {
       READ.test(stmt) ? "L3-其它" : PROMISE.test(stmt) ? "L1-写库承诺" : BEST_EFFORT.test(stmt) ? "L2-尽力而为" : "L3-其它";
     const byLevel = { "L1-写库承诺": [], "L2-尽力而为": [], "L3-其它": [] };
     for (const p of files) {
-      const rel = p.slice(SRC.length + 1);
+      const rel = toBaselineKey(p.slice(SRC.length + 1));
       for (const site of analyzeSilentDrops(readFileSync(p, "utf8")).sites) {
         byLevel[level(site.stmt)].push(`${rel}:${site.line}  ${site.stmt}`);
       }

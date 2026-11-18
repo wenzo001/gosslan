@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, chmodSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * `scripts/publish-release-assets.sh` 的行为用例（不需要凭据、不需要 runner）。
@@ -20,6 +20,34 @@ import { join } from "node:path";
  * 而没带仓库上下文，而当时的本地判据对这件事完全无感（七种结局照样全绿）。
  */
 const SCRIPT = join(import.meta.dirname, "publish-release-assets.sh");
+
+/**
+ * 传给 bash 的路径一律 posix 化（仅 Windows 生效；POSIX 上是无操作）：
+ * bash 会把反斜杠当转义符吃掉 —— `D:\fwd\...\x.sh` 进 bash 变成
+ * `D:fwdcodegosslanscriptspublish-release-assets.sh`（2026-11-18 Windows 实测 18 条用例全红）。
+ * git-bash / MSYS 对 `D:/...` 正斜杠盘符路径完全认账。
+ */
+const bashPath = (p: string): string =>
+  process.platform === "win32" ? p.replaceAll("\\", "/") : p;
+
+/**
+ * 选对 bash：Windows 的 PATH 上 `bash` 通常是 **WSL 的**（`C:\Windows\System32\bash.exe`），
+ * 它读不到 `D:/...` 形状的路径，整族用例会假红（2026-11-18 实测 18 条）。
+ * 本仓 `.sh` 的目标解释器是 git-bash：从 PATH 上的 git.exe 反推同仓的 `usr\bin\bash.exe`；
+ * POSIX 上 `bash` 就是正确解释器，原样返回。
+ */
+function resolveBash(): { bash: string; usrBin: string | null } {
+  if (process.platform !== "win32") return { bash: "bash", usrBin: null };
+  const where = spawnSync("where.exe", ["git"], { encoding: "utf8" });
+  const gitPath = where.stdout?.split(/\r?\n/).find((l) => l.trim());
+  if (gitPath) {
+    const gitRoot = dirname(dirname(gitPath.trim()));
+    const candidate = join(gitRoot, "usr", "bin", "bash.exe");
+    if (existsSync(candidate)) return { bash: candidate, usrBin: join(gitRoot, "usr", "bin") };
+  }
+  return { bash: "bash", usrBin: null };
+}
+const { bash: BASH, usrBin: GIT_USR_BIN } = resolveBash();
 
 /** 假 `gh`：把每次调用的参数写进 log，再按 FAKE_SCENARIO 决定退码与输出。 */
 const FAKE_GH = `#!/usr/bin/env bash
@@ -108,9 +136,9 @@ function run(
   const names = opts.names ?? Array.from({ length: n }, (_, i) => `Gosslan_${i}.dmg`);
   for (const nm of names) writeFileSync(join(assets, nm), "x");
 
-  const r = spawnSync("bash", [
-    SCRIPT,
-    "--assets", assets,
+  const r = spawnSync(BASH, [
+    bashPath(SCRIPT),
+    "--assets", bashPath(assets),
     // ★ 必须显式声明档位：脚本不认"默认档"（2026-10-03 起）—— 新加一档却忘了声明会红，
     //   而默默按 base 放行恰好是那次静默覆盖 bug 的形状。这批夹具默认是 macOS 那种
     //   `Gosslan_x.dmg`，属于默认档。
@@ -124,7 +152,14 @@ function run(
     encoding: "utf8",
     env: {
       ...process.env,
-      PATH: `${binDir}:${process.env.PATH}`,
+      // Windows 的 PATH 用 `;` 分隔（MSYS bash 启动时会整条转成 POSIX 形状）；
+      // POSIX 保持 `:`。两个世界都让假 gh 能从 binDir 里被解析到。
+      // ⚠️ git-bash 的 usr\bin 也要前置：非登录 shell 不会自己补 `/usr/bin`，
+      //    脚本里的 `find`/`sort`/`sleep` 会解析到 System32 的 DOS 版
+      //    （`FIND: Parameter format not correct` ⇒ 文件清单为空 ⇒ 假红，2026-11-18 实测）。
+      PATH: process.platform === "win32"
+        ? `${binDir};${GIT_USR_BIN ?? ""};${process.env.PATH}`
+        : `${binDir}:${process.env.PATH}`,
       // ★ 故意把 LC_CTYPE 固定成 UTF-8：macOS 自带 bash 3.2 在该 locale 下会把紧跟变量名的
       //   全角标点第一个字节当进名字（$upload_err）⇒ set -u 报 unbound）。护栏整跑正是踩在
       //   这个 locale 上（CPython 的 C-locale 强转把 LC_CTYPE=C.UTF-8 复制给了子进程），
@@ -132,8 +167,8 @@ function run(
       LC_CTYPE: "C.UTF-8",
       GH_BIN: "gh",
       FAKE_SCENARIO: scenario,
-      FAKE_GH_LOG: log,
-      FAKE_GH_STATE: state,
+      FAKE_GH_LOG: bashPath(log),
+      FAKE_GH_STATE: bashPath(state),
       // 这套用例测的是**发布行为**，不是 Verify 门禁本身；GitHub Actions 里
       // `GITHUB_ACTIONS=true` 是全局环境变量，不显式跳过的话门禁会在每个用例里
       // 抢在 `--sha` 校验之前失败（2026-10-27 Android CI 实测三条红）。

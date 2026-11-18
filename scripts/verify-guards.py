@@ -168,7 +168,9 @@ def npm_test_corpus() -> tuple[set[str], list[str]]:
     globs = [t for t in re.findall(r'"([^"]*)"', test_cmd) if "*" in t]
     if not globs:
         raise RuntimeError(f"从 `npm test` 里解析不到任何 glob，命令串是：{test_cmd!r}")
-    corpus = {str(p.relative_to(ROOT)) for g in globs for p in ROOT.glob(g)}
+    # as_posix()：Windows 上 relative_to() 给反斜杠键，而用例点名的文件是 posix 形式
+    # ⇒ 不归一的话**每一条**用例都被判成"不在语料里"（2026-11-18 Windows 实测 130+ 条假红）。
+    corpus = {p.relative_to(ROOT).as_posix() for g in globs for p in ROOT.glob(g)}
     if len(corpus) < 10:
         raise RuntimeError(f"`npm test` 的 glob {globs} 只展开出 {len(corpus)} 个文件，量具不可信")
     return corpus, globs

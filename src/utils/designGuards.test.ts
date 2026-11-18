@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { disabledOpacityFromClasses, disabledOpacityFromRule, parseTokenScopes } from "./tokenContrast.ts";
 import { TODO_AUTO_ARCHIVE_DAYS } from "./todos.ts";
 import { mentionHighlightBg } from "./chatStyle.ts";
@@ -810,7 +811,7 @@ test("src 下所有小尺寸可交互元素都带 tap-safe", () => {
   const bad: string[] = [];
   for (const f of files) {
     for (const issue of findSmallTapTargets(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `以下元素点按目标过小：\n${bad.join("\n")}`);
@@ -843,7 +844,7 @@ test("src 下所有默认头像都对读屏隐藏", () => {
     const src = readFileSync(f, "utf8");
     seen += (src.match(/gosslan-avatar-emoji/g) ?? []).length;
     for (const issue of findAvatarFaceWithoutAriaHidden(src)) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   // 判据不能空转。2026-10-29 审计 DUP-08 之后"十几处"这件事搬家了：画法只剩一个家，
@@ -865,7 +866,7 @@ test("src 下所有 as=template 的插槽都干净（无注释、单节点）", 
   const bad: string[] = [];
   for (const f of files) {
     for (const issue of findTemplateSlotIssues(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `以下 as="template" 插槽有问题：\n${bad.join("\n")}`);
@@ -878,7 +879,7 @@ test("src 下所有 outline-none 都自带焦点指示", () => {
   const bad: string[] = [];
   for (const f of files) {
     for (const issue of findOutlineNoneWithoutFocusRing(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `以下元素关掉了焦点指示却没有替代：\n${bad.join("\n")}`);
@@ -894,7 +895,7 @@ test("src 下所有可点击元素都能用键盘触发（含 ⑥ 补上的那�
     const src = readFileSync(f, "utf8");
     seen += countClickActionTags(src);
     for (const issue of findTappableWithoutKeyboard(src)) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   // 分母必须自己说话：一个"非交互标签 + 动作 @click"都看不见时，这条判据（尤其新加的那一半）就是空转。
@@ -923,7 +924,7 @@ test("src 下所有 .vue 的悬停揭示都带了触屏兜底", () => {
   const bad: string[] = [];
   for (const f of files) {
     for (const issue of findHoverRevealIssues(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `发现缺少触屏兜底的悬停揭示：\n${bad.join("\n")}`);
@@ -935,7 +936,7 @@ test("src 下所有 .vue 的截断文本都带了 title / aria-label", () => {
   const bad: string[] = [];
   for (const f of files) {
     for (const issue of findTruncationWithoutTitle(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `发现被截断却没有 title 的文本：\n${bad.join("\n")}`);
@@ -1001,7 +1002,7 @@ test("src 下所有 .vue 的 whitespace-pre-wrap 都配了断词", () => {
     const raw = readFileSync(f, "utf8");
     preWrapSites += countPreWrapSites(raw);
     for (const issue of findPreWrapWithoutBreak(raw)) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   // 非空转下限：这条判据守的是一族站点，数量掉到 8 以下说明提取器或类名改了形状
@@ -1088,7 +1089,7 @@ test("原生 <select> 不得回到模板；真实组件注入必须报（正控�
   const bad: string[] = [];
   for (const f of files) {
     for (const issue of findNativeSelect(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `模板里还有原生 select：\n${bad.join("\n")}`);
@@ -1101,7 +1102,7 @@ test("v-html 只出现在构造即转义的三处；新增位置必须登记（�
   const files = collectVueFiles(srcDir);
   const hits: { file: string; line: number; expr: string }[] = [];
   for (const f of files) {
-    const rel = f.replace(srcDir + "/", "");
+    const rel = f.slice(srcDir.length + 1).replaceAll("\\", "/");
     for (const s of findVHtmlSinks(readFileSync(f, "utf8"))) hits.push({ file: rel, ...s });
   }
   const filesWith = [...new Set(hits.map((h) => h.file))].sort();
@@ -1202,7 +1203,7 @@ test("未读徽标只有 UnreadBadge.vue 一处实现，且保留了垂直居中
   for (const f of files) {
     if (f === badgePath) continue;
     for (const issue of findHandWrittenBadges(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `发现有手写的未读徽标：\n${bad.join("\n")}`);
@@ -1800,7 +1801,7 @@ test("图片预览只有一处渲染点，其余组件一律走 useImagePreviewS
   const stateful: string[] = [];
   for (const f of files) {
     const src = readFileSync(f, "utf8");
-    const rel = f.replace(srcDir + "/", "");
+    const rel = f.slice(srcDir.length + 1).replaceAll("\\", "/");
     // 只数**模板段里、去掉 HTML 注释之后**的元素。
     // 为什么不是"看行首是不是 `<!--`"：注释常常是多行的，提到 `<ImageLightbox>`
     // 的那一行本身不带 `<!--`（第一版就是这么写的，结果三处注释全被当成渲染点）。
@@ -1917,7 +1918,7 @@ test("src 下没有任何一处还在走字母头像", () => {
   const bad: string[] = [];
   for (const f of files) {
     for (const issue of findRetiredLetterAvatarUsage(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `字母头像复活了：\n${bad.join("\n")}`);
@@ -1982,7 +1983,7 @@ test("src 下每个修饰类都能在样式里找到定义", () => {
   for (const f of files) {
     const src = readFileSync(f, "utf8");
     for (const issue of findModifierClassWithoutStyle(src, globalCss)) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   // "解析器今天到底认出了几枚"由上一条用例防空转（同一条口径，不留第二把尺子）
@@ -2011,7 +2012,7 @@ test("整屏图片覆盖层只许长在统一渲染点（私有 viewer 是第二
   const ALLOWED = new Set(["layouts/ResponsiveLayout.vue", "components/GroupTodosWindow.vue"]);
   const offenders: string[] = [];
   for (const f of files) {
-    const rel = f.replace(srcDir + "/", "");
+    const rel = f.slice(srcDir.length + 1).replaceAll("\\", "/");
     if (ALLOWED.has(rel)) continue;
     const full = readFileSync(f, "utf8");
     const tplAt = full.indexOf("<template>");
@@ -2066,7 +2067,7 @@ test("每个任务图片缩略图调用点都必须可点（clickable 默认 fal
       sites += 1;
       const tag = m[0];
       if (!/\bclickable\b/.test(tag) || !/@open=/.test(tag)) {
-        offenders.push(f.replace(srcDir + "/", ""));
+        offenders.push(f.slice(srcDir.length + 1).replaceAll("\\", "/"));
       }
     }
   }
@@ -2110,12 +2111,12 @@ test("任务描述必须经统一渲染件出 @，不许再裸插值", () => {
     const localRenders = tpl.match(/\{\{\s*description\s*\}\}/g) ?? [];
     sites += renders.length + localRenders.length;
     for (const m of tpl.matchAll(/\{\{\s*[\w$]+(?:\.[\w$]+)*\.description\s*\}\}/g)) {
-      offenders.push(`${f.replace(srcDir + "/", "")}（${m[0]}）`);
+      offenders.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}（${m[0]}）`);
     }
     // 卡片先取实时表（`live`）再渲染本地 `description` 也是一种正常形状；
     // 但若退回裸插值，同样会丢掉 @ 高亮 ⇒ 两种写法都要点名。
     for (const m of tpl.matchAll(/\{\{\s*description\s*\}\}/g)) {
-      offenders.push(`${f.replace(srcDir + "/", "")}（${m[0]}）`);
+      offenders.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}（${m[0]}）`);
     }
   }
   // 空转前置：一个渲染点都没数到 ⇒ 任务描述被整族摘掉或改名了，这条判据就恒过
@@ -2163,7 +2164,7 @@ test("查看者视角的 @ 文案只许存在于 i18n 名单里，生产码不�
   const offenders: string[] = [];
   let scanned = 0;
   for (const f of walk(srcDir)) {
-    const rel = f.replace(srcDir + "/", "");
+    const rel = f.slice(srcDir.length + 1).replaceAll("\\", "/");
     if (DICT_FILES.has(rel) || rel.endsWith(".test.ts")) continue;
     scanned += 1;
     const code = readFileSync(f, "utf8")
@@ -2201,7 +2202,7 @@ test("「与我相关」徽标只许 store 算一次，两处 UI 必须消费同
   const offenders: string[] = [];
   for (const f of files) {
     const code = readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    if (recomputeRe.test(code)) offenders.push(f.replace(srcDir + "/", ""));
+    if (recomputeRe.test(code)) offenders.push(f.slice(srcDir.length + 1).replaceAll("\\", "/"));
     recomputeRe.lastIndex = 0;
   }
   assert.deepEqual(
@@ -2312,7 +2313,7 @@ test("「有人@我」只许走 messageMentionsMe：昵称判定不许在调用�
   const offenders: string[] = [];
   let scanned = 0;
   for (const f of walk(srcDir)) {
-    const rel = f.replace(srcDir + "/", "");
+    const rel = f.slice(srcDir.length + 1).replaceAll("\\", "/");
     // messages.ts 是三态那条兜底的**唯一**合法落点；测试里按名字判是夹具的一部分
     if (rel === "utils/messages.ts" || rel.endsWith(".test.ts")) continue;
     scanned += 1;
@@ -2704,7 +2705,7 @@ test("头像框只许住在 ui/AvatarBox.vue：别处再写一份盒子必须报
   const srcDir = join(import.meta.dirname, "..");
   const files = collectVueFiles(srcDir);
   const boxes = files.filter((f) => /class="gosslan-avatar-box/.test(readFileSync(f, "utf8")));
-  const rels = boxes.map((f) => f.replace(srcDir + "/", "")).sort();
+  const rels = boxes.map((f) => f.slice(srcDir.length + 1).replaceAll("\\", "/")).sort();
   assert.deepEqual(rels, ["components/ui/AvatarBox.vue"],
     `gosslan-avatar-box 又长出第二份：${rels.join(", ")}`);
   // 正控：往真组件里塞一份盒子，扫描器必须读得出来（不是"扫到 0 处所以恒真"）
@@ -2722,7 +2723,7 @@ test("AvatarBox 的档位只能三选一；SelfAvatar 不许被喂不存在的 p
   const srcDir = join(import.meta.dirname, "..");
   const bad: string[] = [];
   for (const f of collectVueFiles(srcDir)) {
-    const rel = f.replace(srcDir + "/", "");
+    const rel = f.slice(srcDir.length + 1).replaceAll("\\", "/");
     if (rel.endsWith("ui/AvatarBox.vue")) continue;
     const src = readFileSync(f, "utf8");
     for (const m of src.matchAll(/<AvatarBox\b[\s\S]*?\/>/g)) {
@@ -2858,7 +2859,7 @@ test("src 下所有自绘菜单都带了底", () => {
   const bad: string[] = [];
   for (const f of files) {
     for (const issue of findMenuWithoutBackdrop(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `发现透明得能看见底下一层的自绘菜单：\n${bad.join("\n")}`);
@@ -2985,7 +2986,7 @@ test("真实树：每个写了顶部安全区的 .vue 都也写了底部（分�
   const bad: string[] = [];
   for (const f of files) {
     const src = readFileSync(f, "utf8");
-    const rel = f.replace(srcDir + "/", "");
+    const rel = f.slice(srcDir.length + 1).replaceAll("\\", "/");
     if (!/pt-\[(?:env\(safe-area-inset-top|var\(--gosslan-inset-top\))/.test(src)) continue;
     sites.push(rel);
     for (const issue of findTopInsetWithoutBottomInset(src)) {
@@ -3039,7 +3040,7 @@ test("真实树：src/components/message 下每条 <img> 都带两个 hint（分
     const src = readFileSync(f, "utf8");
     const n = findImgTags(src).length;
     if (n === 0) continue;
-    const rel = f.startsWith(dir) ? f.replace(dir + "/", "") : "ui/AvatarBox.vue";
+    const rel = f.startsWith(dir) ? f.slice(dir.length + 1).replaceAll("\\", "/") : "ui/AvatarBox.vue";
     sites.push(`${rel}=${n}`);
     if (src.includes("img-eager-ok")) { exemptNames.push(rel); continue; }
     for (const issue of findMessageImageWithoutFetchHint(src)) {
@@ -3215,9 +3216,10 @@ test("㉟ 反面：不是平台判定的 API、注释里的提及、逃生阀都
 test("㉟ 真实树：视图层一个裸写都没有，而正门确实在被用（分母现数）", () => {
   const srcDir = join(import.meta.dirname, "..");
   // 只管**视图层**那两棵树：utils/stores 里做能力判定正是它该待的地方（那就是 common layer）。
-  const files = collectVueFiles(srcDir).filter(
-    (f) => f.includes("/components/") || f.includes("/views/"),
-  );
+  // 路径先 posix 化再判：Windows 的 collectVueFiles 给反斜杠，"/components/" 永远失配 ⇒ 分母 0。
+  const files = collectVueFiles(srcDir)
+    .map((f) => f.replaceAll("\\", "/"))
+    .filter((f) => f.includes("/components/") || f.includes("/views/"));
   assert.ok(files.length >= 60, `视图层只数到 ${files.length} 份 .vue ⇒ 扫描目录大概错了`);
   const bad: string[] = [];
   let throughTheDoor = 0;
@@ -3227,7 +3229,7 @@ test("㉟ 真实树：视图层一个裸写都没有，而正门确实在被用�
     // 消息一起带上：注入档（guard_cases）的 fail-hint 要能在失败输出里匹配到判据自己那句话，
     // 只推 "文件:行号" 会让红变成"定位到了但说不出守的是哪一格"。
     for (const i of findRawPlatformCheckInViewLayer(src)) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${i.line} ${i.message.slice(0, 52)}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${i.line} ${i.message.slice(0, 52)}`);
     }
   }
   assert.deepEqual(bad, [], `视图层又出现裸写的平台/能力探测：\n${bad.join("\n")}`);
@@ -3380,7 +3382,7 @@ test("㊱ 真实树：全 src 的 .vue 里没有一处「可见浮层裸 inset-0
   const bad: string[] = [];
   for (const f of files) {
     for (const issue of findFixedOverlayWithoutWindowSafeTop(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}`);
     }
   }
   // 分母自检：一份都没扫到说明路径/遍历坏了，那种绿不算数（㉜ 同一课）。
@@ -3593,7 +3595,7 @@ test("㊴ 真实树：全 src 的 .vue 没有字面圆角（分母现算）", ()
   const bad: string[] = [];
   for (const f of files) {
     for (const issue of findLiteralRadiusClasses(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `以下位置写了字面圆角：\n${bad.join("\n")}`);
@@ -3652,7 +3654,7 @@ test("㊵ 真实树：除 iconRegistry.ts 外零直连 lucide", () => {
   const bad: string[] = [];
   for (const f of files) {
     for (const issue of findDirectLucideImports(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `以下位置仍直连 lucide：\n${bad.join("\n")}`);
@@ -3687,7 +3689,7 @@ test("㊵ 模板里字面量 Icon 名必须登记过（夹具 + 真实树）", (
   const bad: string[] = [];
   for (const f of vueFiles) {
     for (const issue of findUnknownIconNames(readFileSync(f, "utf8"), ICON_KEYS)) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `以下 Icon 名不在登记表里：\n${bad.join("\n")}`);
@@ -3735,7 +3737,7 @@ test("取消键：真实树只剩 SecondaryBtn（分母现算）", () => {
 
   const bad: string[] = [];
   for (const f of files) {
-    const rel = f.replace(srcDir + "/", "");
+    const rel = f.slice(srcDir.length + 1).replaceAll("\\", "/");
     if (rel.startsWith("components/ui/")) continue; // 组件自身与 ActionSheet 的 slot 文案
     for (const issue of findHandWrittenCancelButtons(readFileSync(f, "utf8"))) {
       bad.push(`${rel}:${issue.line}  ${issue.message}`);
@@ -3780,7 +3782,7 @@ test("outline：真实树只剩 SecondaryBtn（分母现算）", () => {
   for (const f of files) {
     if (f.endsWith("components/ui/SecondaryBtn.vue")) continue;
     for (const issue of findHandWrittenOutlineButtons(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `以下位置仍在手写/旧写法使用 outline 档：\n${bad.join("\n")}`);
@@ -3847,9 +3849,9 @@ test("㊶ 真实树：实底危险按钮只剩 DangerBtn（分母现算）", () 
 
   const bad: string[] = [];
   for (const f of files) {
-    if (f.endsWith("components/ui/DangerBtn.vue")) continue;
+    if (f.replaceAll("\\", "/").endsWith("components/ui/DangerBtn.vue")) continue;
     for (const issue of findHandWrittenSolidDangerButtons(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `以下位置仍在手写实底危险按钮：\n${bad.join("\n")}`);
@@ -4229,7 +4231,7 @@ test("㊸ 真实树：阈值与判定只有 previewMetrics 一个家（分母现
   const bad: string[] = [];
   let importers = 0;
   for (const p of files) {
-    const rel = p.replace(srcDir + "/", "");
+    const rel = p.slice(srcDir.length + 1).replaceAll("\\", "/");
     if (rel === HOME) continue;
     const code = readFileSync(p, "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -4330,7 +4332,7 @@ test("㊹ 真实树：组件自造的 objectURL 全部走 adoptUrl，且那个�
   let createSites = 0;
   let guardedFiles = 0;
   for (const p of files) {
-    const rel = p.replace(srcDir + "/", "");
+    const rel = p.slice(srcDir.length + 1).replaceAll("\\", "/");
     const code = stripCommentsJs(readFileSync(p, "utf8"));
     const created = countMatches(code, OBJ_CREATE_RE);
     if (created === 0) continue;
@@ -4468,7 +4470,7 @@ test("㊺ 真实树：每个 var(--gosslan-*) 消费点都找得到定义（分�
   const used = new Map<string, string[]>();
   let useSites = 0;
   for (const p of files) {
-    const rel = p.replace(srcDir + "/", "");
+    const rel = p.slice(srcDir.length + 1).replaceAll("\\", "/");
     // 判据自己读自己的白名单/夹具，不算消费面（同 ㉞ 那族的"注释与夹具不许被数成调用点"）
     if (rel === "utils/designGuards.test.ts" || rel === "utils/designGuards.ts") continue;
     const code = stripCommentsForTokens(readFileSync(p, "utf8"));
@@ -4614,7 +4616,7 @@ test("㊻ 真实树：底栏占位不许多处各抄一份尺寸（分母现数�
   const tokenUse = new Map<string, number>();
   let sites = 0;
   for (const p of files) {
-    const rel = p.replace(srcDir + "/", "");
+    const rel = p.slice(srcDir.length + 1).replaceAll("\\", "/");
     // 注释里的示例不许被数成占位点（与 ㊺ 同一口径：先剥注释再判）
     const a = auditTabbarPlaceholders(stripCommentsForTokens(readFileSync(p, "utf8")));
     sites += a.sites;
@@ -4691,7 +4693,7 @@ test("㊼ 真实树：整屏覆盖壳只许出自 MobilePageFrame（抄本只许
 
   const shells: string[] = [];
   for (const p of files) {
-    if (hasOverlayShell(readFileSync(p, "utf8"))) shells.push(p.replace(srcDir + "/", ""));
+    if (hasOverlayShell(readFileSync(p, "utf8"))) shells.push(p.slice(srcDir.length + 1).replaceAll("\\", "/"));
   }
 
   // 正控：家自己必须被认出来。扫不到 ⇒ 三段形状改了名，下面两句都在空扫。
@@ -4832,7 +4834,7 @@ test("㊽ 真实树：DOM 监听绑定↔解绑逐点对账（分母现数，名
   let totalAdds = 0;
   let totalDyn = 0;
   for (const p of files) {
-    const rel = p.replace(srcDir + "/", "");
+    const rel = p.slice(srcDir.length + 1).replaceAll("\\", "/");
     const a = auditDomListeners(readFileSync(p, "utf8"));
     totalAdds += a.adds;
     totalDyn += a.dyn;
@@ -4986,7 +4988,7 @@ test("㊿ 生产码里没有人再把两枚相加（缺席型判据：正控 + �
   assert.ok(files.length >= 200, "只扫到 " + files.length + " 份生产码 ⇒ 路径写错了，这条是在测空气");
   const offenders = files
     .filter((f) => SUM_RE.test(code691(readFileSync(f, "utf8"))))
-    .map((f) => f.slice(srcDir691.length + 1));
+    .map((f) => f.slice(srcDir691.length + 1).replaceAll("\\", "/"));
   assert.deepEqual(offenders, [], "又把 caption 和安全区叠起来了：" + offenders.join(", "));
   // 正控：迁移前 ImageLightbox 就是这一串，量具抓得住它（抓不住 ⇒ 上面那条 deepEqual 是空的）。
   assert.ok(
@@ -5124,7 +5126,7 @@ test("52 has-caption 的写者恰好是 TitleBar 一处，且与 caption 的渲�
   const WRITE_694 = /classList\.(?:toggle|add|remove)\(\s*["']has-caption["']/;
   const writers = files
     .filter((f) => WRITE_694.test(code691(readFileSync(f, "utf8"))))
-    .map((f) => f.slice(srcDir691.length + 1));
+    .map((f) => f.slice(srcDir691.length + 1).replaceAll("\\", "/"));
   assert.deepEqual(writers, ["components/TitleBar.vue"],
     "「这条窗有 caption」不该有第二个写者（实得 " + writers.join(",") + "）");
   // 正控：针认得出"别的组件也去写"这件事（认不出 ⇒ 上面那条 deepEqual 是空的）
@@ -5288,7 +5290,7 @@ test("㊿ 字号只走令牌：生产码 0 处 text-[NNpx]，且画板字阶像�
   assert.ok(files.length >= 200, "只扫到 " + files.length + " 份生产码 ⇒ 路径写错了，这条是在测空气");
   const offenders = files
     .filter((f) => ARB.test(code691(readFileSync(f, "utf8"))))
-    .map((f) => f.slice(srcDir691.length + 1));
+    .map((f) => f.slice(srcDir691.length + 1).replaceAll("\\", "/"));
   assert.deepEqual(offenders, [], "又写死了字号（应为 micro/caption/meta/fine/small/body/emphasis/row/title/heading/page/title-lg/display）：" + offenders.join(", "));
 
   // 正控：迁移前的真实形状必须被认出来；反控：令牌名本身不是 offender。
@@ -5443,7 +5445,7 @@ test("motion-v 只能从统一封装层导入（业务码不得直连）", () =>
   const offenders = files
     .filter((f) => f !== wrapper)
     .filter((f) => re.test(readFileSync(f, "utf8")))
-    .map((f) => f.slice(srcDir.length + 1));
+    .map((f) => f.slice(srcDir.length + 1).replaceAll("\\", "/"));
   assert.deepEqual(offenders, [], `以下文件绕过封装层直接 import motion-v：\n${offenders.join("\n")}`);
   // 正控：封装层自己必须真的在 re-export；否则上面那句「没人直连」可以靠删掉依赖也变绿。
   assert.match(readFileSync(wrapper, "utf8"), re, "封装层没有 re-export motion-v");
@@ -5943,7 +5945,7 @@ test("加载旋转只许在 Spinner.vue（全仓不得再出现 animate-spin 类
       const code = stripCommentsForTokens(readFileSync(f, "utf8"));
       return /(?:^|\s)class="[^"]*\banimate-spin\b/.test(code) || /:class="[^"]*animate-spin/.test(code);
     })
-    .map((f) => f.slice(srcDir.length + 1));
+    .map((f) => f.slice(srcDir.length + 1).replaceAll("\\", "/"));
   assert.deepEqual(offenders, [], `以下文件又自己写 animate-spin：\n${offenders.join("\n")}`);
   const spinner = readFileSync(join(srcDir, "components", "ui", "Spinner.vue"), "utf8");
   assert.match(spinner, /spinner-icon/, "Spinner 没有唯一的旋转类");
@@ -6334,7 +6336,7 @@ test("55 :: 真实树全绿，且分母现算（有活调用点才证明这条�
   for (const f of files) {
     const src = readFileSync(f, "utf8");
     for (const issue of findPrimaryFillWithoutOnPrimary(src)) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
     // 分母只数**模板里真的写出来的**类名：注释里那句"以前写 …"会把计数抬上去，
     // 抬上去的下限就变成"注释很多"也算绿，量不到调用点还在不在。
@@ -6503,7 +6505,7 @@ test("@提及淡底配方只有一个家：16% 的 color-mix 只许出现在 cha
     const text = normalize(
       readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/<!--[\s\S]*?-->/g, ""),
     );
-    if (RECIPE.test(text)) hits.push(f.replace(srcDir + "/", ""));
+    if (RECIPE.test(text)) hits.push(f.slice(srcDir.length + 1).replaceAll("\\", "/"));
   }
   assert.deepEqual(
     hits,
@@ -7550,7 +7552,7 @@ function ambientChromeSources() {
     settingsGroup: readFileSync(join(srcDir, "components", "settings", "SettingsGroup.vue"), "utf8"),
     dividerStrongUsers: collectVueFiles(srcDir)
       .filter((f) => readFileSync(f, "utf8").includes("--gosslan-divider-strong"))
-      .map((f) => f.replace(srcDir + "/", ""))
+      .map((f) => f.slice(srcDir.length + 1).replaceAll("\\", "/"))
       .join("\n"),
     styleCss: readFileSync(join(srcDir, "style.css"), "utf8"),
   };
@@ -7828,7 +7830,7 @@ test("AM-09：v-press-ripple 只挂在主按钮与发送键", () => {
   ]);
   const hits: string[] = [];
   for (const f of collectVueFiles(srcDir)) {
-    const rel = f.replace(srcDir + "/", "");
+    const rel = f.slice(srcDir.length + 1).replaceAll("\\", "/");
     if (/v-press-ripple/.test(readFileSync(f, "utf8"))) hits.push(rel);
   }
   assert.deepEqual(hits.sort(), [...allowed].sort(),
@@ -8002,8 +8004,10 @@ function settingsSectionFiles(): Array<{ name: string; src: string }> {
     .filter((n) => n.startsWith("Settings") && n.endsWith(".vue"))
     .sort();
   return [
-    ...names.map((name) => ({ name, path: join(dir.pathname, name) })),
-    ...shellNames.map((name) => ({ name, path: join(root.pathname, name) })),
+    // fileURLToPath：Windows 上 URL.pathname 是 "/D:/..."，join 后 readdir/open 解析成
+    // "D:\D:\..." 假路径（2026-11-18 Windows 实测）；POSIX 上与 pathname 等价。
+    ...names.map((name) => ({ name, path: fileURLToPath(new URL(name, dir)) })),
+    ...shellNames.map((name) => ({ name, path: fileURLToPath(new URL(name, root)) })),
   ].map(({ name, path }) => ({ name, src: readFileSync(path, "utf8") }));
 }
 
@@ -8092,7 +8096,8 @@ test("㊶ 三档类与 token 只有一个来源：style.css 定义 + 组件真�
 
 /** 递归收集 src/components 下所有 .vue（分母现数：扫不到 0 份就说明扫错了）。 */
 function allComponentFiles(): Array<{ name: string; src: string }> {
-  const root = new URL("../components/", import.meta.url).pathname;
+  // fileURLToPath：Windows 上 .pathname 是 "/D:/..."，readdirSync 会解析成 "D:\D:\..."（POSIX 等价）。
+  const root = fileURLToPath(new URL("../components/", import.meta.url));
   const names = (readdirSync(root, { recursive: true }) as string[])
     .filter((n) => n.endsWith(".vue"))
     .sort();
@@ -8662,7 +8667,7 @@ test("SC-04 真实树：全部 .vue 里没有「横排 + 纵向滚动/槽位」�
     const src = readFileSync(f, "utf8");
     strips += (src.match(/\boverflow-x-(?:auto|scroll)\b/g) ?? []).length;
     for (const issue of findStripVerticalTrackIssues(src)) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+      bad.push(`${f.slice(srcDir.length + 1).replaceAll("\\", "/")}:${issue.line}  ${issue.message}`);
     }
   }
   // 判据不能空转：真有横排滚动容器被扫到（当前 4 处：附件条 / 灯箱缩略图 / 群任务页签 / 收藏工具行）。
@@ -9169,7 +9174,7 @@ test("SA-01 反例自证：inset 去掉（top=8 / 侧边=0）必须红，贴角�
 
 test("SA-02 统一出口：除 style.css / 首屏骨架外，生产码里没有第二份 env(safe-area-inset-*)", () => {
   const files = walk691(srcDir691).map((f) => ({
-    path: f.replace(srcDir691 + "/", ""),
+    path: f.slice(srcDir691.length + 1).replaceAll("\\", "/"),
     src: readFileSync(f, "utf8"),
   }));
   assert.ok(files.length >= 200, "只扫到 " + files.length + " 份生产码 ⇒ 路径写错了，这条是在测空气");

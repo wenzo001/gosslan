@@ -1844,7 +1844,7 @@ export const zhCN: MessageDict = {
   // 主窗口标题栏右侧功能组（画板 DesktopChats）。
   "titlebar.search": "全局搜索",
   "titlebar.personalize": "个性化设置",
-  // 应用显示名（用户 2026-10-23：中文名由「小院儿」改为「小院儿」，英文名仍是 Gosslan）。
+  // 应用显示名（2026-10-23 用户定名；英文名仍是 Gosslan）。
   // ⚠️ 这只是**界面文案**的家；窗口标题/包显示名/托盘另有各自的层（HTML data-title-*、
   // InfoPlist.strings、state.rs display_name、tray.rs），改名字五层一起改。
   "app.name": "小院儿",

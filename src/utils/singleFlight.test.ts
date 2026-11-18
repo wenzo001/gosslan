@@ -6,7 +6,9 @@ import test from "node:test";
 import { createSingleFlight } from "./singleFlight.ts";
 import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 
-const SRC = fileURLToPath(new URL(".", import.meta.url)).replace(/\/$/, "");
+// 尾部分隔符两种平台都要剥：Windows 的 fileURLToPath 以 "\" 结尾，/\/$/ 剥不掉
+// ⇒ slice(srcDir.length + 1) 全体错位（2026-11-18 Windows 实测）。
+const SRC = fileURLToPath(new URL(".", import.meta.url)).replace(/[\\/]+$/, "");
 
 function prodFiles(dir: string): string[] {
   const out: string[] = [];
@@ -92,7 +94,9 @@ test("公共层不许再手抄单飞：这六行在 src/utils 下只有一个家
   // store 那一族只并得进**同形状**的那一格：`ensureGroupTodoRows` 走 helper，
   // `loadMoreMessages` 因两处被注释保护的偏离**保留**自带表（理由写在那格注释里）。
   // ⇒ 判据钉的是"同形状那格没被谁退回手抄"，不是"store 里一个 Map 都不许有"。
-  const store = readChatStoreSrc(`${SRC.replace(/\/utils$/, "")}/stores/useChatStore.ts`);
+  // /[\\/]utils$/：Windows 的 SRC 是反斜杠路径，/\/utils$/ 剥不掉 utils 那段 ⇒ 找到
+  // src/utils/stores/ 这个不存在的目录（POSIX 两种形状都命中）。
+  const store = readChatStoreSrc(`${SRC.replace(/[\\/]utils$/, "")}/stores/useChatStore.ts`);
   assert.match(store, /const groupTodoRowsInflight = createSingleFlight<void>\(\);/,
     "补读那一格被退回手写 Map ⇒ 又长出第五份单飞");
   assert.match(store, /const loadingMore = new Map<string, Promise<void>>\(\);/,

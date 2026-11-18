@@ -378,7 +378,10 @@ pub fn guard_case_fixture_db(
         name="外链 URL 协议白名单（只放行 http/https）",
         why="`javascript:` / `data:` / `file:` / `tauri:` 一旦漏过，等于把『在应用 WebView 里执行脚本 / "
         "读本机文件』的能力交给一段用户粘贴的字符串",
-        file=TAURI / "src" / "commands.rs",
+        # 2026-11-18：commands.rs 已拆成 commands/ 目录，原 file= 指向不存在的文件，
+        # 守卫退化成全库搜锚点；bots.rs:51 抄了同款 matches! 形状后锚点不再唯一
+        # （--list 每次都 ⚠️）。钉回真实落点 external_links.rs:105。
+        file=TAURI / "src" / "commands" / "external_links.rs",
         injections=[('!matches!(parsed.scheme(), "http" | "https")', "false")],
         cmd=cargo("test", "--lib", "external_link_rejects_non_http_schemes"),
         cwd=TAURI,
@@ -389,7 +392,9 @@ pub fn guard_case_fixture_db(
         name="外链窗口用 WebviewUrl::External 加载远端 URL",
         why="外链窗口是唯一不走本地 App 文档的窗口；退回 App(\"index.html\") 会把聊天三栏挂起来"
         "（回到一窗一入口之前的老问题），且根本加载不了外部网址",
-        file=TAURI / "src" / "commands.rs",
+        # 2026-11-18：commands.rs 已拆成 commands/ 目录，锚点唯一命中 logs.rs:1631（logs 窗口
+        # 的外链 builder），把 file= 钉回真实落点，别再靠全库兜底。
+        file=TAURI / "src" / "commands" / "logs.rs",
         injections=[
             (
                 "            WebviewUrl::External(build_url),",

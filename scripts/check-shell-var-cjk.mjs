@@ -119,7 +119,9 @@ let exempted = 0;
 let pwshSkipped = 0;
 
 for (const abs of files) {
-  const rel = path.relative(ROOT, abs);
+  // EXEMPT 的键是 posix 形式（`scripts/ci-run.sh:23`）；Windows 的 relative() 给反斜杠，
+  // 不归一的话豁免永远查不到 ⇒ 注释里的反面案例被当真违规假红（2026-11-18 Windows 实测）。
+  const rel = path.relative(ROOT, abs).split(path.sep).join("/");
   const lines = fs.readFileSync(abs, "utf8").split("\n");
   const pwshLines = pwshLineSet(lines);
   for (let i = 0; i < lines.length; i += 1) {

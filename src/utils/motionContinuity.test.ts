@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * 时间轴/占位连续性守卫（2026-11-04 四项 UI 动效改造）。
@@ -15,10 +16,11 @@ import { join } from "node:path";
  * 文件末尾给每条判据喂一次**旧写法**，证明它们不是空转。
  */
 
-const SRC = new URL("..", import.meta.url).pathname;
+// fileURLToPath：Windows 上 .pathname 是 "/D:/..."，fs 解析成 "D:\D:\..." 假路径（POSIX 等价）。
+const SRC = fileURLToPath(new URL("..", import.meta.url));
 const read = (p: string) => readFileSync(join(SRC, p), "utf8");
-const CSS = new URL("../style.css", import.meta.url).pathname;
-const DOCS = new URL("../../docs/design-guidelines.md", import.meta.url).pathname;
+const CSS = fileURLToPath(new URL("../style.css", import.meta.url));
+const DOCS = fileURLToPath(new URL("../../docs/design-guidelines.md", import.meta.url));
 
 /** 取某个 CSS 选择器参与的所有规则体（选择器可能出现在逗号清单里，也可能单独成规则）。 */
 function cssRules(css: string, selector: string): string[] {

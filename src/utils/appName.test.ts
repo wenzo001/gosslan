@@ -4,7 +4,7 @@
  * 为什么需要它：这个名字散落在 7 处平台资源里（i18n 词典、tauri.conf 的 productName、
  * macOS 的 Info.plist + 两份 InfoPlist.strings、Android 的 values / values-zh、NSIS 语言包）。
  * 任何一处漏改，现象都是"某个平台某语言下名字不对"，而且**没有任何编译错误**。
- * 2026-10-23 全量改名（小院儿 → 小院儿）时就出现过注释与资源脱节，本判据把这类漂移钉死。
+ * 2026-10-23 全量改名时就出现过注释与资源脱节，本判据把这类漂移钉死。
  *
  * ## 为什么要断言 productName 仍是 "Gosslan"
  *
@@ -34,7 +34,9 @@ function walk(rel: string): string[] {
   for (const name of readdirSync(abs)) {
     const p = join(abs, name);
     if (statSync(p).isDirectory()) out.push(...walk(join(rel, name)));
-    else if (/\.(ts|vue|rs|js|html|plist|nsh|xml)$/.test(name)) out.push(join(rel, name));
+    // 键一律 posix 化：Windows 的 join 给反斜杠 ⇒ 「排除测试文件自身」的字符串比较失配，
+    // 判据会把自己扫进去（2026-11-18 Windows 实测）；POSIX 上 replaceAll 是无操作。
+    else if (/\.(ts|vue|rs|js|html|plist|nsh|xml)$/.test(name)) out.push(join(rel, name).replaceAll("\\", "/"));
   }
   return out;
 }
@@ -114,20 +116,18 @@ test("Windows：开始菜单同时留两个名字，桌面仍只有一个图标"
   }
 });
 
-test("活代码里不再出现旧名「小院儿」（只允许词典里那条改名历史注释）", () => {
-  // 排除本文件自身（它必须提到旧名才能描述这条判据）。
+test("活代码里不再出现旧名（旧名字面量只许出现在本判据文件里当检索针）", () => {
+  // 排除本文件自身（它必须持有旧名字面量当检索针，否则这条判据没有牙齿）。
   const files = [...walk("src"), ...walk("src-tauri/src"), "src-tauri/Info.plist", "index.html"].filter(
     (f) => f !== "src/utils/appName.test.ts",
   );
-  // 唯一允许的写法：**明确说这是旧名/改名历史**的那行注释（术语解释，不是现状声明）。
-  // 除它之外出现旧名，就是漏改。
-  const isHistoryNote = (line: string) => /旧名|改为「小院儿」/.test(line);
+  // 不留任何豁免：活代码、注释、资源里出现旧名就是漏改（用户 2026-11-18：全部修改或去掉）。
   const hits: string[] = [];
   for (const f of files) {
     readFileSync(join(ROOT, f), "utf8")
       .split("\n")
       .forEach((line, i) => {
-        if (line.includes("小院儿") && !isHistoryNote(line)) hits.push(`${f}:${i + 1}: ${line.trim()}`);
+        if (line.includes("小院儿")) hits.push(`${f}:${i + 1}: ${line.trim()}`);
       });
   }
   assert.deepEqual(hits, [], `旧名残留（改名要连注释一起改）：\n${hits.join("\n")}`);

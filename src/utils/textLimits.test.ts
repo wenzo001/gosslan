@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -76,7 +77,8 @@ function vueFiles(dir: URL, acc: string[] = []): string[] {
       if (e.name === "assets") continue;
       vueFiles(u, acc);
     } else if (e.name.endsWith(".vue")) {
-      acc.push(decodeURIComponent(new URL(e.name, dir).pathname));
+      // fileURLToPath：Windows 上 .pathname 是 "/D:/..."，readFileSync 解析成 "D:\D:\..." 假路径（POSIX 等价）。
+      acc.push(fileURLToPath(new URL(e.name, dir)));
     }
   }
   return acc;
