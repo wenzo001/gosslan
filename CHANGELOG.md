@@ -14,6 +14,35 @@
 
 ## [Unreleased]
 
+## [7.1.11] - 2026-11-18
+
+### 测试体系审查后的四组整改（对应报告 P0/P1/P2）
+- **v7 通知服务第一次有跨进程判据**：新增 e2e `--round=bot`（反向档 `--round=bot-lie`）。
+  形状是「停机往 A 的 `settings` 写一行 `bot:<id>` → 起兄弟仓**真实现** `notify.mjs` →
+  `publish` 一条 Markdown → 客户端自己的后台轮询取走」。判据骨架是服务端计数器
+  `queued 0 → 1 → 0`（publish 前 / publish 后 / ack 后），外加落库五条
+  （`botmsg-md-<event_id>` 前缀 / `conv_id` 与 `sender_id` 都是 `bot:<id>` / 正文逐字 /
+  **不在** `outbox` / `bot_inbox` 有该 event）、会话摘要、ack 后再拉 0 条、日志里有
+  「收到机器人通知」。此前 `grep -c bot scripts/e2e-multi-instance.mjs` 是 **0**，
+  而 7.0→7.1.10 的提交几乎全在机器人上 —— 单测那 13 条只覆盖纯函数与 DB 往返，
+  「worker 真的随应用起来了」「落 messages 与落 bot_inbox 同一事务」「ack 后才清队列」三件事看不见。
+- **现役通知服务的两套自测接进 CI**：`notify-selftest.mjs`（16 条）与
+  `notify-persist-selftest.mjs`（3 条）此前**没有任何自动化入口**（CI 只跑 `selftest.mjs`、
+  `protocol_conformance.mjs` 与 fixture 比对）。
+- **已下线的 v6 `webhook.mjs` 归档**：连同它的两套自测（19 条断言）与 API 文档移到
+  `gosslan-relay-server/legacy/`，摘掉 `start:webhook` / `selftest:webhook` 两个 npm 入口。
+  那 19 条守着的是一个不部署的模块，绿了也不能证明现役服务没问题 ——
+  归档目录的 README 写清了这一点，避免有人拿它当现役证据。
+- **`designGuards` 拆分**：实现 4897 行拆成 `designGuards.ts`（3005）+ `designGuards/surface.ts`
+  （1861，表面/几何那一族）+ `designGuards/shared.ts`（69，跨族共用件）。
+  对外 API 不变（`export *` 转出），96 个顶层声明逐个对过：缺失 0、多出 0。
+
+### 排障
+- 「收不到机器人通知」现在有第一分岔点：`[bot] 取件轮询已启动` 与
+  `[bot] 取件轮询：本轮可取的机器人 N 个`（数量**变化时**才记，不刷屏）。
+  没有第一行 = 轮询任务根本没起来；有第一行而 N=0 = 记录没读到或被停用 ——
+  这两种都与「取件失败」（有 `轮询取件失败` 行）是不同病因，以前它们全都表现为"没反应"。
+
 ## [7.1.10] - 2026-11-18
 
 ### 群机器人只能收到第一条（线上故障）

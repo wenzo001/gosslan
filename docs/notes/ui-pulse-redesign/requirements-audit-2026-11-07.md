@@ -57,7 +57,7 @@
 | 编号 | 需求（用户原话要点） | 当前实现证据 | 状态 | 若冲突按用户口径应该是怎样 | 落地动作 |
 |---|---|---|---|---|---|
 | R30 | 色雾：桌面保留 4 层原样，移动端降档 | `report.md:209-212`；`src/utils/ambient.ts:86-94` 写入；`style.css:642-670` 三态；`style.css:2546-2550` reduce/contrast/forced-colors 隐藏 | 已实现 | — | 无 |
-| R31 | 消息骨架改静态，不再循环脉冲 | `ChatWindow.vue:2009-2010` `data-msg-skeleton` + `gosslan-skeleton-in`；`MessageImageBubble.vue:187-188` `data-img-skeleton`；守卫 `designGuards.ts:2778-2821` SK-01 | 已实现 | — | 无 |
+| R31 | 消息骨架改静态，不再循环脉冲 | `ChatWindow.vue:2009-2010` `data-msg-skeleton` + `gosslan-skeleton-in`；`MessageImageBubble.vue:187-188` `data-img-skeleton`；守卫 `designGuards.ts:2976` `checkSkeletonStatic` SK-01 | 已实现 | — | 无 |
 | R32 | 搜索命中黄色 mark 换 token | `src/utils/highlight.ts:14` `bg-[var(--gosslan-primary-light)] text-[var(--gosslan-text)]` | 已实现 | — | 无 |
 | R33 | 搜索框焦点框：按用户裁决保留键盘可达性现状 | `style.css:1093-1098` 文本输入内描边；`report.md:230-233` | 已实现（裁决） | — | 无 |
 | R34 | 页脚版本号：保留还是移到「关于」（用户已于 11-06 答「移到关于」） | 页脚仍渲染版本 `ConversationList.vue:834`（注释 `:815` 明确「判据要求页脚可见 vX.Y.Z」）；「关于」也有版本 `settings/AboutSection.vue:77` | 未做·与画板冲突 | 页脚只留「任务中心 · N」；版本只在关于（用户确认见 `decisions.md:213`） | P0-1 |

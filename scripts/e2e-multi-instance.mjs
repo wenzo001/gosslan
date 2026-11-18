@@ -259,6 +259,14 @@ const POSTTEXT = ROUND === "posttext" || ROUND === "posttext-lie";
 /// （`file_outbox` → flush），与"请求侧按 cid 拉、服务侧回发"这条管道只有收尾代码相同、入口完全不同。
 /// 断言条数不在这里写：判据 C 从分册的 check( 现算。
 const CONTENTPULL = ROUND === "contentpull" || ROUND === "contentpull-lie";
+/// `--round=bot`（2026-11-18 测试体系审查补的那一格）：**v7 产品核心那条链**
+/// （外部 `publish` → 客户端后台轮询 `pull` → 落 messages/conversations/bot_inbox → `ack`）
+/// 在 2026-11-18 之前是**零跨进程判据** —— `grep -c bot scripts/e2e-multi-instance.mjs` = 0，
+/// 而 7.0→7.1.10 的全部提交都在机器人上。`bots.rs` 那 13 条只覆盖纯函数与 DB 往返：
+/// 「worker 真的在跑」「落库与 ack 的先后」「服务端队列真的被清空」三件事只有真进程看得见。
+/// ⚠️ 这一轮 `import` 兄弟仓的真实现（`gosslan-relay-server/notify.mjs`），
+/// 找不到就红、不静默跳过；反向档 `bot-lie` 只翻 msg_id 前缀那一条期望。
+const BOT = ROUND === "bot" || ROUND === "bot-lie";
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createCipheriv, createPrivateKey, randomBytes, randomUUID, sign } from "node:crypto";
@@ -294,6 +302,7 @@ import * as shrink from "./e2e/rounds/shrink.mjs";
 import * as multi from "./e2e/rounds/multi.mjs";
 import * as ghsync from "./e2e/rounds/ghsync.mjs";
 import * as friendreq from "./e2e/rounds/friendreq.mjs";
+import * as bot from "./e2e/rounds/bot.mjs";
 
 
 
@@ -666,6 +675,10 @@ if (GHSYNC) await ghsync.run();
 // A4 那一轮排在它之后：只起 B 一台，自己 `stopAll → 预置 → 起 → 停 → 再起`，
 // 读的是自己那一份 `settings` 行与 B 的磁盘日志 ⇒ 不吃链路、也不给别的轮子留锚点。
 if (FRIENDREQ) await friendreq.run();
+// 机器人轮排在最后：它自己 `stopAll → 预置 → 只起 A`（个人机器人是本机假身份会话，
+// 不需要对端），并起一个本地通知服务（兄弟仓真实现，固定端口 60994）⇒
+// 放在任何一轮之前都会把那一轮的日志锚点与端口读数搅进自己的现场里。
+if (BOT) await bot.run();
 const REPORT_GAPS = [];
 function writeReport(failed) {
   fs.mkdirSync(RUN_DIR, { recursive: true });

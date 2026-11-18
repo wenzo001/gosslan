@@ -1116,6 +1116,29 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--round=friendreq"],
     },
+    {
+      group: "local",
+      name: "机器人轮：外部 publish → 客户端自取 → 落库 → ack（v7 产品核心那条链）",
+      why:
+        `2026-11-18 测试体系审查补的一格。在此之前 \`grep -c bot scripts/e2e-multi-instance.mjs\` = 0 —— `
+        + `7.0→7.1.10 的全部提交都在机器人上，而这条链**一条跨进程判据都没有**：`
+        + `\`bots.rs\` 那 13 条只覆盖纯函数（服务地址规范化）与 DB 往返（收件箱幂等、投递后 ack），`
+        + `「后台 worker 真的随应用起来了」「落 messages 与落 bot_inbox 在同一事务里都成立」`
+        + `「ack 之后服务端队列真的清空」这三件事单测一条都看不见。`
+        + `★ 服务端用的是**兄弟仓的真实现**（\`gosslan-relay-server/notify.mjs\`，v7 现役那一份），`
+        + `本册只给它套一层最小 http 宿主（生产里那层宿主是 \`server.mjs\`）——`
+        + `自己写个假 HTTP 服务只能证明「客户端会调用某个形状」，证不了「两边形状一致」。`
+        + `⚠️ 因此这一步**依赖兄弟仓**在默认相对路径（\`../gosslan-relay-server\`），`
+        + `找不到就红、不静默跳过；另有 \`GOSSLAN_RELAY_SERVER_DIR\` 可覆盖。`
+        + `判据的骨架是服务端那一个计数器 \`queued 0 → 1 → 0\`：少任何一个环节它都变不了。`
+        + `另有落库五条（msg_id 前缀说明 Markdown 渲染 / conv 与 sender 都是 bot:<id> / 正文逐字 / `
+        + `不在 outbox / 收件箱那条 event 在）与「ack 后再拉 0 条」「日志里那行「收到机器人通知」」。`
+        + `反向 \`--round=bot-lie\` 只翻 msg_id 前缀一条期望 ⇒ 恰好 1 条红，其余照绿。`
+        + `每轮条数由 check-doc-numbers 现算，只登记在验收矩阵顶部「轮次账」一处。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=bot"],
+    },
   );
 } else if (!groupFlag) {
   // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。
