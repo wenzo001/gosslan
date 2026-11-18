@@ -66,11 +66,11 @@
 **症状**：守卫只认 `p-3..6`、`py-3..6`、`px-4..6`，以下三种写法实测**全绿**：`p-[16px]`、`px-[16px]`、`pt-4 pb-4`、`!p-4`。本仓库恰好在别处大量使用任意值语法（`h-[68px]`、`rounded-[var(...)]`），所以这不是理论漏洞，是随手就会踩进去的洞。
 
 **证据**（突变实测，改真实文件后跑守卫再复原）
-- `src/utils/designGuards.ts:3655` 起 `RAW_CARD_PADDING_TOKEN_RE` 只匹配整 token
+- `src/utils/designGuards/surface.ts:1131` 起 `RAW_CARD_PADDING_TOKEN_RE` 只匹配整 token
 - 在 `src/components/settings/AboutSection.vue` 注入 `class="p-[16px]"` → `node --test --test-name-pattern "㊶"` **GREEN**（判据未红）
 - 注入 `class="pt-4 pb-4"` → **GREEN**
 - 注入 `class="px-[16px]"` → **GREEN**
-- 对照组：守卫本身有效——同一份文件里写 `px-4 py-3` 会红；`㊶` 真实树用例分母现算（`designGuards.test.ts:7341` 断言 `>= 17`，实测 17）
+- 对照组：守卫本身有效——同一份文件里写 `px-4 py-3` 会红；`㊶` 真实树用例分母现算（`designGuards.test.ts:8012` 断言 `>= 17`，实测 17）
 
 **建议修法**：把正则扩成"任意前缀 + 数值/任意值"四类：`^(p|px|py|pt|pr|pb|pl|ps|pe|gap)?` 的 `p*` + `[0-9.]+|\[.*\]`，并显式允许 `!` 前缀；加三条夹具（`p-[16px]`、`pt-4 pb-4`、`!p-4`）作为反例自证。
 

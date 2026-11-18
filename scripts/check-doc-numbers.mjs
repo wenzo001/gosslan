@@ -204,6 +204,12 @@ GFILE: "群文件轮",
   // 是进程内 HashMap，停机写库造不出来）⇒ 正因为容易被人读成"好友申请全证过了"，
   // 这一轮的断言数更得被对账着，登记不能省。
   FRIENDREQ: "好友申请轮",
+  // `--round=bot`（2026-11-18 测试体系审查）：判的是 **v7 产品核心那条链**
+  // （外部 publish → 客户端后台轮询 pull → 落 messages/conversations/bot_inbox → ack）。
+  // 在这之前它是零跨进程判据（`grep -c bot scripts/e2e-multi-instance.mjs` = 0），
+  // 而 `bots.rs` 那 13 条只覆盖纯函数与 DB 往返 ⇒ 登记不能省，否则这一轮的断言数
+  // 永远不会被对账，也就没人会发现它哪天被静默移出门禁。
+  BOT: "机器人轮",
 };
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");

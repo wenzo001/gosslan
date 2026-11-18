@@ -1169,6 +1169,13 @@ pub fn spawn_bot_poller(state: &Arc<AppState>) -> tauri::async_runtime::JoinHand
     tauri::async_runtime::spawn(async move {
         // 第一轮不立刻跑：刚启动就去打扰服务端（应用刚起来时还没什么通知）。
         tokio::time::sleep(Duration::from_secs(BOT_PULL_FIRST_DELAY_SECS)).await;
+        // 这一行是「为什么收不到机器人通知」的第一个分岔点：有它 ⇒ 轮询任务真跑起来了；
+        // 没有它 ⇒ 任务根本没起来（setup 没调到 / 任务一开始就死了），与「取件失败」是两回事。
+        st.logger
+            .info("bot", "取件轮询已启动（首轮延迟已过，此后长轮询 + 2s 间隔）".to_string());
+        // 启用中的数量**变化时**才记一行。每 2s 记一次会把这个 target 淹掉，而排障只需要知道
+        // 「读到几个」以及「这个数什么时候变过」——0 个 = 记录没读到或被停用。
+        let mut last_active: Option<usize> = None;
         loop {
             // 列出机器人：进阻塞池（DB 访问不该占住 tokio worker —— R-18 棘轮）。
             let bots = {
@@ -1191,6 +1198,17 @@ pub fn spawn_bot_poller(state: &Arc<AppState>) -> tauri::async_runtime::JoinHand
                 }
             };
             // 先清孤儿消息（本机已删但服务端残留的 token）——不让它们在服务端积压。
+            let active = bots
+                .iter()
+                .filter(|r| r.status == "active" && !r.client_token.is_empty())
+                .count();
+            if last_active != Some(active) {
+                st.logger.info(
+                    "bot",
+                    format!("取件轮询：本轮可取的机器人 {active} 个（库里共 {} 个记录）", bots.len()),
+                );
+                last_active = Some(active);
+            }
             let purged = purge_tombstoned_events(&st).await;
             if purged > 0 {
                 st.logger.info("bot", format!("已丢弃 {purged} 条已删除机器人的孤儿通知"));
