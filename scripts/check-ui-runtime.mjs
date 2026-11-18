@@ -21403,7 +21403,11 @@ async function runStage6Mobile(cdp, url) {
     { w: 768, h: 800, tag: "768x800" },
     { w: 1280, h: 800, tag: "1280x800" },
   ];
-  const dir = path.join(ROOT, "docs", "notes", "unslop-review-2026-11-06", "shots", "stage6");
+  // ⚠️ 复拍的图落在 `test-results/`（已 gitignore），**不覆盖** docs 下那份当证据用的
+  // 2026-11-06 截图：那是报告/docs/design-language 点名的历史证据，不该被每次跑门禁
+  // 重拍一遍 —— 本机实测重拍里 13/39 组 dark 与 light 拍成了同一张（主题没切过去），
+  // 覆盖掉原图等于用坏图毁证据。与 `i18n-shots/` 同一口径。
+  const dir = path.join(ROOT, "test-results", "ui-shots", "stage6");
   fs.mkdirSync(dir, { recursive: true });
   const shot = async (name) => {
     const img = await cdp.send("Page.captureScreenshot", { format: "png" });
@@ -21542,7 +21546,7 @@ async function runRecoveryNotice(cdp, url) {
     { w: 640, h: 480, tag: "640x480", mobile: false },
     { w: 390, h: 844, tag: "390x844", mobile: true },
   ];
-  const dir = path.join(ROOT, "docs", "notes", "unslop-review-2026-11-06", "shots", "recoverynotice");
+  const dir = path.join(ROOT, "test-results", "ui-shots", "recoverynotice");
   fs.mkdirSync(dir, { recursive: true });
   const shot = async (name) => {
     const img = await cdp.send("Page.captureScreenshot", { format: "png" });
@@ -21694,7 +21698,7 @@ async function runStage4Mobile(cdp, url) {
     { w: 430, h: 932, tag: "430x932" },
     { w: 768, h: 800, tag: "768x800" },
   ];
-  const dir = path.join(ROOT, "docs", "notes", "unslop-review-2026-11-06", "shots", "stage4");
+  const dir = path.join(ROOT, "test-results", "ui-shots", "stage4");
   fs.mkdirSync(dir, { recursive: true });
   const shot = async (name) => {
     const img = await cdp.send("Page.captureScreenshot", { format: "png" });
@@ -21789,7 +21793,7 @@ async function runStage5Mobile(cdp, url) {
     { w: 768, h: 800, tag: "768x800" },
     { w: 1280, h: 800, tag: "1280x800" },
   ];
-  const dir = path.join(ROOT, "docs", "notes", "unslop-review-2026-11-06", "shots", "stage5");
+  const dir = path.join(ROOT, "test-results", "ui-shots", "stage5");
   fs.mkdirSync(dir, { recursive: true });
   const shot = async (name) => {
     const img = await cdp.send("Page.captureScreenshot", { format: "png" });

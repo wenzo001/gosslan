@@ -15,6 +15,12 @@
 ## [Unreleased]
 
 ### 测试基础设施
+- **UI 运行时探针不再覆盖文档证据图**：`check-ui-runtime.mjs` 里 stage4 / stage5 / stage6 /
+  recoverynotice 四段过去把复拍的 png 直接写进 `docs/notes/unslop-review-2026-11-06/shots/`
+  —— 那是 `report.md` 与 `ux-criteria.md` 点名的历史证据。本机实测复拍里 **13/39 组
+  dark 与 light 被拍成了同一张**（主题没切过去，HEAD 里两版本来就不同），跑一次门禁就把
+  60 张图改脏、还用坏图毁证据。现在四段统一写到 `test-results/ui-shots/`（已 gitignore，
+  与既有 `i18n-shots/` 同一口径）；已把工作区那 60 张退化图还原回 HEAD。
 - **修掉「本机 local 层 E2E 恒红」那条的根因**：`#126` 那条门禁按设计用**带 `bluetooth` 特性**编的
   二进制跑 E2E，而 `target/release/gosslan` 是裸二进制、不是 `.app`、没有 Info.plist 里的
   `NSBluetoothAlwaysUsageDescription`；桌面端蓝牙偏好缺省是**开**（`db::get_bt_enabled`），
