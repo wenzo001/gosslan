@@ -210,9 +210,26 @@ async function publishAnnouncement() {
  * 旧模板在每行里调用 `memberProfile(id)` 11 次（头像、在线、名字、两个按钮的 title…），
  * 每次内部还要扫好友表/节点表 ⇒ 50 人群 = 每帧几百次线性扫描。这里一次算好整表。
  */
-const memberRows = computed(() =>
-  (group.value?.members ?? []).map((id) => ({ id, ...memberProfile(id) })),
-);
+type MemberRow = {
+  id: string;
+  name: string;
+  avatar?: string | null;
+  online: boolean;
+  isBot: boolean;
+  bot?: BotView;
+};
+const memberRows = computed<MemberRow[]>(() => {
+  const rows: MemberRow[] = (group.value?.members ?? []).map((id) => {
+    const p = memberProfile(id);
+    return { id, name: p.name, avatar: p.avatar ?? null, online: p.online, isBot: false };
+  });
+  // 群机器人**混排**在成员里（用户 2026-11-18）：头像/名字与成员一致，右下角「机」字区分，
+  // 不再单列一块（两种列表、两套操作）。
+  for (const b of groupBots.value) {
+    rows.push({ id: `bot:${b.botId}`, name: b.name, avatar: b.avatar ?? null, online: true, isBot: true, bot: b });
+  }
+  return rows;
+});
 
 /** N6-2（2026-11-01 用户拍板）：成员行右键 →「@他」「查看资料」。
  *  面板只把意图交给父组件：@ 需要写输入框、资料需要走既有的 `openSenderProfile`，
@@ -421,16 +438,23 @@ async function confirmAction() {
           <button
             type="button"
             class="relative shrink-0 rounded-full"
-            :aria-label="t('group.member.viewProfile', { name: row.name })"
-            @click="openProfile(row.id)"
+            :aria-label="row.isBot ? t('bot.openDetail', { name: row.name }) : t('group.member.viewProfile', { name: row.name })"
+            @click="row.isBot ? openBotDetail(row.bot!) : openProfile(row.id)"
           >
             <AvatarBox
               class="h-9 w-9"
-              :class="!row.online ? 'grayscale opacity-70' : ''"
+              :class="!row.isBot && !row.online ? 'grayscale opacity-70' : ''"
               :id="row.id"
               :src="row.avatar ?? null"
             />
             <span
+              v-if="row.isBot"
+              class="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full border-2 border-[var(--gosslan-panel)] bg-[var(--gosslan-primary-active)] text-micro leading-none text-[var(--gosslan-on-primary)]"
+              :title="t('bot.listBadge')"
+              aria-hidden="true"
+            >{{ t("bot.badgeShort") }}</span>
+            <span
+              v-else
               class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
               :class="row.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
               aria-hidden="true"
@@ -443,7 +467,7 @@ async function confirmAction() {
                 class="truncate text-left text-sm font-medium hover:underline"
                 :title="row.name"
                 :aria-label="t('group.member.viewProfile', { name: row.name })"
-                @click="openProfile(row.id)"
+                @click="row.isBot ? openBotDetail(row.bot!) : openProfile(row.id)"
               >
                 {{ row.name }}
               </button>
@@ -452,13 +476,13 @@ async function confirmAction() {
               <span v-if="row.id === myId" class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("group.me") }}</span>
             </div>
             <div class="text-xs text-[var(--gosslan-text-2)]">
-              {{ row.online ? t("common.online") : t("common.offline") }}
+              {{ row.isBot ? t("bot.listBadge") : row.online ? t("common.online") : t("common.offline") }}
             </div>
           </div>
           <!-- 管理操作：转让群主**仅群主**；任免管理员**仅群主**；踢人群主/管理员皆可。
                三者都不能操作自己，踢人/任免还不能操作群主本人（群主是最终权威）。 -->
           <button
-            v-if="isOwner && row.id !== myId"
+            v-if="!row.isBot && isOwner && row.id !== myId"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-warning-soft)] hover:text-[var(--gosslan-warning-ink)]"
             :title="t('group.transferOwner', { name: row.name })" :aria-label="t('group.transferOwner', { name: row.name })"
             @click="transferOwner(row.id)"
@@ -466,7 +490,7 @@ async function confirmAction() {
             <Icon name="arrow-right-left" class="h-4 w-4" />
           </button>
           <button
-            v-if="isOwner && row.id !== myId && row.id !== group.creator && group.admins.includes(row.id)"
+            v-if="!row.isBot && isOwner && row.id !== myId && row.id !== group.creator && group.admins.includes(row.id)"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-warning-soft)] hover:text-[var(--gosslan-warning-ink)]"
             :title="t('group.removeAdmin', { name: row.name })" :aria-label="t('group.removeAdmin', { name: row.name })"
             @click="removeAdmin(row.id)"
@@ -474,7 +498,7 @@ async function confirmAction() {
             <Icon name="shield-alert" class="h-4 w-4" />
           </button>
           <button
-            v-else-if="canAppointAdmin && row.id !== myId && row.id !== group.creator"
+            v-else-if="!row.isBot && canAppointAdmin && row.id !== myId && row.id !== group.creator"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-primary)]"
             :title="t('group.appointAdmin', { name: row.name })" :aria-label="t('group.appointAdmin', { name: row.name })"
             @click="appointAdmin(row.id)"
@@ -610,21 +634,6 @@ async function confirmAction() {
           @close="botWizardOpen = false"
           @created="() => { void loadGroupBots(); }"
         />
-        <!-- 本群机器人列表（点进去看配置/免打扰/删除） -->
-        <div v-if="groupBots.length" class="space-y-1">
-          <div class="text-caption text-[var(--gosslan-text-2)]">{{ t("bot.group.listTitle") }}</div>
-          <button
-            v-for="b in groupBots"
-            :key="b.botId"
-            type="button"
-            class="tap-safe flex w-full items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1.5 text-left transition hover:bg-[var(--gosslan-hover)]"
-            @click="openBotDetail(b)"
-          >
-            <Icon name="sparkles" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-primary)]" />
-            <span class="min-w-0 flex-1 truncate" :title="b.name">{{ b.name }}</span>
-            <span class="text-caption text-[var(--gosslan-text-2)]">{{ b.status === "active" ? t("bot.status.active") : t("bot.status.paused") }}</span>
-          </button>
-        </div>
         <BotDetailModal
           :open="botDetailOpen"
           :bot="botDetail"

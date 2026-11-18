@@ -5687,7 +5687,8 @@ test("聊天头像进入好友资料，且群内非好友有兜底", () => {
     "utf8",
   );
   assert.match(members, /useOpenProfile\(\)/, "群成员面板没有用统一的那个入口（点了会没反应）");
-  assert.match(members, /@click="openProfile\(row\.id\)"/, "群成员的头像/名字点了没反应");
+  // 机器人行走 openBotDetail（用户 2026-11-18：混排但点开机器人详情），真人仍走 openProfile。
+  assert.match(members, /:\s*openProfile\(row\.id\)/, "群成员的头像/名字点了没反应");
 });
 
 test("预览失败有 10 秒负缓存，避免群历史缺文件时重试风暴", () => {

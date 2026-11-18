@@ -339,7 +339,8 @@ test("机器人会话是只读通知流：头像下 tag、无输入框/共享目
   const rust = read("src-tauri/src/commands/bots.rs");
 
   // tag 在头像下方，不再贴着名字（用户 2026-11-17）
-  assert.ok(item.includes('-bottom-1 left-1/2'), "机器人标记没移到头像下方");
+  // 2026-11-18：统一成「右下角 + 白边」的角标（与群消息/群成员一致），不再用头像下方胶囊。
+  assert.ok(item.includes('bot.badgeShort'), "机器人标记没统一成角标");
   assert.ok(!/ml-1[^>]*bot\.listBadge/.test(item), "名字后面还贴着机器人标记");
   // 单向通知流：整块输入框（含「不是好友」提示）不渲染；共享目录也不渲染
   assert.ok(chat.includes('v-if="!isBotChat"'), "机器人会话还渲染输入框外壳");
@@ -377,4 +378,29 @@ test("通讯录机器人：只列个人、点头像看详情、右键删除且�
     rust.includes('"只有群主或管理员可以删除群机器人"') && rust.includes("g.is_manager(&me)"),
     "删除群机器人没有权限校验",
   );
+});
+
+test("群机器人历史消息：删了/退群后仍留在发送方侧（靠落库的持久标记）", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
+  const chat = readFileSync(join(repoRoot, "src", "components", "ChatWindow.vue"), "utf8");
+
+  // 后端：群消息落库时写 `local_id = bot:<botId>`（不改表结构、不进线格式）
+  assert.ok(
+    rust.includes('let bot_marker = format!("bot:{}", record.bot_id);'),
+    "群机器人消息没有写持久标记 ⇒ 机器人一删，历史气泡会变回「我发的」",
+  );
+  assert.ok(rust.includes("Some(&bot_marker)"), "持久标记没有传给群发送");
+  // 前端：优先读持久标记；找不到当前机器人时仍按机器人渲染（名字回退正文前缀）
+  assert.ok(chat.includes('lid.startsWith("bot:")'), "前端没有优先识别持久标记");
+  assert.ok(chat.includes('if (!markerId && !b) return null;'), "旧消息的兜底条件丢了");
+});
+
+test("多个机器人必须并发取件（串行长轮询会让后面的机器人等前面超时）", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
+  // 用户 2026-11-18：个人机器人秒收、群机器人要手动拉 —— 根因是 for 循环里逐个 await 长轮询。
+  assert.ok(rust.includes("let mut pulls = tokio::task::JoinSet::new();"), "轮询仍然是串行的");
+  assert.ok(rust.includes("pulls.spawn(async move {"), "没有把每个机器人丢进并发集");
+  assert.ok(rust.includes("while let Some(joined) = pulls.join_next().await"), "没有收敛并发结果");
 });

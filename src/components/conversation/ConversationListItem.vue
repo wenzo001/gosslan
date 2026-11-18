@@ -184,12 +184,12 @@ const groupMembers = computed(() => {
         :id="conv.id"
         :src="conv.avatar"
       />
-      <!-- 机器人标识：放在头像下方（不贴名字），与常亮主色环一起构成专属样式。 -->
+      <!-- 机器人标识：与群消息头像/群成员同款角标（白边 + 主色底）——用户 2026-11-18 统一。 -->
       <span
         v-if="isBot"
-        class="absolute -bottom-1 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-[var(--gosslan-primary-active)] px-1 text-micro leading-tight text-[var(--gosslan-on-primary)]"
+        class="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full border-2 border-[var(--gosslan-list)] bg-[var(--gosslan-primary-active)] text-micro leading-none text-[var(--gosslan-on-primary)]"
         :title="t('bot.listBadge')"
-      >{{ t("bot.listBadge") }}</span>
+      >{{ t("bot.badgeShort") }}</span>
       <!-- 在线标识：群聊不显示；离线标灰半透 -->
       <span
         v-if="online !== null && !isBot"

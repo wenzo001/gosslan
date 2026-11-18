@@ -322,17 +322,25 @@ function isOnline(id: string): boolean | null {
  */
 /** 机器人也进通讯录（用户 2026-11-17）：与好友同一入口，样式专属、点击直接开会话。 */
 const botContacts = ref<BotView[]>([]);
+async function loadBotContacts() {
+  try {
+    const list = await api.botList();
+    // 只列个人机器人：群机器人属于那个群，入口在群成员面板（用户 2026-11-18）。
+    botContacts.value = list.filter((b) => b.status !== "revoked" && b.target?.kind !== "group");
+  } catch {
+    // 机器人列表拉取失败不该拖垮通讯录（好友仍正常显示）。
+  }
+}
+const botScope = createInitScope();
 onMounted(() => {
+  void loadBotContacts();
+  // 改头像/名字后立刻同步（用户 2026-11-18）。
   void api
-    .botList()
-    .then((list) => {
-      // 只列个人机器人：群机器人属于那个群，入口在群成员面板（用户 2026-11-18）。
-      botContacts.value = list.filter((b) => b.status !== "revoked" && b.target?.kind !== "group");
-    })
-    .catch(() => {
-      // 机器人列表拉取失败不该拖垮通讯录（好友仍正常显示）。
-    });
+    .onBotChanged(() => { void loadBotContacts(); })
+    .then((off) => botScope.onDispose(off))
+    .catch(() => {});
 });
+onUnmounted(() => { botScope.dispose(); });
 function openBotContact(b: BotView) {
   const id = `bot:${b.botId}`;
   if (app.isMobile) app.mobileView = "chat";
@@ -858,7 +866,7 @@ useEventListener(document, "click", closeFriendMenu);
           >
             <button
               type="button"
-              class="tap-safe shrink-0 rounded-[var(--gosslan-avatar-radius)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+              class="tap-safe relative shrink-0 rounded-[var(--gosslan-avatar-radius)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
               :aria-label="t('bot.openDetail', { name: b.name })"
               @click.stop="openBotDetail(b)"
             >
@@ -867,6 +875,11 @@ useEventListener(document, "click", closeFriendMenu);
                 :id="`bot:${b.botId}`"
                 :src="b.avatar"
               />
+              <span
+                class="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full border-2 border-[var(--gosslan-list)] bg-[var(--gosslan-primary-active)] text-micro leading-none text-[var(--gosslan-on-primary)]"
+                :title="t('bot.listBadge')"
+                aria-hidden="true"
+              >{{ t("bot.badgeShort") }}</span>
             </button>
             <span class="min-w-0 flex-1 text-left">
               <span class="block truncate text-body leading-5 text-[var(--gosslan-text)]" :title="b.name">{{ b.name }}</span>
