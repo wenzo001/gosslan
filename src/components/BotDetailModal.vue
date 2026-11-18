@@ -78,8 +78,9 @@ watch(
     editServerUrl.value = b?.serverUrl ?? "";
     fetchedUrl.value = "";
     if (b && !b.publishUrl) {
-      void api.botGetPublishUrl(b.botId).then((u) => { fetchedUrl.value = u; }).catch(() => {
-        // 取不回就保持空白，不假装成功；用户可撤销重建。
+      void api.botGetPublishUrl(b.botId).then((u) => { fetchedUrl.value = u; }).catch((e) => {
+        // 取不回要明确告诉用户（此前静默空白 ⇒ 用户以为没有发送链接）；失败仍保留空白，不假装成功。
+        app.toastError(e, t("bot.pullUrlFailed"));
       });
     }
   },
@@ -123,7 +124,11 @@ async function pullNow() {
   try {
     const r = await api.botPullOnce(props.bot.botId);
     app.toast(t("bot.pulled", { n: r.delivered }), "success");
-    emit("changed", await api.botSetDnd(props.bot.botId, props.bot.doNotDisturb));
+    // 刷新视图（借 botSetDnd 回读 BotView）失败不该把「取件成功」报成「取件失败」：
+    // 取件已经完成，刷新只影响计数显示，单独兜住。
+    try {
+      emit("changed", await api.botSetDnd(props.bot.botId, props.bot.doNotDisturb));
+    } catch { /* 视图刷新失败：下次打开详情会重新读到，不影响已取到的消息 */ }
   } catch (e) {
     app.toastError(e, t("bot.pullFailed"));
   } finally {

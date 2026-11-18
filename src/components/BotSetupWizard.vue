@@ -89,13 +89,28 @@ const curlExample = computed(() => {
   return `curl "${url}?text=hello&title=CI"`;
 });
 
+/** 双保险（与 BotDetailModal 同口径）：Tauri WebView 里 navigator.clipboard 常被拒 ⇒ 失败就走 textarea + execCommand。
+ *  向导是创建后第一次复制发送链接的入口，这里没有回退正是「点了复制什么都没复制上」的真因。 */
 async function copy(text: string) {
+  let ok = false;
   try {
-    await navigator.clipboard.writeText(text);
-    app.toast(t("bot.copyDone"), "success");
-  } catch (e) {
-    app.toastError(e, t("bot.copyFailed"));
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch { /* 落到下面的回退 */ }
+  if (!ok) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    document.body.removeChild(ta);
   }
+  if (ok) app.toast(t("bot.copyDone"), "success");
+  else app.toastError(new Error("clipboard unavailable"), t("bot.copyFailed"));
 }
 
 async function submit() {

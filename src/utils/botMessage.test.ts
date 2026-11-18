@@ -170,6 +170,14 @@ test("详情页能看配置 / 免打扰 / 删除；点机器人头像能进详�
     assert.ok(detail.includes(needle), why);
   }
 
+  // 复制必须有回退：Tauri WebView 里 navigator.clipboard 常被拒，向导是首次复制发送链接的入口。
+  // 两处都要有 execCommand 降级，缺一处就会「点了复制什么都没复制上」（7.x 旧 bug）。
+  const wizard = read("components/BotSetupWizard.vue");
+  for (const [label, src] of [["详情", detail], ["创建向导", wizard]] as const) {
+    assert.ok(src.includes("document.execCommand(\"copy\")"), `${label}的复制没有 execCommand 降级`);
+    assert.ok(src.includes("bot.copyFailed"), `${label}的复制失败没有可见提示`);
+  }
+
   // 点机器人消息头像 ⇒ 详情（不是好友资料页）
   const chat = read("components/ChatWindow.vue");
   assert.ok(
