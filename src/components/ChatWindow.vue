@@ -719,12 +719,22 @@ const tasksOpen = ref(false);
 const groupBots = ref<BotView[]>([]);
 function botSenderOf(m: MessageRecord): { id: string; name: string; avatar: string | null } | null {
   if (!isGroup.value || m.sender_id !== app.device?.device_id) return null;
+  // ① 首选消息自带的持久标记（落库时写 `bot:<botId>`）：机器人被删/退群后历史仍可归因。
+  const lid = m.local_id ?? "";
+  const markerId = lid.startsWith("bot:") ? lid.slice("bot:".length) : null;
+  // ② 兼容旧消息（没有标记）：退回正文前缀，只在当前机器人列表里找得到时才认。
   const mt = /^【([^】]{1,60})】/.exec(m.content ?? "");
-  if (!mt) return null;
-  const name = mt[1].trim();
-  const b = groupBots.value.find((x) => x.name.trim() === name);
-  // id 用 `bot:<botId>`：没自定义头像时默认脸也按机器人种子出图，不会借用「我」的脸。
-  return b ? { id: `bot:${b.botId}`, name: b.name, avatar: b.avatar ?? null } : null;
+  if (!markerId && !mt) return null;
+  const name0 = mt ? mt[1].trim() : "";
+  const b = markerId
+    ? groupBots.value.find((x) => x.botId === markerId)
+    : groupBots.value.find((x) => x.name.trim() === name0);
+  if (!markerId && !b) return null;
+  // 名字：当前机器人 → 正文前缀（历史快照）→ 通用「机器人」。
+  const name = b?.name ?? (name0 || t("bot.listBadge"));
+  // id 必须稳定（头像种子 + 分组键）：优先持久标记，旧消息退回名字派生。
+  const id = markerId ? `bot:${markerId}` : `bot:${b!.botId}`;
+  return { id, name, avatar: b?.avatar ?? null };
 }
 
 
@@ -746,6 +756,11 @@ watch(activeGroupId, () => { void loadGroupBots(); }, { immediate: true });
 const botScope = createInitScope();
 onMounted(() => {
   void listen("bot-inbox-updated", () => { void loadGroupBots(); })
+    .then((off) => botScope.onDispose(off))
+    .catch(() => {});
+  // 改了机器人资料（头像/名字）也要立刻反映到群里的历史气泡。
+  void api
+    .onBotChanged(() => { void loadGroupBots(); })
     .then((off) => botScope.onDispose(off))
     .catch(() => {});
 });

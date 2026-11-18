@@ -1749,20 +1749,28 @@ async function copyFileToClipboard() {
       <!-- 头像：单聊两方都不显示（联系人信息在顶部会话栏）；群聊只有对方、且只在组首显示。
            组内其余消息留一个同宽空位，气泡左边缘才不会一条一条地跳。 -->
       <template v-if="avatarCol">
-        <button
-          v-if="atGroupStart"
-          type="button"
-          class="tap-safe shrink-0 rounded-[var(--gosslan-avatar-radius)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-          :aria-label="t('friend.openProfile', { name: avatarName })"
-          @click="emit('open-profile', botSender ? botSender.id : message.sender_id)"
-        >
-          <MessageAvatar
-            :id="botSender ? botSender.id : message.sender_id"
-            :name="avatarName"
-            :avatar="avatarSrc"
-            :size="'var(--gosslan-msg-avatar)'"
-          />
-        </button>
+        <span v-if="atGroupStart" class="relative shrink-0">
+          <button
+            type="button"
+            class="tap-safe rounded-[var(--gosslan-avatar-radius)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+            :aria-label="t('friend.openProfile', { name: avatarName })"
+            @click="emit('open-profile', botSender ? botSender.id : message.sender_id)"
+          >
+            <MessageAvatar
+              :id="botSender ? botSender.id : message.sender_id"
+              :name="avatarName"
+              :avatar="avatarSrc"
+              :size="'var(--gosslan-msg-avatar)'"
+            />
+          </button>
+          <!-- 机器人角标：与真人成员一眼区分（用户 2026-11-18）。 -->
+          <span
+            v-if="botSender"
+            class="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full border-2 border-[var(--gosslan-panel)] bg-[var(--gosslan-primary-active)] text-micro leading-none text-[var(--gosslan-on-primary)]"
+            :title="t('bot.listBadge')"
+            aria-hidden="true"
+          >{{ t("bot.badgeShort") }}</span>
+        </span>
         <span
           v-else
           aria-hidden="true"

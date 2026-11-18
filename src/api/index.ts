@@ -153,6 +153,9 @@ export const api = {
   /** 群机器人的白名单群管理指令（如 create_todo）。 */
   onBotGroupAction: (cb: (a: { type: string; groupId: string; title: string; botName: string }) => void) =>
     listen<{ type: string; groupId: string; title: string; botName: string }>("bot-group-action", (e) => cb(e.payload)),
+  /** 机器人资料变化（改名/换头像/换地址）：通讯录与群成员列表据此重拉。 */
+  onBotChanged: (cb: (botId: string) => void) =>
+    listen<{ bot_id?: string }>("bot-changed", (e) => cb(String(e.payload?.bot_id ?? ""))),
   onBotInboxUpdated: (cb: (botId: string, count: number) => void) =>
     listen<{ bot_id?: string; count?: number }>("bot-inbox-updated", (e) => {
       const p = (e.payload ?? {}) as { bot_id?: string; count?: number };

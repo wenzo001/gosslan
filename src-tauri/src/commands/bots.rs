@@ -574,6 +574,7 @@ pub async fn bot_set_profile(
     server_url: Option<String>,
 ) -> Result<BotView, String> {
     let s = state.inner().clone();
+    let app_emit = s.app.clone();
     let clean_name: String = name.trim().chars().take(BOT_NAME_MAX).collect();
     if clean_name.is_empty() {
         return Err(crate::error_codes::coded(
@@ -620,6 +621,8 @@ pub async fn bot_set_profile(
     })
     .await
     .map_err(|e| format!("保存任务中断：{e}"))??;
+    // 广播给界面：通讯录列表 / 群成员面板都据此重拉（用户 2026-11-18：改头像后列表没同步）。
+    let _ = app_emit.emit("bot-changed", serde_json::json!({ "bot_id": view.bot_id }));
     Ok(view)
 }
 
@@ -1008,7 +1011,10 @@ async fn deliver_event(
                     }
                 }
             }
-            let sent = send_group_payload(s, &group_id, "text", content, None, None, None)
+            // `local_id` 记下「这条是哪个机器人代发的」：机器人被删/退群后，
+            // 历史消息仍能留在发送方侧（用户 2026-11-18）。不改表结构，也不进线格式。
+            let bot_marker = format!("bot:{}", record.bot_id);
+            let sent = send_group_payload(s, &group_id, "text", content, None, Some(&bot_marker), None)
                 .await
                 .map(|_| ())
                 .map_err(|e| format!("发进群失败：{e}"));
@@ -1144,14 +1150,24 @@ pub fn spawn_bot_poller(state: &Arc<AppState>) -> tauri::async_runtime::JoinHand
             if purged > 0 {
                 st.logger.info("bot", format!("已丢弃 {purged} 条已删除机器人的孤儿通知"));
             }
+            // 并发拉取（用户 2026-11-18）：串行时长轮询会把每个机器人的 15s 窗口排成队，
+            // 后面的机器人要等前一个超时才轮到 —— 表现正是「个人机器人秒收、群机器人要手动拉」。
+            // 每个机器人各自挂一条长轮询（纯 IO 等待，几乎不吃 CPU），新消息立即唤醒。
+            let mut pulls = tokio::task::JoinSet::new();
             for rec in bots {
                 if rec.status != "active" || rec.client_token.is_empty() {
                     continue;
                 }
-                // 一轮里**逐个**拉：一个机器人失败不许卡住整轮。
                 let sd = st.clone();
                 let bid = rec.bot_id.clone();
-                let outcome = pull_bot_once(&sd, &bid, BOT_LONG_POLL_SECS).await;
+                pulls.spawn(async move {
+                    let outcome = pull_bot_once(&sd, &bid, BOT_LONG_POLL_SECS).await;
+                    (bid, outcome)
+                });
+            }
+            while let Some(joined) = pulls.join_next().await {
+                let Ok((bid, outcome)) = joined else { continue };
+                let sd = st.clone();
                 match outcome {
                     Ok(o) if o.delivered > 0 => {
                         sd.logger.info(
