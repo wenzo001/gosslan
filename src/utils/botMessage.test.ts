@@ -398,8 +398,14 @@ test("群机器人历史消息：删了/退群后仍留在发送方侧（靠落�
 
   // 后端：群消息落库时写 `local_id = bot:<botId>`（不改表结构、不进线格式）
   assert.ok(
-    rust.includes('format!("bot:{}", record.bot_id)') && rust.includes('format!("bot-md:{}", record.bot_id)'),
-    "群机器人消息没有写持久标记（纯文本 `bot:` / markdown `bot-md:`）⇒ 删了会回「我发的」、富文本也丢",
+    rust.includes('format!("bot:{}#{}"') && rust.includes('format!("bot-md:{}#{}"'),
+    "群机器人消息没有写持久标记（`bot:<botId>#<eventId>` / `bot-md:...`）⇒ 删了会回「我发的」、富文本也丢",
+  );
+  // ⚠️ `messages.local_id` 是 UNIQUE：标记里**必须**带 event_id，否则第二条消息撞唯一键
+  // 被丢弃（投递却算成功并 ACK 服务端）⇒ 机器人只能收到第一条（用户 2026-11-18 的线上故障）。
+  assert.ok(
+    rust.includes("entry.event_id") && rust.includes("bot_marker"),
+    "标记没有带上 event_id ⇒ local_id 不唯一，后续消息会被静默丢弃",
   );
   assert.ok(rust.includes("Some(&bot_marker)"), "持久标记没有传给群发送");
   // 前端：优先读持久标记；找不到当前机器人时仍按机器人渲染（名字回退正文前缀）
@@ -521,4 +527,30 @@ test("renderBotMessage 走注入的 purify 实例（不是直接返回第一层�
   const out = renderBotMessage("**bold**", "markdown", spy);
   assert.equal(called, 1, "renderBotMessage 没有调用第二层消毒 ⇒ 可被人整层拿掉");
   assert.ok(out.startsWith("[sanitized]"), "渲染结果没有采用消毒层的返回值");
+});
+
+test("群机器人消息正文不带来源前缀（来源由头像/昵称/「机」角标表达）", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const read = (p: string) => readFileSync(join(repoRoot, p), "utf8");
+  const rust = read("src-tauri/src/commands/bots.rs");
+  const item = read("src/components/MessageItem.vue");
+
+  // 后端：正文就是内容本身，不再拼 `【机器人名】`
+  assert.ok(!rust.includes('bot_group_prefix(&record.name)'), "后端还在往群消息正文里加来源前缀");
+  assert.ok(rust.includes("let content = entry.text.clone();"), "群消息正文没有直接使用内容");
+  assert.ok(!rust.includes("pub fn bot_group_prefix"), "前缀函数没删干净（会留死代码）");
+  // 前端：历史消息里的旧前缀在展示层剥掉
+  assert.ok(item.includes("const displayContent = computed"), "前端没有剥离历史消息的来源前缀");
+  assert.ok(item.includes(':content="displayContent"'), "文本气泡没有改用剥离后的正文");
+});
+
+test("群成员行的「移除」也能删机器人（不只在详情页）", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const panel = readFileSync(join(repoRoot, "src/components/GroupMemberPanel.vue"), "utf8");
+  // 机器人行也要有「移除」入口，并且点它走的是 bot_delete（不是把设备移出群）
+  assert.ok(panel.includes('canManage && (row.isBot ||'), "机器人行没有「移除」入口");
+  assert.ok(panel.includes("askRemoveBot(row.bot!)"), "「移除」没有分派到机器人删除");
+  assert.ok(panel.includes('kind: "removeBot"'), "没有机器人删除的确认类型");
+  assert.ok(panel.includes("await api.botDelete(a.botId)"), "确认后没有真的撤销机器人");
+  assert.ok(panel.includes("groupBots.value = groupBots.value.filter"), "删除后没有从成员列表移除");
 });

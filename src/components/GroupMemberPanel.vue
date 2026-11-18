@@ -126,6 +126,7 @@ const pendingConfirm = ref<
   | null
   | { kind: "transfer"; targetId: string; name: string }
   | { kind: "remove"; targetId: string; name: string }
+  | { kind: "removeBot"; botId: string; name: string }
   | { kind: "leave"; name: string }
 >(null);
 
@@ -283,6 +284,15 @@ function askRemoveMember(id: string) {
   pendingConfirm.value = { kind: "remove", targetId: id, name: memberProfile(id).name };
 }
 
+/**
+ * 「移除」机器人（用户 2026-11-18）：与详情页的删除同一条链路（服务端撤销 + 清本地 +
+ * 删记录），只是入口搬到成员行的「移除」按钮上 —— 群里看它就是一个成员，用户不会
+ * 先去点开头像再找删除。
+ */
+function askRemoveBot(bot: BotView) {
+  pendingConfirm.value = { kind: "removeBot", botId: bot.botId, name: bot.name };
+}
+
 /** 任命管理员（仅群主， additive 低风险 ⇒ 直接执行 + toast，与「加人」同档）。 */
 async function appointAdmin(id: string) {
   if (!props.groupId) return;
@@ -337,6 +347,16 @@ async function confirmAction() {
       app.toast(t("group.toast.removed", { name: a.name }), "success");
     } catch (e) {
       app.toastError(e, t("group.toast.removeFail"));
+    }
+  } else if (a.kind === "removeBot") {
+    try {
+      await api.botDelete(a.botId);
+      groupBots.value = groupBots.value.filter((b) => b.botId !== a.botId);
+      app.toast(t("bot.deleted"), "success");
+      // 会话列表里那扇 bot 会话由后端一并删除，这里让主窗口刷新一次。
+      void chat.refreshConversations();
+    } catch (e) {
+      app.toastError(e, t("bot.deleteFailed"));
     }
   } else {
     try {
@@ -505,11 +525,13 @@ async function confirmAction() {
           >
             <Icon name="shield" class="h-4 w-4" />
           </button>
+          <!-- 机器人也走这个入口（用户 2026-11-18）：对它来说「移除」= 删除机器人。 -->
           <button
-            v-if="canManage && row.id !== myId && row.id !== group.creator"
+            v-if="canManage && (row.isBot || (row.id !== myId && row.id !== group.creator))"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
-            :title="t('group.removeMember', { name: row.name })" :aria-label="t('group.removeMember', { name: row.name })"
-            @click="askRemoveMember(row.id)"
+            :title="row.isBot ? t('bot.action.delete') : t('group.removeMember', { name: row.name })"
+            :aria-label="row.isBot ? t('bot.action.delete') : t('group.removeMember', { name: row.name })"
+            @click="row.isBot ? askRemoveBot(row.bot!) : askRemoveMember(row.id)"
           >
             <Icon name="user-minus" class="h-4 w-4" />
           </button>

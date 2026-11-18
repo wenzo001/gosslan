@@ -725,7 +725,9 @@ function botSenderOf(
   //    机器人被删/退群后历史仍可归因，且富文本标记随消息走（与单聊机器人一致）。
   const lid = m.local_id ?? "";
   const isMd = lid.startsWith("bot-md:");
-  const markerId = isMd ? lid.slice("bot-md:".length) : lid.startsWith("bot:") ? lid.slice("bot:".length) : null;
+  // 标记形如 `bot:<botId>#<eventId>`（eventId 只为保证 local_id 唯一）；旧记录没有 `#`。
+  const markerRaw = isMd ? lid.slice("bot-md:".length) : lid.startsWith("bot:") ? lid.slice("bot:".length) : null;
+  const markerId = markerRaw ? markerRaw.split("#")[0] : null;
   // ② 兼容旧消息（没有持久标记）：退回正文前缀 `【机器人名】`。
   //    旧消息即便机器人已删/退群，仍按机器人身份显示——此前「列表里找不到就 return null」
   //    会让历史气泡回落成「我发的」。前缀是机器人专用格式，普通消息不会这样开头。
