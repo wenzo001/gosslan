@@ -642,6 +642,26 @@ pub async fn bot_delete(
         return Err(crate::error_codes::coded(crate::error_codes::BOT_NOT_FOUND, "机器人不存在"));
     };
 
+    // 群机器人：只有群主/管理员能删（用户 2026-11-18；前端隐藏不算权限，命令 fail-closed）。
+    if rec.target.kind == "group" {
+        if let Some(gid) = rec.target.group_id.clone() {
+            let sd = s.clone();
+            let me = sd.device_id.clone();
+            let allowed = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+                let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
+                Ok(db::get_group(&dbc, &gid).map(|g| g.is_manager(&me)).unwrap_or(false))
+            })
+            .await
+            .map_err(|e| format!("权限检查中断：{e}"))??;
+            if !allowed {
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::BOT_TARGET_INVALID,
+                    "只有群主或管理员可以删除群机器人",
+                ));
+            }
+        }
+    }
+
     // ① 先撤销远端（真正的「hook 失效」裁决方）。失败 ⇒ 报错，本地**不删**，可重试。
     if !rec.client_token.is_empty() {
         let client = bot_client()?;
