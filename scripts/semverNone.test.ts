@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -22,6 +23,23 @@ import {
 } from "./semver.mjs";
 
 const DOCS = ["docs/notes/x.md", "README.md", "CHANGELOG.md", "docs/ARCHITECTURE-MAP.html"];
+
+/**
+ * 临时 git 仓库的建与删（两个钩子路径用例共用同一套纪律）。
+ *
+ * - **建在 os.tmpdir() 而不是仓库根**：仓库根是杀软/索引器重点盯防的目录，
+ *   Windows 上刚退出的 git/node 进程还握着目录句柄时 rmSync 会 EPERM
+ *   （2026-11-18 Windows 实测：同一条用例独立跑必绿、verify 连跑两轮 npm test 就假红）；
+ * - **删除带线性退避重试**（最坏 ~10s）：句柄释放是异步的，裸删就是掷硬币；
+ *   POSIX 上这些错误几乎不触发，参数是无操作。
+ */
+const TEMP_ROOT = path.join(tmpdir(), "gosslan-budget-hook-");
+function makeTempRepo(): string {
+  return mkdtempSync(TEMP_ROOT);
+}
+function removeTempRepo(dir: string): void {
+  rmSync(dir, { recursive: true, force: true, maxRetries: 40, retryDelay: 250 });
+}
 /**
  * 夹具必须**自洽**：`touchesCode` 由路径现算（生产侧 `buildRows` 就是这么来的）。
  * 第一版我手写了 `touchesCode: false` 却往 paths 里塞 `src/...`，于是这条提交先落进既有的
@@ -138,7 +156,7 @@ test("集成：判据 4 接受合法 none（退 0）、拒绝混入代码的 non
  * 用临时 git 仓库跑，不碰本仓暂存区。
  */
 test("钩子路径：纯文档无 trailer 放行；四个清单都动却无声明仍红", () => {
-  const dir = mkdtempSync(path.join(ROOT, ".tmp-budget-hook-"));
+  const dir = makeTempRepo();
   const git = (...args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
   const gate = (msgFile: string) =>
     spawnSync(
@@ -175,7 +193,7 @@ test("钩子路径：纯文档无 trailer 放行；四个清单都动却无声�
     assert.equal(red.status, 1, red.stdout + red.stderr);
     assert.match(red.stdout + red.stderr, /动了全部 4 个版本清单文件（一次真 bump）却没声明/);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeTempRepo(dir);
   }
 });
 
@@ -188,7 +206,7 @@ test("钩子路径：纯文档无 trailer 放行；四个清单都动却无声�
  * 三条一起，任一支判定被删都会有一条红。
  */
 test("钩子路径边界：只动 1–3 个清单（含只改 package.json 脚本）不要求声明；声明了就必须四条齐", () => {
-  const dir = mkdtempSync(path.join(ROOT, ".tmp-budget-hook-"));
+  const dir = makeTempRepo();
   const git = (...args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
   const gate = (msgFile: string) =>
     spawnSync(
@@ -230,6 +248,6 @@ test("钩子路径边界：只动 1–3 个清单（含只改 package.json 脚�
     const three = gate(msgFile);
     assert.equal(three.status, 0, `只动 3 条清单不要求声明\n${three.stdout}${three.stderr}`);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeTempRepo(dir);
   }
 });

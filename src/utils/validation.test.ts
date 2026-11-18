@@ -198,7 +198,7 @@ test("计数器那把尺与 schema 同一把：charCount 数码点，且全仓�
   for (const rel of files) {
     const src = stripComments(fs.readFileSync(path.join(ROOT, rel), "utf8"));
     const n = (src.match(RE) ?? []).length;
-    for (let i = 0; i < n; i++) homes.push(rel);
+    for (let i = 0; i < n; i++) homes.push(rel.replaceAll("\\", "/"));
   }
   assert.deepEqual(
     homes,

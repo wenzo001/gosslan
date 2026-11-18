@@ -24,7 +24,7 @@
  *   node scripts/check-panic-sites.mjs --self-test
  */
 import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 
@@ -191,6 +191,16 @@ export function stripCfgTest(text) {
   return out;
 }
 
+/**
+ * 基线键一律 posix 化：Windows 的 `path.relative()` 给出反斜杠（`commands\x.rs`），
+ * 而基线（macOS 上生成）是正斜杠键 ⇒ 不归一的话**每个**文件都查不到基线，
+ * 全被当成"新文件"假红（2026-11-18 Windows 实测，快速层 fail-fast 在第 8 步）。
+ * 与 check-key-boundary.mjs / check-test-manifest.mjs / check-ble-constants.mjs 的既有先例同款。
+ */
+export function toBaselineKey(rel) {
+  return rel.split(sep).join("/");
+}
+
 function lineAt(text, index) {
   let line = 1;
   for (let i = 0; i < index && i < text.length; i++) if (text[i] === "\n") line++;
@@ -259,6 +269,13 @@ function runSelfTest() {
     const got = analyze(src).counts;
     assert.deepEqual(got, want, `self-test 失败：${name}（实际 ${JSON.stringify(got)}）`);
   }
+  // 路径归一自证（平台各证一半）：Windows 必须把反斜杠键转成 posix；posix 必须原样恒等。
+  if (sep === "\\") {
+    assert.equal(toBaselineKey("a\\b\\c.rs"), "a/b/c.rs");
+    assert.equal(toBaselineKey("a/b.rs"), "a/b.rs");
+  } else {
+    assert.equal(toBaselineKey("a/b.rs"), "a/b.rs");
+  }
   console.log(`✓ self-test：${cases.length} 条正反控全部通过`);
 }
 
@@ -297,7 +314,7 @@ function main() {
   let totals = { panic: 0, expect: 0, unwrap: 0 };
   for (const f of srcFiles) {
     const { counts } = analyze(readFileSync(f, "utf8"));
-    const rel = relative(SRC, f);
+    const rel = toBaselineKey(relative(SRC, f));
     current[rel] = counts;
     totals = addCounts(totals, counts);
   }
