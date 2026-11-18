@@ -8,7 +8,7 @@
 // ⚠️ 判据 C（scripts/check-doc-numbers.mjs）按下面这行 export const MODE 把本文件的 check( 归到这一轮：
 //    改这行、或把断言挪去别的分册，都会让活文档里那句「N 条断言」当场对不上。
 export const MODE = "LATE";
-import { ALL_INST, GROUP_ID, GROUP_KEY_B64, GROUP_KEY_STR, GROUP_NAME, INSTANCES, INST_C, ROUND, RUN_DIR, S, bootBaseOf, buildGroupEnvelope, check, ed25519Priv, launch, noteId, nowMs, openDb, readIdentity, seed, sleep, step, stopAll, tcpOpen, waitFor } from "../core.mjs";
+import { ALL_INST, GROUP_ID, GROUP_KEY_B64, GROUP_KEY_STR, GROUP_NAME, INSTANCES, INST_C, ROUND, RUN_DIR, S, bootBaseOf, buildGroupEnvelope, check, ed25519Priv, launch, noteId, nowMs, openDb, readIdentity, seed, seedBleOff, sleep, step, stopAll, tcpOpen, waitFor } from "../core.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { BOOT_LINE, bootReady, countLog } from "../../e2e-logtail.mjs";
@@ -42,6 +42,8 @@ export async function run() {
         .run(JSON.stringify([{ address: `127.0.0.1:${INSTANCES[1].port}` }]));
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('downloads_dir',?1)").run(recvC);
     });
+    // 第三实例不走 seedPair ⇒ 蓝牙偏好必须在这里补（否则正式 launch 后 2s 就被 TCC 杀掉）。
+    seedBleOff(INST_C);
     // B：把 C 追加进好友与端点。⚠️ 端点必须**先读回再追加**（同链式轮）—— 直接覆盖会把 A 的端点清没。
     seed(INSTANCES[1].db, (db) => {
       db.prepare(
