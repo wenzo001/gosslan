@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { decideDefaultFilter } from "./todoFilter.ts";
 
 const base = { open: true, dataReady: true, selfKnown: true, mineCount: 2, settled: false };
@@ -51,4 +53,19 @@ test("反例自证：漏掉「身份已知」这个前提，身份未到 + 「�
   const late = { ...base, selfKnown: false, mineCount: 2 };
   assert.equal(naive(late), "mine");
   assert.notEqual(naive(late), decideDefaultFilter(late));
+});
+
+test("常驻群任务窗口：每次打开都要重判默认页签（否则停在上一轮的页签）", () => {
+  const root = join(import.meta.dirname, "..", "..");
+  const win = readFileSync(join(root, "src/components/GroupTodosWindow.vue"), "utf8");
+  const board = readFileSync(join(root, "src/components/GroupTasksBoard.vue"), "utf8");
+  // 窗口关=隐藏、同群重开不重挂看板 ⇒ 必须有一个「又打开了一次」的信号
+  assert.ok(win.includes("resetSeq.value += 1"), "窗口每次被打开时没有发出重判信号");
+  assert.ok(win.includes(':reset-seq="resetSeq"'), "重判信号没有传给看板");
+  assert.ok(board.includes("() => props.resetSeq"), "看板没有监听重开信号");
+  // 重开时按当前「我的」重判，不是无条件回「我的」
+  assert.ok(
+    board.includes('filter.value = counts.value.mine === 0 ? "all" : "mine"'),
+    "重开时没有按「我的」是否为空重判",
+  );
 });

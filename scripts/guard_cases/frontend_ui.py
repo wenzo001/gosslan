@@ -142,9 +142,11 @@ CASES: list[Case] = [
         "     换群清状态只剩 `:key` 一条路。摘掉它的表现是「在新群里点新建，草稿是上一个群的」，\n"
         "     而 `submitDraft` 读的是当前 `props.groupId` ⇒ 上一个群的半成品会被真的建进这个群。",
         file=ROOT / "src" / "components" / "GroupTodosWindow.vue",
+        # 2026-11-18：看板挂载改成多行（多了 reset-seq），锚点跟着搬家 ——
+        # 不搬的话注入注不上去，这条守卫会静默空转（正是本用例 why 里说的那种退化）。
         injections=[(
-            '<GroupTasksBoard :key="groupId" ref="boardRef" :group-id="groupId" standalone two-pane />',
-            '<GroupTasksBoard ref="boardRef" :group-id="groupId" standalone two-pane />',
+            '      <GroupTasksBoard\n        :key="groupId"\n        ref="boardRef"',
+            '      <GroupTasksBoard\n        ref="boardRef"',
         )],
         cmd=node_test("src/utils/channelState.test.ts"),
         cwd=ROOT,

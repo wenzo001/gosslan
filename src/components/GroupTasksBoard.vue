@@ -89,6 +89,11 @@ import { POPOVER_EDGE } from "@/utils/popoverBounds";
 const props = defineProps<{
   groupId: string | null;
   open?: boolean;
+  /**
+   * 每次「被重新打开」的序号（独立窗口形态用）。同一群重开时组件不重挂，
+   * 靠它触发一次默认页签重判；内嵌弹窗形态走 `open` 的翻转，不需要它。
+   */
+  resetSeq?: number;
   standalone?: boolean;
   /**
    * 独立窗口形态的「左列表 + 右详情」两栏（用户 2026-11-08）。
@@ -490,6 +495,22 @@ watch(
   () => props.open,
   (open) => {
     if (open === false) filterSettled.value = false;
+  },
+);
+
+/**
+ * 「又一次打开」的显式信号（独立窗口：关窗=隐藏，同群重开不重挂看板）。
+ * 数据通常已在 ⇒ 立刻按当前「我的」重判；还没就绪就交给上面那条 watch。
+ */
+watch(
+  () => props.resetSeq,
+  (seq, prev) => {
+    if (seq == null || seq === prev) return;
+    filterSettled.value = false;
+    if (!firstScreenLoading.value && rowsState.value.status === "ready") {
+      filter.value = counts.value.mine === 0 ? "all" : "mine";
+      filterSettled.value = true;
+    }
   },
 );
 
