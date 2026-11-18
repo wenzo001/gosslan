@@ -1,16 +1,36 @@
 {
   "_comment": "check-selfproof-baseline.mjs 的基线：每个 *selfproof 档的「退出码 / 报红条数 / 结论总数」。跑法：`node scripts/check-selfproof-baseline.mjs`（核对）；改了判据/夹具/harness 后重新生成用 `--sync`。★ 这里刻意**不存** expect_red 也**不存** unit：前者（该红还是该绿）由 package.json 的命令串现推（`-lie` = 必须红，`--*-selfcheck` = 必须绿），后者（条断言 / 格）就是它的一个函数 —— 存下来就是第二个会各自漂的事实来源（本文件第一版真存了 unit，于是 20 档里只有 4 档带这个字段）。",
-  "generated_from_tip": "849d882",
+  "generated_from_tip": "d3ae38fe",
   "entries": {
+    "test:e2e:bot-selfproof": {
+      "exit": 1,
+      "red": 1,
+      "total": 34
+    },
+    "test:e2e:contentpull-selfproof": {
+      "exit": 1,
+      "red": 2,
+      "total": 40
+    },
     "test:e2e:dmreaction-selfproof": {
       "exit": 1,
       "red": 2,
       "total": 24
     },
+    "test:e2e:friendreq-selfproof": {
+      "exit": 1,
+      "red": 2,
+      "total": 28
+    },
     "test:e2e:gfile-selfproof": {
       "exit": 1,
       "red": 2,
       "total": 28
+    },
+    "test:e2e:ghsync-selfproof": {
+      "exit": 1,
+      "red": 9,
+      "total": 41
     },
     "test:e2e:gossip-late-selfproof": {
       "exit": 1,
@@ -25,12 +45,12 @@
     "test:e2e:group-selfproof": {
       "exit": 1,
       "red": 9,
-      "total": 36
+      "total": 37
     },
     "test:e2e:group-targets-selfproof": {
       "exit": 1,
       "red": 1,
-      "total": 36
+      "total": 37
     },
     "test:e2e:groupcrash-selfproof": {
       "exit": 1,
@@ -85,7 +105,7 @@
     "test:fault-injection:multi-selfproof": {
       "exit": 1,
       "red": 1,
-      "total": 24
+      "total": 29
     },
     "test:fault-injection:rename-selfproof": {
       "exit": 1,
@@ -110,7 +130,7 @@
     "test:fault-injection:shrink-selfproof": {
       "exit": 1,
       "red": 1,
-      "total": 24
+      "total": 26
     },
     "test:fault-injection:stall-selfproof": {
       "exit": 1,
