@@ -11,7 +11,7 @@ export const MODE = "GROUP";
 import { GROUP_ID, GROUP_KEY_B64, GROUP_KEY_STR, GROUP_NAME, INSTANCES, ROUND, RUN_DIR, S, buildGroupEnvelope, buildMentionTargets, check, ed25519Priv, noteId, nowMs, openDb, procs, seed, sleep, step, waitFor } from "../core.mjs";
 import fs from "node:fs";
 import path from "node:path";
-import { countLog } from "../../e2e-logtail.mjs";
+import { countLog, countLogFields } from "../../e2e-logtail.mjs";
 
 // ── 族私有的量（只有这一族读；随块一起搬过来）──
 let gMentionText = "";
@@ -304,10 +304,13 @@ export async function run() {
     // "把缺键也当成空名单"那种实现（那样旧对端发的 @ 会永久判不出来，比原缺陷更糟）。
     // ⚠️ 这一格判不到那枚红点：徽标活在 webview 的 store 里（不落库、也不进日志）
     //    ⇒ "界面上真的亮了"仍归 Smoke-10/11 人工（#117 记的就是这剩下的一半）。
-    const mentionLineCount = countLog(
-      INSTANCES[1].log, `群消息@输入 msg=${gMentionOnlyId} mentions=1`);
-    const legacyLineCount = countLog(
-      INSTANCES[1].log, `群消息@输入 msg=${gLegacyShapeId} mentions=none`);
+    // ⚠️ 按**字段**取，不写死 `msg=<id> mentions=1` 这种相邻子串：
+    // 产品 2026-11-09 在两者之间插了 `kind=text`（b6e01c04），旧写法恒红 4 条。
+    // 反向档照旧有效：group-lie 翻 id ⇒ 前缀对不上；group-targets-lie 摘 targets ⇒ 字段变成 none。
+    const mentionLineCount = countLogFields(
+      INSTANCES[1].log, `群消息@输入 msg=${gMentionOnlyId}`, { mentions: "1" });
+    const legacyLineCount = countLogFields(
+      INSTANCES[1].log, `群消息@输入 msg=${gLegacyShapeId}`, { mentions: "none" });
     check("带 @ 名单那条：B 自己解密后读到 1 个身份号（名单穿过 seal→网络→解析没丢）",
       mentionLineCount >= 1, "≥1 行 mentions=1", mentionLineCount);
     check("没带这个键那条（旧形状）：B 判成「不知道」而不是「谁都没 @」——第三态跨进程成立",
@@ -321,8 +324,9 @@ export async function run() {
       && gMentionTargets[0].id === S.idB.runtimeId && gMentionTargets[0].name
       && gMentionText.includes(`@${gMentionTargets[0].name}`),
       "1 条、n=1、id=B、name 真的出现在正文里", JSON.stringify(gMentionTargets));
-    const targetLineCount = countLog(
-      INSTANCES[1].log, `群消息@输入 msg=${gMentionId} mentions=1 targets=1`);
+    const targetLineCount = countLogFields(
+      INSTANCES[1].log, `群消息@输入 msg=${gMentionId}`,
+      { mentions: "1", targets: "1" });
     check("名单+落点都带那条：B 自己解密后读到 1 个落点（mention_targets 穿过 seal→网络→解析没丢）",
       targetLineCount >= 1, "≥1 行 mentions=1 targets=1", targetLineCount);
     // 这一条是 INV-P24「新字段只许让新版更准、不许让老对端变暗」在**落点**这一层的跨进程版本：
@@ -331,8 +335,9 @@ export async function run() {
     // 变成"权威地说谁都没 @ "—— 比原缺陷更糟，而且无声（单元层
     // `gossip_plaintext_with_targets_roundtrips_and_old_shape_still_parses` 钉过同一条，
     // 但那里没有真的第二进程；两边各钉是因为破坏点分别在这条管道的两截）。
-    const rosterOnlyTargetCount = countLog(
-      INSTANCES[1].log, `群消息@输入 msg=${gMentionOnlyId} mentions=1 targets=none`);
+    const rosterOnlyTargetCount = countLogFields(
+      INSTANCES[1].log, `群消息@输入 msg=${gMentionOnlyId}`,
+      { mentions: "1", targets: "none" });
     check("只带名单那条：落点判成「不知道」而不是「空落点」——兜底路径跨进程仍然活着",
       rosterOnlyTargetCount >= 1, "≥1 行 mentions=1 targets=none", rosterOnlyTargetCount);
     // ★ **可选**的真界面采样（#140）：`GOSSLAN_AX=1` 时在"对端刚收下那条 @、窗口还活着"的这一刻，
@@ -418,8 +423,8 @@ export async function run() {
             let ingested = false;
             try {
               await waitFor(
-                () => countLog(INSTANCES[1].log,
-                  `群消息@输入 msg=${L.messageId} mentions=1`) >= 1,
+                () => countLogFields(INSTANCES[1].log,
+                  `群消息@输入 msg=${L.messageId}`, { mentions: "1" }) >= 1,
                 75_000, "B 摄入就绪后补送的那条 @",
               );
               ingested = true;

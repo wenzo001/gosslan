@@ -59,6 +59,32 @@ export function countLog(file, needle) {
 }
 
 /**
+ * 按「同一行里若干 key=value 字段」数行 —— 字段之间的其它内容和顺序都忽略。
+ *
+ * ⚠️ 为什么需要它（2026-11-18 的实测回归）：群聊轮 #103/#122 的判据把
+ * `msg=<id> mentions=1` 当成**相邻子串**去数，而产品 2026-11-09 在两者之间插了
+ * `kind=text`（`gossip.rs` 的「群消息@输入」行）⇒ 产品一个字没错、日志里
+ * mentions/targets 三态全对，判据却**恒红 4 条**。
+ * 产品的日志字段随时可能增删/重排，判据只该认自己真正关心的那几项。
+ *
+ * @param prefix 行内必含的前缀（用来定位是哪族日志），如 `群消息@输入 msg=<id>`
+ * @param fields 必须**逐字相等**的 token 映射，如 `{ mentions: "1", targets: "none" }`
+ */
+export function countLogFields(file, prefix, fields) {
+  const all = `${readIfExists(rolledLog(file))}\n${readIfExists(file)}`;
+  const keys = Object.keys(fields);
+  let n = 0;
+  for (const line of all.split("\n")) {
+    if (!line.includes(prefix)) continue;
+    const toks = new Map(
+      Array.from(line.matchAll(/([a-z_]+)=(\S+)/g), (m) => [m[1], m[2]]),
+    );
+    if (keys.every((k) => toks.get(k) === fields[k])) n++;
+  }
+  return n;
+}
+
+/**
  * 把某实例现有的日志（含轮转旧档）**移动**到 run 目录留证，原位置清空。
  * 每次 launch 前调用一次 ⇒ 本轮启动写下的行必然在 `.log` 里，判据不再和轮转时间赛跑。
  * 是移动不是删除：文件内容逐字节进 `runDir`，事后照样能在报告目录里翻。
