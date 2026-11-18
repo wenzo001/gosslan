@@ -479,6 +479,20 @@ watch(
   { immediate: true },
 );
 
+/**
+ * 关掉时把「已判过」复位（用户 2026-11-18：逻辑只在**点开时**执行一次）。
+ *
+ * 独立窗口每次都是新实例，天然满足；内嵌弹窗形态常驻，不复位的话第二次打开
+ * 仍停在上次的页签（而不是按当前「我的」是否为空重判）。手动切页签时 `open` 不变，
+ * 所以不会被拉回。
+ */
+watch(
+  () => props.open,
+  (open) => {
+    if (open === false) filterSettled.value = false;
+  },
+);
+
 /** 分组小标题的图标（与状态语汇一致：待办=空心圈、进行中=实心点、延期=时钟、做不了=叉圈、完成=对勾圈）。 */
 const STATUS_ICON: Record<TodoStatus, IconName> = {
   todo: "circle",

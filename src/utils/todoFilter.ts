@@ -36,6 +36,13 @@ export interface DefaultFilterInput {
  * 否则会把"这次没数据"误当成"默认页签选错了"。
  */
 export function decideDefaultFilter(i: DefaultFilterInput): TodoFilter | null {
-  if (!i.open || !i.dataReady || !i.selfKnown || i.settled) return null;
-  return i.mineCount === 0 ? "all" : "mine";
+  if (!i.open || !i.dataReady || i.settled) return null;
+  // 「我的」一条都没有 ⇒ 落到「全部」。**身份未知时也照判**：
+  // 这时「我的」本来就不可用（`isAssignedToMe` 对空 myId 恒 false），停在它上面只会是
+  // 一页空白（用户 2026-11-18 在群任务窗口看到的就是「我的 0 + 没有符合条件的任务」）。
+  // 与 5.20.0 的取舍：宁可多落一次「全部」（用户能立刻看到任务），也不要停在空页。
+  if (i.mineCount === 0) return "all";
+  // 有内容却不知道我是谁 ⇒ 可能是假数（身份还在路上），这次不判，等身份回来再判。
+  if (!i.selfKnown) return null;
+  return "mine";
 }

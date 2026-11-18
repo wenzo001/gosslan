@@ -22,8 +22,8 @@ test("数据没到齐不判（加载中 / 读失败都不是「空的」）", ()
   assert.equal(decideDefaultFilter({ ...base, dataReady: false, mineCount: 0 }), null);
 });
 
-test("身份没回来不判（否则「我的」被数成 0 并锁死在「全部」，5.20.0 的实际缺陷）", () => {
-  assert.equal(decideDefaultFilter({ ...base, selfKnown: false, mineCount: 0 }), null);
+test("身份没回来但「我的」为 0 ⇒ 仍落「全部」（否则停在空页，用户 2026-11-18）", () => {
+  assert.equal(decideDefaultFilter({ ...base, selfKnown: false, mineCount: 0 }), "all");
   assert.equal(decideDefaultFilter({ ...base, selfKnown: false, mineCount: 2 }), null);
 });
 
@@ -43,12 +43,12 @@ test("反例自证：漏掉「面板关着」这个前提，闭着时会把标�
   );
 });
 
-test("反例自证：漏掉「身份已知」这个前提，身份未到 + 「我的」有任务会误判成「全部」", () => {
-  // 把 selfKnown 摘掉：mineCount 此时还是 0（`isAssignedToMe` 对空 myId 恒 false），
-  // 于是会返回 "all" 并锁住 —— 正是发布版上用户看到的行为。这条必须与正确结果不同。
+test("反例自证：漏掉「身份已知」这个前提，身份未到 + 「我的」有任务会误判成「我的」并锁住", () => {
+  // selfKnown 仍然是前提：有内容但不知道我是谁时，正确实现必须返回 null（等身份），
+  // 而摘掉前提的实现会直接判「我的」并锁死（身份回来后也不会重判）。
   const naive = (i: typeof base) =>
     !i.open || !i.dataReady || i.settled ? null : i.mineCount === 0 ? "all" : "mine";
-  const late = { ...base, selfKnown: false, mineCount: 0 };
-  assert.equal(naive(late), "all");
+  const late = { ...base, selfKnown: false, mineCount: 2 };
+  assert.equal(naive(late), "mine");
   assert.notEqual(naive(late), decideDefaultFilter(late));
 });
