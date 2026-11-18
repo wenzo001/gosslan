@@ -85,7 +85,7 @@ const props = withDefaults(
      * 群机器人代发的消息：以「对方」渲染（头像/昵称用机器人身份）。
      * 机器人实际以本机身份入线（线格式不动），这里只改展示层。
      */
-    botSender?: { id: string; name: string; avatar?: string | null } | null;
+    botSender?: { id: string; name: string; avatar?: string | null; markdown?: boolean } | null;
     /** 已读该群消息的成员 ID（由父组件按消息时间计算） */
     groupReaderIds?: string[];
     /** 正在闪烁定位的消息键（点击引用块跳转时高亮 1.6s） */
@@ -1966,7 +1966,8 @@ async function copyFileToClipboard() {
               <MessageTextBubble
                 v-if="message.kind === 'text'"
             :content="message.content"
-            :is-bot="isBotMessage"
+            :is-bot="isBotMessage || !!botSender"
+            :bot-markdown="!!botSender?.markdown"
             :msg-id="message.msg_id"
             :bubble-style="bubbleStyle"
             :card-style="cardStyle"

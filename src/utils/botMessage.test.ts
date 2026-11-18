@@ -387,8 +387,8 @@ test("群机器人历史消息：删了/退群后仍留在发送方侧（靠落�
 
   // 后端：群消息落库时写 `local_id = bot:<botId>`（不改表结构、不进线格式）
   assert.ok(
-    rust.includes('let bot_marker = format!("bot:{}", record.bot_id);'),
-    "群机器人消息没有写持久标记 ⇒ 机器人一删，历史气泡会变回「我发的」",
+    rust.includes('format!("bot:{}", record.bot_id)') && rust.includes('format!("bot-md:{}", record.bot_id)'),
+    "群机器人消息没有写持久标记（纯文本 `bot:` / markdown `bot-md:`）⇒ 删了会回「我发的」、富文本也丢",
   );
   assert.ok(rust.includes("Some(&bot_marker)"), "持久标记没有传给群发送");
   // 前端：优先读持久标记；找不到当前机器人时仍按机器人渲染（名字回退正文前缀）
@@ -403,4 +403,34 @@ test("多个机器人必须并发取件（串行长轮询会让后面的机器�
   assert.ok(rust.includes("let mut pulls = tokio::task::JoinSet::new();"), "轮询仍然是串行的");
   assert.ok(rust.includes("pulls.spawn(async move {"), "没有把每个机器人丢进并发集");
   assert.ok(rust.includes("while let Some(joined) = pulls.join_next().await"), "没有收敛并发结果");
+});
+
+test("群机器人 markdown 与单聊闭环（协议标记 → 气泡按富文本渲染）", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const read = (p: string) => readFileSync(join(repoRoot, p), "utf8");
+  const rust = read("src-tauri/src/commands/bots.rs");
+  const chat = read("src/components/ChatWindow.vue");
+  const item = read("src/components/MessageItem.vue");
+  const bubble = read("src/components/message/MessageTextBubble.vue");
+
+  assert.ok(rust.includes('if entry.format == "markdown"'), "投递时没按 format 区分");
+  assert.ok(chat.includes('lid.startsWith("bot-md:")'), "前端没解析 markdown 标记");
+  assert.ok(chat.includes("markdown: isMd"), "botSender 没把 markdown 带出去");
+  assert.ok(item.includes(':bot-markdown="!!botSender?.markdown"'), "气泡没收到 markdown 标记");
+  assert.ok(
+    bubble.includes("botMarkdown || msgId?.startsWith('botmsg-md-')"),
+    "气泡没有把群机器人的 markdown 当富文本渲染",
+  );
+});
+
+test("删除机器人是幂等的：服务端已没有它（404/401）也必须能删掉本地记录", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const rust = readFileSync(join(repoRoot, "src-tauri", "src", "commands", "bots.rs"), "utf8");
+  // 线上 7.1.2：服务端已无该 bot（或 token 失效）时 DELETE 返回 404/401，客户端却当成「拒绝撤销」
+  // ⇒ 记录永远删不掉。删除是幂等的，远端不存在 = 已达成目标。
+  assert.ok(rust.includes("reqwest::StatusCode::NOT_FOUND"), "404 没有被当成「远端已不存在」");
+  assert.ok(rust.includes("reqwest::StatusCode::UNAUTHORIZED"), "401 没有被当成「token 已失效」");
+  assert.ok(rust.includes("let already_gone ="), "没有 404/401 的放行判据");
+  // 群已解散/被移出时也应能清理，否则权限校验把用户自己锁死。
+  assert.ok(rust.includes("None => true"), "群不存在时仍要求群主/管理员 ⇒ 永远删不掉");
 });
