@@ -717,11 +717,15 @@ const tasksOpen = ref(false);
  * 头像与昵称用机器人的。识别不到就原样退回（不会把普通消息误判）。
  */
 const groupBots = ref<BotView[]>([]);
-function botSenderOf(m: MessageRecord): { id: string; name: string; avatar: string | null } | null {
+function botSenderOf(
+  m: MessageRecord,
+): { id: string; name: string; avatar: string | null; markdown: boolean } | null {
   if (!isGroup.value || m.sender_id !== app.device?.device_id) return null;
-  // ① 首选消息自带的持久标记（落库时写 `bot:<botId>`）：机器人被删/退群后历史仍可归因。
+  // ① 首选消息自带的持久标记（`bot:<botId>` / markdown 用 `bot-md:<botId>`）：
+  //    机器人被删/退群后历史仍可归因，且富文本标记随消息走（与单聊机器人一致）。
   const lid = m.local_id ?? "";
-  const markerId = lid.startsWith("bot:") ? lid.slice("bot:".length) : null;
+  const isMd = lid.startsWith("bot-md:");
+  const markerId = isMd ? lid.slice("bot-md:".length) : lid.startsWith("bot:") ? lid.slice("bot:".length) : null;
   // ② 兼容旧消息（没有标记）：退回正文前缀，只在当前机器人列表里找得到时才认。
   const mt = /^【([^】]{1,60})】/.exec(m.content ?? "");
   if (!markerId && !mt) return null;
@@ -734,7 +738,7 @@ function botSenderOf(m: MessageRecord): { id: string; name: string; avatar: stri
   const name = b?.name ?? (name0 || t("bot.listBadge"));
   // id 必须稳定（头像种子 + 分组键）：优先持久标记，旧消息退回名字派生。
   const id = markerId ? `bot:${markerId}` : `bot:${b!.botId}`;
-  return { id, name, avatar: b?.avatar ?? null };
+  return { id, name, avatar: b?.avatar ?? null, markdown: isMd };
 }
 
 

@@ -28,6 +28,8 @@ const props = defineProps<{
   isBot?: boolean;
   /** botmsg-md-* = Markdown 正文；其它机器人消息按纯文本（防止 # / * 被误解析）。 */
   msgId?: string;
+  /** 群机器人消息的富文本标记（群消息走协议层 msg_id，没有 `botmsg-md-` 前缀，靠消息自带标记）。 */
+  botMarkdown?: boolean;
   /** 自己的消息气泡尖角朝右、对方朝左，指向头像。 */
   mine: boolean;
   /** 群成员名列表：正文里的 @name 按此高亮（不传不高亮）。 */
@@ -213,7 +215,7 @@ async function openLink(href: string) {
     <div ref="contentEl">
       <!-- 机器人正文：Markdown（输入已在 renderBotMessage 里消毒）。 -->
       <div
-        v-if="isBot && msgId?.startsWith('botmsg-md-')"
+        v-if="isBot && (botMarkdown || msgId?.startsWith('botmsg-md-'))"
         ref="bodyEl"
         data-msg-body=""
         class="bot-message-body gosslan-selectable break-words"

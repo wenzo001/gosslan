@@ -652,7 +652,12 @@ pub async fn bot_delete(
             let me = sd.device_id.clone();
             let allowed = tokio::task::spawn_blocking(move || -> Result<bool, String> {
                 let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
-                Ok(db::get_group(&dbc, &gid).map(|g| g.is_manager(&me)).unwrap_or(false))
+                // 群已不存在（解散/被移出）：机器人已无归属，允许清理本地记录；
+                // 群还在时才要求群主/管理员。
+                Ok(match db::get_group(&dbc, &gid) {
+                    Some(g) => g.is_manager(&me),
+                    None => true,
+                })
             })
             .await
             .map_err(|e| format!("权限检查中断：{e}"))??;
@@ -678,13 +683,15 @@ pub async fn bot_delete(
                     format!("连不上通知服务，未能撤销 hook（本地记录已保留，可重试）：{e}"),
                 )
             })?;
-        if !resp.status().is_success() {
+        // 404/401 = 服务端已经没有这个机器人（被删过 / 服务端重建丢了状态 / token 失效）。
+        // 删除是幂等的：「远端不存在」已经达成撤销目标，必须继续清本地，
+        // 否则这条记录永远删不掉（线上 7.1.2 用户 2026-11-18 报的正是这个）。
+        let st = resp.status();
+        let already_gone = st == reqwest::StatusCode::NOT_FOUND || st == reqwest::StatusCode::UNAUTHORIZED;
+        if !st.is_success() && !already_gone {
             return Err(crate::error_codes::coded(
                 crate::error_codes::BOT_STATUS_FAILED,
-                format!(
-                    "通知服务拒绝了撤销（HTTP {}），本地记录已保留，可重试",
-                    resp.status()
-                ),
+                format!("通知服务拒绝了撤销（HTTP {st}），本地记录已保留，可重试"),
             ));
         }
     }
@@ -1013,7 +1020,12 @@ async fn deliver_event(
             }
             // `local_id` 记下「这条是哪个机器人代发的」：机器人被删/退群后，
             // 历史消息仍能留在发送方侧（用户 2026-11-18）。不改表结构，也不进线格式。
-            let bot_marker = format!("bot:{}", record.bot_id);
+            // `bot-md:` = markdown 正文（前端按富文本渲染），`bot:` = 纯文本；两者都带 botId 供归因。
+            let bot_marker = if entry.format == "markdown" {
+                format!("bot-md:{}", record.bot_id)
+            } else {
+                format!("bot:{}", record.bot_id)
+            };
             let sent = send_group_payload(s, &group_id, "text", content, None, Some(&bot_marker), None)
                 .await
                 .map(|_| ())
