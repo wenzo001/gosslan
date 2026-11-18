@@ -14,12 +14,12 @@
  * ## 分两层（为什么）
  *
  * - `botMessageToHtml`：**纯逻辑**（转义 / marked 解析 / 丢弃 raw HTML）⇒ **可单测**；
- * - `renderBotMessage`：在纯逻辑产物上再过一遍 **DOMPurify**（第二道）⇒ 需要 DOM。
+ * - `renderBotMessage`：在纯逻辑产物上再过一遍 **DOMPurify**（第二道）⇒ 需要 DOM，
+ *   生产在 WebView 跑；测试注入 `createDOMPurify(window)`（happy-dom）同样能自动测这一层。
  *
- * 为什么在 marked 那一层就把 **raw HTML 掐掉**：marked 默认会把正文里的
- * `<script>`/`<img>` 当**原始 HTML** 透传进产物 ⇒ 只剩 DOMPurify 一道挡，
- * 而 DOMPurify 在 Node 里没有 DOM ⇒ 单测够不着。掐在前一层 ⇒
- * 「外部正文里没有 HTML」这条**纯逻辑可单测** ✔。
+ * 为什么在 marked 那一层也把 **raw HTML 掐掉**：marked 默认会把正文里的
+ * `<script>`/`<img>` 当**原始 HTML** 透传进产物。两层都挡（深度防御）：
+ * 前一层纯逻辑可单测 ✔；后一层用注入的 DOM 实例可单测 ✔（7.x P2 补上）。
  *
  * ## 与既有 Markdown 工具的关系
  *
@@ -148,24 +148,43 @@ export function botMessageToHtml(
   return botMarked.parse(text, { async: false });
 }
 
+/** DOMPurify 实例形状（Web 默认单例 / 测试注入 createDOMPurify(window) 都满足）。 */
+type PurifyLike = { sanitize: (html: string, cfg: Record<string, unknown>) => string };
+
+/**
+ * 消毒配置（**唯一事实源**）：Web 的 `renderBotMessage` 与测试注入实例共用同一份配置，
+ * 保证「测的那层」和「WebView 跑的那层」是同一套白名单，而不是两套各写一遍。
+ */
+export const BOT_SANITIZE_CONFIG = {
+  ALLOWED_TAGS: BOT_MESSAGE_ALLOWED_TAGS,
+  ALLOWED_ATTR: BOT_MESSAGE_ALLOWED_ATTR,
+  ALLOW_DATA_ATTR: false,
+  // 图片与内联样式一律不许（远程图片不自动加载 ⇒ 不给 img 也不给 style）。
+  FORBID_TAGS: ["img", "style", "svg", "math", "iframe", "object", "embed"],
+  FORBID_ATTR: ["style", "srcset", "formaction", "ping"],
+} as const;
+
 /**
  * 渲染成可 `v-html` 的安全片段（**DOM 环境**：在消毒之后再交给界面）。
  *
- * DOMPurify 在 Node 里没有 DOM ⇒ 单测只跑 `botMessageToHtml`（纯逻辑那层）；
- * 这一层在真实 WebView 里执行。
+ * 生产走模块级 DOMPurify（WebView 有 window）；`purify` 参数仅供测试注入
+ * `createDOMPurify(window)`（如 happy-dom）—— 这样第二层消毒**也能自动测**，
+ * 而不是「Node 没 DOM ⇒ 只能靠代码审阅」（审计 7.x P2）。
  */
 export function renderBotMessage(
   raw: string | null | undefined,
   format: string | null | undefined,
+  purify: PurifyLike = DOMPurify,
 ): string {
   const html = botMessageToHtml(raw, format);
   if (!html) return "";
-  return DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: BOT_MESSAGE_ALLOWED_TAGS,
-    ALLOWED_ATTR: BOT_MESSAGE_ALLOWED_ATTR,
-    ALLOW_DATA_ATTR: false,
-    // 图片与内联样式一律不许（远程图片不自动加载 ⇒ 不给 img 也不给 style）。
-    FORBID_TAGS: ["img", "style", "svg", "math", "iframe", "object", "embed"],
-    FORBID_ATTR: ["style", "srcset", "formaction", "ping"],
-  });
+  return sanitizeBotHtml(html, purify);
+}
+
+/**
+ * 只做第二层消毒（导出以便**独立单测**：直接喂原始 HTML 验证白名单真的生效）。
+ * 生产由 `renderBotMessage` 调用；测试注入 happy-dom 的 DOMPurify 实例。
+ */
+export function sanitizeBotHtml(html: string, purify: PurifyLike = DOMPurify): string {
+  return purify.sanitize(html, BOT_SANITIZE_CONFIG);
 }

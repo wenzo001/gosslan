@@ -11,6 +11,7 @@ commands::attention_tests::macos_bounces_only_when_urgent
 commands::attention_tests::other_desktops_keep_the_previous_behavior
 commands::attention_tests::windows_flashes_regardless_of_urgency
 commands::avatar_gate_tests::avatar_size_gate_is_fail_closed_and_boundary_exact
+commands::bot_cmd_tests::action_error_writes_only_last_error
 commands::bot_cmd_tests::dnd_is_a_local_preference_command
 commands::bot_cmd_tests::endpoint_and_status_normalization
 commands::bot_cmd_tests::group_bot_creation_checks_group_admin

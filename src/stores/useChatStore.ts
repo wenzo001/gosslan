@@ -437,8 +437,13 @@ export const useChatStore = defineStore("chat", () => {
       try {
         await api.sendGroupTodo(a.groupId, t("bot.groupTaskTitle", { name: a.botName, title: a.title }), []);
       } catch (e) {
-        // 失败不留静默：toast 让用户知道机器人指令没执行成。
+        // 失败不留静默：toast 让用户当场知道，同时写回 last_error 让详情页事后可查。
         app.toastError(e, t("bot.groupActionFailed"));
+        if (a.botId) {
+          void api.botReportActionError(a.botId, String(e)).catch(() => {
+            // 写回失败不该盖掉原错误提示；last_error 是尽力而为的可观测性。
+          });
+        }
       }
     }).then((un) => scope.onDispose(un));
 

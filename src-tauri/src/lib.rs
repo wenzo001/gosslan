@@ -1033,6 +1033,7 @@ pub fn run() {
             commands::bot_set_dnd,
             commands::bot_set_profile,
             commands::bot_get_publish_url,
+            commands::bot_report_action_error,
             commands::topology_layout_load,
             commands::topology_layout_save,
             commands::topology_layout_reset,

@@ -726,18 +726,20 @@ function botSenderOf(
   const lid = m.local_id ?? "";
   const isMd = lid.startsWith("bot-md:");
   const markerId = isMd ? lid.slice("bot-md:".length) : lid.startsWith("bot:") ? lid.slice("bot:".length) : null;
-  // ② 兼容旧消息（没有标记）：退回正文前缀，只在当前机器人列表里找得到时才认。
+  // ② 兼容旧消息（没有持久标记）：退回正文前缀 `【机器人名】`。
+  //    旧消息即便机器人已删/退群，仍按机器人身份显示——此前「列表里找不到就 return null」
+  //    会让历史气泡回落成「我发的」。前缀是机器人专用格式，普通消息不会这样开头。
   const mt = /^【([^】]{1,60})】/.exec(m.content ?? "");
   if (!markerId && !mt) return null;
   const name0 = mt ? mt[1].trim() : "";
   const b = markerId
     ? groupBots.value.find((x) => x.botId === markerId)
     : groupBots.value.find((x) => x.name.trim() === name0);
-  if (!markerId && !b) return null;
   // 名字：当前机器人 → 正文前缀（历史快照）→ 通用「机器人」。
   const name = b?.name ?? (name0 || t("bot.listBadge"));
-  // id 必须稳定（头像种子 + 分组键）：优先持久标记，旧消息退回名字派生。
-  const id = markerId ? `bot:${markerId}` : `bot:${b!.botId}`;
+  // id 必须稳定（头像种子 + 分组键）：持久标记 > 当前记录 id > 历史名字派生（机器人已删时）。
+  //    三种来源都加 `bot:` 前缀，复用既有头像/分组逻辑；历史名字派生对同一机器人恒定。
+  const id = markerId ? `bot:${markerId}` : b ? `bot:${b.botId}` : `bot:name:${name0}`;
   return { id, name, avatar: b?.avatar ?? null, markdown: isMd };
 }
 
