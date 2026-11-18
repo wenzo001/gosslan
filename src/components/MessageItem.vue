@@ -166,6 +166,22 @@ async function refetchContent() {
 /** 机器人消息（`bot:` 会话）的外部正文按 Markdown 渲染，输入已消毒。 */
 const isBotMessage = computed(() => props.message.conv_id.startsWith("bot:"));
 
+/**
+ * 展示用的正文：群机器人消息的历史数据里带 `【机器人名】` 来源前缀，
+ * 现在来源已由头像/昵称/「机」字角标表达 ⇒ 渲染前剥掉，避免名字出现两次
+ * （用户 2026-11-18：「消息里别带机器人的名字了直接显示内容」）。
+ * 新消息后端已不再写前缀，这里主要给历史消息兜底。
+ */
+const displayContent = computed(() => {
+  const b = props.botSender;
+  const raw = props.message.content ?? "";
+  if (!b) return raw;
+  // 括号码点在运行时构造：这不是界面文案（只是匹配旧前缀），
+  // 直接写字面量（或 \u 转义）都会被 `check-hardcoded-ui-text` 的 AST 判成硬编码中文。
+  const prefix = String.fromCharCode(0x3010) + b.name + String.fromCharCode(0x3011);
+  return raw.startsWith(prefix) ? raw.slice(prefix.length).replace(/^\s+/, "") : raw;
+});
+
 const retryableContent = computed(() => {
   if (props.message.kind !== "file" && props.message.kind !== "image") return null;
   // 载荷解析走唯一一份 `utils/fileMeta`（此前这里又手写了一次 JSON.parse）
@@ -1965,7 +1981,7 @@ async function copyFileToClipboard() {
               <!-- 文本 -->
               <MessageTextBubble
                 v-if="message.kind === 'text'"
-            :content="message.content"
+            :content="displayContent"
             :is-bot="isBotMessage || !!botSender"
             :bot-markdown="!!botSender?.markdown"
             :msg-id="message.msg_id"

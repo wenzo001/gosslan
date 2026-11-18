@@ -80,14 +80,6 @@ pub fn bot_hook_endpoint(server_url: &str, send_token: &str) -> String {
     format!("{}/publish/{send_token}", server_url.trim_end_matches('/'))
 }
 
-/// 群投递时的来源前缀（**发送者仍是网关设备**，只是加一个可见来源标记）。
-///
-/// ⚠️ 线格式属 Frozen Core ⇒ 首版不改协议字段，用正文前缀表达来源；
-/// 结构化 `webhook_bot` 元数据留到协议评审之后（计划 §1.3）。
-pub fn bot_group_prefix(bot_name: &str) -> String {
-    format!("【{}】", bot_name.trim())
-}
-
 /// 把失败原因写进 bot.last_error（详情页可见）。供 spawn_blocking 内调用，
 /// 与后台取件失败那处同口径：原因截断 200 字，机器人已不存在则静默跳过。
 fn write_bot_last_error(conn: &rusqlite::Connection, bot_id: &str, reason: &str) -> Result<(), String> {
@@ -1000,8 +992,9 @@ async fn deliver_event(
                 return Err("群目标已失效（没有群 id）".into());
             }
             let group_id = record.target.group_id.clone().unwrap_or_default();
-            // 群消息的**发送者仍是网关设备**；正文加来源前缀（线格式不动，见计划 §1.3）。
-            let content = format!("{}{}", bot_group_prefix(&record.name), entry.text);
+            // 正文就是内容本身：来源已由气泡的头像 / 昵称 / 「机」字角标表达（用户 2026-11-18：
+            // 「消息里别带机器人的名字，直接显示内容」）。历史消息里的旧前缀由前端展示层剥掉。
+            let content = entry.text.clone();
             let sd = s.clone();
             let gid = group_id.clone();
             tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -1058,10 +1051,13 @@ async fn deliver_event(
             // `local_id` 记下「这条是哪个机器人代发的」：机器人被删/退群后，
             // 历史消息仍能留在发送方侧（用户 2026-11-18）。不改表结构，也不进线格式。
             // `bot-md:` = markdown 正文（前端按富文本渲染），`bot:` = 纯文本；两者都带 botId 供归因。
+            // ⚠️ **必须带上 event_id**：`messages.local_id` 是 UNIQUE 索引，用常量标记时
+            // 第二条消息会撞唯一键被丢弃（投递却被当成成功并 ACK 服务端）⇒ 机器人只能收到
+            // 第一条、之后全丢、手动拉取也救不回来（用户 2026-11-18 报的正是这个）。
             let bot_marker = if entry.format == "markdown" {
-                format!("bot-md:{}", record.bot_id)
+                format!("bot-md:{}#{}", record.bot_id, entry.event_id)
             } else {
-                format!("bot:{}", record.bot_id)
+                format!("bot:{}#{}", record.bot_id, entry.event_id)
             };
             let sent = send_group_payload(s, &group_id, "text", content, None, Some(&bot_marker), None)
                 .await
@@ -1386,14 +1382,6 @@ mod bot_cmd_tests {
         assert_eq!(normalize_bot_status("paused").unwrap(), "paused");
         assert_eq!(normalize_bot_status("revoked").unwrap(), "revoked");
         assert!(normalize_bot_status("deleted").is_err());
-    }
-
-    /// 群投递的来源前缀（发送者仍是网关设备，不冒充外部账号）。
-    #[test]
-    fn group_prefix_marks_the_source_but_not_the_sender() {
-        assert_eq!(bot_group_prefix("CI 通知"), "【CI 通知】");
-        // 前缀里不许出现设备 id（那是「谁发的」，由群消息本身承担）
-        assert!(!bot_group_prefix("CI 通知").contains("device"));
     }
 
     /// 列表视图**不含任何密钥**。
