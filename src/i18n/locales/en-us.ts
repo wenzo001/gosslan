@@ -2126,6 +2126,7 @@ export const enUS: MessageDict = {
   "bot.statusFailed": "Could not change the status",
   "bot.deleteFailed": "Could not delete the bot",
   "bot.pullFailed": "Could not fetch messages",
+  "bot.pullUrlFailed": "Could not restore the send link. Revoke and recreate the bot instead.",
   "bot.pulled": "Received {n} notifications",
   "bot.paused": "Paused",
   "bot.resumed": "Resumed",

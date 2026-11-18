@@ -2175,6 +2175,7 @@ export const zhCN: MessageDict = {
   "bot.statusFailed": "改状态失败",
   "bot.deleteFailed": "删除机器人失败",
   "bot.pullFailed": "取件失败",
+  "bot.pullUrlFailed": "取回发送链接失败，可撤销后重建",
   "bot.pulled": "收到 {n} 条通知",
   "bot.paused": "已暂停",
   "bot.resumed": "已恢复",
