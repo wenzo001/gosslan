@@ -2,7 +2,7 @@
 import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -25,6 +25,62 @@ const friendName = () => chat.activeConversation?.name ?? "";
 
 function depth(p: string) {
   return p.split("/").length - 1;
+}
+
+/**
+ * 展开的目录路径集合（用户 2026-11-18）。
+ *
+ * 默认**空集 = 全部折叠**：深层目录第一次打开时不会一次铺满整屏，最外层目录也只显示
+ * 一行标题；点一下才展开该层（子目录仍折叠）。
+ */
+const expanded = ref<Set<string>>(new Set());
+function isExpanded(p: string) {
+  return expanded.value.has(p);
+}
+function toggleDir(p: string) {
+  const next = new Set(expanded.value);
+  if (next.has(p)) next.delete(p);
+  else next.add(p);
+  expanded.value = next;
+}
+
+/** 可见行：保留「所有祖先目录都已展开」的条目。O(n·depth)，只在展开态变化时重算。 */
+const visibleEntries = computed<ShareEntry[]>(() => {
+  const open = expanded.value;
+  return entries.value.filter((e) => {
+    const parts = e.path.split("/");
+    // 顶层（无父目录）永远可见
+    for (let i = 1; i < parts.length; i++) {
+      if (!open.has(parts.slice(0, i).join("/"))) return false;
+    }
+    return true;
+  });
+});
+
+/** 该目录下还有没有内容（决定是否显示展开箭头 / 下载按钮）。 */
+function hasChild(dirPath: string) {
+  return entries.value.some((e) => e.path.startsWith(`${dirPath}/`));
+}
+/** 目录下所有文件（递归）。 */
+function filesUnder(dirPath: string) {
+  return entries.value.filter((e) => !e.is_dir && e.path.startsWith(`${dirPath}/`));
+}
+
+/** 整目录下载的进度（按目录 path 记；同时只允许少量并发，避免把对端打满）。 */
+type DirTask = { done: number; total: number; failed: number };
+const dirTasks = ref<Map<string, DirTask>>(new Map());
+const DIR_CONCURRENCY = 2;
+const DIR_PROGRESS_TICK = 10;
+
+function setDirTask(path: string, task: DirTask) {
+  const next = new Map(dirTasks.value);
+  next.set(path, { ...task });
+  dirTasks.value = next;
+}
+function clearDirTask(path: string) {
+  const next = new Map(dirTasks.value);
+  next.delete(path);
+  dirTasks.value = next;
 }
 
 /**
@@ -54,6 +110,54 @@ const error = computed(() =>
 
 function load() {
   void treeQuery.refetch();
+}
+
+/**
+ * 下载整个目录：把该目录下所有文件逐个发起下载（协议仍是"一个文件一条流"，
+ * 不新增打包格式 ⇒ 不动线格式）。并发 2，进度按「已发起/总数」显示；
+ * 全部静默发起（`silent`），避免刷出上百条"你正在下载…"系统消息。
+ */
+async function downloadDir(e: ShareEntry) {
+  const owner = snapshot.value?.friendId;
+  if (!owner) return;
+  if (dirTasks.value.has(e.path)) return; // 正在下载，防重入
+  const files = filesUnder(e.path);
+  if (files.length === 0) {
+    app.toast(t("share.toast.dirEmpty"), "info");
+    return;
+  }
+  const task: DirTask = { done: 0, total: files.length, failed: 0 };
+  setDirTask(e.path, task);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < files.length) {
+      const f = files[cursor++];
+      try {
+        await api.downloadSharedFile(owner, f.path, true);
+      } catch {
+        task.failed += 1;
+      }
+      task.done += 1;
+      // 进度不必每一条都触发重渲染（大目录会把主线程刷爆）。
+      if (task.done % DIR_PROGRESS_TICK === 0 || task.done === task.total) setDirTask(e.path, task);
+    }
+  };
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(DIR_CONCURRENCY, files.length) }, () => worker()),
+    );
+    chat.refreshTransfers();
+    if (task.failed === 0) {
+      app.toast(t("share.toast.dirQueued", { n: files.length }), "success");
+    } else {
+      app.toast(
+        t("share.toast.dirPartial", { ok: files.length - task.failed, fail: task.failed }),
+        "error",
+      );
+    }
+  } finally {
+    clearDirTask(e.path);
+  }
 }
 
 async function download(e: ShareEntry) {
@@ -124,22 +228,60 @@ async function download(e: ShareEntry) {
       />
 
       <div
-        v-for="e in entries"
+        v-for="e in visibleEntries"
         :key="e.path"
         class="flex items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-2 transition hover:bg-[var(--gosslan-hover)]"
         :style="{ paddingLeft: `${12 + depth(e.path) * 16}px`, height: '36px' }"
       >
-        <Icon name="folder" v-if="e.is_dir" class="h-4 w-4 shrink-0 text-[var(--gosslan-warning-ink)]" />
-        <span class="flex-1 truncate text-sm" :title="e.name">{{ e.name }}</span>
-        <span v-if="!e.is_dir" class="text-caption text-[var(--gosslan-text-2)]">{{ formatBytes(e.size) }}</span>
-        <button
-          v-if="!e.is_dir"
-          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
-          :title="t('common.download')" :aria-label="t('common.download')"
-          @click="download(e)"
-        >
-          <Icon name="download" class="h-4 w-4" />
-        </button>
+        <!-- 目录一条分支、文件一条分支：各自内部自洽，避免同条件下另起一条 v-if 链。 -->
+        <template v-if="e.is_dir">
+          <button
+            v-if="hasChild(e.path)"
+            type="button"
+            class="tap-safe flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+            :aria-label="isExpanded(e.path) ? t('share.collapseDir') : t('share.expandDir')"
+            :title="isExpanded(e.path) ? t('share.collapseDir') : t('share.expandDir')"
+            @click="toggleDir(e.path)"
+          >
+            <Icon :name="isExpanded(e.path) ? 'chevron-down' : 'chevron-right'" class="h-4 w-4" />
+          </button>
+          <span v-else class="w-6 shrink-0" aria-hidden="true"></span>
+          <Icon name="folder" class="h-4 w-4 shrink-0 text-[var(--gosslan-warning-ink)]" />
+          <button
+            type="button"
+            class="min-w-0 flex-1 truncate text-left text-sm"
+            :title="e.name"
+            @click="hasChild(e.path) ? toggleDir(e.path) : undefined"
+          >{{ e.name }}</button>
+          <!-- 整目录下载：进度 = 已发起/总数（协议仍是一个文件一条流）。 -->
+          <span v-if="dirTasks.get(e.path)" class="shrink-0 text-caption text-[var(--gosslan-text-2)]">
+            {{ t("share.dirProgress", { done: dirTasks.get(e.path)!.done, total: dirTasks.get(e.path)!.total }) }}
+          </span>
+          <button
+            v-if="hasChild(e.path)"
+            type="button"
+            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+            :disabled="dirTasks.has(e.path)"
+            :title="t('share.downloadDir')" :aria-label="t('share.downloadDir')"
+            @click.stop="downloadDir(e)"
+          >
+            <Spinner v-if="dirTasks.has(e.path)" size-class="h-3.5 w-3.5" decorative />
+            <Icon v-else name="download" class="h-4 w-4" />
+          </button>
+        </template>
+        <template v-else>
+          <span class="w-6 shrink-0" aria-hidden="true"></span>
+          <span class="min-w-0 flex-1 truncate text-sm" :title="e.name">{{ e.name }}</span>
+          <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ formatBytes(e.size) }}</span>
+          <button
+            type="button"
+            class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+            :title="t('common.download')" :aria-label="t('common.download')"
+            @click="download(e)"
+          >
+            <Icon name="download" class="h-4 w-4" />
+          </button>
+        </template>
       </div>
     </div>
   </BaseModal>

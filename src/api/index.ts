@@ -708,8 +708,9 @@ export const api = {
     invoke<unknown>("request_share_tree", { friendId }).then((v) =>
       parseIpcValue(shareTreeSchema, v, "request_share_tree"),
     ),
-  downloadSharedFile: (friendId: string, remotePath: string) =>
-    invoke<string>("download_shared_file", { friendId, remotePath }),
+  /** 下载单个共享文件；`silent` 供整目录批量下载用（不逐文件插系统消息）。 */
+  downloadSharedFile: (friendId: string, remotePath: string, silent = false) =>
+    invoke<string>("download_shared_file", { friendId, remotePath, silent }),
 
   /**
    * 申请 Android 的运行时权限（「附近的设备」）。

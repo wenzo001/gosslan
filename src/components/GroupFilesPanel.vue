@@ -19,7 +19,7 @@ import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import BaseModal from "@/components/BaseModal.vue";
-import { fmtConversationTime } from "@/utils/time";
+import { fmtConversationTime, fmtDateTime } from "@/utils/time";
 import { formatBytes } from "@/utils/format";
 import { FILE_KIND_ICON_NAMES, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
@@ -40,7 +40,11 @@ import { createInitScope, type InitScope } from "@/utils/initScope";
 import type { GroupFileEntry } from "@/types";
 
 const props = defineProps<{ open: boolean; groupId: string | null }>();
-const emit = defineEmits<{ (e: "close"): void }>();
+const emit = defineEmits<{
+  (e: "close"): void;
+  /** 在聊天里定位这条文件消息（用户 2026-11-18）：父组件关面板并滚动高亮。 */
+  (e: "locate", msgId: string): void;
+}>();
 
 const app = useAppStore();
 const { memberProfile, myId } = useMemberProfile();
@@ -352,7 +356,8 @@ function stateText(state: GroupFileEntry["local_state"]): string {
                    否则行尾会留下悬空的「·」。 -->
               <template v-if="fmtConversationTime(f.created_at, t)">
                 <span>·</span>
-                <span class="shrink-0">{{ fmtConversationTime(f.created_at, t) }}</span>
+                <!-- 时间 = 这条文件在聊天记录里的时间；悬停给完整时刻，便于核对。 -->
+                <span class="shrink-0" :title="fmtDateTime(f.created_at)">{{ fmtConversationTime(f.created_at, t) }}</span>
               </template>
               <template v-if="deliveryText(f)">
                 <span>·</span>
@@ -369,6 +374,15 @@ function stateText(state: GroupFileEntry["local_state"]): string {
             <Spinner v-if="f.local_state === 'receiving'" size-class="h-3 w-3" decorative />
             {{ stateText(f.local_state) }}
           </span>
+          <!-- 在聊天中定位：群文件行的 msg_id 恒为 `gfile-{transfer_id}`（与消息同源）。 -->
+          <button
+            type="button"
+            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+            :title="t('group.files.locate')" :aria-label="t('group.files.locate')"
+            @click.stop="emit('locate', `gfile-${f.transfer_id}`)"
+          >
+            <Icon name="search" class="h-4 w-4" />
+          </button>
           <button
             v-if="canRefetch(f)"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
