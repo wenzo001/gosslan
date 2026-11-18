@@ -27,6 +27,23 @@
 2026-09-26 之前这些数字散在十几段叙述里，加一条判据要改 11 处 —— 那是漂移的制造机而不是防漂移，
 所以按判据 C 自己的建议收成一份：**要改就只改这里，叙述性行子里不再抄数字。**
 
+> ★ **跑这些轮次的二进制前提（2026-11-18）：带不带 `bluetooth` 特性都能跑，因为播种会把蓝牙关掉。**
+> 这一条以前没有明确口径，踩过一次很难诊断的坑：`src-tauri/target/release/gosslan` 是**裸二进制**
+> 而不是 `.app`，没有 `Contents/Info.plist`；而桌面端蓝牙偏好缺省是**开**
+> （`db::get_bt_enabled`：有蓝牙就默认开），前端 `init()` 会在启动 2 秒后自动把它拉起来
+> ⇒ 一碰 CoreBluetooth，macOS 的 TCC 发现拿不到 `NSBluetoothAlwaysUsageDescription`
+> 就**直接 SIGABRT 整进程消失**（崩溃报告在 `~/Library/Logs/DiagnosticReports/gosslan-*.ips`）。
+> 症状极具误导性：日志停在「蓝牙通道切换：已停止 → 开启」那一行，之后零输出、零出站请求，
+> 看起来完全像「应用正常启动然后什么都不做」—— 于是所有轮次一起卡到超时。
+> **现在的做法**：公共播种步（`scripts/e2e/core.mjs` 的 `seedPair`）往两台实例的 `settings` 里写
+> `bt_enabled='0'`，前端 `ensureBluetoothOn` 在 `if (!ch.preferred) return;` 处就退出，蓝牙栈从不启动。
+> 好处是**一条产品码都不用动**，而 #126 那条门禁（测的那份必须就是发的那份）可以继续用
+> **带 `bluetooth` 特性**的二进制跑 E2E —— 不必退回默认特性。
+> 复现这个坑：`E2E_BLE_ALLOW_START=1 node scripts/e2e-multi-instance.mjs --round=bot`（必红 + 落崩溃报告）。
+> ⚠️ 两个边界：① 这一轮只保证**局域网 TCP**那条路不被蓝牙干扰，**BLE 传输本身从未被 E2E 覆盖**
+> （它需要两台真机与系统授权，属人工 Smoke）；② 别把 `bt_enabled='0'` 当成产品行为 ——
+> 它只活在 E2E 的夹具里，真实安装仍是「有蓝牙就默认开」。
+
 > ★ **#145（2026-09-28）：每档"该红几条"不再是文字，改由机器基线记账。**
 > 反证档 / 判据自查档的**退出码 + 报红条数 + 结论总数**存在 `scripts/fixtures/selfproof-baseline.json`，
 > 核对：`npm run selfproof:check`（改了判据 / 夹具 / harness 之后跑；跑满全档本机实测一次 **820.2 秒**

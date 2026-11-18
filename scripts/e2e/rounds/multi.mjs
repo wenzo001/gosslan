@@ -8,7 +8,7 @@
 // ⚠️ 判据 C（scripts/check-doc-numbers.mjs）按下面这行 export const MODE 把本文件的 check( 归到这一轮：
 //    改这行、或把断言挪去别的分册，都会让活文档里那句「N 条断言」当场对不上。
 export const MODE = "MULTI";
-import { INSTANCES, INST_C, LIE, LIE_SHA, RUN_DIR, S, bootBaseOf, check, eid, launch, nowMs, openDb, readIdentity, seed, sleep, step, stopAll, tcpOpen, waitFor } from "../core.mjs";
+import { INSTANCES, INST_C, LIE, LIE_SHA, RUN_DIR, S, bootBaseOf, check, eid, launch, nowMs, openDb, readIdentity, seed, seedBleOff, sleep, step, stopAll, tcpOpen, waitFor } from "../core.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -165,6 +165,8 @@ export async function run() {
         .run(JSON.stringify([{ address: endpointOf(INSTANCES[0]) }, { address: endpointOf(INSTANCES[1]) }]));
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('downloads_dir',?1)").run(recvC);
     });
+    // 第三实例不走 seedPair ⇒ 蓝牙偏好必须在这里补（否则正式 launch 后 2s 就被 TCC 杀掉）。
+    seedBleOff(INST_C);
     for (const s of spec) {
       seed(s.inst.db, (db) => {
         db.prepare(

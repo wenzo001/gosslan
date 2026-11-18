@@ -14,6 +14,20 @@
 
 ## [Unreleased]
 
+### 测试基础设施
+- **修掉「本机 local 层 E2E 恒红」那条的根因**：`#126` 那条门禁按设计用**带 `bluetooth` 特性**编的
+  二进制跑 E2E，而 `target/release/gosslan` 是裸二进制、不是 `.app`、没有 Info.plist 里的
+  `NSBluetoothAlwaysUsageDescription`；桌面端蓝牙偏好缺省是**开**（`db::get_bt_enabled`），
+  前端 `init()` 启动 2 秒后自动 `ensureBluetoothOn()` ⇒ 一碰 CoreBluetooth 就被 macOS 的 TCC
+  `SIGABRT` 掉整进程。症状极具误导性：日志停在「蓝牙通道切换：已停止 → 开启」，之后零输出、
+  零出站请求，看起来完全像「应用正常启动然后什么都不做」⇒ 每一轮 E2E 一起卡到超时，
+  与具体轮次无关。
+  现在公共播种步（`seedPair`）把 `bt_enabled` 写成 `0`，`ensureBluetoothOn` 在
+  `if (!ch.preferred) return;` 处退出、蓝牙栈从不启动 —— **一条产品码都没动**，
+  `#126` 的「测的那份就是发的那份」因此得以保留（不必退回默认特性编译）。
+  第三实例 `INST_C` 不经过公共播种，用到它的三册（chain / late / multi）各自补一次 `seedBleOff`。
+  取证用反向开关：`E2E_BLE_ALLOW_START=1`（本机必红并落一份崩溃报告，用于自证这条判据非空转）。
+
 ## [7.1.11] - 2026-11-18
 
 ### 测试体系审查后的四组整改（对应报告 P0/P1/P2）

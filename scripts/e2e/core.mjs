@@ -796,7 +796,47 @@ export function seedPair(nodes) {
       // 陷阱：macOS 上 load() 优先信书签 ⇒ 只写路径，绝不写 downloads_dir_bookmark
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('downloads_dir',?1)").run(recv);
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('lan_enabled','true')").run();
+      // **BLE 在这里必须写成关**：两个实例同机对发走 loopback TCP，蓝牙一点用都没有；
+      // 而桌面端 BLE 偏好缺省是**开**（`db::get_bt_enabled`：有蓝牙就默认开）⇒ 前端
+      // `init()` 会在启动 2s 后自动调 `ensureBluetoothOn()` 把它拉起来 ⇒ 碰 CoreBluetooth。
+      // 裸二进制（`target/release/gosslan`）不是 .app、没有 Info.plist 的
+      // `NSBluetoothAlwaysUsageDescription` ⇒ macOS 的 TCC 无法展示授权框，直接 SIGABRT
+      // 整进程消失。症状极像"应用正常启动然后什么都不做"：日志停在
+      // 「蓝牙通道切换：已停止 → 开启」那一行，之后零输出、零出站请求。
+      // 写成 '0' 就能让 `ensureBluetoothOn` 在 `if (!ch.preferred) return;` 处退出，
+      // 一条产品码都不用动 —— 也正因为如此，#126（测的那份就是发的那份）可以继续
+      // 用**带 bluetooth 特性**的二进制跑 E2E。
+      //
+      // ⚠️ `E2E_BLE_ALLOW_START=1` 是**取证用的反向自证开关，不是功能开关**：
+      // 设上它 BLE 就会真的启动，而裸二进制没有 Info.plist ⇒ 本机必然 TCC SIGABRT、
+      // 整轮 e2e 卡到 90s 超时（2026-11-18 实测，崩溃报告落在 ~/Library/Logs/DiagnosticReports）。
+      // 保留它是为了让"这个坑还在不在"能用一条命令复现，而不是靠人记得去注释代码。
+      // 正常跑 e2e 永远不要设它。
+      // 第三实例 `INST_C` 不经过本函数 ⇒ 用到它的册必须另调 `seedBleOff`（见该函数）。
+      if (!process.env.E2E_BLE_ALLOW_START)
+        db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('bt_enabled','0')").run();
     });
+  });
+}
+
+/// 关掉某实例的「蓝牙自动启动」偏好 —— **E2E 的全局前提**，完整理由见上面 `seedPair` 里那段注释。
+///
+/// 为什么单独有个函数：`seedPair` 只覆盖 A/B 两台，而**第三实例 `INST_C` 不走它**
+/// （C 的库要先首启才建出来，seed 只能在首启之后做）。用到 C 的册（chain / late / multi）
+/// 必须在**正式 launch 之前**调一次本函数 —— 否则那一轮会在"应用看起来正常起来了"之后
+/// 静默卡到 90s 超时，而且日志里只有一行「蓝牙通道切换」当遗言。
+/// 新增用到 `INST_C` 的册时别忘这一步。
+///
+/// ⚠️ 为什么**首启那一次**不需要它（实测：三册跑完零新增崩溃报告）：C 首启是
+/// `launch` → 等 TCP → 等 boot 行 → 立刻 `stopAll`，全程 1s 上下，而前端的自动拉蓝牙
+/// 挂在 `setTimeout(…, 2000)` 上 ⇒ 定时器还没到进程就没了。这是**时序依赖**：
+/// 谁要是给 C 的首启加一步长等待（或让 boot 变慢），首启就会先崩一次。
+/// 真崩了也不至于误判成回归 —— 库和身份在 2s 前就已落盘，后续 seed/launch 照跑；
+/// 只是 `~/Library/Logs/DiagnosticReports` 会多一份报告，别把它当成产品问题。
+export function seedBleOff(inst) {
+  if (process.env.E2E_BLE_ALLOW_START) return;
+  seed(inst.db, (db) => {
+    db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('bt_enabled','0')").run();
   });
 }
 // ── 断言账本 ───────────────────────────────────────────────────────
