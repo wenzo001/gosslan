@@ -19,6 +19,8 @@ import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import ConversationListItem from "@/components/conversation/ConversationListItem.vue";
 import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
+import BotContactMenu from "@/components/conversation/BotContactMenu.vue";
+import BotDetailModal from "@/components/BotDetailModal.vue";
 import ConversationContextMenu from "@/components/conversation/ConversationContextMenu.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
@@ -324,7 +326,8 @@ onMounted(() => {
   void api
     .botList()
     .then((list) => {
-      botContacts.value = list.filter((b) => b.status !== "revoked");
+      // 只列个人机器人：群机器人属于那个群，入口在群成员面板（用户 2026-11-18）。
+      botContacts.value = list.filter((b) => b.status !== "revoked" && b.target?.kind !== "group");
     })
     .catch(() => {
       // 机器人列表拉取失败不该拖垮通讯录（好友仍正常显示）。
@@ -335,6 +338,56 @@ function openBotContact(b: BotView) {
   if (app.isMobile) app.mobileView = "chat";
   void chat.openConversation(id);
   void router.push({ name: "conversation", params: { convId: id } });
+}
+
+// ---- 通讯录里的机器人：点头像看详情 / 右键删除 / 删除后立即消失（用户 2026-11-18）
+const botDetail = ref<BotView | null>(null);
+const botDetailOpen = ref(false);
+const botMenu = ref<{ x: number; y: number; bot: BotView } | null>(null);
+const pendingRemoveBot = ref<BotView | null>(null);
+const removingBot = ref(false);
+
+function openBotDetail(b: BotView) {
+  botDetail.value = b;
+  botDetailOpen.value = true;
+}
+function onBotContext(b: BotView, e: MouseEvent) {
+  botMenu.value = { x: e.clientX, y: e.clientY, bot: b };
+}
+function onAskRemoveBot() {
+  pendingRemoveBot.value = botMenu.value?.bot ?? null;
+  botMenu.value = null;
+}
+/** 删除机器人：后端已撤销 + 删记录 + 删会话，这里把列表与当前会话一并收拾干净。 */
+async function confirmRemoveBot() {
+  const b = pendingRemoveBot.value;
+  pendingRemoveBot.value = null;
+  if (!b || removingBot.value) return;
+  removingBot.value = true;
+  try {
+    await api.botDelete(b.botId);
+    botContacts.value = botContacts.value.filter((x) => x.botId !== b.botId);
+    // 后端把会话也删了 ⇒ 正看着它就先回列表，再刷新（否则停在已删会话上）。
+    if (chat.activeConv === `bot:${b.botId}`) {
+      chat.activeConv = null;
+      void router.push({ name: "chats" });
+    }
+    void chat.refreshConversations();
+    app.toast(t("bot.deleted"), "success");
+  } catch (e) {
+    app.toastError(e, t("bot.deleteFailed"));
+  } finally {
+    removingBot.value = false;
+  }
+}
+/** 详情页里删的：同步从通讯录列表移除。 */
+function onBotDeletedFromDetail(botId: string) {
+  botContacts.value = botContacts.value.filter((x) => x.botId !== botId);
+  if (chat.activeConv === `bot:${botId}`) {
+    chat.activeConv = null;
+    void router.push({ name: "chats" });
+  }
+  void chat.refreshConversations();
 }
 
 async function openConv(conv: Conversation) {
@@ -788,24 +841,38 @@ useEventListener(document, "click", closeFriendMenu);
           <div class="gosslan-sticky-veil sticky top-0 z-10 px-3 py-1 text-caption font-medium text-[var(--gosslan-text-2)]">
             {{ t("bot.contactSection") }}
           </div>
-          <button
+          <!-- 整行 = 开会话；头像单独一个按钮 = 看详情（用户 2026-11-18）；
+               右键/长按 = 删除机器人（与会话、好友同一套二次确认）。 -->
+          <div
             v-for="b in botContacts"
             :key="b.botId"
             class="flex h-[56px] w-full cursor-pointer items-center gap-3 px-3 transition-colors"
             :class="chat.activeConv === `bot:${b.botId}` ? 'bg-[var(--gosslan-list-active)]' : 'hover:bg-[var(--gosslan-list-hover)]'"
+            role="button"
+            tabindex="0"
             :aria-label="b.name"
             @click="openBotContact(b)"
+            @keydown.enter.prevent="openBotContact(b)"
+            @keydown.space.prevent="openBotContact(b)"
+            @contextmenu.prevent="onBotContext(b, $event)"
           >
-            <AvatarBox
-              class="h-10 w-10 shrink-0 ring-2 ring-[var(--gosslan-primary)]"
-              :id="`bot:${b.botId}`"
-              :src="b.avatar"
-            />
+            <button
+              type="button"
+              class="tap-safe shrink-0 rounded-[var(--gosslan-avatar-radius)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+              :aria-label="t('bot.openDetail', { name: b.name })"
+              @click.stop="openBotDetail(b)"
+            >
+              <AvatarBox
+                class="h-10 w-10 ring-2 ring-[var(--gosslan-primary)]"
+                :id="`bot:${b.botId}`"
+                :src="b.avatar"
+              />
+            </button>
             <span class="min-w-0 flex-1 text-left">
               <span class="block truncate text-body leading-5 text-[var(--gosslan-text)]" :title="b.name">{{ b.name }}</span>
               <span class="block truncate text-meta leading-5 text-[var(--gosslan-text-2)]" :title="t('bot.listBadge')">{{ t("bot.listBadge") }}</span>
             </span>
-          </button>
+          </div>
         </template>
         <!-- 自己（用户 2026-09-17）：不再做成钉在「新的朋友」下面的特殊行 ——
              它作为一条**伪好友**进 `filteredFriends` / `friendGroups`，与好友同一套
@@ -930,6 +997,39 @@ useEventListener(document, "click", closeFriendMenu);
       @toggle-pin="onTogglePinConv"
       @delete="onAskDeleteConvFromMenu"
     />
+
+    <BotContactMenu
+      v-if="botMenu"
+      :x="botMenu.x"
+      :y="botMenu.y"
+      @close="botMenu = null"
+      @delete="onAskRemoveBot"
+    />
+
+    <BotDetailModal
+      :open="botDetailOpen"
+      :bot="botDetail"
+      @close="botDetailOpen = false"
+      @changed="(v) => { botDetail = v; }"
+      @deleted="onBotDeletedFromDetail"
+    />
+
+    <!-- 二次确认：删除机器人（服务端撤销 + 删会话，链接立即失效） -->
+    <ConfirmDialog
+      :open="pendingRemoveBot !== null"
+      :title="t('bot.contact.deleteTitle')"
+      :confirm-label="t('common.delete')"
+      @cancel="pendingRemoveBot = null"
+      @confirm="confirmRemoveBot"
+    >
+      <p class="text-sm text-[var(--gosslan-text)]">
+        {{ t("bot.contact.deleteBody", { name: pendingRemoveBot?.name ?? "" }) }}
+      </p>
+      <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
+        <li>· {{ t("bot.contact.deleteItem1") }}</li>
+        <li>· {{ t("bot.contact.deleteItem2") }}</li>
+      </ul>
+    </ConfirmDialog>
 
     <FriendContextMenu
       v-if="friendMenu"

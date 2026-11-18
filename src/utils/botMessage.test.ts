@@ -353,3 +353,28 @@ test("机器人会话是只读通知流：头像下 tag、无输入框/共享目
   assert.ok(modal.includes('editServerUrl.value.trim() || null'), "详情页没保存地址");
 });
 
+
+test("通讯录机器人：只列个人、点头像看详情、右键删除且删完即消失", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const read = (p: string) => readFileSync(join(repoRoot, p), "utf8");
+  const list = read("src/components/ConversationList.vue");
+  const menu = read("src/components/conversation/BotContactMenu.vue");
+  const rust = read("src-tauri/src/commands/bots.rs");
+
+  // 群机器人不进通讯录（入口在群成员面板，用户 2026-11-18）
+  assert.ok(list.includes('b.target?.kind !== "group"'), "通讯录还把群机器人列出来了");
+  // 头像按钮打开详情（不是开会话）；整行才是开会话
+  assert.ok(list.includes('@click.stop="openBotDetail(b)"'), "点头像没有打开详情");
+  assert.ok(list.includes('@click="openBotContact(b)"'), "整行不能开会话");
+  // 右键 → 菜单 → 二次确认 → 删除机器人
+  assert.ok(list.includes('@contextmenu.prevent="onBotContext(b, $event)"'), "机器人行没有右键入口");
+  assert.ok(menu.includes('t("bot.action.delete")'), "右键菜单里没有删除项");
+  assert.ok(list.includes("await api.botDelete(b.botId)"), "确认后没有真的删除");
+  assert.ok(list.includes("botContacts.value = botContacts.value.filter"), "删除后没有从列表移除（会残留）");
+  assert.ok(list.includes("void chat.refreshConversations()"), "删除后没刷新会话列表");
+  // 群机器人删除：后端必须校验群主/管理员（fail-closed）
+  assert.ok(
+    rust.includes('"只有群主或管理员可以删除群机器人"') && rust.includes("g.is_manager(&me)"),
+    "删除群机器人没有权限校验",
+  );
+});
