@@ -96,8 +96,13 @@ async function deliverFocus(focus: TodoFocus) {
  * `watchGroupTodos` 只在**群真的变了**时调用：store 里那份实现自己会摘掉上一个群的监听，
  * 重复调用只是白建一次订阅。
  */
+/** 每次「被打开」的序号：同群重开时 `:key` 不变、看板不重挂，靠它让看板重判默认页签。 */
+const resetSeq = ref(0);
+
 async function applyTarget(next: string | null) {
   if (!next) return;
+  // 同一群再打开也算一次「新的打开」：常驻窗口不会因此重挂看板（用户 2026-11-18）。
+  resetSeq.value += 1;
   const switched = groupId.value !== next;
   groupId.value = next;
   loadError.value = "";
@@ -195,7 +200,14 @@ onUnmounted(() => {
     />
     <div v-else class="min-h-0 flex-1 overflow-hidden p-4">
       <!-- `:key` 是换群必须做的重置：筛选/草稿/展开态都属于上一个群，留着就是串群。 -->
-      <GroupTasksBoard :key="groupId" ref="boardRef" :group-id="groupId" standalone two-pane />
+      <GroupTasksBoard
+        :key="groupId"
+        ref="boardRef"
+        :group-id="groupId"
+        :reset-seq="resetSeq"
+        standalone
+        two-pane
+      />
     </div>
   </AuxWindowShell>
   <ImageLightbox
