@@ -81,8 +81,17 @@ const SKIP_FILES = new Set([
   "src/boot/skeletonTokens.ts",
 ]);
 
-/** 整目录跳过。 */
-const SKIP_DIRS = new Set(["src/i18n/locales", "src/data"]);
+/**
+ * 整目录跳过。
+ *
+ * ⚠️ `src/utils/designGuards` 是 2026-11-18 拆出来的**分册目录**（原 `designGuards.ts` 一个文件
+ * 长到 4897 行）。它必须**按目录**跳过而不是只跳过主文件：那里面的中文全是守卫自己的
+ * issue 文案（开发者/构建期可见，不进任何渲染树）。只写 `SKIP_FILES` 里那一条的话，
+ * `surface.ts` / `shared.ts` 里那两百多条规则文案会被当成「新写的用户可见硬编码中文」
+ * 而整片报红 —— 这个回归在拆分当天就发生过一次，`npm test` 抓不到（它不在前端单测里），
+ * 只有 `npm run verify:local` 那一步会红。
+ */
+const SKIP_DIRS = new Set(["src/i18n/locales", "src/data", "src/utils/designGuards"]);
 
 const rel = (p) => p.slice(ROOT.length + 1).split(path.sep).join("/");
 const normalize = (s) => s.replace(/\s+/g, " ").trim();
