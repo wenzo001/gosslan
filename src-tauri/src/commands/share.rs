@@ -213,6 +213,9 @@ pub async fn download_shared_file(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
     remote_path: String,
+    // 批量下载（整目录）时置 true：不逐文件插"你正在下载…"系统消息，
+    // 否则下一个 100 个文件的目录会刷 100 条系统消息（用户 2026-11-18）。
+    silent: Option<bool>,
 ) -> Result<String, String> {
     let s = state.inner();
     {
@@ -246,6 +249,9 @@ pub async fn download_shared_file(
                 "无法联系对方：没有可达的中继邻居",
             ),
         ));
+    }
+    if silent.unwrap_or(false) {
+        return Ok(transfer_id);
     }
     // 本地提示：你正在下载好友的文件（聊天信息内简约系统消息）
     let file_name = std::path::Path::new(&remote_path)

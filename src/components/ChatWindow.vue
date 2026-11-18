@@ -2470,7 +2470,12 @@ function retryHistory() {
     </ConfirmDialog>
 
     <!-- 群文件列表 -->
-    <GroupFilesPanel :open="filesOpen" :group-id="activeGroupId" @close="filesOpen = false" />
+    <GroupFilesPanel
+      :open="filesOpen"
+      :group-id="activeGroupId"
+      @close="filesOpen = false"
+      @locate="(id) => { filesOpen = false; void locateMessage(id); }"
+    />
 
     <!-- 群任务（Card kind：不进时间线，只在这个面板里折叠展示） -->
     <GroupTasksPanel

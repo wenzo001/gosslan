@@ -823,7 +823,7 @@ const CMDS = [
   ["reset_settings", "settings", "", "()|err"],
   ["save_settings", "settings", "settings Settings", "()|err"],
   ["set_ui_language", "settings", "lang str", "()|err"],
-  ["download_shared_file", "share", "friend_id str; remote_path str", "str|err"],
+  ["download_shared_file", "share", "friend_id str; remote_path str; silent bool|null", "str|err"],
   ["get_downloads_dir", "share", "", "str"],
   ["get_share_dir", "share", "", "str?"],
   ["open_downloads_dir", "share", "", "()|err"],
