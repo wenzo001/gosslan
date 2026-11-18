@@ -7,9 +7,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   BOT_MESSAGE_ALLOWED_TAGS,
+  BOT_SANITIZE_CONFIG,
   botMessageToHtml,
   capBotMessageText,
   normalizeBotFormat,
+  renderBotMessage,
+  sanitizeBotHtml,
 } from "./botMessage.ts";
 
 test("格式归一化：只认 markdown/md，其余按纯文本（不猜）", () => {
@@ -401,7 +404,11 @@ test("群机器人历史消息：删了/退群后仍留在发送方侧（靠落�
   assert.ok(rust.includes("Some(&bot_marker)"), "持久标记没有传给群发送");
   // 前端：优先读持久标记；找不到当前机器人时仍按机器人渲染（名字回退正文前缀）
   assert.ok(chat.includes('lid.startsWith("bot:")'), "前端没有优先识别持久标记");
-  assert.ok(chat.includes('if (!markerId && !b) return null;'), "旧消息的兜底条件丢了");
+  // 普通消息（无标记、无【名】前缀）仍必须排除，别把用户自己发的消息误认成机器人。
+  assert.ok(chat.includes('if (!markerId && !mt) return null;'), "普通消息误判成机器人的拦截丢了");
+  // 旧消息无持久标记、机器人已删时：仍按机器人身份显示，id 由历史名字派生（稳定头像/分组）。
+  assert.ok(chat.includes('`bot:name:${name0}`'), "旧消息在机器人删除后没有名字兜底 id ⇒ 回落成「我发的」");
+  assert.ok(!chat.includes('if (!markerId && !b) return null;'), "旧逻辑仍会在机器人删掉后把历史消息打成「我发的」");
 });
 
 test("多个机器人必须并发取件（串行长轮询会让后面的机器人等前面超时）", () => {
@@ -441,4 +448,77 @@ test("删除机器人是幂等的：服务端已没有它（404/401）也必须�
   assert.ok(rust.includes("let already_gone ="), "没有 404/401 的放行判据");
   // 群已解散/被移出时也应能清理，否则权限校验把用户自己锁死。
   assert.ok(rust.includes("None => true"), "群不存在时仍要求群主/管理员 ⇒ 永远删不掉");
+});
+
+test("群机器人 action 失败要写 last_error：Rust 拒权 + 前端建任务失败都能在详情页看到原因", () => {
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const read = (p: string) => readFileSync(join(repoRoot, p), "utf8");
+  const rust = read("src-tauri/src/commands/bots.rs");
+  const lib = read("src-tauri/src/lib.rs");
+  const api = read("src/api/index.ts");
+  const store = read("src/stores/useChatStore.ts");
+  const map = read("docs/ARCHITECTURE-MAP.html");
+
+  // 只改 last_error 一个字段的 helper（不清统计、不 resurrect 已删记录）。
+  assert.ok(rust.includes("fn write_bot_last_error("), "缺少只改 last_error 的 helper");
+  // Rust 侧权限被拒不能只写日志：要写 last_error。
+  assert.ok(rust.includes("建任务被拒：本机已不是该群管理员"), "Rust 拒权没写进 last_error");
+  // 事件带 botId ⇒ 前端失败时知道往哪个机器人回写。
+  assert.ok(rust.includes('"botId": record.bot_id'), "action 事件没带 botId");
+  // 新增回报 command：注册 + 架构图 + 前端封装 + 失败时调用。
+  assert.ok(rust.includes("pub async fn bot_report_action_error("), "缺少回报 command");
+  assert.ok(lib.includes("commands::bot_report_action_error"), "回报 command 没注册");
+  assert.ok(map.includes('["bot_report_action_error"'), "回报 command 没进架构图");
+  assert.ok(api.includes('invoke<void>("bot_report_action_error"'), "前端没封装回报 command");
+  assert.ok(store.includes("api.botReportActionError(a.botId"), "前端建任务失败没回写 last_error");
+});
+
+// ── 第二层消毒（DOMPurify）：用 happy-dom 在 Node 里真跑 ────────────────────
+// 7.x 之前这层「Node 没 DOM ⇒ 只能靠代码审阅」，拆掉白名单 CI 抓不到；这里补真判据。
+const { Window } = await import("happy-dom");
+const createDOMPurify = (await import("dompurify")).default;
+const realPurify = createDOMPurify(new Window());
+
+test("第二层消毒配置完整：img/style 在禁用名单（防被改弱后远程图片自动加载）", () => {
+  // 行为层：「不在 ALLOWED_TAGS」就够挡 img ⇒ 光喂 img 输入抓不到 FORBID_TAGS 被删。
+  // 所以直接断言配置本身：这道防线两处都在，缺一处就红。
+  assert.ok(BOT_SANITIZE_CONFIG.FORBID_TAGS.includes("img"), "img 不在 FORBID_TAGS ⇒ 白名单一放宽就会自动加载远程图片");
+  assert.ok(BOT_SANITIZE_CONFIG.FORBID_TAGS.includes("style"), "style 不在 FORBID_TAGS");
+  for (const tag of ["iframe", "object", "embed", "svg", "math"]) {
+    assert.ok(BOT_SANITIZE_CONFIG.FORBID_TAGS.includes(tag), `${tag} 不在 FORBID_TAGS`);
+  }
+  assert.ok(!BOT_SANITIZE_CONFIG.ALLOWED_TAGS.includes("img"), "img 混进了 ALLOWED_TAGS");
+  for (const attr of ["style", "srcset", "formaction", "ping"]) {
+    assert.ok(BOT_SANITIZE_CONFIG.FORBID_ATTR.includes(attr), `${attr} 不在 FORBID_ATTR`);
+  }
+});
+
+test("第二层消毒真能拦：img / script 标签 / javascript: 链接在 DOM 环境被剥掉", () => {
+  const img = sanitizeBotHtml('<img src=x onerror=alert(1)>ok', realPurify);
+  assert.ok(!img.includes("<img"), `远程图片必须被剥：${img}`);
+  assert.ok(!img.includes("onerror"), `事件属性必须被剥：${img}`);
+
+  const script = sanitizeBotHtml('<script>alert(1)</script>ok', realPurify);
+  assert.ok(!script.includes("<script"), `script 标签必须被剥：${script}`);
+
+  const link = sanitizeBotHtml('<a href="javascript:alert(1)">x</a>', realPurify);
+  assert.ok(!link.includes("javascript:"), `javascript: 链接必须被剥：${link}`);
+
+  // 合法标签要保留（别把消毒做成「全剥光」）。
+  const table = sanitizeBotHtml("<table><tr><td>t</td></tr></table>", realPurify);
+  assert.ok(table.includes("<td>"), `白名单内的表格应保留：${table}`);
+});
+
+test("renderBotMessage 走注入的 purify 实例（不是直接返回第一层产物）", () => {
+  let called = 0;
+  const spy = {
+    sanitize(html: string, cfg: Record<string, unknown>) {
+      called += 1;
+      assert.deepEqual(cfg, BOT_SANITIZE_CONFIG, "消毒配置被改弱 ⇒ 白名单守卫失效");
+      return `[sanitized]${html}`;
+    },
+  };
+  const out = renderBotMessage("**bold**", "markdown", spy);
+  assert.equal(called, 1, "renderBotMessage 没有调用第二层消毒 ⇒ 可被人整层拿掉");
+  assert.ok(out.startsWith("[sanitized]"), "渲染结果没有采用消毒层的返回值");
 });

@@ -334,8 +334,10 @@ curl -v --connect-timeout 5 "http://<服务器IP>:59994/healthz"
 ## 5. 复跑自检
 
 ```bash
-# 服务端：8 条自测（三方法 / 离线留存 / ack / TTL / 上限 / 错误 token）
+# 服务端：条数现读脚本末尾「自测通过：N 条」；覆盖三方法 / 离线留存 / ack / TTL / 上限 / 中文 / 长轮询 / limit / 断连 / 撤销唤醒
 cd gosslan-relay-server && node notify-selftest.mjs
+# 写盘失败回滚另有一个脚本（需独立数据目录，勿与上面混跑）
+node notify-persist-selftest.mjs
 
 # 客户端
 cd gosslan && npm test

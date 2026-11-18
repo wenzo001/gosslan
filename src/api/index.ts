@@ -129,6 +129,9 @@ export const api = {
   /** 用户编辑机器人名字 / 头像（头像传 SVG data URL；传 null 表示不改）。 */
   /** 取回发送链接（兼容旧机器人：创建时没存 publishUrl）。 */
   botGetPublishUrl: (botId: string) => invoke<string>("bot_get_publish_url", { botId }),
+  /** 群机器人 action 执行失败回报原因，写进详情 last_error。 */
+  botReportActionError: (botId: string, reason: string) =>
+    invoke<void>("bot_report_action_error", { botId, reason }),
   botSetProfile: (
     botId: string,
     name: string,
@@ -151,8 +154,8 @@ export const api = {
    * 载荷 = bot_id；界面据此决定要不要重读那个机器人的收件箱。
    */
   /** 群机器人的白名单群管理指令（如 create_todo）。 */
-  onBotGroupAction: (cb: (a: { type: string; groupId: string; title: string; botName: string }) => void) =>
-    listen<{ type: string; groupId: string; title: string; botName: string }>("bot-group-action", (e) => cb(e.payload)),
+  onBotGroupAction: (cb: (a: { type: string; groupId: string; title: string; botName: string; botId: string }) => void) =>
+    listen<{ type: string; groupId: string; title: string; botName: string; botId: string }>("bot-group-action", (e) => cb(e.payload)),
   /** 机器人资料变化（改名/换头像/换地址）：通讯录与群成员列表据此重拉。 */
   onBotChanged: (cb: (botId: string) => void) =>
     listen<{ bot_id?: string }>("bot-changed", (e) => cb(String(e.payload?.bot_id ?? ""))),

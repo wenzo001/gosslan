@@ -88,6 +88,17 @@ pub fn bot_group_prefix(bot_name: &str) -> String {
     format!("【{}】", bot_name.trim())
 }
 
+/// 把失败原因写进 bot.last_error（详情页可见）。供 spawn_blocking 内调用，
+/// 与后台取件失败那处同口径：原因截断 200 字，机器人已不存在则静默跳过。
+fn write_bot_last_error(conn: &rusqlite::Connection, bot_id: &str, reason: &str) -> Result<(), String> {
+    let mut rec = match db::load_bot(conn, bot_id) {
+        Ok(Some(r)) => r,
+        _ => return Ok(()),
+    };
+    rec.last_error = Some(reason.chars().take(200).collect());
+    db::save_bot(conn, &rec).map_err(|e| format!("记录机器人错误失败：{e}"))
+}
+
 /// 机器人状态：只允许这三个。
 pub fn normalize_bot_status(raw: &str) -> Result<&'static str, String> {
     match raw.trim() {
@@ -561,6 +572,23 @@ pub async fn bot_get_publish_url(
     Ok(format!("{}{}", server.trim_end_matches('/'), path))
 }
 
+/// 群机器人在前端执行白名单 action（建任务）失败时回报原因，写进 last_error 让详情页可见。
+/// db 读写放 spawn_blocking（不占 tokio worker，符合 R-18 棘轮）。
+#[tauri::command(async)]
+pub async fn bot_report_action_error(
+    state: State<'_, Arc<AppState>>,
+    bot_id: String,
+    reason: String,
+) -> Result<(), String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        write_bot_last_error(&dbc, &bot_id, &reason)
+    })
+    .await
+    .map_err(|e| format!("记录任务中断：{e}"))?
+}
+
 /// 用户编辑机器人名字 / 头像（2026-11-17）。
 ///
 /// 字段级更新：一次 `spawn_blocking` 内持锁读-改-写，不与轮询统计互相覆盖；
@@ -1006,14 +1034,23 @@ async fn deliver_event(
                             .map(|t| t.chars().take(120).collect::<String>())
                             .unwrap_or_else(|| entry.text.chars().take(60).collect());
                         // 发内部事件让前端调既有 send_group_todo（不复制建任务逻辑）。
+                        // 带 botId：前端建任务失败时据此把原因写回 last_error（详情页可见）。
                         let _ = s.app.emit("bot-group-action", serde_json::json!({
                             "type": "create_todo",
                             "groupId": group_id,
                             "title": title,
                             "botName": record.name,
+                            "botId": record.bot_id,
                         }));
                         s.logger.info("bot", format!("群机器人 {} 触发建任务：{title}", record.bot_id));
                     } else {
+                        // 权限被拒不能只写日志（用户只会看到「没建成」却不知为什么）：写 last_error。
+                        let sd = s.clone();
+                        let bid = record.bot_id.clone();
+                        let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                            let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
+                            write_bot_last_error(&dbc, &bid, "建任务被拒：本机已不是该群管理员")
+                        }).await;
                         s.logger.info("bot", format!("群机器人 {} 的建任务被拒（已非管理员）", record.bot_id));
                     }
                 }
@@ -1270,6 +1307,23 @@ mod bot_cmd_tests {
             pending: 0,
             failed: 0,
         }
+    }
+
+    /// 群 action 失败写 last_error：只改这一个字段，不清统计、机器人不存在时静默跳过。
+    #[test]
+    fn action_error_writes_only_last_error() {
+        let conn = test_db();
+        db::save_bot(&conn, &sample_bot()).unwrap();
+        write_bot_last_error(&conn, "bot_1", "建任务失败：群已解散").unwrap();
+        let got = db::load_bot(&conn, "bot_1").unwrap().unwrap();
+        assert_eq!(got.last_error.as_deref(), Some("建任务失败：群已解散"));
+        // 其它字段不动（尤其不能把 pending/failed/状态清掉）。
+        assert_eq!(got.status, "active");
+        assert_eq!(got.failed, 0);
+        assert_eq!(got.pending, 0);
+        // 机器人不存在 ⇒ 静默跳过，不报错（避免把已删记录 resurrect）。
+        assert!(write_bot_last_error(&conn, "missing_bot", "x").is_ok());
+        assert!(db::load_bot(&conn, "missing_bot").unwrap().is_none());
     }
 
     /// 审计：URL parser 必须挡住 userinfo / query / fragment / 非法端口 / 路径。
