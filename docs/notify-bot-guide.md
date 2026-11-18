@@ -11,8 +11,8 @@
 > ⚠️ **旧协议已删除**：`/v1/hooks/<bot_id>/messages` + `Authorization` 头 +
 > 独立进程 `webhook.mjs`（59995）+ `WEBHOOK_CLIENT_TOKEN` / `WEBHOOK_PEPPER`
 > 那一套全部不再使用。旧机器人无法升级，删掉重建。
-> 那一套的源码、接口文档与它自己的两套自测已归档到服务端仓库的 `legacy/`
-> （2026-11-18；**不部署、也不算现役证据**），本仓不再指向它的任何路径。
+> 那一套的源码、接口文档与它自己的两套自测已从服务端仓库**彻底删除**（2026-11-18），
+> 本仓与服务端都只支持 v7 这一套通知协议。
 > 设计取舍记录在 `docs/notes/webhook-simple-protocol-v7-2026-11-17.md`；
 > 群机器人管理指令见 `docs/notes/bot-group-actions-2026-11-17.md`。
 
