@@ -15,6 +15,11 @@
 ## [Unreleased]
 
 ### 测试基础设施
+- **反证基线补齐到 27 档并全量重算**（`scripts/fixtures/selfproof-baseline.json`）：此前缺
+  bot / contentpull / friendreq / ghsync 四档（`npm run selfproof:check` 起跑即报缺档），
+  另有四档的断言总数是旧口径（`group` 两档 36→37、multi 24→29、shrink 24→26）。
+  `node scripts/check-selfproof-baseline.mjs --sync` 全档跑齐后写入；**所有档的 `red` 值一个没变**，
+  即没有任何反证档退化成全绿。该工具不进门禁层（量具，一次全跑约 20 分钟）。
 - **UI 运行时探针不再覆盖文档证据图**：`check-ui-runtime.mjs` 里 stage4 / stage5 / stage6 /
   recoverynotice 四段过去把复拍的 png 直接写进 `docs/notes/unslop-review-2026-11-06/shots/`
   —— 那是 `report.md` 与 `ux-criteria.md` 点名的历史证据。本机实测复拍里 **13/39 组
