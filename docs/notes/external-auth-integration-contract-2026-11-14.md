@@ -309,13 +309,15 @@
 | 分享面板单选 / 多选 | **多选**（逐项勾、按钮带目标数、部分失败只留失败项可重试） | **已实现**（`src/components/SharePanel.vue`，判据在 `shareWiring.test.ts`） |
 | 系统分享目标（从别的应用分享到本应用） | **要做，先 macOS / Windows** | **读取端已实现，平台写入端未实现**：协议 + 读取端 + 两份骨架已交（`incoming_share.rs` + `commands/external_share.rs` 的扫描 + 设计稿 §6）；macOS 需要 Share Extension（Xcode target，本仓构建不出）、Windows 需要 MSIX share target，两者都要签名打包与真机验证 |
 | 双边撤销 | **做，先定契约再实现** | **已实现（客户端侧）**：metadata 加可选 `revocation_endpoint`（HTTPS 同源）、撤销先本地后通知、通知带 `Idempotency-Key`、体只回 `{client_id, kid}`；结果由 `rp_notified` 分四态呈现，通知失败可**重发**。判据 `deviceAuthRevokeWiring.test.ts` + Rust 单测。RP 侧作废与最终一致性仍需生产实现（见 §4） |
-| RP 私钥保护 | **上平台密钥库** | 未实现。要求与迁移顺序见 §5；成本口径与免费路径见 [`platform-keychain-free-path-2026-11-15.md`](platform-keychain-free-path-2026-11-15.md)（只有 macOS 需签名，且免费证书即可） |
+| RP 私钥保护 | **上平台密钥库** | **已实现（Windows DPAPI 凭据管理器 + Android Keystore，2026-11-15）**：`rp_device_bindings.secret_key` 列存 `gsk1.<后端>.<base64url 信封>`，私钥明文不再落盘；升级按「封 → 开回来验 → 才写回」，解不开绝不回落明文。macOS / Linux **暂缓**（等签名身份，见 §5 与 [`platform-keychain-free-path-2026-11-15.md`](platform-keychain-free-path-2026-11-15.md)）；旧行为（明文列）保持直到接入密钥库。实现见 `src-tauri/src/rp_key_store.rs`（含 `dpapi` / `keystore_android` 子模块） |
 | 开放接口：好友同步 / 定向分享 / 事件交付 | **要做**（scope 一键允许，2026-11-17 起默认全勾可取消） | **已实现（客户端侧）**（2026-11-15 裁决后落地，设计稿 [`open-extension-api-design-2026-11-15.md`](open-extension-api-design-2026-11-15.md)）：`sync` 动作 + `friends.read` / `events.metadata` 两个 scope、确认页一键允许（2026-11-17 起请求项默认全勾、可逐项取消）、决策回写体带可选 `data`（形状：**没有正文、没有公钥、没勾的连键都没有**）、scope 只对本次事务有效（**不落库**）；定向分享（`to` / `to_kind` 预填 + 目标 fail-closed + 可选回执）。**注意**：`friends.read` 只给好友列表 ⇒ RP 拿不到群列表，「一键发到某个群」需要 RP 另行知道 `group:<群 id>` |
 | 导出 / 恢复绑定密钥 | **要做**（口令加密单文件；不做云备份、不导出 P2P 密钥） | **已实现（客户端）**：`rp_key_backup.rs` + 三条命令 + 设置页区块；判据 `rpKeyBackupWiring.test.ts` 与 Rust 单测。设计稿：[`rp-key-export-recovery-design-2026-11-15.md`](rp-key-export-recovery-design-2026-11-15.md)。**顺序硬约束**：导出能力必须先于「抹掉 SQLite 明文 seed」可用 |
 
 已实现的那几条（多选、导出/恢复、双边撤销的客户端侧、系统分享目标的**读取端**、**数据交付与定向分享的客户端侧**）
-在本轮改代码与文档；**平台分享写入端**与**平台密钥库**仍只有裁决、没有实现，
-对外仍按本节上面的「未做」口径回答，不得写成已具备。
+在本轮改代码与文档；**平台分享写入端**仍只有裁决、没有实现，对外仍按「未做」口径回答。
+**平台密钥库**已在 Windows / Android 落地（2026-11-15，见上表），macOS / Linux 仍暂缓 —— 对外按
+「Windows/Android 已受平台密钥库保护、macOS/Linux 维持本机文件权限保护」的口径回答，不得笼统说
+「全部已上密钥库」或「全部未实现」。
 
 ## 12. 复跑与维护
 
