@@ -255,7 +255,7 @@ RP 后端须把 `request_id`、当前 RP 用户、登录 session 或待绑定账
 }
 ```
 
-签名主体、header `kid`、audience、client_id、request_id、challenge、action 必须互相一致。签名有效期建议不超过 60 秒，`jti` 与事务均只能消费一次。初次 `link` 时，RP 在已有登录 session 和用户明确操作的前提下注册公钥；后续 `authenticate` 必须用已登记公钥验证，不能在登录流程里临时接受新公钥。拒绝示例为 `{"decision":"deny"}`，不带 assertion。
+签名主体、header `kid`、audience、client_id、request_id、challenge、action 必须互相一致。签名有效期建议不超过 60 秒，`jti` 与事务均只能消费一次。首绑（2026-11-19 产品决策：**先登录后绑定**）时，RP 专属密钥由 Gosslan 本地生成、不来自 RP —— `authenticate` 在无绑定时同样走首绑生成，RP 拿到断言后按稳定 `pairwise_subject` 登录该 subject 对应的账号，或用该 subject 快速注册新账号；后续 `authenticate` 复用同一密钥。⚠️ **RP 必须以 `pairwise_subject` 为账号主键，绝不能用昵称/设备名匹配已有账号**（否则改名即可冒充他人）。仅当绑定处于待登记（Gosslan 已签发、RP 尚未回写确认）时再次 authenticate 才拒绝。拒绝示例为 `{"decision":"deny"}`，不带 assertion。
 
 响应：`202 Accepted`，表示已登记待完成状态；重复提交同一事务返回幂等结果，不重复创建绑定。RP 事务状态变为 `approved` / `denied` / `expired` / `consumed`。
 
@@ -355,7 +355,7 @@ Gosslan UI 的确认页至少显示：
 - **反钓鱼与确认。** 展示从 HTTPS 元数据取得的 origin；不信任 deep link 中的 `display_name`、callback 或 claim。用户确认必须发生在受信任的 Gosslan 原生界面。
 - **callback 限制。** 回调/状态接口只来自 HTTPS 同源 metadata，不接受用户输入 URL、任意 redirect 或 HTTP URL。阻止 open redirect、SSRF、DNS rebinding 和跨域凭据转发；不跟随跨 origin 重定向。
 - **短时、一次性与防重放。** 随机 nonce、transaction ID、challenge、jti 绑定 RP、action、audience 和浏览器会话；后端原子消费事务。拒绝 PKCE 降级（如 RP 同时采用 OAuth code flow）。
-- **账号绑定先验。** 首次绑定必须由 RP 已登录会话发起，执行 CSRF 检查并显示目标账户；不能仅凭 Gosslan 自报昵称/设备 ID 找到并登录某个用户。
+- **账号以 pairwise subject 为准，昵称绝不用于匹配账号。** 2026-11-19 起支持先登录后绑定：无绑定设备首次 authenticate 由 Gosslan 本地生成 RP 专属密钥与稳定 `pairwise_subject`，RP 据此登录或快速注册。RP **必须**把 subject 当账号主键；昵称只是用户可选共享的展示字段，**不能**用它去查找/匹配已有账号（否则改名即冒充）。若 RP 走的是「把设备绑定到已有账号」流程，那一步仍须在 RP 已登录会话中发起并做 CSRF 检查、显示目标账户 —— 即先登录后绑定不等于允许跳过 RP 侧的账号绑定校验。
 - **最小资料。** RP 只拿到用户批准的 allowlisted claims。每个 RP 使用不同 subject/key；默认不传 `device_id`、X25519 key、硬件信息、通讯录、好友/群信息。
 - **密钥储存与撤销。** RP 绑定密钥可单独撤销/轮换；用户从 Gosslan 可查看已授权应用并撤销本地授权，但服务端仍须提供设备解绑入口。需要设计 OS Keychain/Keystore 能力或清楚标注本机数据库保护限制。
 - **登录授权不等于 P2P 好友关系。** 此流程不得添加好友、接受好友申请、允许网络中继或修改现有设备身份锚点。
@@ -437,7 +437,7 @@ Gosslan UI 的确认页至少显示：
 
 ## 10. 未决产品选择
 
-1. 是否首期只做“已登录账号绑定设备”，把真正的无密码快捷登录放到第二期？推荐先绑定、再登录。
+1. ~~是否首期只做“已登录账号绑定设备”，把真正的无密码快捷登录放到第二期？推荐先绑定、再登录。~~ **已决（2026-11-19）：支持先登录后绑定** —— `authenticate`/`sync` 无绑定时自动首绑，RP 用稳定 `pairwise_subject` 登录或快速注册；昵称仅作展示，不作账号主键。原"先绑定后登录"的安全顾虑通过"以 subject 为账号主键 + RP 侧账号绑定仍要 CSRF"来满足，而非靠强制预绑。
 2. 首期采用 RP 专属设备密钥，还是接受复用 Gosslan P2P 身份密钥的跨站关联？推荐 RP 专属密钥。
 3. 是否允许个人开发者/内网应用自助集成，还是只允许经过审核的 RP origin？安全性和开放性需要明确取舍。
 4. 用户资料到底要共享哪些字段？推荐首期只提供 pairwise `device_subject` 与设备公钥；昵称仅作为设备标签选项，不提供自然人资料。

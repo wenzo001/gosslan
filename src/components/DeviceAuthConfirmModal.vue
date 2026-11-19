@@ -40,11 +40,7 @@ const preCheckedScopes = ref<string[]>([]);
 // 订阅与定时器都交给 initScope 成对拆除（判据 ㊷：不许手工卸载句柄）。
 const scope = createInitScope();
 onMounted(() => {
-  // 绑定清单：用于 authenticate/sync 的"未绑定"预判（首次加载失败时不影响主流程）。
-  void store.loadBindings().catch(() => {});
   void api.onDeviceAuthRequest((p) => {
-    // 每个新事务到来时复核绑定态：第三方可能刚完成 link，避免用旧快照误判"未绑定"。
-    void store.loadBindings().catch(() => {});
     // 同一 request_id 的重复事件（系统/浏览器重试、手动重复粘贴）：**不重置**用户正在
     // 修改的勾选与昵称开关。后端 emit 前已按 request_id 去重，这里再挡一层。
     if (shouldResetChecksForPrompt(store.pending, p)) {
@@ -91,16 +87,6 @@ const actionLabel = computed(() => {
   if (prompt.value?.action === "sync") return t("deviceAuth.syncAction");
   return t("deviceAuth.linkAction");
 });
-/**
- * 登录/同步类事务但本机没有 active 绑定：批准必然被后端以 NO_BINDING 拒绝。
- * 提前显示引导，而不是让用户点了批准才看到一句看不懂的"未绑定应用"。
- * 判定只认"已加载且确实没有"；未加载/加载失败（null）时返回 false，不误拦正常流程。
- */
-const needsBinding = computed(() => {
-  const p = prompt.value;
-  if (!p || p.action === "link") return false;
-  return store.hasActiveBinding(p.rp_origin, p.client_id) === false;
-});
 /** 本次事务请求的交付范围（RP 声明要什么）。 */
 const requestedScopes = computed(() => prompt.value?.requested_scopes ?? []);
 /** 用户勾选后**实际**会交付的那部分（请求 ∩ 勾选 ∩ allowlist）。 */
@@ -124,11 +110,10 @@ async function onApprove() {
     const out = await store.approve(allowNickname.value, granted.value);
     if (out) app.toast(t("deviceAuth.approved"), "success");
   } catch (e) {
-    // 竞态兜底：预判时已绑定、批准瞬间绑定被撤销/变化 ⇒ 后端仍会报 NO_BINDING。
-    // 给可操作引导而不是一句"批准失败"，并刷新绑定态让预警条即时出现。
+    // 先登录后绑定：无绑定会自动首绑，但首绑后要等 RP 回调才 active。若在等待期间再次
+    // 登录，后端报 NO_BINDING（未完成登记）—— 给可操作提示，而不是一句"批准失败"。
     if (errorCode(String(e)) === "DEVICE_AUTH_NO_BINDING" || String(e).includes("DEVICE_AUTH_NO_BINDING")) {
-      void store.loadBindings().catch(() => {});
-      app.toast(t("deviceAuth.notBoundTitle"), "info");
+      app.toast(t("deviceAuth.bindingPending"), "info");
       return;
     }
     app.toastError(e, t("deviceAuth.approveFail"));
@@ -165,21 +150,6 @@ function onClose() {
       </div>
 
       <div class="text-body font-medium text-[var(--gosslan-text)]">{{ actionLabel }}</div>
-
-      <!-- 未绑定预警：登录/同步类事务但本机无 active 绑定 ⇒ 批准必然失败。
-           提前说清怎么走绑定流程（含域名/端口漂移这一真机常见诱因），而不是点了才报错。 -->
-      <div
-        v-if="needsBinding"
-        role="status"
-        class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-warning)] bg-[var(--gosslan-warning-soft)] px-3 py-2.5"
-      >
-        <div class="text-body font-medium text-[var(--gosslan-warning-text-ink)]">
-          {{ t("deviceAuth.notBoundTitle") }}
-        </div>
-        <p class="mt-1 text-meta leading-relaxed text-[var(--gosslan-warning-text-ink)]">
-          {{ t("deviceAuth.notBoundHint") }}
-        </p>
-      </div>
 
       <div class="text-meta text-[var(--gosslan-text-2)]">
         {{ t("deviceAuth.accountLabel") }}{{ prompt.account_hint || t("deviceAuth.noAccountHint") }}
@@ -260,17 +230,9 @@ function onClose() {
         <SecondaryBtn :disabled="store.busy" @click="onDeny">
           {{ store.denyNeedsRetry ? t("deviceAuth.denyRetry") : t("deviceAuth.deny") }}
         </SecondaryBtn>
-        <!-- 重试态 / 未绑定态隐藏「批准」：前者用户意图已是拒绝；后者批准必然被后端
-             NO_BINDING 拒绝，留一个必败按钮没有意义 —— 引导用户先去绑定。 -->
-        <PrimaryBtn
-          v-if="!store.denyNeedsRetry && !needsBinding"
-          :disabled="store.busy || expired"
-          @click="onApprove"
-        >
+        <!-- 重试态隐藏「批准」：用户意图已是拒绝，不允许被误点成批准一个自己要拒绝的事务。 -->
+        <PrimaryBtn v-if="!store.denyNeedsRetry" :disabled="store.busy || expired" @click="onApprove">
           {{ t("deviceAuth.approve") }}
-        </PrimaryBtn>
-        <PrimaryBtn v-else-if="needsBinding && !store.denyNeedsRetry" @click="onDeny">
-          {{ t("deviceAuth.notBoundDeny") }}
         </PrimaryBtn>
       </div>
     </template>
