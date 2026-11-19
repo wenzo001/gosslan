@@ -68,7 +68,7 @@ CASES: list[Case] = [
         )],
         cmd=cargo("test", "--lib", "new_message_kinds_are_queued_then_negotiated"),
         cwd=TAURI,
-        expect_fail_hint="不许在写库前拒绝",
+        expect_fail_hint="不许绕过 deferred_send_decision 自己问判据",
         tags=["rust", "protocol", "gating"],
     ),
     Case(
