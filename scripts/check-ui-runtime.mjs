@@ -4735,6 +4735,7 @@ async function main() {
     const touchroster = want("touchroster");
     const locale = want("locale");
     const i18nshots = want("i18nshots");
+    const readmeshots = want("readmeshots");
     const startuperror = want("startuperror");
     const rowpair = want("rowpair");
     const flicker = want("flicker");
@@ -5003,6 +5004,7 @@ async function main() {
     await runSegment("delivery", delivery, () => runDelivery(cdp, url));
     await runSegment("locale", locale, () => runLocale(cdp, url));
     await runSegment("i18nshots", i18nshots, () => runI18nShots(cdp, url));
+    await runSegment("readmeshots", readmeshots, () => runReadmeShots(cdp, url));
     await runSegment("startuperror", startuperror, () => runStartupError(cdp, url));
     await runSegment("rowpair", rowpair, () => runRowPair(cdp, url));
     await runSegment("flicker", flicker, () => runFlicker(cdp, url));
@@ -11914,6 +11916,163 @@ async function runI18nShots(cdp, url) {
       cardText.includes(L.card), `可见文本含 ${L.card}`, JSON.stringify(cardText.slice(0, 80)));
     await shot(`${L.loc}-3-merge-card`);
   }
+}
+
+/**
+ * README 英文截图（2026-11-19，用户要求「英文 README 配英文界面图，用系统 Brave」）。
+ *
+ * 与 i18nshots 的区别：那里挂小组件出对照图，这里要 README 用的**完整场景大图**
+ * （聊天主窗 / 群任务看板 / 设置），UI 语言与夹具数据**全英文**（只切语言会留下中文会话名/
+ * 任务名，那不是「英文界面」）。用系统 Brave（findChrome 回退路径）跑，须带
+ * GOSSLAN_PROBE_NO_SANDBOX=1（宿主 sandbox 初始化失败，否则 Runtime.enable 45s 不回包）。
+ *
+ * 图写到 docs/assets/readme/*.en-US.png（**不是**被 gitignore 的 test-results），直接给 README.md 引用。
+ * 这是文档出图段，判据只挡「挂不起来 / 截出全白 / 文案没翻成英文」，不量设计 token（那些有专段）。
+ */
+async function runReadmeShots(cdp, url) {
+  const outDir = path.join(ROOT, "docs", "assets", "readme");
+  fs.mkdirSync(outDir, { recursive: true });
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  // Tauri 桩：裸浏览器没有 __TAURI_INTERNALS__，ChatWindow 在 setup 里调 getCurrentWebview()
+  // 会同步抛错（metadata 缺失）⇒ 组件挂成半截。给全 metadata + 吞掉所有命令的 invoke。
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: {
+        currentWindow: { label: 'main' },
+        currentWebview: { label: 'main', windowLabel: 'main' },
+      },
+      invoke: async () => null,
+      transformCallback: (cb) => cb,
+      convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+
+  const setLang = (p) => cdp.eval("(async () => { var m = await import('/src/i18n/index.ts');"
+    + ` m.applyPreference('${p}'); return m.currentLocale(); })()`);
+  const lang = await setLang("en-US");
+  check("README 截图段：语言切到 en-US", lang === "en-US", "currentLocale() == en-US", JSON.stringify(lang));
+
+  const setViewport = (w, h) => cdp.send("Emulation.setDeviceMetricsOverride",
+    { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+  const shot = async (name) => {
+    const s = await cdp.send("Page.captureScreenshot", { format: "png" });
+    const file = path.join(outDir, name + ".png");
+    fs.writeFileSync(file, Buffer.from(s.data, "base64"));
+    const bytes = fs.statSync(file).size;
+    check(`README 英文截图落盘：${name}`, bytes > 6_000, "png > 6KB", `${bytes} bytes`);
+    console.log(`  📷 ${file}`);
+  };
+  const visibleText = () => cdp.eval(
+    "(() => { var h = document.querySelector('#probe-host'); return h ? h.innerText : ''; })()");
+
+  // ---------- 图 1：聊天主窗（挂完整 ResponsiveLayout：会话列表 + 消息 + 输入框）----------
+  await setViewport(1400, 953);
+  await cdp.eval("window.__probe.install('/src/layouts/ResponsiveLayout.vue', '', "
+    + JSON.stringify(JSON.stringify({ router: true, hostHeight: "953px" })) + ")");
+  await sleep(1200);
+  const chatSeed = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const { useAppStore } = await import('/src/stores/useAppStore.ts');
+    // 必须显式传组件用的那一份 pinia（__probe.install 每次新建），否则 seed 到模块级
+    // store、组件读的是另一个实例 ⇒ 界面显示空态，就是「种了数据却看不到」的根因。
+    const P = window.__pinia;
+    const chat = useChatStore(P); const app = useAppStore(P);
+    app.device = Object.assign({}, app.device, { device_id: 'dev-me', nickname: 'Alex' });
+    chat.friends = [
+      { device_id: 'p1', nickname: 'Mia Chen', avatar: null, device_type: 'desktop', online: true },
+      { device_id: 'p2', nickname: 'Leo Wang', avatar: null, device_type: 'mobile', online: true },
+      { device_id: 'p3', nickname: 'Family', avatar: null, device_type: 'desktop', online: false },
+      { device_id: 'p4', nickname: 'Ops Team', avatar: null, device_type: 'desktop', online: false },
+    ];
+    const conv = 'group:team';
+    chat.conversations = [
+      { id: conv, kind: 'group', name: 'Product Team', avatar: null, last_msg: 'Let us ship it', last_ts: Date.now(), unread: 0, pinned: false },
+      { id: 'p1', kind: 'single', name: 'Mia Chen', avatar: null, last_msg: 'Sounds good to me', last_ts: Date.now() - 6e4, unread: 2, pinned: false },
+      { id: 'p2', kind: 'single', name: 'Leo Wang', avatar: null, last_msg: 'The build is green', last_ts: Date.now() - 3.6e5, unread: 0, pinned: false },
+      { id: 'group:family', kind: 'group', name: 'Family', avatar: null, last_msg: 'Dinner at seven', last_ts: Date.now() - 1.8e6, unread: 0, pinned: false },
+      { id: 'p4', kind: 'single', name: 'Ops Team', avatar: null, last_msg: 'Deploy finished', last_ts: Date.now() - 7.2e6, unread: 0, pinned: false },
+    ];
+    chat.activeConv = conv;
+    const texts = [
+      ['p1','Mia Chen','Got it, I will update the spec this afternoon.'],
+      ['dev-me','Alex','Thanks. Please also sync the release checklist with the ops team.'],
+      ['p1','Mia Chen','Sure, I will take care of it right away.'],
+      ['p2','Leo Wang','The file transfer just finished, everything looks fine.'],
+      ['dev-me','Alex','Great. I will review the diff and merge it tonight.'],
+      ['p2','Leo Wang','Sounds good. Let me know if you need anything else.'],
+      ['dev-me','Alex','Will do. Thanks for the quick turnaround!'],
+    ];
+    chat.messages[conv] = texts.map((t, i) => ({
+      conv_id: conv, msg_id: 'rm' + i, local_id: 'rm' + i,
+      sender_id: t[0], sender_name: t[1], kind: 'text', content: t[2],
+      status: 'sent', seq: i + 1, ts: 1700000000000 + i * 6e4,
+    }));
+    const R = await import('/src/router/main.ts');
+    await R.mainRouter.push({ name: 'conversation', params: { convId: conv } });
+    await new Promise((r) => setTimeout(r, 900));
+    return { msgs: (chat.messages[conv] || []).length, convs: chat.conversations.length, active: chat.activeConv };
+  })()`);
+  check("README chat 夹具：7 条英文消息 + 英文会话列表进 store",
+    !!chatSeed && chatSeed.msgs === 7 && chatSeed.convs === 5, "7 msgs / 5 convs",
+    JSON.stringify(chatSeed));
+  await sleep(900);
+  await shot("chat.en-US");
+
+  const chatText = await visibleText();
+  check("README chat 图：界面文案是英文（无「发送 / 搜索」中文框架）",
+    !chatText.includes("发送") && !chatText.includes("搜索"), "发送/搜索 不出现",
+    JSON.stringify(chatText.slice(0, 120)));
+
+  // ---------- 图 2：群任务看板 ----------
+  await setViewport(1000, 795);
+  // 先把任务行种进**现有 pinia**（图1建的），再以 reusePinia 挂载看板 —— 否则组件 onMounted
+  // 在数据到位前先发起 IPC（Tauri 桩返回 null），rowsLoading 卡在 true ⇒ 永远「Loading tasks」。
+  const todoSeed = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore(window.__pinia);
+    chat.groups = [{ id: 'team', name: 'Product Team', members: ['dev-me','p1','p2'], creator: 'dev-me', admins: [] }];
+    chat.friends = [
+      { device_id: 'p1', nickname: 'Mia Chen', avatar: null, device_type: 'desktop', online: true },
+      { device_id: 'p2', nickname: 'Leo Wang', avatar: null, device_type: 'desktop', online: true },
+    ];
+    // groupTodoRows 是从会话消息派生的任务定义行；直接种进去让 rowsState=ready（否则一直转圈）。
+    const defs = [
+      { todo_id:'t7', title:'Update the release checklist and share it with ops', assignees:['dev-me'], status:'todo', creator:'dev-me', number:7, category:'task', priority:'normal', description:'', images:[], archived:false, deleted:false },
+      { todo_id:'t6', title:'Review the onboarding copy for the next release', assignees:['p1'], status:'todo', creator:'dev-me', number:6, category:'task', priority:'normal', description:'', images:[], archived:false, deleted:false },
+      { todo_id:'t5', title:'Fix the file-transfer size drift issue', assignees:['dev-me'], status:'done', creator:'dev-me', number:5, category:'bug', priority:'high', description:'', images:[], archived:false, deleted:false },
+      { todo_id:'t4', title:'Write the API integration guide', assignees:['p2'], status:'done', creator:'dev-me', number:4, category:'requirement', priority:'normal', description:'', images:[], archived:false, deleted:false },
+    ];
+    chat.groupTodoRows['group:team'] = defs.map((d, i) => ({
+      conv_id:'group:team', msg_id:'rt'+i, local_id:'rt'+i, sender_id:'dev-me', sender_name:'Alex',
+      kind:'todo', content:JSON.stringify(d), seq:i+1, ts:1700000000000 + i*6e4,
+    }));
+    await new Promise((r) => setTimeout(r, 400));
+    return { groups: chat.groups.length, rows: chat.groupTodoRows['group:team'].length };
+  })()`);
+  check("README 任务图夹具：英文群 + 4 条英文任务进 store",
+    !!todoSeed && todoSeed.groups === 1 && todoSeed.rows === 4, "1 group / 4 tasks",
+    JSON.stringify(todoSeed));
+  // 复用已种好数据的 pinia 挂载看板：onMounted 见到数据已加载就不会发 IPC ⇒ 不卡 Loading。
+  await cdp.eval("window.__probe.install('/src/components/GroupTasksBoard.vue', '', "
+    + JSON.stringify(JSON.stringify({ groupId: 'team', reusePinia: true })) + ")");
+  await sleep(900);
+  await shot("group-tasks.en-US");
+
+  // ---------- 图 3：设置 ----------
+  await setViewport(1000, 769);
+  await cdp.eval("window.__probe.install('/src/components/SettingsWindow.vue', '', "
+    + JSON.stringify(JSON.stringify({ router: true })) + ")");
+  await sleep(1000);
+  await shot("settings.en-US");
+
+  await cdp.send("Emulation.clearDeviceMetricsOverride");
 }
 
 /**
