@@ -737,6 +737,21 @@
                 && helper.contains("install_hide_on_close(&win)"),
             "`ensure_aux_window` 里必须接上「关闭即隐藏」（常驻）——              否则每次打开都要重新加载 WebView + 前端，用户要等（`resident` 是开关）"
         );
+        // 2026-11-19「点了没反应」复核：show / set_focus 的 Err 过去被 `let _ =` 静默吞，
+        // "建好却没显示"既无用户反馈也无日志。现在显示逻辑统一收敛到 reveal_aux_window（写埋点）。
+        assert!(
+            helper.contains("reveal_aux_window(app, label, &win)"),
+            "`ensure_aux_window` 的显示必须走 reveal_aux_window（show/focus 失败要写 AUX_WINDOW_SHOW_FAILED 埋点）"
+        );
+        assert!(
+            !code_flat(commands).contains("let _ = win.show()")
+                && !code_flat(commands).contains("let _ = win.set_focus()"),
+            "不许再用 `let _ = win.show()/set_focus()` 静默吞错：窗口建好却没显示时会变成无日志的黑洞"
+        );
+        assert!(
+            commands.contains("code=AUX_WINDOW_SHOW_FAILED"),
+            "reveal 失败必须写 AUX_WINDOW_SHOW_FAILED 具名日志，否则无法诊断「点了没反应」"
+        );
         // 2026-09-24 策略翻转（用户："其他新窗口默认不销毁，第二次打开速度优化快点"）：
         // 常驻 = 群任务 / 外链；销毁 = 设置 / 日志（这两个每次都要读最新的环境与日志尾部）。
         // 钉四件事，缺一条都是一个具体的回归：

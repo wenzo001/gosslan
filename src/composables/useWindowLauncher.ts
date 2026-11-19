@@ -11,7 +11,11 @@
  * - 后端 `ensure_aux_window`：窗口实例唯一（已存在就 show + focus，绝不建第二个）。
  */
 import { computed, reactive, type ComputedRef } from "vue";
-import { shouldLaunchWindow } from "@/utils/windowLaunch";
+import {
+  raceWithTimeout,
+  shouldLaunchWindow,
+  WINDOW_LAUNCH_TIMEOUT_MS,
+} from "@/utils/windowLaunch";
 
 /**
  * 桌面独立窗口的 label，与 Rust `lib.rs` 的 `WINDOW_*` 常量一一对应
@@ -59,7 +63,12 @@ export async function launchAuxWindow(
   opening.add(label);
   lastLaunchAt.set(label, Date.now());
   try {
-    await open();
+    // 超时兜底（2026-11-19「点了没反应」）：open() 若永不 settle，finally 就永不执行，
+    // opening 会永久卡 true、此后该窗口每次点击都被吞。加超时保证必定走到 finally 释放单飞。
+    await raceWithTimeout(open(), WINDOW_LAUNCH_TIMEOUT_MS, {
+      set: (fn, ms) => window.setTimeout(fn, ms),
+      clear: (id) => window.clearTimeout(id as number),
+    });
     return true;
   } finally {
     opening.delete(label);
