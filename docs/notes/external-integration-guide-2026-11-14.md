@@ -542,7 +542,7 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
 | `DEVICE_AUTH_NOT_FOUND` | 待确认事务已被清除/从未存在 | 授权请求不存在或已清除 | 重新发起 |
 | `DEVICE_AUTH_BINDING_REVOKED` | 本机对该应用是撤销态，又收到 `authenticate` | 绑定已撤销，请先在本机移除后重新绑定 | 引导用户在 Gosslan 设置页点「移除」清掉撤销态绑定，再走 `link`；你服务端那把公钥仍须按账号页流程作废 |
 | `DEVICE_AUTH_BINDING_EXISTS` | 已有撤销态绑定，又收到 `link` | 已有撤销态绑定，请先在本机移除后再绑定 | 引导用户在 Gosslan 设置页点「移除」清掉撤销态绑定后重新 `link`（移除后可绑出一把新密钥）；你账号页的授权仍需自行作废 |
-| `DEVICE_AUTH_NO_BINDING` | 本机没有该应用的 active 绑定就 `authenticate` | 尚未绑定该应用，请先绑定 | 先走 `link` |
+| `DEVICE_AUTH_NO_BINDING` | 本机没有该应用的 active 绑定就 `authenticate`/`sync`（含从未绑定、绑定未完成登记） | 尚未绑定该应用，请先绑定 | **必须先用 `action=link` 建绑定事务**：在 Gosslan 确认页批准后再发 `authenticate`。绑定键是 `(规范化 origin, client_id)`，域名/端口/IP 或 client_id 与首次绑定不一致都会查不到绑定 —— 内网自签 + hosts 域名部署时尤其要先确认 origin 稳定。Gosslan 确认页对"登录但未绑定"会提前预警并引导用户走绑定；不要试图用 `authenticate` 代替首绑（协议不支持在登录流程里临时登记公钥） |
 | `DEVICE_AUTH_BUSY` | 待确认队列已满（上限 4） | 待确认的授权太多，先处理手上这几条 | 别把多条授权并发塞给用户 |
 | `DEVICE_AUTH_DENY_NOTIFY_FAILED` | 本机已拒绝，回写你失败 | 本机已拒绝，但对方没收到通知，请重试 | 你的 `decision_endpoint` 要能接受重复的 `deny` |
 | `EXTERNAL_SHARE_INVALID_LINK` | 分享链接形状不对（不是 share 入口） | 这个分享链接不正确 | 检查 scheme 与路径 |
