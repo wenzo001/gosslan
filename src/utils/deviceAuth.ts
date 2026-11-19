@@ -110,6 +110,20 @@ export function guardSetPending(g: PendingGuard, p: DeviceAuthPrompt): void {
   g.pending = p;
 }
 
+/**
+ * 是否要为一个新到达的确认页事件**重置**用户的勾选（昵称开关 + scope 勾选）。
+ *
+ * 后端 emit 前已按 request_id 去重（重复深链不再 emit）；这里再挡一层：同一 request_id
+ * 的事件即使因手动粘贴等路径重复到达，也不重置用户正在修改的选择。
+ * 不同的 request_id = 真正的新事务 ⇒ 重置为服务端默认（一键全勾）。
+ */
+export function shouldResetChecksForPrompt(
+  current: DeviceAuthPrompt | null,
+  incoming: DeviceAuthPrompt,
+): boolean {
+  return !current || current.request_id !== incoming.request_id;
+}
+
 /** 清空（拒绝 / 清数据 / 关闭）：推进代际，让所有在途异步对账失败。 */
 export function guardClear(g: PendingGuard): void {
   g.generation += 1;

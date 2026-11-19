@@ -188,11 +188,28 @@ fn windows_available_bytes(path: &Path) -> Option<u64> {
 ///
 /// 形态一：`C:\foo\bar` ⇒ 根是 `C:\`。
 /// 形态二：UNC `\\server\share\dir` ⇒ 根是 `\\server\share`。
-/// 形态三：相对路径 / 没有盘符 ⇒ 取不到（⇒ 放行）。
+/// 形态三：Win32 长路径前缀 `\\?\C:\foo`（或 `\\.\C:\foo`）⇒ 先剥前缀再按盘符解析（W11）。
+/// 形态四：相对路径 / 没有盘符 ⇒ 取不到（⇒ 放行）。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn volume_root_of(wide: &[u16]) -> Vec<u16> {
     let s = String::from_utf16_lossy(wide);
     let trimmed = s.trim_end_matches('\0');
+    // Win32 设备/长路径前缀：\\?\ 与 \\.\ —— 不剥的话会被下面的 UNC 分支误判成
+    // server="?"、share="C:"，GetDiskFreeSpaceExW 查不到 ⇒ 余量恒"读不到" ⇒ 预检形同虚设。
+    // 剥掉后 C:\ 形态照常解析；UNC 长路径 \\?\UNC\server\share 也归一成普通 UNC。
+    let trimmed = if let Some(rest) = trimmed
+        .strip_prefix("\\\\?\\UNC\\")
+        .or_else(|| trimmed.strip_prefix("\\\\.\\UNC\\"))
+    {
+        format!("\\\\{rest}")
+    } else if let Some(rest) = trimmed
+        .strip_prefix("\\\\?\\")
+        .or_else(|| trimmed.strip_prefix("\\\\.\\"))
+    {
+        rest.to_string()
+    } else {
+        trimmed.to_string()
+    };
     let b = trimmed.as_bytes();
     if b.len() >= 2 {
         if b[0] == b'\\' && b[1] == b'\\' {
@@ -265,6 +282,14 @@ mod tests {
         // UNC：`\\server\share\dir` ⇒ `\\server\share\`
         assert_eq!(
             as_str(&volume_root_of(&w("\\\\server\\share\\dir"))),
+            "\\\\server\\share\\",
+        );
+        // Win32 长路径前缀（W11）：\\?\C:\... 与 \\.\C:\... 都归一到 C:\
+        assert_eq!(as_str(&volume_root_of(&w("\\\\?\\C:\\Users\\me"))), "C:\\");
+        assert_eq!(as_str(&volume_root_of(&w("\\\\.\\D:\\data"))), "D:\\");
+        // \\?\UNC\server\share\dir ⇒ \\server\share\
+        assert_eq!(
+            as_str(&volume_root_of(&w("\\\\?\\UNC\\server\\share\\dir"))),
             "\\\\server\\share\\",
         );
         // 取不到卷根 ⇒ 空串（调用方据此放行，不硬猜）

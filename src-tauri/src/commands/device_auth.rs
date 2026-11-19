@@ -48,10 +48,34 @@ fn rp_client() -> Result<reqwest::Client, String> {
         .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("网络初始化失败：{e}")))
 }
 
+/// 把 reqwest 的底层错误归成**可操作**的引导文案（纯函数，可单测）。
+///
+/// 为什么要分类：生产内网自签证书场景下，用户只看到「授权链接处理失败」这种笼统提示，
+/// 无法自查是「证书没装信任库」「域名 host 没解析」「RP 没开机」还是「重定向被拒」。
+/// 分类后把引导语 + 原始错误串一起回报（原始串仍带错误码，进日志/console）。
+fn describe_rp_network_error(e: &reqwest::Error) -> String {
+    rp_network_error_hint(e.is_connect(), e.is_timeout(), &e.to_string())
+}
+
+/// 分类核心（**纯函数**，可单测）：按 reqwest 的 `is_connect` / `is_timeout` 与错误串分类。
+fn rp_network_error_hint(is_connect: bool, is_timeout: bool, raw: &str) -> String {
+    let lower = raw.to_ascii_lowercase();
+    let hint = if is_connect {
+        "无法连接 RP 服务（检查域名/host 解析、服务是否启动、HTTPS 端口）"
+    } else if is_timeout {
+        "连接 RP 服务超时（检查网络与防火墙）"
+    } else if lower.contains("certificate") || lower.contains("invalid peer") || lower.contains("unknownissuer") {
+        "RP 的 TLS 证书不被信任（内网自签证书须把签发 CA 装入系统信任库，且证书 SAN 覆盖实际访问域名）"
+    } else {
+        "网络请求失败（检查网络与 RP 服务状态）"
+    };
+    format!("{hint}；底层：{raw}")
+}
+
 /// 流式拉取并解析 JSON（累计到上限即中止，与 external_links 导入同口径）。
 async fn fetch_rp_json<T: serde::de::DeserializeOwned>(client: &reqwest::Client, url: &str) -> Result<T, String> {
     let mut resp = client.get(url).send().await
-        .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("拉取失败：{e}")))?;
+        .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("拉取失败：{}", describe_rp_network_error(&e))))?;
     if !resp.status().is_success() {
         // Policy::none() 下 3xx 也走这里 ⇒ 不跟随跨域跳转，直接拒。
         return Err(error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("RP 返回 HTTP {}", resp.status())));
@@ -536,18 +560,54 @@ pub async fn handle_device_auth_link(app: &tauri::AppHandle, url: String) -> Res
         // 都读它 —— 见上面那段说明。
         idempotency_key,
     };
-    let prompt = pending.prompt();
-    {
+    // 重复深链去重：同一 key 已有一条 live 的同事务待确认项 ⇒ 只刷新窗口、不重复 emit，
+    // 保住前端用户正在修改的勾选（见 is_duplicate_live_pending 注释）。
+    // 不同 request_id = 真正的新登录，照常替换 + emit。
+    //
+    // duplicate 时返回**map 里现存那条**的 prompt（与后续 approve 同源）；只有真正新事务
+    // 才用刚拉到的 pending 生成 prompt。这样 emit 出去的与 approve 读到的永远同一份。
+    let fresh_prompt = pending.prompt();
+    let (emit, prompt) = {
         let mut map = s.device_auth_pending.lock().unwrap_or_else(|e| e.into_inner());
-        // 满载返回明确错误（不淘汰、不顶掉已有确认页）；返回 Err 时下面的 emit 不会执行。
-        admit_pending(&mut map, key, pending, now_ms, MAX_PENDING_DEVICE_AUTH)?;
-    }
+        let duplicate = map
+            .get(&key)
+            .is_some_and(|existing| is_duplicate_live_pending(existing, &pending, now_ms));
+        if duplicate {
+            (false, map.get(&key).map(|p| p.prompt()).unwrap_or_else(|| fresh_prompt.clone()))
+        } else {
+            // 满载返回明确错误（不淘汰、不顶掉已有确认页）；返回 Err 时下面的 emit 不执行。
+            admit_pending(&mut map, key, pending, now_ms, MAX_PENDING_DEVICE_AUTH)?;
+            (true, fresh_prompt)
+        }
+    };
     if let Some(w) = s.app.get_webview_window(crate::WINDOW_MAIN) {
         let _ = w.show();
         let _ = w.set_focus();
     }
-    let _ = s.app.emit("device-auth-request", &prompt);
+    if emit {
+        let _ = s.app.emit("device-auth-request", &prompt);
+    }
     Ok(prompt)
+}
+
+/// 重复深链判定（**纯函数**，可单测）：同 key 已有一条未过期、同 request_id 的待确认事务
+/// ⇒ 视为系统/浏览器重试，**不再重复 emit**。
+///
+/// 为什么要去重：`handle_device_auth_link` 每收到一次深链都会 emit `device-auth-request`，
+/// 而前端确认页每次收到事件都把昵称开关与 scope 勾选重置为服务端默认值。若同一笔事务因
+/// 重试到达两次，用户正在修改的勾选会被静默清掉 —— 这就是「授权页异常重复展示」。
+/// 代际守卫只防异步回填复活旧事务，不防重复 emit，故在 emit 这一层单独去重。
+///
+/// 边界：不同 request_id（真正的第二次登录）**不算重复**，照常 emit 新确认页。
+fn is_duplicate_live_pending(
+    existing: &da::PendingDeviceAuth,
+    incoming: &da::PendingDeviceAuth,
+    now_ms: i64,
+) -> bool {
+    existing.expires_at_ms > now_ms
+        && existing.request.request_id == incoming.request.request_id
+        && existing.rp_origin == incoming.rp_origin
+        && existing.meta.client_id == incoming.meta.client_id
 }
 
 /// 取（或建）同一 RP 的排队锁（#1）：同 RP 的多个批准依次处理，不同 RP 并行。
@@ -979,18 +1039,21 @@ pub async fn device_auth_revoke(
         if let Err(e) = crate::db::clear_grant_memory(&dbc, &rp_origin) {
             eprintln!("[device-auth] code=DEVICE_AUTH_GRANT_MEMORY_CLEAR_FAILED：{e}");
         }
+        // 昵称记忆同样要清：撤销后不该再预勾「上次共享了昵称」。
+        if let Err(e) = crate::db::save_nickname_memory(&dbc, &rp_origin, false) {
+            eprintln!("[device-auth] code=DEVICE_AUTH_NICKNAME_MEMORY_CLEAR_FAILED：{e}");
+        }
     }
     let (revoked, kid) = tokio::task::spawn_blocking(move || {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let row = crate::db::get_binding(&dbc, &origin, &cid)
-            .map_err(|e| {
-                error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("读取绑定失败：{e}"))
-            })?;
-        let kid = row.as_ref().map(|r| r.kid.clone());
-        let was_revoked = row
-            .as_ref()
-            .map(|r| r.status == "revoked")
-            .unwrap_or(false);
+        // 只读 kid/status 的轻量查询：**绝不解密 secret_key**。异机封的密钥库信封在这台
+        // 机器上解不开（DPAPI/Keystore 绑设备），若走 get_binding 会在本地撤销之前 Err
+        // 返回，导致「历史绑定能显示、删不掉」（2026-11-19 真机事故）。
+        let meta = crate::db::get_binding_meta(&dbc, &origin, &cid).map_err(|e| {
+            error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("读取绑定失败：{e}"))
+        })?;
+        let kid = meta.as_ref().map(|m| m.kid.clone());
+        let was_revoked = meta.as_ref().map(|m| m.status == "revoked").unwrap_or(false);
         let changed = crate::db::revoke_binding(&dbc, &origin, &cid, crate::db::now_ms())
             .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("撤销失败：{e}")))?;
         Ok::<_, String>((changed || was_revoked, kid))
@@ -1009,6 +1072,47 @@ pub async fn device_auth_revoke(
         None => revoke_with_notify(false, || async { false }).await,
     };
     Ok(outcome)
+}
+
+/// 移除某 RP 的**本地绑定行**（物理删除，任意状态）：让「能绑也能解、所有状态可结束」闭环。
+///
+/// 与 `device_auth_revoke` 的分工：
+/// - `revoke` 对 active 授权生效、保留审计痕迹、尽力通知 RP 作废公钥；
+/// - `remove` 是本地彻底清理，用于中间态（pending_registration / registration_failed）、
+///   脏 status、以及「对方已解绑、本机还留痕迹」的撤销态。
+///
+/// 安全不变量：
+/// - **绝不解密 secret_key**：删行只需主键定位 ⇒ 密钥库打不开照样能清理；
+/// - 本地移除立即生效，不依赖网络；RP 侧的作废由用户在该应用账号页完成（界面文案明确）；
+/// - 移除后同一 RP 可重新走完整绑定流程（生成新密钥，kid 全新）。
+#[tauri::command(async)]
+pub async fn device_auth_remove_binding(
+    state: State<'_, Arc<crate::state::AppState>>,
+    rp_origin: String,
+    client_id: String,
+) -> Result<bool, String> {
+    let s = state.inner().clone();
+    let (origin, cid) = (rp_origin.clone(), client_id.clone());
+    // 该 RP 的「上次允许了什么 / 昵称」记忆一并清掉，避免移除后残留偏好。
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = crate::db::clear_grant_memory(&dbc, &rp_origin) {
+            eprintln!("[device-auth] code=DEVICE_AUTH_GRANT_MEMORY_CLEAR_FAILED：{e}");
+        }
+        if let Err(e) = crate::db::save_nickname_memory(&dbc, &rp_origin, false) {
+            eprintln!("[device-auth] code=DEVICE_AUTH_NICKNAME_MEMORY_CLEAR_FAILED：{e}");
+        }
+    }
+    tokio::task::spawn_blocking(move || {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::db::remove_binding(&dbc, &origin, &cid).map_err(|e| {
+            error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("移除绑定失败：{e}"))
+        })
+    })
+    .await
+    .map_err(|e| {
+        error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("移除任务被中断：{e}"))
+    })?
 }
 
 #[cfg(test)]
@@ -1277,6 +1381,81 @@ mod device_auth_cmd_tests {
         crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap();
         assert!(crate::db::revoke_binding(&conn, ORIGIN, CLIENT, 3_000).unwrap(), "active 才允许撤销");
         assert_eq!(crate::db::get_binding(&conn, ORIGIN, CLIENT).unwrap().unwrap().status, "revoked");
+    }
+
+    /// 解绑解耦判据（P0，2026-11-19 真机事故）：secret_key 是一串**打不开的异机信封**时，
+    /// get_binding（会解密）必须失败，而 get_binding_meta（不解密）必须照样拿到 kid/status。
+    /// 撤销命令正是靠后者做到「密钥库打不开也能本地撤销」。
+    #[test]
+    fn revoke_meta_reads_kid_without_opening_foreign_keystore_envelope() {
+        let conn = test_db();
+        let p = pending("link", vec!["device_subject".into()]);
+        prepare_assertion(&conn, &p, false, 1_000, "my-device", &[]).unwrap();
+        crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap();
+        // 把 secret_key 换成一台「别的机器」封的信封（本机打不开）。
+        conn.execute(
+            "UPDATE rp_device_bindings SET secret_key = ?1 WHERE rp_origin = ?2 AND client_id = ?3",
+            rusqlite::params!["gsk1.dpapi.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", ORIGIN, CLIENT],
+        ).unwrap();
+        // 解密路径必须失败（fail closed，不回落明文）。
+        assert!(crate::db::get_binding(&conn, ORIGIN, CLIENT).is_err(), "异机信封不能解密");
+        // 轻量元数据路径必须照样读到 kid + status —— 这是撤销能本地生效的关键。
+        let meta = crate::db::get_binding_meta(&conn, ORIGIN, CLIENT).unwrap().unwrap();
+        assert!(!meta.kid.is_empty());
+        assert_eq!(meta.status, "active");
+    }
+
+    /// 全状态可结束判据：remove_binding 对 active / pending_registration / registration_failed /
+    /// revoked / 脏 status 一律物理删除；不存在的行返回 false（幂等）。
+    #[test]
+    fn remove_binding_deletes_every_status() {
+        for status in ["active", "pending_registration", "registration_failed", "revoked", "legacy_dirty"] {
+            let conn = test_db();
+            let p = pending("link", vec!["device_subject".into()]);
+            prepare_assertion(&conn, &p, false, 1_000, "my-device", &[]).unwrap();
+            conn.execute(
+                "UPDATE rp_device_bindings SET status = ?1 WHERE rp_origin = ?2 AND client_id = ?3",
+                rusqlite::params![status, ORIGIN, CLIENT],
+            ).unwrap();
+            assert!(crate::db::remove_binding(&conn, ORIGIN, CLIENT).unwrap(), "{status} 应能移除");
+            assert!(crate::db::get_binding_meta(&conn, ORIGIN, CLIENT).unwrap().is_none(), "{status} 移除后不应残留");
+            // 幂等：再删一次返回 false。
+            assert!(!crate::db::remove_binding(&conn, ORIGIN, CLIENT).unwrap());
+        }
+    }
+
+    /// 生产网络错误分类判据：证书/连接/超时/其它各给可操作引导，且保留底层错误串。
+    #[test]
+    fn rp_network_error_hint_classifies_and_keeps_raw() {
+        let cert = rp_network_error_hint(false, false, "invalid peer certificate: UnknownIssuer");
+        assert!(cert.contains("证书不被信任") && cert.contains("UnknownIssuer"));
+        let conn = rp_network_error_hint(true, false, "connection refused");
+        assert!(conn.contains("无法连接 RP 服务") && conn.contains("connection refused"));
+        let timeout = rp_network_error_hint(false, true, "operation timed out");
+        assert!(timeout.contains("超时"));
+        let other = rp_network_error_hint(false, false, "some error");
+        assert!(other.contains("网络请求失败") && other.contains("some error"));
+    }
+
+    /// 重复深链去重判据（纯函数）：同 request_id + live ⇒ 重复；不同 request_id / 过期 / 跨 RP ⇒ 不重复。
+    #[test]
+    fn duplicate_live_pending_detects_same_transaction_only() {
+        let base = pending("link", vec![]);
+        let mut same = pending("link", vec![]);
+        same.request.request_id = base.request.request_id.clone();
+        assert!(is_duplicate_live_pending(&base, &same, 1_000), "同 request_id ⇒ 重复");
+
+        let mut different = pending("link", vec![]);
+        different.request.request_id = "req-2".into();
+        assert!(!is_duplicate_live_pending(&base, &different, 1_000), "不同 request_id = 新事务");
+
+        let mut expired = base.clone();
+        expired.expires_at_ms = 500;
+        assert!(!is_duplicate_live_pending(&expired, &same, 1_000), "过期项不算 live");
+
+        let mut cross_rp = same.clone();
+        cross_rp.rp_origin = "https://other.example.com".into();
+        assert!(!is_duplicate_live_pending(&base, &cross_rp, 1_000), "跨 RP 不算重复");
     }
 
     /// get_binding 中间态不许被当成 active 直接签名发断言（就绪度审计 §3.3）。

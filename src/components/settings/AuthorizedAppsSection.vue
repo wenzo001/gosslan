@@ -18,6 +18,8 @@ const app = useAppStore();
 const ime = useImeEnterGuard();
 const linkDraft = ref("");
 const linking = ref(false);
+/** 就地二次确认：记住当前等待确认移除的行（rp_origin + client_id），避免误触。 */
+const pendingRemove = ref<string | null>(null);
 
 onMounted(() => {
   void store.loadBindings().catch((e) => app.toastError(e, t("deviceAuth.appsLoadFail")));
@@ -60,6 +62,27 @@ async function onRevoke(rpOrigin: string, clientId: string, wasRevoked = false) 
     app.toast(t(wasRevoked ? "deviceAuth.revokeRenotified" : "deviceAuth.revoked"), "success");
   } catch (e) {
     app.toastError(e, t("deviceAuth.revokeFail"));
+  }
+}
+
+function removeKey(rpOrigin: string, clientId: string): string {
+  return rpOrigin + "\u0000" + clientId;
+}
+
+/** 移除：第一次点击进入确认态，第二次点击才真正删除；切换行即取消。 */
+async function onRemove(rpOrigin: string, clientId: string) {
+  const key = removeKey(rpOrigin, clientId);
+  if (pendingRemove.value !== key) {
+    pendingRemove.value = key;
+    app.toast(t("deviceAuth.removeConfirm"), "info");
+    return;
+  }
+  pendingRemove.value = null;
+  try {
+    const removed = await store.remove(rpOrigin, clientId);
+    app.toast(t(removed ? "deviceAuth.removed" : "deviceAuth.revokeNotFound"), removed ? "success" : "info");
+  } catch (e) {
+    app.toastError(e, t("deviceAuth.removeFail"));
   }
 }
 
@@ -122,6 +145,15 @@ function fmtTime(ms: number | null): string {
           @click="onRevoke(b.rp_origin, b.client_id, true)"
         >
           {{ t("deviceAuth.revokeRenotify") }}
+        </SecondaryBtn>
+        <!-- 「移除」对**所有状态**可见：中间态/失败态/脏值/撤销态都能彻底结束，
+             让每个状态都有出口（active 行也允许直接移除，不经撤销通知）。二次确认防误触。 -->
+        <SecondaryBtn
+          size="xs"
+          shrink
+          @click="onRemove(b.rp_origin, b.client_id)"
+        >
+          {{ pendingRemove === removeKey(b.rp_origin, b.client_id) ? t("deviceAuth.remove") + "?" : t("deviceAuth.remove") }}
         </SecondaryBtn>
       </li>
     </ul>

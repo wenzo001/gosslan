@@ -18,6 +18,7 @@ import {
   deviceAuthSecondsLeft,
   disclosedClaims,
   grantedScopes,
+  shouldResetChecksForPrompt,
 } from "@/utils/deviceAuth";
 import { createInitScope } from "@/utils/initScope";
 import { t } from "@/i18n";
@@ -39,17 +40,17 @@ const preCheckedScopes = ref<string[]>([]);
 const scope = createInitScope();
 onMounted(() => {
   void api.onDeviceAuthRequest((p) => {
-    // 同一 RP 上次的选择缓存（用户 2026-11-17）：后端 prompt.nickname_default
-    // 就是记忆值；首次授权仍是 false（最小披露），用户随时可改。
-    allowNickname.value = p.nickname_default;
-    // 新事务 ⇒ 上一笔的勾选**不带过来**（scope 是本次事务的授权）。
-    // 但**同一个 RP 上次**允许过的会被预勾（记忆）⇒ 第二次登录只需点一次「批准」。
-    // 用户 2026-11-17：「对方接入，点击弹出应用，用户直接确认就行」⇒
-    // 请求的 scope **默认全勾**，用户只需点一次「允许」。
-    // 风险由确认页的清单明示（将同步：设备凭证 / 好友列表 / 群列表 / 分享入口），
-    // 用户仍可逐项取消（toggle 保留）——一键是默认值，不是强制。
-    preCheckedScopes.value = [...p.requested_scopes];
-    scopeChecks.value = [...p.requested_scopes];
+    // 同一 request_id 的重复事件（系统/浏览器重试、手动重复粘贴）：**不重置**用户正在
+    // 修改的勾选与昵称开关。后端 emit 前已按 request_id 去重，这里再挡一层。
+    if (shouldResetChecksForPrompt(store.pending, p)) {
+      // 新事务 ⇒ 上一笔的勾选**不带过来**（scope 是本次事务的授权）。
+      // 后端 prompt.nickname_default 是「同一 RP 上次的选择」记忆值；首次为 false。
+      // 用户 2026-11-17：「一键允许」⇒ 请求的 scope 默认全勾，点一次「允许」即完成，
+      // 清单在页面上明列、仍可逐项取消（一键是默认值不是强制）。
+      allowNickname.value = p.nickname_default;
+      preCheckedScopes.value = [...p.requested_scopes];
+      scopeChecks.value = [...p.requested_scopes];
+    }
     store.setPending(p);
   }).then((un) => scope.onDispose(un));
   // 清数据（clearAllData / resetAfterDataCleared 经后端广播 data-cleared）一并清掉确认页（#8）：

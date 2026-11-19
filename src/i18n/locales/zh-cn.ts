@@ -1366,6 +1366,11 @@ export const zhCN: MessageDict = {
   "deviceAuth.revokeRenotified": "已通知对方撤销",
   "deviceAuth.revokeNotFound": "本机没有这条授权记录",
   "deviceAuth.revokeFail": "撤销失败",
+  // 移除（物理删除本地绑定行）：给中间态/撤销态/脏值一条「彻底结束」的路。
+  "deviceAuth.remove": "移除",
+  "deviceAuth.removeConfirm": "从本机彻底移除这条绑定记录？移除后该应用可重新绑定；对方账号页里的授权需你自行撤销。",
+  "deviceAuth.removed": "已移除",
+  "deviceAuth.removeFail": "移除失败",
   "deviceAuth.statusActive": "已授权",
   "deviceAuth.statusRevoked": "已撤销",
   // 首绑的中间态/失败态（pending_registration / registration_failed）与未知状态共用这一格：

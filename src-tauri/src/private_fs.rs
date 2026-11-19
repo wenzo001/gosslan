@@ -49,8 +49,15 @@ pub(crate) fn unusable_on_windows(name: &str, windows_rules: bool) -> bool {
     {
         return true;
     }
-    // ② 保留设备名（取扩展名前那段；`CON.txt` 与 `CON` 同样保留）
-    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    // ② 保留设备名（取扩展名前那段；`CON.txt` 与 `CON` 同样保留）。
+    //    Windows 会先剥掉点前的空格再判定 ⇒ `CON .txt` 也是保留名。这里同步剥掉 stem
+    //    结尾的空格/点，与 rewrite_with_platform_rules 的 trim 口径一致（W14）。
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches([' ', '.'])
+        .to_ascii_uppercase();
     if WINDOWS_RESERVED_NAMES.contains(&stem.as_str()) {
         return true;
     }
@@ -240,7 +247,16 @@ mod tests {
         }
         // ② 保留设备名（**带扩展名照样保留**：`CON.txt` 在 Windows 上也打不开）
         for name in [
-            "CON", "con.txt", "PRN", "AUX", "NUL", "COM1", "com9.log", "LPT1",
+            "CON",
+            "con.txt",
+            "PRN",
+            "AUX",
+            "NUL",
+            "COM1",
+            "com9.log",
+            "LPT1",
+            "CON .txt",
+            "COM1 .log", // 点前空格：Windows 先剥空格再判保留名（W14）
         ] {
             assert!(
                 super::unusable_on_windows(name, true),

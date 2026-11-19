@@ -12,6 +12,10 @@ name: Build Windows + 内置 WebView2（固定版本，普通版的另一档）
 # 而它在开发推送上没有新信息（默认档 build.yml 已经在每个 push 上出 x64 + arm64）。
 # 现有那三条打包与 verify.yml 一行没改 ⇒ 普通推送的 CI 结论不受这条流水线影响。
 #
+# ⚠️ 供应链门禁（W1）：归档来自社区账号而非微软官方 ⇒ 下载后必须校验 SHA-256 才解压，
+#    清单在"Download and extract"步骤的 $expectedHashes 表里，按 <版本>-<架构> 登记。
+#    新版本/占位哈希一律 fail closed（构建红着等人登记真实摘要，绝不解压未校验的 CAB）。
+#
 # ⚠️ 两条今天没被任何机器证明过的东西，别读成"已验证可用"：
 #   ① 解出来的文件夹名必须正好是 `Microsoft.WebView2.FixedVersionRuntime.<版本>.<架构>`——
 #      下面有一步断言会拦（拦不住就说明归档改名了）；但
@@ -81,10 +85,38 @@ jobs:
             Write-Error "webview2_version 不是 x.y.z.w 四段数字：`"$env:WV2_VER`""
             exit 1
           }
+          # 供应链校验（W1）：社区归档不是微软官方源 ⇒ 必须固定 SHA-256 才能解压进源码树。
+          # 清单按 "<版本>-<架构>" 登记；缺条目 / 占位 / 不匹配一律 fail closed ——
+          # 宁可构建红着等人登记哈希，也不把未校验的第三方二进制打进安装包。
+          # 登记新版本：先手动下载 CAB、算 `Get-FileHash -Algorithm SHA256`，把摘要填进下表。
+          # 真实摘要于 2026-11-19 从下列 release 的 CAB 实测（shasum + openssl 双算一致，
+          # 文件大小与 release 元数据逐字节吻合）；复算：curl 下载后 Get-FileHash -Algorithm SHA256。
+          $expectedHashes = @{
+            "133.0.3065.92-x64"   = "2e2ebde332fd319f89f769628574e94230a1c715a928a5b846eeec012e811242"
+            "133.0.3065.92-arm64" = "f4b2290895029cd57bffdea5fe5b25d7dbf4424f2ff352e9c3dccf885419ab85"
+          }
+          $hashKey = "$env:WV2_VER-$($env:WV2_ARCH)"
+          if (-not $expectedHashes.ContainsKey($hashKey)) {
+            Write-Error "没有为 $hashKey 登记 SHA-256 —— 拒绝解压未校验的第三方 CAB。请先在 expectedHashes 登记该版本的真实摘要。"
+            exit 1
+          }
+          $expected = $expectedHashes[$hashKey]
+          if ($expected -eq "REPLACE_WITH_REAL_SHA256" -or $expected -notmatch '^[A-Fa-f0-9]{64}$') {
+            Write-Error "$hashKey 的 SHA-256 仍是占位或格式不对 —— 拒绝构建。请用真实 64 位十六进制摘要替换。"
+            exit 1
+          }
+
           $cab = "Microsoft.WebView2.FixedVersionRuntime.$env:WV2_VER.$($env:WV2_ARCH).cab"
           $url = "https://github.com/westinyang/WebView2RuntimeArchive/releases/download/$env:WV2_VER/$cab"
           Write-Host "下载 $url"
           Invoke-WebRequest -Uri $url -OutFile $cab
+          $actual = (Get-FileHash -Algorithm SHA256 -Path $cab).Hash
+          if ($actual -ne $expected.ToUpperInvariant()) {
+            Write-Error "SHA-256 不匹配 —— 归档内容被替换：$hashKey 期望 $expected，实际 $actual。拒绝解压。"
+            Remove-Item $cab -Force -ErrorAction SilentlyContinue
+            exit 1
+          }
+          Write-Host "SHA-256 校验通过：$hashKey = $actual"
           # Windows 自带的 expand.exe 才认 .cab（Expand-Archive 只认 zip）
           cmd /c "expand -F:* $cab src-tauri"
           $dir = "src-tauri/Microsoft.WebView2.FixedVersionRuntime.$env:WV2_VER.$($env:WV2_ARCH)"

@@ -218,6 +218,24 @@ const CROSS_DEVICE_ERRNO: i32 = 17;
 #[cfg(not(any(unix, windows)))]
 const CROSS_DEVICE_ERRNO: i32 = 18;
 
+/// 删除临时凭据副本，带有限退避重试（杀软扫描/句柄占用时 `remove_file` 会短暂失败）。
+/// 与 `rename_replacing` 的占用重试同一口径：有限次、指数退避、封顶。
+fn remove_temp_with_retry(path: &std::path::Path) -> std::io::Result<()> {
+    let mut delay = std::time::Duration::from_millis(RENAME_BACKOFF_MS);
+    for attempt in 1..=RENAME_ATTEMPTS {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if attempt == RENAME_ATTEMPTS || !is_transient_rename_failure(&e) => return Err(e),
+            Err(_) => {
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(std::time::Duration::from_millis(400));
+            }
+        }
+    }
+    unreachable!("循环必然以 Ok 或 Err 收尾")
+}
+
 /// 改名盖住目标（`fs::rename`），把平台差异收在这里：
 /// - **跨卷（EXDEV）**：`rename` 不能跨设备 ⇒ 退回复制 + 删除。
 /// - **Windows 瞬时占用**：有限次退避重试（杀软/记事本占着目标文件时不该让用户重导一次）。
@@ -229,8 +247,17 @@ fn rename_replacing(from: &std::path::Path, to: &std::path::Path) -> std::io::Re
             Err(e) => {
                 // 跨卷：改名永远不可能成功（目标目录可能是指向别的卷的联接/符号链接）⇒ 复制。
                 if e.raw_os_error() == Some(CROSS_DEVICE_ERRNO) {
+                    // 跨卷：复制成功但删除临时副本失败会留下**完整的明文密钥包副本**（
+                    // 文件即凭证）。重试删除；仍失败则带上路径返回 Err —— 宁可让用户知道
+                    // "目标已写入但有临时副本没清掉、请手动删除"，也绝不静默成功。
                     std::fs::copy(from, to)?;
-                    let _ = std::fs::remove_file(from);
+                    if let Err(del) = remove_temp_with_retry(from) {
+                        eprintln!(
+                            "[rp-key-backup] 跨卷导出后临时凭据副本删除失败，请手动删除：{}（{del}）",
+                            from.display()
+                        );
+                        return Err(del);
+                    }
                     return Ok(());
                 }
                 if attempt == RENAME_ATTEMPTS || !is_transient_rename_failure(&e) {
@@ -283,7 +310,9 @@ fn write_atomic_file(dest: &std::path::Path, bytes: &[u8]) -> std::io::Result<()
         {
             use std::os::unix::fs::PermissionsExt;
             // 文件即凭证：导出就收紧到 0600（与日志目录同一条纪律）。
-            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+            // chmod 失败必须上抛：静默吞掉会让临时文件以 umask 默认权限（常见 0644）
+            // 留在盘上，同机其他用户可读 —— 这是凭据文件的 fail-open。
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
         f.write_all(bytes)?;
         // 落盘再改名：改名成功 ⇒ 内容真的在盘上（掉电也不留半截）。

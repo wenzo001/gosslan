@@ -10,17 +10,27 @@ Write-Host "========== gosslan 编译环境检查 ==========" -ForegroundColor C
 Write-Host ""
 
 # 工具函数：运行命令并打印结果
-function Check([string]$label, [string]$cmd, [string[]]$args) {
+# ⚠️ 形参不能叫 $args —— 那是 PowerShell 的自动变量（未绑定位置参数的容器），
+#    依赖"形参遮蔽自动变量"在 5.1 / 7 之间行为不一致。改名 $cmdArgs。
+#    临时文件用 GUID 后缀：两个实例并发跑时固定文件名会互相覆盖输出（D4）。
+function Check([string]$label, [string]$cmd, [string[]]$cmdArgs) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $p = Start-Process -FilePath $cmd -ArgumentList $args -NoNewWindow -PassThru -Wait -RedirectStandardOutput "$env:TEMP\gosslan_check_out.txt" -RedirectStandardError "$env:TEMP\gosslan_check_err.txt"
-    $sw.Stop()
-    $out = (Get-Content "$env:TEMP\gosslan_check_out.txt" -Raw -ErrorAction SilentlyContinue)
-    $err = (Get-Content "$env:TEMP\gosslan_check_err.txt" -Raw -ErrorAction SilentlyContinue)
-    $ver = ($out + $err).Trim().Split("`n")[0]
-    if ($p.ExitCode -eq 0 -and $ver) {
-        Write-Host ("  [OK]   {0,-28} {1}" -f $label, $ver) -ForegroundColor Green
-    } else {
-        Write-Host ("  [MISS] {0,-28} 未安装或不在 PATH 中" -f $label) -ForegroundColor Red
+    $tag = [guid]::NewGuid().ToString("N")
+    $outFile = Join-Path $env:TEMP "gosslan_check_out_$tag.txt"
+    $errFile = Join-Path $env:TEMP "gosslan_check_err_$tag.txt"
+    try {
+        $p = Start-Process -FilePath $cmd -ArgumentList $cmdArgs -NoNewWindow -PassThru -Wait -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        $sw.Stop()
+        $out = (Get-Content $outFile -Raw -ErrorAction SilentlyContinue)
+        $err = (Get-Content $errFile -Raw -ErrorAction SilentlyContinue)
+        $ver = ($out + $err).Trim().Split("`n")[0]
+        if ($p.ExitCode -eq 0 -and $ver) {
+            Write-Host ("  [OK]   {0,-28} {1}" -f $label, $ver) -ForegroundColor Green
+        } else {
+            Write-Host ("  [MISS] {0,-28} 未安装或不在 PATH 中" -f $label) -ForegroundColor Red
+        }
+    } finally {
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -44,8 +54,15 @@ Check "rustup" "rustup" @("--version")
 Write-Host ""
 Write-Host "【Tauri CLI】" -ForegroundColor Yellow
 $tauriOk = $false
-$p = Start-Process -FilePath "npx" -ArgumentList @("--no-install","tauri","--version") -NoNewWindow -PassThru -Wait -RedirectStandardOutput "$env:TEMP\gosslan_check_out.txt" -RedirectStandardError "$env:TEMP\gosslan_check_err.txt"
-$out = (Get-Content "$env:TEMP\gosslan_check_out.txt" -Raw -ErrorAction SilentlyContinue)
+$tauriTag = [guid]::NewGuid().ToString("N")
+$tauriOut = Join-Path $env:TEMP "gosslan_check_out_$tauriTag.txt"
+$tauriErr = Join-Path $env:TEMP "gosslan_check_err_$tauriTag.txt"
+try {
+    $p = Start-Process -FilePath "npx" -ArgumentList @("--no-install","tauri","--version") -NoNewWindow -PassThru -Wait -RedirectStandardOutput $tauriOut -RedirectStandardError $tauriErr
+    $out = (Get-Content $tauriOut -Raw -ErrorAction SilentlyContinue)
+} finally {
+    Remove-Item $tauriOut, $tauriErr -Force -ErrorAction SilentlyContinue
+}
 if ($p.ExitCode -eq 0 -and $out.Trim()) {
     Write-Host ("  [OK]   {0,-28} {1}" -f "tauri (npm)" , $out.Trim().Split("`n")[0]) -ForegroundColor Green
     $tauriOk = $true

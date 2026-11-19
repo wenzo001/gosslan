@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "7.1.12"
+version = "7.1.13"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -44,7 +44,11 @@ tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 外部链接「从线上 JSON 导入」：后端拉取可绕开 WebView 的 CORS 限制。
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# 设备认证/分享的 RP 端点也在公司内网自签证书场景：同时启用 native-roots，让 IT 已装入
+# 系统/钥匙串信任库的企业根 CA 生效（reqwest 会把 webpki 公共根 + 系统根合并）。
+# 安全底线：仍逐笔校验证书链，绝不开 danger_accept_invalid_certs —— 这里只是「多信系统根」，
+# 不是「不校验」。接入指南要求内网把自签 CA 装进系统信任库 + 证书 SAN 覆盖实际域名。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots"] }
 async-trait = "0.1"
 # 启动期边界错误用 derive 生成 Display/Error/From（MIT OR Apache-2.0，MSRV 1.77 与本仓一致；
 # 已在依赖树里）。决策记录与分批：docs/architecture/backend-modernization.md §2（B2）。
