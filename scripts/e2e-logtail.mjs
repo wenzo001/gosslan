@@ -94,13 +94,24 @@ export function countLogFields(file, prefix, fields) {
  * 时退化成 copy + unlink —— 语义仍等价于 rename（目标存在则覆盖）。
  * 2026-11-18 Windows 腿实测：裸 renameSync 在 C:→D: 一律 EXDEV ⇒ E2E 整层速败。
  */
-export function moveFile(src, dst) {
-  try {
-    fs.renameSync(src, dst);
-  } catch (e) {
-    if (e.code !== "EXDEV") throw e;
-    fs.copyFileSync(src, dst);
-    fs.rmSync(src, { force: true });
+export function moveFile(src, dst, tries = 5) {
+  for (let i = 0; ; i++) {
+    try {
+      fs.renameSync(src, dst);
+      return;
+    } catch (e) {
+      if (e.code === "EXDEV") {
+        fs.copyFileSync(src, dst);
+        fs.rmSync(src, { force: true });
+        return;
+      }
+      // EBUSY：句柄刚释放的窗口期（2026-11-19 实测 Stop-Process 后立刻搬必撞上）
+      if (e.code === "EBUSY" && i < tries) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+        continue;
+      }
+      throw e;
+    }
   }
 }
 

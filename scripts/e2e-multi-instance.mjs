@@ -756,6 +756,18 @@ ${sum.shots.length
 }
 
 const backups = new Map();
+// 起跑前清场：上一轮若留下**可执行文件 === 本轮被测二进制**的实例（harness 中途崩过一次就会），
+// 下面的"备份用户库"会 EBUSY，之后每一轮都 2~4 秒速败（2026-11-19 Windows 实测：
+// stall-mid 留下一个 B，后续 10 轮全灭）。只按**路径全等**精确匹配、逐 PID 杀 ——
+// 用户自己开的实例跑的是另一份构建（main tree 的 target/release），路径不同，不碰。
+if (process.platform === "win32") {
+  const ps = `Get-Process gosslan -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq '${BIN.replaceAll("'", "''")}' } | ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction Stop; Write-Output ("killed " + $_.Id) } catch {} }`;
+  const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps],
+    { encoding: "utf8", timeout: 30_000 });
+  const killed = (r.stdout || "").trim();
+  if (killed) console.error(`⚠️ 起跑前清场：${killed.replaceAll("\n", "、")}（上一轮残留的被测实例）`);
+  if (killed) await sleep(500);
+}
 try {
   fs.mkdirSync(RUN_DIR, { recursive: true });
   for (const i of ALL_INST) {
