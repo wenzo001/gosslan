@@ -1041,6 +1041,7 @@ pub fn run() {
             commands::get_logs,
             commands::clear_logs,
             commands::get_log_locations,
+            commands::open_logs_dir,
             commands::get_previous_exit,
             commands::restart_app,
             commands::ui_heartbeat,

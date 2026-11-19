@@ -813,6 +813,8 @@ export const api = {
    * `gosslan-1.log` 与 `gosslan.log` 只差一个数字，拼错就是让用户去复制别人的那一份。
    */
   getLogLocations: () => invoke<LogLocations>("get_log_locations"),
+  /** 在系统文件管理器中打开日志目录（本轮日志 + 崩溃现场都在此处）。 */
+  openLogsDir: () => invoke<void>("open_logs_dir"),
   /** 上一轮运行报告（崩溃横幅/启动失败提示）。只读后端算好的快照。 */
   getPreviousExit: () => invoke<PreviousRunReport>("get_previous_exit"),
   /** 一键重启（与托盘「重启」同一入口）：有界收尾 → 销毁单实例锁 → 重启。 */

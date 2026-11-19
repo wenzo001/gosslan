@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LOG_LEVEL_TEXT, filterLogLines, logLineText, matchesLogQuery, mergeLogRows } from "./logFilter.ts";
+import { LOG_LEVEL_TEXT, filterLogLines, logLineKey, logLineText, matchesLogQuery, mergeLogRows } from "./logFilter.ts";
 
 const L = (time: string, level: string, target: string, message: string) => ({
   time,
@@ -162,4 +162,22 @@ test("过滤保持输入顺序（模板已按倒序排好，不能被打乱）",
 
 test("级别文本表覆盖后端全部三档", () => {
   assert.deepEqual(Object.keys(LOG_LEVEL_TEXT).sort(), ["error", "info", "warn"]);
+});
+
+
+// ---------------- 稳定 key：选中行不能被新日志冲掉 ----------------
+
+test("logLineKey：key 只由内容决定，与数组下标/新日志追加无关", () => {
+  const a = { ts: 1731999999000, level: "error", target: "transport", message: "签名不匹配" };
+  const b = { ts: 1731999999001, level: "info", target: "mesh", message: "+conn" };
+  const ka = logLineKey(a);
+  // 同一条日志，前面追加了新日志、下标变了 ⇒ key 必须不变。
+  assert.equal(logLineKey(a), ka);
+  assert.equal(logLineKey({ ...a }), ka, "内容相同 ⇒ key 相同（纯值派生）");
+  assert.notEqual(logLineKey(b), ka, "内容不同 ⇒ key 不同");
+  // 核心承诺：模拟"前面追加了一条新日志"，所有旧行的下标都变了，但按内容派生的 key 不变。
+  const before = [a, b].map((l) => logLineKey(l));
+  const after = [{ ts: 1, level: "info", target: "new", message: "新日志" }, a, b].map((l) => logLineKey(l));
+  assert.equal(after[1], before[0], "追加新日志后，旧行 key 不因位置偏移而改变");
+  assert.equal(after[2], before[1], "追加新日志后，旧行 key 不因位置偏移而改变");
 });

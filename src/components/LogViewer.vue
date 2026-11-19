@@ -25,6 +25,7 @@ import {
   LOG_LEVEL_TEXT,
   MAX_LOG_FILTER_CHARS,
   filterLogLines,
+  logLineKey,
   mergeLogRows,
 } from "@/utils/logFilter";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
@@ -120,8 +121,10 @@ const trimmedFilter = computed(() => deferredFilter.value.trim());
  * 不含未显示的日期部分。
  */
 const lines = computed(() =>
-  displayLogs.value.map((l, i) => ({
-    key: `${l.ts}-${l.target}-${i}`,
+  displayLogs.value.map((l) => ({
+    // 稳定 key（内容派生，不含数组下标）：每 2s 轮询追加新日志时不改动既有行的 key，
+    // 选中高亮与详情面板才不会被冲掉 —— 见 logLineKey 注释与「选中行闪没」修复。
+    key: logLineKey(l),
     level: l.level,
     time: fmtClock(l.ts),
     target: l.target,
@@ -260,6 +263,15 @@ async function copyLogPath() {
   app.toast(t("logs.pathCopied"), "success");
 }
 
+/** 在系统文件管理器里打开日志目录（本轮日志 + 崩溃现场都在此处）。 */
+async function openLogDir() {
+  try {
+    await api.openLogsDir();
+  } catch (e) {
+    app.toastError(e, t("logs.openDirFail"));
+  }
+}
+
 /**
  * 「导出诊断包」：先把落点交给**用户**（系统保存对话框），再让后端脱敏落盘。
  *
@@ -384,6 +396,14 @@ function close() {
           @click="copyAll"
         >
           <Icon name="copy" class="h-4 w-4" />
+        </button>
+        <button
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+          :title="t('logs.openDir')"
+          :aria-label="t('logs.openDir')"
+          @click="openLogDir"
+        >
+          <Icon name="folder-open" class="h-4 w-4" />
         </button>
         <button
           class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-[var(--gosslan-hover)]"
