@@ -114,6 +114,7 @@ export const zhCN: MessageDict = {
   "search.hint": "输入关键词搜索聊天记录",
   "search.peopleSection": "联系人 / 群成员",
   "search.peopleOpen": "打开与",
+  "search.peopleTitle": "{name}（{sub}）",
   "search.peopleGroupChat": "群聊",
   "search.searching": "正在搜索…",
   "search.empty": "没有找到相关聊天记录",

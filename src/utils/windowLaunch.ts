@@ -57,7 +57,7 @@ export function raceWithTimeout<T>(
     const id = timer.set(() => {
       if (settled) return;
       settled = true;
-      reject(new Error(`code=${code} 打开窗口超时（${timeoutMs}ms）`));
+      reject(new Error(`code=${code} window launch timed out (${timeoutMs}ms)`));
     }, timeoutMs);
     p.then(
       (v) => {
