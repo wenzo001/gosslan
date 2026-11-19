@@ -11,7 +11,7 @@
 Gosslan discovers peers over UDP multicast/broadcast and Bluetooth, then talks to them directly over
 TCP. Messages are end-to-end encrypted and stored only on the devices that sent or received them.
 
-![Gosslan chat window](docs/assets/readme/chat.png)
+![Gosslan chat window](docs/assets/readme/chat.en-US.png)
 
 ## Why Gosslan
 
@@ -65,7 +65,7 @@ Users do not need the `.sig` files: they are for the desktop updater's signature
 
 | Group tasks | Settings |
 | --- | --- |
-| ![Group task board](docs/assets/readme/group-tasks.png) | ![Settings](docs/assets/readme/settings.png) |
+| ![Group task board](docs/assets/readme/group-tasks.en-US.png) | ![Settings](docs/assets/readme/settings.en-US.png) |
 
 ## Decentralization and privacy
 
