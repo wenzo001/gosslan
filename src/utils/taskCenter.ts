@@ -80,6 +80,19 @@ export type OperationAction =
   | "cancel_history"
   | "open_conversation";
 
+/**
+ * 取消类动作全集 —— 「全部取消」只对带这些动作的行下手。
+ * 与"重试/重新发送/立即同步/去会话"严格分开：那些动作不是取消，批量取消不许碰。
+ */
+export const CANCEL_ACTIONS: readonly OperationAction[] = [
+  "cancel", "cancel_message", "cancel_update", "cancel_content", "cancel_history",
+];
+
+/** 一行是否可取消（有任一取消类动作）。判定单一真源，组件与判据共用。 */
+export function isCancellable(row: Pick<OperationRow, "actions">): boolean {
+  return row.actions.some((a) => CANCEL_ACTIONS.includes(a));
+}
+
 export interface OperationRow {
   /** 稳定 id：文件/内容 = transfer_id / cid，消息 = msg_id，群历史 = group:<gid>。 */
   id: string;

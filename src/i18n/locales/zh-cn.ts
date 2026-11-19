@@ -1980,6 +1980,11 @@ export const zhCN: MessageDict = {
   "task.attempts": "已重试 {n} 次",
   "task.waitingFor": "还有 {n} 个人没收到",
   "task.cancel": "取消",
+  "task.cancelAll": "全部取消",
+  "task.cancelAllConfirm": "再点一次确认取消全部 {n} 项",
+  "task.cancelAllDone": "已取消 {ok} 项{failed}",
+  "task.cancelAllFailed": "，{n} 项取消失败",
+  "task.cancelAllWorking": "正在取消…",
   "task.cancelDone": "已取消",
   // 按 cid 拉取的内容被用户取消（终态：建链时不会再自动拉回来）。
   "task.contentCancelOk": "已取消，不会再自动获取",
