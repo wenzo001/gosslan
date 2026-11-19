@@ -21,7 +21,9 @@ const ROOT = join(import.meta.dirname, "../..");
 import {
   countOperations,
   deriveOperations,
+  CANCEL_ACTIONS,
   FALLBACK_TITLE_KEYS,
+  isCancellable,
   isLiveTransferStatus,
   OPERATION_ORIGIN_MAP,
   operationDetailText,
@@ -703,4 +705,20 @@ test("用户确认过的重发：那一行说「重发中」，但可取消性�
   const plain = byId(rows, "m-plain");
   assert.equal(plain.state, "queued", "没点过重发的补发行不受影响");
   assert.equal(operationStatusText(plain, (k) => k), "send.queued");
+});
+
+// ---------------- 全部取消的作用域（isCancellable） ----------------
+test("isCancellable：只认取消类动作，重试/去会话等不许被批量取消碰", () => {
+  for (const a of CANCEL_ACTIONS) {
+    assert.equal(isCancellable({ actions: [a] }), true, `${a} 是可取消动作`);
+  }
+  for (const a of ["retry_content", "resend_message", "sync_history_now", "redownload_update", "open_conversation"] as const) {
+    assert.equal(isCancellable({ actions: [a] }), false, `${a} 不是取消动作`);
+  }
+  assert.equal(isCancellable({ actions: [] }), false, "没有动作的行不可取消");
+  assert.equal(
+    isCancellable({ actions: ["retry_content", "cancel"] }),
+    true,
+    "同时有重试与取消时仍算可取消（按其中取消动作下手）",
+  );
 });

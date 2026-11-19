@@ -9,7 +9,9 @@ import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import {
+  CANCEL_ACTIONS,
   FALLBACK_TITLE_KEYS,
+  isCancellable,
   operationDetailText,
   operationStatusText,
   type OperationAction,
@@ -147,6 +149,13 @@ const actionLabel: Record<OperationAction, string> = {
   open_conversation: "task.openChat",
 };
 
+/** 返回一行要走的取消动作（判定真源在 utils/taskCenter，这里只取具体动作来分派）。 */
+function cancelActionOf(row: OperationRow): OperationAction | null {
+  return row.actions.find((a) => CANCEL_ACTIONS.includes(a as OperationAction)) ?? null;
+}
+/** 有取消动作的行 —— 全部取消只作用于这一份，列表里"只能重试/去会话"的行不受影响。 */
+const cancellableRows = computed(() => rows.value.filter(isCancellable));
+
 async function runAction(row: OperationRow, action: OperationAction) {
   if (busy.value) return;
   busy.value = `${row.id}|${action}`;
@@ -169,16 +178,76 @@ async function runAction(row: OperationRow, action: OperationAction) {
 }
 
 /**
+ * 「全部取消」：一次性下发所有可取消行的取消命令（用户 2026-11-19：任务太多，一个个取消很累）。
+ *
+ * 与单条取消的两处刻意差别：
+ * - **加二次确认**：批量影响面大得多，误触代价高（单条可逆、不确认的约定只对单条成立）。
+ * - **并发 + 逐条计数**：allSettled 让一条失败不拖累其它；最后只弹一条汇总 toast，而不是 N 条。
+ * 每条实际下发复用现有单条 cancel 函数，口径（刷新台账、alreadyDone 判断）不另起一套。
+ */
+const cancellingAll = ref(false);
+const confirmCancelAll = ref(false);
+let cancelAllTimer = 0;
+
+function armCancelAllConfirm() {
+  if (cancellingAll.value) return;
+  confirmCancelAll.value = true;
+  window.clearTimeout(cancelAllTimer);
+  cancelAllTimer = window.setTimeout(() => (confirmCancelAll.value = false), 3000);
+}
+
+async function cancelAll() {
+  if (cancellingAll.value) return;
+  if (!confirmCancelAll.value) {
+    armCancelAllConfirm();
+    return;
+  }
+  confirmCancelAll.value = false;
+  window.clearTimeout(cancelAllTimer);
+  const targets = [...cancellableRows.value];
+  if (targets.length === 0) return;
+  cancellingAll.value = true;
+  let ok = 0;
+  let failed = 0;
+  try {
+    // capture 每行点取消前的 wasSent 口径（与单条 cancelFile 同一判据），避免刷新后退化。
+    const results = await Promise.allSettled(
+      targets.map(async (row) => {
+        const action = cancelActionOf(row);
+        // quiet=true：批量场景抑制每条的 toast，最后统一弹一条汇总。
+        if (action === "cancel") await cancelFile(row, true);
+        else if (action === "cancel_message") await cancelMessage(row, true);
+        else if (action === "cancel_update") await cancelUpdate(true);
+        else if (action === "cancel_content") await cancelContent(row, true);
+        else if (action === "cancel_history") await chat.cancelGroupHistory(row.id.slice("group:".length));
+      }),
+    );
+    for (const r of results) r.status === "fulfilled" ? ok++ : failed++;
+    await chat.refreshTransfers();
+    app.toast(
+      t("task.cancelAllDone", {
+        ok,
+        failed: failed > 0 ? t("task.cancelAllFailed", { n: failed }) : "",
+      }),
+      failed > 0 ? "info" : "success",
+    );
+  } finally {
+    cancellingAll.value = false;
+  }
+}
+
+/**
  * 取消一条**还没送出去的消息**（B4 的命令，2026-10-24 接进任务中心）。
  *
  * 2026-10-25：后端改成**结构化结果**（群消息可能只取消了剩余成员）。这里不再用
  * "cancelled / already_delivered" 两句二元判断 —— 文案映射只有一份，在
  * `utils/cancelFeedback.messageCancelNotice`，与气泡菜单共用。
  */
-async function cancelMessage(row: OperationRow) {
+async function cancelMessage(row: OperationRow, quiet = false) {
   if (!row.convId) return;
   const res = await api.cancelMessage(row.convId, row.id);
   await chat.refreshTransfers();
+  if (quiet) return;
   const notice = messageCancelNotice(res);
   app.toast(t(notice.key, notice.params ?? {}), notice.kind);
 }
@@ -189,12 +258,13 @@ async function cancelMessage(row: OperationRow) {
  * 后端返回的是**台账口径**：`alreadyDone` = 它已经到终态了（那一下没改成任何东西）。
  * 在这里说清楚而不是静默刷新 —— 用户点了"取消"却看到行还在，需要知道那是为什么。
  */
-async function cancelFile(row: OperationRow) {
+async function cancelFile(row: OperationRow, quiet = false) {
   // 先记下"点取消的那一刻是不是已经写出去了"：取消之后刷新的行会变成 cancelled，
   // 那时再读就永远是"没有 waiting_ack"——措辞会退化成一句"已取消"（用户 2026-10-25 指出的）。
   const wasSent = row.blockedReason === "waiting_ack";
   const res = await api.cancelFileTransfer(row.id);
   await chat.refreshTransfers();
+  if (quiet) return;
   // 四个分支的唯一判据在 `utils/cancelFeedback`（同一个事实同一句话，不在这里另推一遍）。
   const outcome = cancelOutcome(res);
   app.toast(t(fileCancelKey(outcome, wasSent)), outcome === "notified" ? "success" : "info");
@@ -240,9 +310,10 @@ async function resendMessage(row: OperationRow) {
  * 那时说"已取消"就是比事实更满。取消后内容是 `Rejected(Cancelled)` 终态，
  * 建链的自动重取**不会**再把它拉回来。
  */
-async function cancelContent(row: OperationRow) {
+async function cancelContent(row: OperationRow, quiet = false) {
   const res = await api.cancelContentFetch(row.id);
   await chat.refreshTransfers();
+  if (quiet) return;
   if (res.alreadyDone || !res.cancelled) {
     app.toast(t("task.contentCancelDone"), "info");
     return;
@@ -259,10 +330,10 @@ async function cancelContent(row: OperationRow) {
  * 取消之后立刻补拉 `updater_status` —— 事件也会来，但同一帧里补拉一次能让这一行**当场**
  * 消失/变成已取消，不必等下一帧。
  */
-async function cancelUpdate() {
+async function cancelUpdate(quiet = false) {
   await api.updaterCancel();
   await chat.refreshUpdaterStatus();
-  app.toast(t("task.cancelDone"), "success");
+  if (!quiet) app.toast(t("task.cancelDone"), "success");
 }
 
 /**
@@ -410,13 +481,39 @@ async function openConversation(row: OperationRow) {
       :retry-label="t('common.retry')"
       @retry="chat.refreshTransfers()"
     />
-    <StateBlock
+      <StateBlock
       v-else-if="rows.length === 0"
       kind="empty"
       compact
       :title="t('task.empty')"
     />
-    <ul v-else class="gosslan-scroll max-h-[55vh] space-y-2 overflow-y-auto">
+    <template v-else>
+      <!-- 全部取消：只作用于有取消动作的行；二次确认防误触（单条取消仍不确认，见顶部约定）。 -->
+      <div v-if="cancellableRows.length > 0" class="mb-2 flex justify-end">
+        <button
+          type="button"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] border px-2.5 py-1 text-meta transition"
+          :class="confirmCancelAll
+            ? 'border-[var(--gosslan-danger)] bg-[var(--gosslan-danger-soft)] text-[var(--gosslan-danger-ink)]'
+            : 'border-[var(--gosslan-border)] text-[var(--gosslan-danger-ink)] hover:bg-[var(--gosslan-hover)]'"
+          :disabled="cancellingAll || !!busy"
+          :aria-label="confirmCancelAll
+            ? t('task.cancelAllConfirm', { n: cancellableRows.length })
+            : t('task.cancelAll')"
+          @click="cancelAll"
+        >
+          <span v-if="cancellingAll" class="inline-flex items-center gap-1">
+            <Spinner size-class="h-3 w-3" decorative />
+            {{ t("task.cancelAllWorking") }}
+          </span>
+          <span v-else>
+            {{ confirmCancelAll
+              ? t("task.cancelAllConfirm", { n: cancellableRows.length })
+              : t("task.cancelAll") }}
+          </span>
+        </button>
+      </div>
+      <ul class="gosslan-scroll max-h-[55vh] space-y-2 overflow-y-auto">
       <li
         v-for="row in rows"
         :key="row.id"
@@ -492,7 +589,8 @@ async function openConversation(row: OperationRow) {
           </button>
         </div>
       </li>
-    </ul>
+      </ul>
+    </template>
     <p v-if="rows.length > 0" class="mt-3 text-xs leading-relaxed text-[var(--gosslan-text-2)]">
       {{ t("task.note") }}
     </p>
