@@ -35,6 +35,21 @@ export function logLineText(line: LogLineInput): string {
 }
 
 /**
+ * 一行日志的**稳定 key**（给虚拟列表 / 选中态用）。
+ *
+ * 为什么不能用数组下标：日志面板每 2 秒轮询一次，只要有新日志插入，倒序数组里每一行的
+ * 下标都会偏移。若 key 含下标，选中行记住的旧 key 在新一轮渲染里就找不到 ⇒ 选中高亮与
+ * 详情面板瞬间消失 —— 用户「点一条想复制，新日志一来就闪没了，一直复制不了」的根因。
+ *
+ * key 只由这一行自身的**内容**决定（毫秒时间戳 + 级别 + target + 消息），与它在数组里的
+ * 位置无关 ⇒ 新日志追加不会改动既有行的 key，选中态能在轮询之间稳定保持。
+ * 分隔符用 \u0000（日志正文不会出现），避免内容里恰好含 "|" 时撞键。
+ */
+export function logLineKey(line: { ts: number; level: string; target: string; message: string }): string {
+  return `${line.ts}\u0000${line.level}\u0000${line.target}\u0000${line.message}`;
+}
+
+/**
  * 是否命中过滤词。
  *
  * 语义刻意收紧为**字面包含**：

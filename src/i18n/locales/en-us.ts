@@ -56,6 +56,8 @@ export const enUS: MessageDict = {
   "logs.copyPath": "Copy log path",
   "logs.pathCopied": "Log path copied",
   "logs.pathCopyFail": "Failed to read the log path",
+  "logs.openDir": "Open log folder",
+  "logs.openDirFail": "Failed to open the log folder",
   "logs.export": "Export diagnostics",
   "logs.exporting": "Exporting…",
   "logs.exportDone": "Exported {files} log file(s), {redactions} redactions, {size}",

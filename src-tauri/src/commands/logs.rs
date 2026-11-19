@@ -140,6 +140,25 @@ pub fn get_log_locations(
     crate::diagnostics::locations(&state.logger)
 }
 
+/// 在系统文件管理器中打开**日志目录**（本轮日志 + 崩溃现场都在这一处）。
+///
+/// 路径由后端从 logger 解析（`diagnostics::locations`），**不收前端传来的路径** ⇒ 前端
+/// 无法借此打开任意目录。打开动作走 `open_path::open_dir_native` 唯一门面（macOS 沙盒
+/// 禁止 fork `/usr/bin/open`），整块 filesystem/进程活放 spawn_blocking（R-18）。
+#[tauri::command(async)]
+pub async fn open_logs_dir(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let dir = crate::diagnostics::locations(&s.logger).dir;
+        let path = std::path::PathBuf::from(&dir);
+        std::fs::create_dir_all(&path)
+            .map_err(|e| format!("code=OPEN_LOG_DIR_CREATE_FAILED：{e}"))?;
+        crate::open_path::open_dir_native(&path)
+    })
+    .await
+    .map_err(|e| format!("code=OPEN_DIR_FAILED：打开日志目录失败：{e}"))?
+}
+
 /// 导出**脱敏**诊断包到用户选好的路径（纯文本；形状与边界见 `crate::diagnostics`）。
 ///
 /// - 落点由界面保存对话框给（`dialog:allow-save` 已在能力表里）：Rust 不替用户决定写到哪，

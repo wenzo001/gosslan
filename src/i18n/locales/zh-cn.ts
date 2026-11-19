@@ -55,6 +55,8 @@ export const zhCN: MessageDict = {
   "logs.copyPath": "复制日志路径",
   "logs.pathCopied": "已复制日志路径",
   "logs.pathCopyFail": "日志路径读取失败",
+  "logs.openDir": "打开日志目录",
+  "logs.openDirFail": "打开日志目录失败",
   "logs.export": "导出诊断包",
   "logs.exporting": "导出中…",
   "logs.exportDone": "已导出 {files} 份日志，脱敏 {redactions} 处，共 {size}",
