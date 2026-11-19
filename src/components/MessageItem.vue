@@ -20,6 +20,7 @@ import { EMPTY_REACTION_CHIPS, EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { localizeQuoteHeader, parseQuote, stripQuoteMsgId } from "@/utils/quote";
 import { QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { parseFileMeta } from "@/utils/fileMeta";
+import { isWindows } from "@/utils/platform";
 import { openLocalFile } from "@/utils/localFile";
 import { saveImageAs } from "@/utils/saveImageAs";
 import { haptic } from "@/utils/haptics";
@@ -2340,6 +2341,7 @@ async function copyFileToClipboard() {
           {{ t("common.save") }}
         </button>
         <button
+          v-if="isWindows"
           class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
           @click="copyFileToClipboard"
         >

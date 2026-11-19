@@ -1,7 +1,7 @@
 {
   "name": "gosslan",
   "private": true,
-  "version": "7.1.11",
+  "version": "7.1.12",
   "type": "module",
   "description": "Gosslan — 无服务器 P2P 局域网即时通讯（Tauri v2 + Vue 3 + TypeScript）",
   "scripts": {
@@ -21,6 +21,7 @@
     "lint:md": "npx --yes markdownlint-cli2@0.18.1",
     "lint": "npm run lint:py && npm run lint:sh && npm run lint:md",
     "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning \"src/**/*.test.ts\" \"scripts/*.test.ts\"",
+    "cargo:clean": "node scripts/cargo-clean.mjs",
     "test:ui-runtime": "node scripts/check-ui-runtime.mjs",
     "tauri": "tauri",
     "icon": "node scripts/build-app-icons.mjs",

@@ -9,7 +9,7 @@
  * - 恢复**先预览再写**：冲突（本机已有另一把钥）与"已撤销不复活"要逐条给用户看见，不静默覆盖。
  * - 落点由系统对话框给：后端不替用户决定写到哪，也不在后台留副本。
  */
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import BaseModal from "@/components/BaseModal.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
@@ -40,6 +40,44 @@ const passTooShort = computed(() => pass1.value.length < MIN_PASS);
 const passMismatch = computed(() => pass1.value !== pass2.value);
 const canExport = computed(() => !busy.value && !passTooShort.value && !passMismatch.value);
 const canPreview = computed(() => !busy.value && pass1.value.length >= MIN_PASS);
+
+/**
+ * **清单读到没有**（不是「有没有授权」）。
+ *
+ * 为什么要单独一格：导出前先看本机到底有没有可导出的应用，没有就**当场说清楚**，
+ * 而不是让用户输完口令、选完保存位置，最后才弹一句「读写密钥包失败，请检查文件与磁盘空间」
+ * （真机 2026-11-19：库里一条绑定都没有，磁盘是满的，那句提示把人带去查磁盘）。
+ */
+const listReady = ref(false);
+
+/**
+ * 可导出的条数：**只算 active / revoked**（与后端导出过滤同一口径）。
+ *
+ * ⚠️ 口径必须与后端一致（`commands/rp_key_backup.rs` 里同一组状态）：后端只导出
+ * `active` / `revoked`，`pending_registration` / `registration_failed` 是中间态，
+ * 导出去恢复后仍然不成立 ⇒ 前端不能把它们算成「有东西可导」。
+ */
+const exportableCount = computed(
+  () => store.bindings.filter((b) => b.status === "active" || b.status === "revoked").length,
+);
+
+/**
+ * 能不能点「导出」：**清单还没读到时不拦**（可能是加载失败，不该把用户挡在门外），
+ * 读到了且一条都没有 ⇒ 拦下并给出原因（按钮旁有说明文字，不是让用户猜）。
+ */
+const canStartExport = computed(() => !listReady.value || exportableCount.value > 0);
+
+onMounted(() => {
+  // 与「已授权应用」那块共用同一个 store；这里自己拉一次是为了**本块自己知道**清单状态
+  // （清单为空时要给原因，而不是让用户点进去撞一堵墙）。拉取失败不弹提示：导出按钮照旧可用，
+  // 真失败由后端按**真实原因**报（不再报「磁盘空间」）。
+  void store
+    .loadBindings()
+    .catch(() => undefined)
+    .finally(() => {
+      listReady.value = true;
+    });
+});
 
 function reset() {
   phase.value = "idle";
@@ -152,10 +190,17 @@ const addable = computed(() => preview.value?.added ?? 0);
 
     <div class="flex flex-wrap items-center gap-2">
       <!-- 平时就要看得出是按钮（用户 2026-11-16：「只有 hover 的时候才能看出是按钮」）：
-           dense 档的次要按钮底色透明 ⇒ 去掉 dense，用默认档（有描边、有底）。 -->
-      <SecondaryBtn shrink @click="openExport">{{ t("deviceAuth.backup.export") }}</SecondaryBtn>
+           dense 档的次要按钮底色透明 ⇒ 去掉 dense，用默认档（有描边、有底）。
+           ⚠️ 本机一条可导出的应用都没有时**禁用**并给原因（下方那行）——
+           让用户输完口令、选完保存位置后才撞上失败是不可接受的（2026-11-19 真机事故）。 -->
+      <SecondaryBtn shrink :disabled="!canStartExport" @click="openExport">
+        {{ t("deviceAuth.backup.export") }}
+      </SecondaryBtn>
       <SecondaryBtn shrink @click="pickImport">{{ t("deviceAuth.backup.import") }}</SecondaryBtn>
     </div>
+    <p v-if="listReady && exportableCount === 0" class="text-meta text-[var(--gosslan-text-2)]">
+      {{ t("deviceAuth.backup.nothingToExport") }}
+    </p>
 
     <!-- 导出：口令两遍 -->
     <BaseModal

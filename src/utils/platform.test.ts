@@ -8,6 +8,7 @@ import {
   canHoverByMedia,
   isAndroidUA,
   isMacUA,
+  isWindowsUA,
   prefersReducedMotionByMedia,
   resolveMobileLayout,
 } from "./platform.ts";
@@ -86,6 +87,30 @@ test("isAndroidUA：桌面三端 / iOS 判为非 Android", () => {
     "",
   ];
   for (const ua of uas) assert.equal(isAndroidUA(ua), false, ua);
+});
+
+/**
+ * Windows 判定：**只用来按能力隐藏入口**（系统剪贴板的「文件列表」只有 Windows 有）。
+ *
+ * 判据的形状与 isMacUA / isAndroidUA 同一套：真样本为正控，别的平台为反例，
+ * 空 UA 必须是「判不出」而不是「抛错」。
+ */
+test("isWindowsUA：Windows（WebView2 / Edge / Chrome）判为 Windows", () => {
+  const uas = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+  ];
+  for (const ua of uas) assert.equal(isWindowsUA(ua), true, ua);
+});
+
+test("isWindowsUA：macOS / Linux / Android / 空 判为非 Windows", () => {
+  const uas = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+    "",
+  ];
+  for (const ua of uas) assert.equal(isWindowsUA(ua), false, ua);
 });
 
 test("resolveMobileLayout：移动平台**一律**走移动布局，宽度判否也不算数", () => {

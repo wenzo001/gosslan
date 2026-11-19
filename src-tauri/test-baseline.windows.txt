@@ -1,3 +1,12 @@
+android_update_core::tests::checksum_comparison_is_case_insensitive_but_length_strict
+android_update_core::tests::fixed_manifest_keeps_android_platforms_only
+android_update_core::tests::fixed_manifest_requires_version_and_android_entries
+android_update_core::tests::fixed_manifest_without_sha256_is_rejected_later
+android_update_core::tests::parse_digest_rejects_wrong_length_and_non_hex
+android_update_core::tests::parse_release_reads_version_notes_and_digest
+android_update_core::tests::select_asset_matches_abi_suffix_only
+android_update_core::tests::sha256_file_matches_known_digest_and_detects_content
+android_update_core::tests::version_comparison_is_strict_and_fails_closed
 commands::attention_tests::macos_bounces_only_when_urgent
 commands::attention_tests::other_desktops_keep_the_previous_behavior
 commands::attention_tests::windows_flashes_regardless_of_urgency
@@ -129,6 +138,13 @@ commands::relay_config_tests::relay_server_accepts_ip_and_ip_port_and_rejects_ju
 commands::relay_config_tests::relay_server_default_port_is_not_the_lan_port
 commands::relay_config_tests::relay_token_rejects_whitespace_because_the_preamble_is_space_separated
 commands::rp_key_backup_cmd_tests::apply_only_inserts_added_items
+commands::rp_key_backup_cmd_tests::atomic_write_cleans_temp_file_on_failure
+commands::rp_key_backup_cmd_tests::atomic_write_replaces_existing_target
+commands::rp_key_backup_cmd_tests::empty_export_reports_nothing_to_export_not_io
+commands::rp_key_backup_cmd_tests::exportable_status_is_active_or_revoked_only
+commands::rp_key_backup_cmd_tests::foreign_envelope_is_reported_as_keystore_failure_not_db_failure
+commands::rp_key_backup_cmd_tests::plaintext_secret_still_reads_on_every_platform
+commands::rp_key_backup_cmd_tests::temp_file_is_a_sibling_of_the_target
 commands::save_data_file_rejects_oversized_payload_after_decode
 commands::save_data_file_writes_exact_bytes_and_never_leaves_a_half_file
 commands::send_lang_persistence_tests::hold_branch_persists_lang_roundtrip
@@ -737,6 +753,8 @@ logging::tests::real_enospc_is_classified_as_disk_full
 logging::tests::rel_to_src_is_separator_independent
 logging::tests::report_last_seen_is_the_previous_runs_last_line_not_the_next_bootstrap
 logging::tests::ring_only_reaches_the_panel_but_never_the_file
+logging::tests::rotate_log_file_falls_back_to_truncation_when_rename_cannot_happen
+logging::tests::rotate_log_file_moves_the_old_content_aside
 logging::tests::startup_marker_carries_the_run_id
 logging::tests::the_wall_clock_has_two_names_max
 logging::tests::the_wall_clock_matcher_catches_a_new_copy
@@ -1025,6 +1043,7 @@ network::file::tests::unique_path_never_returns_existing_path
 network::file::tests::unknown_attempt_count_is_not_a_death_sentence
 network::file::tests::wire_ledger_is_reclaimed_on_every_exit_path
 network::file::tests::wire_progress_is_counted_per_recipient_within_one_group_transfer
+network::file::windows_remove_open_file_tests::deleting_an_open_part_file_succeeds_and_frees_the_name
 network::group_history::group_history_engine_tests::a_full_tie_is_broken_deterministically_by_id
 network::group_history::group_history_engine_tests::a_history_page_is_classified_low_so_chat_is_never_starved
 network::group_history::group_history_engine_tests::a_key_that_has_not_arrived_is_not_reported_as_a_failure
@@ -1268,6 +1287,10 @@ notifications::tests::platform_hint_is_never_empty
 notifications::tests::windows_only_branch_is_source_checkable_for_pattern_bounds
 open_path::tests::open_dir_native_reports_a_missing_directory
 open_path::tests::opening_a_directory_never_forks_the_open_binary
+private_fs::tests::dot_prefixed_names_are_hidden_on_every_platform
+private_fs::tests::rewritten_name_is_always_usable_on_windows
+private_fs::tests::windows_hidden_attribute_counts_as_hidden
+private_fs::tests::windows_name_rules_reject_what_windows_cannot_create
 protocol::tests::announce_rejects_forged_signature_with_victim_pubkey
 protocol::tests::announce_rejects_signed_but_incomplete_packets
 protocol::tests::announce_rejects_tampering_on_every_signed_field
@@ -1668,6 +1691,10 @@ transport::tcp::tests::tcp_transport_roundtrip_over_loopback
 transport::tcp::tests::truncated_payload_is_rejected_not_returned_as_a_short_frame
 transport::tcp::tests::wire_format_is_length_prefixed_big_endian
 transport::tcp::tests::write_then_read_roundtrip
+tray::dot::tests::malformed_buffer_is_returned_as_is
+tray::dot::tests::unread_dot_edges_are_antialiased
+tray::dot::tests::unread_dot_is_small_and_lands_top_right
+tray::dot::tests::unread_dot_is_the_app_badge_red
 tray::tests::tooltip_carries_unread_count_only_when_positive
 tray::tests::tray_icon_redrawn_only_on_has_or_hasnt_transition
 tray::tests::tray_menu_labels_follow_language

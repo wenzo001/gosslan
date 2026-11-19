@@ -259,6 +259,12 @@ const CODE_RULES: Record<string, string> = {
   RP_KEY_BACKUP_WEAK_PASSPHRASE: "errors.rule.rpKeyBackupWeakPassphrase",
   RP_KEY_BACKUP_TOO_LARGE: "errors.rule.rpKeyBackupTooLarge",
   RP_KEY_BACKUP_IO: "errors.rule.rpKeyBackupIo",
+  // ⚠️ 下面三格是 2026-11-19 从 `RP_KEY_BACKUP_IO` 里**拆出来**的：那一格原来同时装着
+  // 「空态」「密钥库打不开」「真·文件 IO」三件事 ⇒ 界面一律说「检查文件与磁盘空间」，
+  // 而真机那次（库里一条绑定都没有）磁盘是满的。三种原因给三种下一步，必须分开。
+  RP_KEY_BACKUP_NOTHING_TO_EXPORT: "errors.rule.rpKeyBackupNothingToExport",
+  RP_KEY_BACKUP_KEYSTORE_UNAVAILABLE: "errors.rule.rpKeyBackupKeystore",
+  RP_KEY_BACKUP_STORE_READ_FAILED: "errors.rule.rpKeyBackupStoreRead",
   FAVORITE_DELETE_BATCH_TOO_LARGE: "errors.rule.favoriteDeleteBatchTooLarge",
   // B6 第十三批：群管理 reject 族。
   GROUP_TODO_ASSIGNEE_NOT_MEMBER: "errors.rule.groupTodoAssigneeNotMember",

@@ -133,7 +133,7 @@ const MAX_MEM_LOGS: usize = 500;
 /// `GetDiskFreeSpaceExW`，前者需要新依赖（本仓默认构建零新增第三方 crate，ADR-0015 §2），
 /// 后者只在 `bluetooth` feature 的 Windows 构建里才有 `windows` crate ⇒ 为一条日志
 /// 加一次系统调用 + 一个依赖不值。**盘真满时第一次写失败就会带 `StorageFull` /
-/// `ENOSPC(28)` / `ERROR_DISK_FULL(112)` / `ERROR_HANDLE_DISK_FULL(3900)`**，
+/// `ENOSPC(28)` / `ERROR_HANDLE_DISK_FULL(39)` / `ERROR_DISK_FULL(112)`**，
 /// 那个信号比任何预防性查询都准，因为它量的就是我们要做的这次写。
 const LOG_RETRY_BACKOFF_LINES: u64 = 256;
 /// 单个日志文件大小上限（字节），超出即轮转。
@@ -575,9 +575,19 @@ pub struct Logger {
 /// ⚠️ 只用裸 OS 码，不用 `ErrorKind::StorageFull`：那个变体稳定于 Rust 1.83，
 /// 而本仓 `rust-version = 1.77`（clippy 的 `incompatible_msrv` 直接把它判成 error，
 /// 2026-10-20 第一次跑 clippy 就是这么红的）。裸码是各平台事实上的定义：
-/// `28` = ENOSPC（macOS/Linux/Android）、`112`/`3900` = Windows 的
-/// `ERROR_DISK_FULL`/`ERROR_HANDLE_DISK_FULL`；再加一条按错误文本兜底，
+/// `28` = ENOSPC（macOS/Linux/Android）、`39` = `ERROR_HANDLE_DISK_FULL`、
+/// `112` = `ERROR_DISK_FULL`（Windows）；再加一条按错误文本兜底，
 /// 免得某个平台既给不出这些码又确实写不下。
+///
+/// ⚠️ **2026-11-19 修正过两个码**（真机核对，Windows 自带错误码表 `net helpmsg <码>`）：
+/// - 原写的 `3900` **不是** Windows 的盘满码 —— `ERROR_HANDLE_DISK_FULL` 是 **39**。
+///   写错的后果：Windows 上真盘满（39）**不在匹配列表** ⇒ 不归 `DISK_FULL`
+///   ⇒ 界面不给「清出空间后重试」，只给一句不可行动的原文。
+/// - 原写的 `122` 是 `ERROR_INSUFFICIENT_BUFFER`（"传给系统调用的数据区太小"），
+///   **与盘满无关**（Unix 上 122 也不是 ENOSPC）⇒ 归错类会让用户去清磁盘（白忙一场），
+///   而真正的解法完全不是腾空间。
+///
+/// 判据里的常数与这段注释是同一份事实，改一处必须改另一处（下面有反例自证）。
 ///
 /// **为什么是 `pub(crate)` 而不再是私有**：接收侧的写盘失败也要判"是不是盘满"——
 /// 那条路径此前只把 `io::Error` 原样转成一句英文（"No space left on device"），
@@ -585,10 +595,7 @@ pub struct Logger {
 /// 同一个判定有两份实现必然漂移 ⇒ 归到这一份（observability 域的叶子模块；
 /// files / transport 域单向调用它，见 `docs/domains.data.mjs` 的 consumes）。
 pub(crate) fn is_disk_full(e: &std::io::Error) -> bool {
-    if matches!(
-        e.raw_os_error(),
-        Some(28) | Some(112) | Some(3900) | Some(122)
-    ) {
+    if matches!(e.raw_os_error(), Some(28) | Some(39) | Some(112)) {
         return true;
     }
     let t = e.to_string().to_lowercase();
@@ -778,6 +785,30 @@ pub(crate) fn classify_write_failure(e: &std::io::Error) -> Option<&'static str>
         Some(FAIL_CODE_DISK_FULL)
     } else {
         None
+    }
+}
+
+/// 日志轮转：把当前文件挪到 `.old.log`（旧的那份先删掉）。
+///
+/// ⚠️ Windows 上 `.old.log` 可能正被占用（外部 tail 工具、编辑器、诊断包正在读它）
+/// ⇒ 删不掉、改不了名。**这时不许把失败当成功** —— 以前这一步两个错误都被 `let _ =`
+/// 吞掉、计数照样清零 ⇒ **512KB 上限被静默废掉** ⇒ 日志无限长 ⇒ 迟早把盘写满。
+///
+/// 现在：改名失败就**截断当前文件**（丢这一窗历史，但保证有上界）。
+fn rotate_log_file(path: &std::path::Path, old_path: &std::path::Path) -> std::io::Result<()> {
+    let _ = std::fs::remove_file(old_path);
+    match std::fs::rename(path, old_path) {
+        Ok(()) => Ok(()),
+        Err(rename_err) => {
+            // 截断兜底：文件自己总该可写（否则写日志早就失败了）。
+            match std::fs::OpenOptions::new().write(true).open(path) {
+                Ok(f) => {
+                    f.set_len(0)?;
+                    Ok(())
+                }
+                Err(_) => Err(rename_err),
+            }
+        }
     }
 }
 
@@ -1950,14 +1981,31 @@ impl Logger {
                 .saturating_add(line.len() as u64 + 1);
             if projected > MAX_LOG_FILE_BYTES {
                 *guard = None;
-                let _ = std::fs::remove_file(self.old_path());
-                let _ = std::fs::rename(&path, self.old_path());
+                // ⚠️ 轮转**不许失败就当成功**（2026-11-19 修）：以前这里是
+                // `let _ = remove_file(old)` + `let _ = rename(...)`，两个错误都被吞掉，
+                // 而计数照样清零 ⇒ Windows 上 `.old.log` 被占用（外部 tail 工具/编辑器/
+                // 诊断包正在读）时，**512KB 上限被静默废掉** ⇒ 日志无限长 ⇒ 迟早把盘写满。
+                // 现在：改名失败就**截断当前文件**（丢这一窗历史，但保证有上界）。
+                match rotate_log_file(&path, &self.old_path()) {
+                    Ok(()) => {
+                        self.sink_bytes.store(0, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[gosslan-log] 日志轮转失败（当前文件可能被占用）：{e} —— 继续追加，上限以实际长度计"
+                        );
+                        // 记账按**真实长度**：清零会让上限形同虚设。
+                        self.sink_bytes.store(
+                            std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+                            Ordering::Relaxed,
+                        );
+                    }
+                }
                 let f = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(&path)?;
                 restrict_to_owner(&path);
-                self.sink_bytes.store(0, Ordering::Relaxed);
                 self.file_opens.fetch_add(1, Ordering::Relaxed);
                 *guard = Some(f);
             }
@@ -2527,6 +2575,45 @@ fn parse_log_line(line: &str, fingerprint: &str) -> Option<LogEntry> {
 mod tests {
     use super::*;
 
+    /// 日志轮转：正常形状 = 旧内容挪到 `.old.log`，当前文件被挪走。
+    #[test]
+    fn rotate_log_file_moves_the_old_content_aside() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("gosslan.log");
+        let old = tmp.path().join("gosslan.old.log");
+        std::fs::write(&path, b"fresh").unwrap();
+        std::fs::write(&old, b"older").unwrap();
+
+        super::rotate_log_file(&path, &old).expect("轮转必须成功");
+        assert_eq!(
+            std::fs::read(&old).unwrap(),
+            b"fresh",
+            "旧内容要挪到 .old.log"
+        );
+        assert!(!path.exists(), "当前文件被挪走了（调用方随后重建它）");
+    }
+
+    /// **轮转失败不许把上限废掉**（2026-11-19 真机形状：Windows 上 `.old.log` 被占用）。
+    ///
+    /// 兜底口径是「截断当前文件」：丢这一窗历史，但保证文件有上界
+    /// （以前是两个错误都吞掉 + 计数清零 ⇒ 512KB 上限静默失效 ⇒ 日志无限长）。
+    #[test]
+    fn rotate_log_file_falls_back_to_truncation_when_rename_cannot_happen() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("gosslan.log");
+        let old = tmp.path().join("gosslan.old.log");
+        std::fs::write(&path, b"x".repeat(1024)).unwrap();
+        // 让改名**必然失败**：目标是个目录（删不掉、也盖不过去）。
+        std::fs::create_dir_all(&old).unwrap();
+
+        super::rotate_log_file(&path, &old).expect("兜底截断必须成功");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            0,
+            "改名失败时要截断当前文件（上限不许被静默废掉）"
+        );
+    }
+
     /// 盘满归类：ENOSPC / Windows 的两个码 / 文本兜底 ⇒ 稳定码 `DISK_FULL`；
     /// 其它错误（权限、无权限目录等）⇒ **没有专属码**（保留原文，那是唯一信息量）。
     ///
@@ -2644,7 +2731,7 @@ mod tests {
         //（本文件 `is_disk_full` 的注释里写着同一条）。用裸码，那是各平台事实上的定义。
         let raw = err.raw_os_error();
         assert!(
-            matches!(raw, Some(28) | Some(112) | Some(3900)),
+            matches!(raw, Some(28) | Some(39) | Some(112)),
             "真 ENOSPC 的裸码不是 ENOSPC/ERROR_DISK_FULL：raw={raw:?} err={err}"
         );
         assert_eq!(
@@ -2669,8 +2756,11 @@ mod tests {
             Some(FAIL_CODE_DISK_FULL),
             "ENOSPC 必须归类成盘满 ⇒ 前端才能给出「清出空间后重试」"
         );
-        // Windows：112 = ERROR_DISK_FULL、3900 = ERROR_HANDLE_DISK_FULL
-        for code in [112, 3900] {
+        // Windows：39 = ERROR_HANDLE_DISK_FULL（"The disk is full."）、
+        // 112 = ERROR_DISK_FULL（"There is not enough space on the disk."）。
+        // ⚠️ 这两个数是**Windows 自带错误码表**里的事实（`net helpmsg 39` / `net helpmsg 112`
+        // 在真机上原样打出那两句），不是抄来的数字 —— 原先写的 3900 是笔误（真机没有这个码）。
+        for code in [39, 112] {
             let e = std::io::Error::from_raw_os_error(code);
             assert_eq!(classify_write_failure(&e), Some(FAIL_CODE_DISK_FULL));
         }
@@ -2686,6 +2776,18 @@ mod tests {
             None,
             "EACCES 不许归成盘满 ⇒ 用户的下一步完全不同"
         );
+        // 反例（2026-11-19 修）：`122` = ERROR_INSUFFICIENT_BUFFER（缓冲区太小）、
+        // `3900` 根本不是 Windows 的盘满码 —— 两者都**不许**归成盘满。
+        // 这条是那次修正的**反例自证**：把 122/3900 塞回匹配列表，本用例当场红。
+        for code in [122, 3900] {
+            let e = std::io::Error::from_raw_os_error(code);
+            assert_eq!(
+                classify_write_failure(&e),
+                None,
+                "裸码 {code} 不是盘满（122=ERROR_INSUFFICIENT_BUFFER，3900 不是 Windows 盘满码）\
+                 ⇒ 归成盘满会让用户去清磁盘"
+            );
+        }
         let other = std::io::Error::other("broken pipe");
         assert_eq!(classify_write_failure(&other), None);
     }

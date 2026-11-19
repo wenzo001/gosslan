@@ -48,6 +48,7 @@ import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { dropFavoritePreview, favoritePreviewUrl, loadFavoritePreview, clearFavoritePreviews } from "@/utils/favoritePreview";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
 import { isForwardableKind, isKnownKind, isTransferKind, kindClass } from "@/utils/messageKinds";
+import { isWindows } from "@/utils/platform";
 import { cardCopyText } from "@/utils/cardText";
 import {
   TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoStatus, type TodoImage, type TodoStatus, } from "@/utils/todos";
@@ -461,6 +462,25 @@ function selectItem(f: FavoriteEntry) {
   }
 }
 
+/**
+ * 这一条收藏的「复制」是不是**复制文件本体**（而不是复制文字）。
+ *
+ * 文字类（text / code / merge / card）到处都能复制；媒体类走系统剪贴板的「文件列表」
+ * （CF_HDROP）—— **只有 Windows 有**。⇒ 非 Windows 上媒体收藏不显示「复制」：
+ * 给一个注定失败的按钮、再吃一句「当前平台暂不支持」，是把平台差异漏给用户。
+ */
+function copiesAsFile(kind: string): boolean {
+  if (kind === "text" || kind === "code" || kind === "merge") return false;
+  return kindClass(kind) !== "card";
+}
+
+/** 详情页那条收藏的「复制」按钮该不该显示（媒体类只在 Windows 有文件剪贴板）。 */
+const canCopyActive = computed(() => {
+  const f = active.value;
+  if (!f) return false;
+  return !copiesAsFile(f.kind) || isWindows;
+});
+
 async function copyItem(f: FavoriteEntry) {
   menu.value = null;
   try {
@@ -468,8 +488,7 @@ async function copyItem(f: FavoriteEntry) {
       await copyContent("favorite", f.content);
       app.toast(t("common.copied"), "success");
       return;
-    }
-    if (f.kind === "merge") {
+    }    if (f.kind === "merge") {
       // 合并转发的"复制"＝复制展开后的文字记录（复制一段 JSON 对用户没有意义）
       const p = parseMergePayload(f.content);
       const text = p
@@ -975,6 +994,7 @@ async function confirmDelete() {
                min-w-14 保证字不挤压截断；真放不下时横向滚动兜底，绝不折行。 -->
           <div class="mt-2 flex shrink-0 items-stretch gap-0.5 overflow-x-auto border-t border-[var(--gosslan-divider)] px-2 pb-2 pt-1">
             <button
+              v-if="canCopyActive"
               class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="copyItem(active)"
             >
@@ -1053,7 +1073,11 @@ async function confirmDelete() {
 
     <!-- 行菜单：复制 / 转发 / 跳回原消息 / 删除（桌面右键与移动 ⋯ 共用一份实现） -->
     <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" @close="menu = null">
-      <DropdownMenuItem class="gosslan-menu-item" @select="copyItem(menu.item)">
+      <DropdownMenuItem
+        v-if="!copiesAsFile(menu.item.kind) || isWindows"
+        class="gosslan-menu-item"
+        @select="copyItem(menu.item)"
+      >
         <Icon name="copy" />
         {{ t("favorite.copy") }}
       </DropdownMenuItem>

@@ -49,6 +49,25 @@ export const isAndroid =
     : false;
 
 /**
+ * 判断一段 UA 是否来自 Windows（纯函数，便于单测）。
+ *
+ * 用途：**按能力隐藏入口**。系统剪贴板的「文件列表」（CF_HDROP）只有 Windows 有，
+ * macOS/Linux 的同一操作必然失败 ⇒ 与其让用户点一个注定失败的按钮、再吃一句
+ * 「当前平台暂不支持」，不如**不显示这个入口**（平台差异对用户无感）。
+ *
+ * ⚠️ 判定用 `/Windows/`：Windows WebView2 的 UA 恒含 `Windows NT …`。
+ */
+export function isWindowsUA(ua: string): boolean {
+  return /Windows/i.test(ua);
+}
+
+/** 运行时平台判定（Windows）。与 isMac 同一套 navigator 守卫。 */
+export const isWindows =
+  typeof navigator !== "undefined" && typeof navigator.userAgent === "string"
+    ? isWindowsUA(navigator.userAgent)
+    : false;
+
+/**
  * 判断一段 UA 是否来自 iOS / iPadOS（纯函数，便于单测）。
  *
  * 用途：返回箭头按平台给原生观感 —— iOS 用 chevron（`<`），其余平台（Android / 桌面）
