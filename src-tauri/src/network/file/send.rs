@@ -87,25 +87,9 @@ fn prepare_send_source_blocking(
     let snap_dir = PathBuf::from(&dl).join(".send-snapshots");
     std::fs::create_dir_all(&snap_dir)
         .map_err(|e| SendFileError::permanent(format!("创建发送快照目录失败：{e}")))?;
-    // 顺手清扫超过 TTL 的陈旧快照（失败/取消终态不会走 finalize，靠这里兜底）。
-    // 只删本目录内 .bin、按 mtime 判，绝不碰用户文件。
-    if let Ok(entries) = std::fs::read_dir(&snap_dir) {
-        for ent in entries.flatten() {
-            let p = ent.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("bin") {
-                continue;
-            }
-            let stale = p
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|d| d.as_millis() as i64 > SEND_SNAPSHOT_TTL_MS);
-            if stale {
-                let _ = std::fs::remove_file(&p);
-            }
-        }
-    }
+    // 顺手清扫超过 TTL 的陈旧快照（失败/取消终态不会走 finalize；全局定时清扫也有同一份，见
+    // sweep_stale_send_snapshots）。这里在"发活文件"时再补一刀，缩短残留窗口。
+    sweep_stale_send_snapshots(state);
     let snap_path = snap_dir.join(format!("{safe_tid}.bin"));
     std::fs::copy(path, &snap_path)
         .map_err(|e| SendFileError::permanent(format!("复制活文件快照失败：{e}")))?;
@@ -142,6 +126,38 @@ pub(crate) fn clear_send_snapshot(state: &Arc<AppState>, transfer_id: &str) {
             );
         }
     }
+}
+
+/// 清扫超过 TTL 的陈旧发送快照（磁盘副本）。由 `.part` 每小时定时任务调用，
+/// 也在每次发活文件时顺手跑一次。只删本应用自己的 `.send-snapshots/*.bin`，按 mtime 判，
+/// 绝不碰用户下载目录里的其它文件。返回清掉的个数。
+pub(crate) fn sweep_stale_send_snapshots(state: &AppState) -> usize {
+    let dl = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let snap_dir = PathBuf::from(&dl).join(".send-snapshots");
+    let Ok(entries) = std::fs::read_dir(&snap_dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for ent in entries.flatten() {
+        let p = ent.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("bin") {
+            continue;
+        }
+        let stale = p
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|d| d.as_millis() as i64 > SEND_SNAPSHOT_TTL_MS);
+        if stale && std::fs::remove_file(&p).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// 主动向 `peer_id` 发送本地文件。

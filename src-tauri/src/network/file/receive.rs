@@ -100,7 +100,9 @@ pub fn sweep_stale_parts(state: &AppState) -> usize {
             }
         }
     }
-    removed
+    // 活文件发送快照也走这趟每小时清扫（失败/取消终态不会走 finalize 即时清理）——
+    // 只删 .send-snapshots 里超过 TTL 的 .bin，绝不碰用户文件（实现见 send.rs）。
+    removed + sweep_stale_send_snapshots(state)
 }
 
 /// 磁盘上那份 `.part` 前缀**能不能拿来续传**（1:1 侧的内容身份判据）。
