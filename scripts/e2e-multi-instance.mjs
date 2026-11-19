@@ -278,7 +278,7 @@ import { BOOT_LINE, bootBaseline, bootReady, countLog, readLogTail, selfcheckLog
 import { captureShot, captureWindowShot, describeShotDir, screenBlockedReason, selfcheckShot } from "./e2e-shot.mjs";
 // 引擎层（常量 + 共享量 + 工具函数）在 scripts/e2e/core.mjs：整段搬过去、只在声明行加了 export；
 import {
-  ALL_INST, APPDATA, BIN, FAULT, FILE_BYTES, GROUP_ID, GROUP_KEY_B64, GROUP_KEY_STR, GROUP_NAME, GROUP_TTL, INSTANCES, INST_C, ISO, LIE, LIE_SHA, MINTED_IDS, NO_ROUTED, PKCS8, ROOT, ROUND, RUN_DIR, S, TCP_BASE, appDataDir, assertions, binaryPath, bootAndStop, bootBaseOf, buildGroupEnvelope, buildMentionTargets, check, classifyRun, citedRunIds, ed25519Priv, dirBytes, eid, launch, newestMtime, noteId, nowMs, openDb, procs, procsLeft, pruneOldRuns, prunePlan, pubFromSecret, readIdentity, readReportContract, reportContractGaps, retentionLimits, runStep, seed, seedPair, selfcheckPrune, selfcheckReportContract, shotFiles, shotSources, sleep, step, stepBadge, steps, stopAll, stopOne, tailLog, takeShot, tcpOpen, traceExcerpt, waitFor, waitSendTerminal,
+  ALL_INST, APPDATA, BIN, FAULT, FILE_BYTES, GROUP_ID, GROUP_KEY_B64, GROUP_KEY_STR, GROUP_NAME, GROUP_TTL, INSTANCES, INST_C, ISO, LIE, LIE_SHA, MINTED_IDS, NO_ROUTED, PKCS8, ROOT, ROUND, RUN_DIR, S, TCP_BASE, appDataDir, assertions, binaryPath, bootAndStop, bootBaseOf, buildGroupEnvelope, buildMentionTargets, check, classifyRun, citedRunIds, ed25519Priv, dirBytes, eid, launch, moveFile, newestMtime, noteId, nowMs, openDb, procs, procsLeft, pruneOldRuns, prunePlan, pubFromSecret, readIdentity, readReportContract, reportContractGaps, retentionLimits, runStep, seed, seedPair, selfcheckPrune, selfcheckReportContract, shotFiles, shotSources, sleep, step, stepBadge, steps, stopAll, stopOne, tailLog, takeShot, tcpOpen, traceExcerpt, waitFor, waitSendTerminal,
 } from "./e2e/core.mjs";
 import * as group from "./e2e/rounds/group.mjs";
 import * as task from "./e2e/rounds/task.mjs";
@@ -762,10 +762,12 @@ try {
     if (fs.existsSync(i.db)) {
       const to = path.join(RUN_DIR, `backup-${i.label}`, path.basename(i.db));
       fs.mkdirSync(path.dirname(to), { recursive: true });
-      fs.renameSync(i.db, to);
+      // moveFile：appdata 在 C:、run 目录在 D: 时裸 rename 是 EXDEV（2026-11-18 实测，
+      // 整层 24 轮在"停机预置备份"这一步前就崩）。见 core.mjs moveFile。
+      moveFile(i.db, to);
       backups.set(i.db, to);
       for (const s of ["-wal", "-shm"]) {
-        if (fs.existsSync(i.db + s)) fs.renameSync(i.db + s, to + s);
+        if (fs.existsSync(i.db + s)) moveFile(i.db + s, to + s);
       }
     }
   }
@@ -826,7 +828,7 @@ try {
   // 用户原来的库必须回来 —— 覆盖掉本轮写出来的测试库
   for (const [dbFile, from] of backups) {
     for (const s of ["", "-wal", "-shm"]) {
-      if (fs.existsSync(from + s)) fs.renameSync(from + s, dbFile + s);
+      if (fs.existsSync(from + s)) moveFile(from + s, dbFile + s);
       else if (fs.existsSync(dbFile + s)) fs.rmSync(dbFile + s);
     }
   }

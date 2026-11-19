@@ -1066,3 +1066,18 @@ export function allowDirWrites(dir) {
   if (process.platform !== "win32") { fs.chmodSync(dir, 0o700); return; }
   icacls([dir, "/remove:d", process.env.USERNAME]); // deny ACE 不存在时退码非 0，属正常
 }
+
+// ── 跨盘安全搬文件（EXDEV 兜底）────────────────────────────────────────────
+// rename 成功就完事；EXDEV（跨卷，例如 appdata 在 C:、run 目录在 D:）时退化成
+// copy + unlink —— 语义仍等价于 rename（目标存在则覆盖）。
+// 2026-11-18 Windows 腿实测：备份/还原用户库那两段用裸 renameSync，C:→D: 一律
+// EXDEV ⇒ 整层 E2E 在"停机预置备份"就崩，24 轮全部 2~7 秒速败（mac 单卷所以从未暴露）。
+export function moveFile(src, dst) {
+  try {
+    fs.renameSync(src, dst);
+  } catch (e) {
+    if (e.code !== "EXDEV") throw e;
+    fs.copyFileSync(src, dst);
+    fs.rmSync(src, { force: true });
+  }
+}
