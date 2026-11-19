@@ -138,3 +138,22 @@ test("按需加载与滚动高亮的下游实现仍在：locateInLoaded 翻页�
   assert.match(locateMessageBody, /scrollToIndex\(idx, "top"\)/, "必须滚动到那条消息");
   assert.match(locateMessageBody, /highlightId\.value = id/, "必须短暂高亮以免找不到");
 });
+
+test("人名搜索（拼音/首字母）能搜到人并直接进聊天", () => {
+  // 弹窗：引入拼音匹配 + 从 store 取好友/群 + 人名结果走 open-conversation（msgId 留空 = 只进会话）
+  assert.match(dialogSrc, /import \{ pinyinMatch \} from "@\/utils\/pinyinMatch"/, "弹窗必须接入拼音匹配");
+  assert.match(dialogSrc, /useChatStore\(\)/, "弹窗必须从 store 取好友/群成员作为人名数据源");
+  assert.match(
+    dialogSrc,
+    /emit\("open-conversation", \{ convId: hit\.convId, msgId: "" \}\)/,
+    "点人名结果必须走现成的 open-conversation 跳转链（msgId 空 = 只进会话）",
+  );
+  assert.match(dialogSrc, /pinyinMatch\(f\.nickname, kw\)/, "好友名要走拼音匹配");
+  assert.match(dialogSrc, /pinyinMatch\(name, kw\)/, "群成员名要走拼音匹配");
+  // 会话列表：打字筛人也用同一套拼音判据（单一真源，不许各写一份字面 includes）
+  const convListSrc = readFileSync(
+    new URL("../components/ConversationList.vue", import.meta.url),
+    "utf8",
+  );
+  assert.match(convListSrc, /pinyinMatch\(f\.nickname, kw\)/, "会话列表筛人也要走拼音匹配");
+});
