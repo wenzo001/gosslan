@@ -8,7 +8,7 @@
 // ⚠️ 判据 C（scripts/check-doc-numbers.mjs）按下面这行 export const MODE 把本文件的 check( 归到这一轮：
 //    改这行、或把断言挪去别的分册，都会让活文档里那句「N 条断言」当场对不上。
 export const MODE = "STALL";
-import { INSTANCES, LIE, LIE_SHA, RUN_DIR, S, check, eid, nowMs, openDb, procs, seed, sleep, step, tailLog, waitFor, waitSendTerminal } from "../core.mjs";
+import { INSTANCES, LIE, LIE_SHA, RUN_DIR, S, check, eid, freezeProc, nowMs, openDb, procs, seed, sleep, step, tailLog, thawProc, waitFor, waitSendTerminal } from "../core.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -64,7 +64,7 @@ export async function run() {
         await sleep(50);
       }
       const freezeT0 = nowMs();
-      pB.kill("SIGSTOP");
+      freezeProc(pB.pid);
       frozen = true;
       // 快照取在**冻结之后**：冻结前那几毫秒 B 还在写，拿 atGrowth 当基准会虚涨。
       // ⚠️ 还要再等一下：`kill("SIGSTOP")` 是**异步生效**的，信号排到队上之后 B 仍可能写完一片。
@@ -111,14 +111,14 @@ export async function run() {
       for (const l of abandon) console.log("      A│ " + l.slice(0, 220));
       if (!abandon.length) console.log("      · A 侧本轮没留下'这一单已结束'的日志痕迹（记下，待判是否 A-13）");
 
-      pB.kill("SIGCONT");
+      thawProc(pB.pid);
       thawed = true;
       const t0 = nowMs();
       await waitFor(() => sizeOfS(landedS) >= 0, 180_000, "解冻后必须把这一单补完并 rename 成终名");
       console.log(`  · 实测：解冻 → 终名落地 ${(nowMs() - t0) / 1000}s`);
     } finally {
       // ⚠️ 被 SIGSTOP 停住的进程收不到 SIGTERM ⇒ 不解冻会把整条 harness 挂死（冻结轮的教训）。
-      if (frozen && !thawed) { try { pB.kill("SIGCONT"); } catch { /* 已经退了 */ } }
+      if (frozen && !thawed) { try { thawProc(pB.pid); } catch { /* 已经退了 */ } }
     }
 
     const gotS = sizeOfS(landedS) >= 0

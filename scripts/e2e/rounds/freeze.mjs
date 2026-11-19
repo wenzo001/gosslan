@@ -8,7 +8,7 @@
 // ⚠️ 判据 C（scripts/check-doc-numbers.mjs）按下面这行 export const MODE 把本文件的 check( 归到这一轮：
 //    改这行、或把断言挪去别的分册，都会让活文档里那句「N 条断言」当场对不上。
 export const MODE = "FREEZE";
-import { INSTANCES, LIE, LIE_SHA, RUN_DIR, S, check, eid, nowMs, openDb, procs, seed, sleep, step, tailLog, waitFor, waitSendTerminal } from "../core.mjs";
+import { INSTANCES, LIE, LIE_SHA, RUN_DIR, S, check, eid, freezeProc, nowMs, openDb, procs, seed, sleep, step, tailLog, thawProc, waitFor, waitSendTerminal } from "../core.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -41,9 +41,10 @@ export async function run() {
     const pB = procs.get(INSTANCES[1].n);
     if (!pB) throw new Error("拿不到 B 的子进程句柄 —— 这条注入没有可冻结的对象");
     let thawed = false;
-    // ⚠️ 解冻必须放进 finally：**被 SIGSTOP 停住的进程收不到 SIGTERM 的处理**（信号挂起），
+    // ⚠️ 解冻必须放进 finally：**被冻住的进程收不到 SIGTERM 的处理**（信号挂起），
     //    收尾的 stopAll() 会永久等一个不会来的 exit ⇒ 整条 harness 挂死、留一个僵尸。
-    pB.kill("SIGSTOP");
+    //    平台差异：macOS/Linux 是 SIGSTOP，Windows 是 NtSuspendProcess（见 core.mjs freezeProc）。
+    freezeProc(pB.pid);
     let mid = null;
     try {
       // 入队在冻结之后：与 kill 轮同一个教训 —— 注入时机必须在判据自己手里。
@@ -91,13 +92,13 @@ export async function run() {
       console.log(`  · 实测（失联 ${FREEZE_MS / 1000}s）：${JSON.stringify(mid)}`);
       for (const l of (tailLog(INSTANCES[0].log, 60000) || "").split("\n")
         .filter((x) => x.includes(xferId5)).slice(-8)) console.log("      A│ " + l.slice(0, 220));
-      pB.kill("SIGCONT");
+      thawProc(pB.pid);
       thawed = true;
       const t0 = nowMs();
       await waitFor(() => sizeOf(landed) >= 0, 120_000, "解冻后 B 该把这一单收完并 rename 成终名");
       console.log(`  · 实测：解冻 → 终名落地 ${(nowMs() - t0) / 1000}s`);
     } finally {
-      if (!thawed) { try { pB.kill("SIGCONT"); } catch { /* 已经退了 */ } }
+      if (!thawed) { try { thawProc(pB.pid); } catch { /* 已经退了 */ } }
     }
     const got = sizeOf(landed) >= 0
       ? createHash("sha256").update(fs.readFileSync(landed)).digest("hex") : null;

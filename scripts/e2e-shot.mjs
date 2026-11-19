@@ -8,8 +8,9 @@
 //   · 截图里的界面"对不对" —— 不是机器判据（没有像素级断言），仍然按 §19 记 MANUAL/结构级。
 // 把第二件事也算进"绿"里就是假证据，所以名字与文档都只许写第一件。
 //
-// 平台边界：只实现 macOS 的 `screencapture`。Windows 要自己实现（PowerShell CopyFromScreen 之类），
-// **在实现之前这一格在 Windows 上是红，不是"跳过就算过"** —— 总指令§十禁止把没跑写成 PASS。
+// 平台边界：macOS 用系统 `screencapture`；Windows 用 PowerShell + System.Drawing 的
+// CopyFromScreen（2026-11-18 补上的——此前这一格在 Windows 上是红，§十禁止把没跑写成 PASS）。
+// 「按窗口 id 抓」仍只有 macOS 一条腿：Windows 上它记一句原因后**回落整屏**（#91 的既定降级路径）。
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -120,10 +121,28 @@ export function pngIsBlank(file, maxPixels = 400_000) {
  *  而且红的原因是"没采到"，不是"判据写坏了"。这也是 Windows 腿今天的真实状态（那里还没有采集器）。 */
 export const captureSupported = (platform = process.platform) =>
   process.env.E2E_NO_CAPTURE !== "1"
-  && platform === "darwin" && fs.existsSync("/usr/sbin/screencapture");
+  && (platform === "darwin" ? fs.existsSync("/usr/sbin/screencapture") : platform === "win32");
 
 export function shotsDir(runDir) {
   return path.join(runDir, SHOTS_DIRNAME);
+}
+
+/** 截一张全屏；失败返回 null（不抛 —— 截图不该把一轮 E2E 变成技术故障）。 */
+/** Windows 整屏采集：PowerShell + CopyFromScreen（System.Drawing），落 PNG。
+ *  路径里单引号在 PS 字符串中双写转义。失败抛错，由调用方统一返回 null。 */
+function captureFullScreenWin(file) {
+  const q = (s) => String(s).replaceAll("'", "''");
+  const ps = [
+    "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;",
+    "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen;",
+    "$bmp=New-Object System.Drawing.Bitmap($b.Width,$b.Height);",
+    "$g=[System.Drawing.Graphics]::FromImage($bmp);",
+    "$g.CopyFromScreen($b.Left,$b.Top,0,0,$bmp.Size);",
+    `$bmp.Save('${q(file)}',[System.Drawing.Imaging.ImageFormat]::Png);`,
+    "$g.Dispose();$bmp.Dispose();",
+  ].join("");
+  execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps],
+    { stdio: "ignore", timeout: 30_000 });
 }
 
 /** 截一张全屏；失败返回 null（不抛 —— 截图不该把一轮 E2E 变成技术故障）。 */
@@ -133,9 +152,13 @@ export function captureShot(runDir, tag) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${tag}.png`);
   try {
-    // -x 不出快门声；不带 -l（窗口 id 要额外权限与 CoreGraphics 枚举）⇒ 抓整屏，
-    // 两个实例的窗口此刻都在这台机器的桌面上。
-    execFileSync("/usr/sbin/screencapture", ["-x", file], { stdio: "ignore" });
+    if (process.platform === "win32") {
+      captureFullScreenWin(file);
+    } else {
+      // -x 不出快门声；不带 -l（窗口 id 要额外权限与 CoreGraphics 枚举）⇒ 抓整屏，
+      // 两个实例的窗口此刻都在这台机器的桌面上。
+      execFileSync("/usr/sbin/screencapture", ["-x", file], { stdio: "ignore" });
+    }
   } catch {
     return null;
   }
@@ -225,6 +248,7 @@ function windowGeometryMatches(head, win) {
 /** 抓指定那一扇窗。失败返回 `{ ok:false, why }` —— why 要能读，因为报告里那句"为什么只能用整屏"靠它。 */
 export function captureWindowBySpec(runDir, tag, win) {
   if (!captureSupported()) return { ok: false, why: "本机没有可用采集器" };
+  if (process.platform === "win32") return { ok: false, why: "Windows 采集器目前只实现整屏帧（按窗口抓未实现）" };
   if (!win) return { ok: false, why: "没有可读的窗口" };
   const dir = shotsDir(runDir);
   fs.mkdirSync(dir, { recursive: true });
@@ -260,6 +284,7 @@ export function captureWindowBySpec(runDir, tag, win) {
 /** 按**实例自己的 pid** 抓那一扇最大的窗。抓不到不是错误：调用方回落整屏，并把原因如实记进报告。 */
 export function captureWindowShot(runDir, tag, pid) {
   if (!Number.isInteger(pid) || pid <= 0) return { ok: false, why: "没有这个实例的 pid" };
+  if (process.platform === "win32") return { ok: false, why: "Windows 采集器目前只实现整屏帧（按窗口抓未实现，回落整屏）" };
   const wins = listPidWindows(pid);
   if (!wins) return { ok: false, why: `问不出窗口清单：${windowQueryWhy() ?? "原因未记"}` };
   if (!wins.length) return { ok: false, why: `pid ${pid} 名下没有 ≥80×80 的窗口` };
@@ -333,6 +358,24 @@ export function screenLockedState() {
  */
 export function screenBlockedReason(tmpRoot = path.join(os.tmpdir(), `gosslan-screen-${Date.now()}`)) {
   if (!captureSupported()) return null;
+  if (process.platform === "win32") {
+    // Windows：锁屏 / RDP 断开时 CopyFromScreen 给的是整屏纯黑 ⇒ 与 macOS 同一句理由。
+    // 会话没锁时给真帧 ⇒ null。采集器本身失败不算环境问题，交给自证/轮次去红。
+    try {
+      fs.mkdirSync(tmpRoot, { recursive: true });
+      const probe = path.join(tmpRoot, "probe.png");
+      captureFullScreenWin(probe);
+      if (!fs.existsSync(probe)) return null;
+      return pngIsBlank(probe)
+        ? "屏幕被锁 / 会话无可见桌面：CopyFromScreen 只给得出纯色帧 ⇒ 这一层要判的"
+          + "「真实界面截图」今天拿不到。解锁后再跑（不要去放宽截图判据 —— 那正是刚修掉的假绿）。"
+        : null;
+    } catch {
+      return null;
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  }
   const locked = screenLockedState();
   if (locked === true) {
     return "会话处于锁定状态（loginwindow 盖住整屏）⇒ 全屏抓到的是桌面壁纸，"
@@ -426,6 +469,11 @@ export function selfcheckShot(tmpRoot = path.join(os.tmpdir(), `gosslan-shot-${D
     has("⑥ 只多一条白线的同尺寸 PNG 必须判真（证明 ⑤ 不是「永远判假」）", shotIsReal(lined, 0));
     // ⑦ ⑧ #91「按窗口 id 抓」这一格的自证。放在整屏那几格**之后**、真截整屏那格之前：
     //   它们判的是"按窗口抓"这个机制成不成立，与屏幕上是谁的窗口无关。
+    //   Windows：按窗口抓未实现（见 captureWindowBySpec），⑧ 的"不存在 id 必须截不出文件"仍成立，
+    //   但 ⑦ 依赖真实窗口枚举 ⇒ 只在 macOS 上跑。
+    if (process.platform === "win32") {
+      notes.push("⑦ 跳过：Windows 采集器只实现整屏帧（按窗口抓未实现）⇒ 整屏那条 ④ 照判");
+    } else {
     const wins = listPidWindows(null);
     if (wins === null) {
       notes.push("⑦ 跳过：这台机器问不出窗口清单（没有 python3/pyobjc）⇒ 按窗口抓这一格在本机未实现，不是判据坏了");
@@ -471,6 +519,7 @@ export function selfcheckShot(tmpRoot = path.join(os.tmpdir(), `gosslan-shot-${D
       has(`⑧ 不存在的窗口 id（${bogus.id}）必须截不出文件 —— 实测 ok=${rb.ok} 文件是否存在=${left}`,
         !rb.ok && !left);
     }
+    }
     // ④ 真的截一张必须判真 —— 反过来钉住"判据没有苛刻到永远达不到"。
     //   ⚠️ 这一格在 2026-09-26 抓到过一次**判据自己坏**：桌面接近空白时截图只有 ~104 KB，
     //   当时那条按体积定的阈值（200 KiB）判它"不是真截图" ⇒ 每一轮 E2E 起跑前被拦停。
@@ -479,7 +528,8 @@ export function selfcheckShot(tmpRoot = path.join(os.tmpdir(), `gosslan-shot-${D
       const dir = shotsDir(tmpRoot);
       fs.mkdirSync(dir, { recursive: true });
       const real = path.join(dir, "probe.png");
-      execFileSync("/usr/sbin/screencapture", ["-x", real], { stdio: "ignore" });
+      if (process.platform === "win32") captureFullScreenWin(real);
+      else execFileSync("/usr/sbin/screencapture", ["-x", real], { stdio: "ignore" });
       if (!fs.existsSync(real)) {
         // 说支持却截不出文件 = 判据层自己坏了（不是环境问题）⇒ 必须拦停
         fails.push("④ 采集器被判定为可用，却一个文件都没写出 ⇒ 判据层坏了，不是环境问题");

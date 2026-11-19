@@ -78,14 +78,27 @@ export async function run() {
       countLog(B.log, "discovery_started") === 0, 0, countLog(B.log, "discovery_started"));
 
     // 关着的那段窗口里先把监听口的读数取走（**只打印**，理由见文件末尾那三行对照的注释）
+    // 平台：macOS/Linux 用 lsof + ps；Windows 没有这两个工具，换 netstat + tasklist 说同一件事
+    // （2026-11-18 实测：Windows 上原先这里静默退化成"(ps 查不到这个 pid)"，判定不受影响，但证据变糊）。
     const listenerPids = () => {
+      if (process.platform === "win32") {
+        const r = spawnSync("netstat", ["-ano"], { encoding: "utf8" });
+        return (r.stdout || "").split("\n")
+          .filter((l) => new RegExp(`[:.]${B.port}\\s`).test(l) && /LISTENING/i.test(l))
+          .map((l) => l.trim().split(/\s+/).pop()).filter(Boolean);
+      }
       const r = spawnSync("lsof", ["-nP", "-tiTCP:" + B.port, "-sTCP:LISTEN"], { encoding: "utf8" });
       return (r.stdout || "").trim().split("\n").filter(Boolean);
     };
-    const psOf = (pid) => pid
-      ? (spawnSync("ps", ["-o", "pid=,comm=,lstart=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim()
-         || "(ps 查不到这个 pid)")
-      : "(没有 pid)";
+    const psOf = (pid) => {
+      if (!pid) return "(没有 pid)";
+      if (process.platform === "win32") {
+        return spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8" })
+          .stdout.trim() || "(tasklist 查不到这个 pid)";
+      }
+      return spawnSync("ps", ["-o", "pid=,comm=,lstart=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim()
+        || "(ps 查不到这个 pid)";
+    };
     const openWhileOff = await tcpOpen(B.port);
     const whoHolds = listenerPids();
     check("★ 关掉之后连 TCP 监听口都不存在（别人拨不进来，不只是「我不再广播」）",

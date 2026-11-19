@@ -8,7 +8,7 @@
 // ⚠️ 判据 C（scripts/check-doc-numbers.mjs）按下面这行 export const MODE 把本文件的 check( 归到这一轮：
 //    改这行、或把断言挪去别的分册，都会让活文档里那句「N 条断言」当场对不上。
 export const MODE = "DISK";
-import { DISK_MAX_ATTEMPTS, INSTANCES, LIE, RUN_DIR, S, check, eid, nowMs, openDb, seed, sleep, step, tailLog, waitFor } from "../core.mjs";
+import { DISK_MAX_ATTEMPTS, INSTANCES, LIE, RUN_DIR, S, allowDirWrites, check, denyDirWrites, eid, nowMs, openDb, seed, sleep, step, tailLog, waitFor } from "../core.mjs";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -29,7 +29,8 @@ export async function run() {
     fs.writeFileSync(srcFile6, Buffer.alloc(DISK_BYTES));
     const t0 = nowMs();
     // 注入：接收目录整个改成只读 —— 建 `.part` 与最终 rename 都需要目录写权限。
-    fs.chmodSync(dl, 0o500);
+    // 平台差异：macOS/Linux 是 chmod 0500；Windows 是目录 ACL 拒绝 (WD,AD,DC)（见 core.mjs denyDirWrites）。
+    denyDirWrites(dl);
     try {
       for (let i = 0; ; i++) {
         try {
@@ -71,7 +72,7 @@ export async function run() {
     } finally {
       // ⚠️ 必须还原：否则这一轮的接收目录连同后续清理都带着只读位，
       //    而且下一个模式会被这条注入的残留状态污染。
-      fs.chmodSync(dl, 0o700);
+      allowDirWrites(dl);
     }
     const seen = fs.readdirSync(dl).filter((f) => f.includes(xferId6));
     // 反空转前提（冻结轮的教训：先量"我以为已经成立的前提"）：

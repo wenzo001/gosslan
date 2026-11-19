@@ -1011,3 +1011,58 @@ export function selfcheckReportContract() {
   for (const [name, ok] of badges) if (!ok) fails.push(`步骤徽章：${name} 不成立`);
   return { fails, notes: `${cases.length + badges.length} 格` };
 }
+
+// ── 跨平台进程冻结 / 解冻（SIGSTOP / SIGCONT 的 Windows 等价物）────────────
+// macOS / Linux：SIGSTOP / SIGCONT 原样。
+// Windows：没有这两个信号（`kill(pid,"SIGSTOP")` 抛 ERR_UNKNOWN_SIGNAL），改用 ntdll 的
+//   NtSuspendProcess / NtResumeProcess —— Process Explorer 的 Suspend 用的就是这对 API，
+//   语义与 SIGSTOP 一致：整个进程的线程原地挂起，socket 照旧缓冲、不读不写。
+//   （2026-11-18 Windows 腿实测：peer-freeze / src-shrunk / stall-mid 三轮因缺这一层整族跑不了。）
+const NT_SUSPEND_PS = (pid, resume) => [
+  "$src='using System;using System.Runtime.InteropServices;public static class GosNT{",
+  '[DllImport("kernel32.dll",SetLastError=true)] public static extern IntPtr OpenProcess(uint a,bool b,uint p);',
+  '[DllImport("ntdll.dll")] public static extern int NtSuspendProcess(IntPtr h);',
+  '[DllImport("ntdll.dll")] public static extern int NtResumeProcess(IntPtr h);',
+  '[DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);}\';',
+  "Add-Type -TypeDefinition $src;",
+  `$h=[GosNT]::OpenProcess(0x0800,$false,${pid});`,
+  "if($h -eq [IntPtr]::Zero){ exit 3 }",
+  `$rc=[GosNT]::${resume ? "NtResumeProcess" : "NtSuspendProcess"}($h);`,
+  "[void][GosNT]::CloseHandle($h);",
+  "if($rc -ne 0){ exit $rc }",
+].join("\n");
+function runNt(pid, resume) {
+  const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", NT_SUSPEND_PS(pid, resume)],
+    { encoding: "utf8", timeout: 20_000 });
+  if (r.status !== 0) {
+    throw new Error(`Nt${resume ? "Resume" : "Suspend"}Process(${pid}) 失败：退码 ${r.status} ${(r.stderr || "").trim()}`);
+  }
+}
+export function freezeProc(pid) {
+  if (process.platform === "win32") runNt(pid, false);
+  else process.kill(pid, "SIGSTOP");
+}
+export function thawProc(pid) {
+  if (process.platform === "win32") runNt(pid, true);
+  else process.kill(pid, "SIGCONT");
+}
+
+// ── 目录只读注入（chmod 0500 的 Windows 等价物）─────────────────────────────
+// macOS / Linux：chmod 0500 —— 目录内不许 create / rename / unlink，已有文件内的写入仍允许。
+// Windows：chmod 对目录只翻只读属性、**完全不拦创建**（2026-11-18 实测两轮注入静默不生效），
+//   改为在目录 ACL 上显式拒绝 (WD,AD,DC) 且不继承到子文件：
+//   WD = 写数据/创建文件、AD = 创建子目录、DC = 删子项（rename 的落点）；
+//   已有 .part 子文件写它自己的内容不受影响（写权限在文件上）⇒ 与 chmod 0500 语义一致。
+//   还原用 /remove:d（只删这条 deny ACE，不动原有授权）。
+function icacls(args) {
+  return spawnSync("icacls", args, { encoding: "utf8", timeout: 20_000 });
+}
+export function denyDirWrites(dir) {
+  if (process.platform !== "win32") { fs.chmodSync(dir, 0o500); return; }
+  const r = icacls([dir, "/deny", `${process.env.USERNAME}:(WD,AD,DC)`]);
+  if (r.status !== 0) throw new Error(`icacls deny 失败：${(r.stderr || r.stdout || "").trim()}`);
+}
+export function allowDirWrites(dir) {
+  if (process.platform !== "win32") { fs.chmodSync(dir, 0o700); return; }
+  icacls([dir, "/remove:d", process.env.USERNAME]); // deny ACE 不存在时退码非 0，属正常
+}
