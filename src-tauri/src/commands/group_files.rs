@@ -509,10 +509,60 @@ fn todo_reply_exists(conn: &rusqlite::Connection, conv_id: &str, todo_id: &str, 
     false
 }
 
+/// 机器人指派人的 id 前缀（2026-11-19）。机器人没有真实 device 身份，用 `bot:<botId>` 假 id
+/// 当指派人 —— 这样不动协议/schema（Frozen Core），同时天然标记"这是机器人发的任务"。
+const BOT_ASSIGNEE_PREFIX: &str = "bot:";
+
+/// 这条 assignee 是不是机器人假身份；是则返回 botId 部分。
+fn bot_id_of_assignee(a: &str) -> Option<&str> {
+    a.strip_prefix(BOT_ASSIGNEE_PREFIX).filter(|id| !id.is_empty())
+}
+
+/// 这条任务是不是机器人发起的（指派人里含 bot: 即视为机器人任务 —— 建任务时机器人就是唯一指派人）。
+fn is_bot_owned_todo(assignees: &[String]) -> bool {
+    assignees.iter().any(|a| bot_id_of_assignee(a).is_some())
+}
+
+/// 纯判据：机器人任务的指派人是否被篡改（2026-11-19）。机器人任务的新指派人必须**逐字等于**
+/// 库里那份（bot: 标识不可增删/替换）。拆成纯函数是为了单测能直接判，命令体只负责调用。
+fn bot_assignee_locked_violation(old: &[String], new: &[String]) -> bool {
+    is_bot_owned_todo(old) && old != new
+}
+
+/// 校验一个 bot: 指派人是否合法：bot 存在、scope=group、target.group_id 正好是当前群。
+/// 三条缺一不可 —— 尤其跨群校验，防止真人在别的群里伪造一个 bot 指派混进来。
+fn check_bot_assignee(s: &AppState, group_id: &str, bot_id: &str) -> Result<(), String> {
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+    let rec = crate::db::load_bot(&dbc, bot_id).map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_BOT_ASSIGNEE_INVALID,
+            format!("读取机器人失败：{e}"),
+        )
+    })?;
+    let rec = rec.ok_or_else(|| {
+        crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_BOT_ASSIGNEE_INVALID,
+            format!("机器人 {bot_id} 不存在"),
+        )
+    })?;
+    let target_ok = rec.scope == "group"
+        && rec.target.group_id.as_deref() == Some(group_id);
+    if !target_ok {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_BOT_ASSIGNEE_INVALID,
+            format!("机器人 {bot_id} 不属于本群"),
+        ));
+    }
+    Ok(())
+}
+
 /// 被指派人必须**至少一个且都是群成员**（用户 2026-09-16：「每个任务可以给一个或多个人」）。
 ///
 /// 为什么在命令层拦：指派人同时是**改状态的鉴权依据**（见 `may_update_todo`）——
 /// 放进一个非成员会让这条任务对谁都"改不了状态"（谁都不是被指派人），而群里也没人认识它。
+///
+/// 2026-11-19：`bot:<botId>` 假身份也放行，但必须过 [`check_bot_assignee`]（存在 + 群机器人 +
+/// 目标群匹配）。其余非 bot 指派人仍须是真实群成员。
 fn check_todo_assignees(s: &AppState, group_id: &str, assignees: &[String]) -> Result<(), String> {
     if assignees.is_empty() {
         return Err(crate::error_codes::coded(
@@ -529,17 +579,24 @@ fn check_todo_assignees(s: &AppState, group_id: &str, assignees: &[String]) -> R
             })?
     };
     // ⚠️ `resolve_nickname` 内部会再锁一次 db，必须在放锁之后调用（见文件里那条同名注释）
-    if let Some(bad) = assignees.iter().find(|a| !members.contains(a)) {
-        return Err(crate::error_codes::coded(
-            crate::error_codes::GROUP_TODO_ASSIGNEE_NOT_MEMBER,
-            reject(
-                s,
-                group_id,
-                "todo",
-                "not_member",
-                &format!("{} 不是群成员", resolve_nickname(s, bad)),
-            ),
-        ));
+    for a in assignees {
+        if let Some(bot_id) = bot_id_of_assignee(a) {
+            // 机器人假身份：必须存在 + 是本群机器人（跨群/伪造一律拒）。
+            check_bot_assignee(s, group_id, bot_id)?;
+            continue;
+        }
+        if !members.contains(a) {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_TODO_ASSIGNEE_NOT_MEMBER,
+                reject(
+                    s,
+                    group_id,
+                    "todo",
+                    "not_member",
+                    &format!("{} 不是群成员", resolve_nickname(s, a)),
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -1028,6 +1085,12 @@ fn may_change_todo(
     edits_structure: bool,
     lane: MemberLane,
 ) -> bool {
+    // 2026-11-19 产品决策：真人发的任务，**全体群成员都能编辑**（等同创建者 —— 改标题、
+    // 指派人、状态、描述、删除都可）。机器人发的任务（assignees 含 bot:）例外：真人不放行
+    // 全改，仍走原来的两档 + 成员窄档（指派人已被上面的 LOCKED 校验锁死，真人改不了）。
+    if lane.is_member && !is_bot_owned_todo(&def.assignees) {
+        return true;
+    }
     may_update_todo(def, actor, group_creator, group_admins, edits_structure) || lane.allows()
 }
 
@@ -1136,6 +1199,15 @@ pub async fn update_group_todo(
         let g = db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?;
         (def, g.creator, g.admins, g.members)
     };
+    // 机器人任务的指派人**恒锁定**为创建时的 bot: 标识（2026-11-19）：任何人（含群主）都不许
+    // 把机器人移除或加进真人 —— 否则"机器人发的任务只能指派机器人"就被绕过。这条校验与
+    // 权限无关，必须独立于 may_change_todo 之前执行。删除任务不动 assignee，跳过。
+    if !deleted && bot_assignee_locked_violation(&def.assignees, &assignees) {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_BOT_ASSIGNEE_LOCKED,
+            "机器人发布的任务，负责人固定为该机器人，不能修改",
+        ));
+    }
     // `None` ⇒ 保留库里原值（不让"只改状态"的请求把描述/图片清空）；
     // `Some(x)` ⇒ 用传来的（显式传空串即表示清空）。
     let description = match description {

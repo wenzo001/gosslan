@@ -930,14 +930,39 @@ export function openTodosForMe<
  *
  * 判据与后端 `may_update_todo` 必须一致（后端是权威、这里是显示用的镜像）。
  */
+/** 机器人指派人 id 前缀（与后端 group_files.rs::BOT_ASSIGNEE_PREFIX 同源，2026-11-19）。 */
+export const BOT_ASSIGNEE_PREFIX = "bot:";
+
+/** 这条 assignee 是不是机器人假身份；是则返回 botId。 */
+export function botIdOfAssignee(a: string): string | null {
+  return a.startsWith(BOT_ASSIGNEE_PREFIX) && a.length > BOT_ASSIGNEE_PREFIX.length
+    ? a.slice(BOT_ASSIGNEE_PREFIX.length)
+    : null;
+}
+
+/** 机器人发起的任务（指派人里含 bot:）——负责人被锁定，真人不能改指派人。 */
+export function isBotOwnedTodo(item: Pick<TodoItem, "assignees">): boolean {
+  return item.assignees.some((a) => botIdOfAssignee(a) !== null);
+}
+
+/**
+ * 我能不能改这条任务（显示用镜像，后端 `may_change_todo` 才是权威）。
+ *
+ * 2026-11-19 产品决策：真人任务**全体群成员可编辑**（等同创建者）；机器人任务例外，
+ * 真人不放开全改（指派人已被后端锁定），仍走原来的两档。
+ * `isMember` 由调用点传（成员上下文恒为 true），保留参数是为了"未加载群资料"时能收紧。
+ */
 export function canUpdateTodo(
   item: Pick<TodoItem, "creator" | "assignees">,
   actor: string,
   groupCreator: string,
   structural: boolean,
   groupAdmins: readonly string[] = [],
+  isMember: boolean = false,
 ): boolean {
-  // 创建者 / 群主 / 管理员：改什么都行。
+  // 真人任务：任何群成员都能改（含结构）。调用点必须显式确认是群成员才传 true。
+  if (isMember && !isBotOwnedTodo(item)) return true;
+  // 创建者 / 群主 / 管理员：改什么都行（机器人任务下也保留创建者那台网关的本机权限）。
   if (item.creator === actor || groupCreator === actor || groupAdmins.includes(actor)) return true;
   // 被指派人：能改描述 / 图片 / 指派人 / 状态，但不能改结构（标题 / 删除）。
   if (structural) return false;
@@ -951,7 +976,9 @@ export function canUpdateTodo(
 export function assigneesInGroup(assignees: readonly string[], members: readonly string[]): string[] {
   if (members.length === 0) return [...assignees];
   const allowed = new Set(members);
-  return assignees.filter((id) => allowed.has(id));
+  // bot: 假身份不在群成员表里，但合法（后端会校验 bot 存在/属于本群），必须放行否则机器人
+  // 指派人在保存/认领时被误删光（2026-11-19）。
+  return assignees.filter((id) => botIdOfAssignee(id) !== null || allowed.has(id));
 }
 
 /**
@@ -963,7 +990,10 @@ export function canEditAssignees(
   actor: string,
   groupCreator: string,
   groupAdmins: readonly string[] = [],
+  isMember: boolean = false,
 ): boolean {
+  // 真人任务：全体群成员可改指派人；机器人任务指派锁定，只能靠创建者那台网关改。
+  if (isMember && !isBotOwnedTodo(item)) return true;
   if (item.creator === actor) return true;
   if (groupCreator === actor || groupAdmins.includes(actor)) return true;
   return item.assignees.includes(actor);

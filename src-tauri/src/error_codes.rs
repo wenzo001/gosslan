@@ -583,6 +583,10 @@ pub const FAVORITE_DELETE_BATCH_TOO_LARGE: &str = "FAVORITE_DELETE_BATCH_TOO_LAR
 // 用 `coded(码, reject(...))` 外套一层：日志留痕与文案一字不丢，前端多一个可认的码。
 /// 群待办：被指派的人已经不在群里。
 pub const GROUP_TODO_ASSIGNEE_NOT_MEMBER: &str = "GROUP_TODO_ASSIGNEE_NOT_MEMBER";
+/// 群待办：机器人指派人（bot:）不存在 / 不是群机器人 / 跨群 —— 拒绝伪造指派。
+pub const GROUP_TODO_BOT_ASSIGNEE_INVALID: &str = "GROUP_TODO_BOT_ASSIGNEE_INVALID";
+/// 群待办：机器人发起的任务指派人被篡改（必须恒等于创建时的 bot: 标识，不可增删）。
+pub const GROUP_TODO_BOT_ASSIGNEE_LOCKED: &str = "GROUP_TODO_BOT_ASSIGNEE_LOCKED";
 /// 群待办：当前成员无权编辑该任务（human 带底层原因）。
 pub const GROUP_TODO_EDIT_FORBIDDEN: &str = "GROUP_TODO_EDIT_FORBIDDEN";
 /// 群待办：状态不允许归档。

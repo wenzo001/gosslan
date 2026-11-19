@@ -18,7 +18,7 @@
  * **权限**：与后端 `commands::may_change_todo` 一致（`canUpdateTodo` / `canEditAssignees` /
  * `canArchiveOrReopenTodo` 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
  */
-import { computed, nextTick, onBeforeUnmount, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from "vue";
 import { useEventListener, useResizeObserver } from "@vueuse/core";
 import {
   DropdownMenuContent,
@@ -51,10 +51,10 @@ import TodoAttrDateField from "@/components/TodoAttrDateField.vue";
 import TodoAttrTypeField from "@/components/TodoAttrTypeField.vue";
 import TodoAttrTagsField from "@/components/TodoAttrTagsField.vue";
 import CharCounter from "@/components/ui/CharCounter.vue";
-import type { TodoFocusRequest } from "@/types";
+import type { BotView, TodoFocusRequest } from "@/types";
 import type { TodoTagCandidate } from "@/api";
 import {
-  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, autoArchiveDaysLeft, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, foldTodoReplies, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
+  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, autoArchiveDaysLeft, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, foldTodoReplies, isBotOwnedTodo, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import {
   isTodoRowsLoaded,
   todoRowsLoadState,
@@ -155,7 +155,33 @@ const groupMembers = computed<string[]>(() => group.value?.members ?? []);
  * 而 `assigneesInGroup` 对空表是 fail-open（原样返回）—— 两件事刻意不同：
  * 前者是"不给你乱选"，后者是"别把历史指派误删光"。真要收缩成员表，等资料到位再说。
  */
-const assignableMembers = computed<string[]>(() => groupMembers.value);
+/**
+ * 本群机器人（假身份 `bot:<id>`）——机器人发的任务负责人就是它，也要出现在候选里（2026-11-19）。
+ * 与 GroupMemberPanel 同源：scope=group 且 target.groupId 匹配本群。
+ */
+const groupBots = ref<BotView[]>([]);
+async function loadGroupBots() {
+  try {
+    const all = await api.botList();
+    groupBots.value = all.filter((b) => b.scope === "group" && b.target.groupId === props.groupId);
+  } catch {
+    groupBots.value = [];
+  }
+}
+onMounted(() => void loadGroupBots());
+watch(() => props.groupId, () => void loadGroupBots());
+const groupBotAssignees = computed<string[]>(() => groupBots.value.map((b) => `bot:${b.botId}`));
+
+/** bot 假身份显示成机器人名（memberProfile 只认真实 device_id，bot: 会落到「未知成员」）。 */
+function displayMemberName(id: string): string {
+  if (id.startsWith("bot:")) {
+    const botId = id.slice(4);
+    return groupBots.value.find((b) => b.botId === botId)?.name ?? t("bot.unknownName", { id: botId });
+  }
+  return memberProfile(id).name;
+}
+
+const assignableMembers = computed<string[]>(() => [...groupMembers.value, ...groupBotAssignees.value]);
 
 /**
  * 行内状态切换的**乐观覆盖**：`todoId -> 临时状态`。
@@ -554,7 +580,7 @@ function statusText(s: TodoStatus): string {
 
 /** 指派人名（顿号连接；空 = 未指派）。 */
 function assigneeNames(x: TodoItem): string {
-  return x.assignees.map((a) => memberProfile(a).name).join(t("common.sep.list"));
+  return x.assignees.map((a) => displayMemberName(a)).join(t("common.sep.list"));
 }
 
 /**
@@ -572,7 +598,7 @@ function autoArchiveTip(x: TodoItem): string {
 
 // ---------------- 权限（显示用的镜像，后端才是权威） ----------------
 function canChangeStatus(x: TodoItem): boolean {
-  return canUpdateTodo(x, myId.value, groupCreator.value, false, groupAdmins.value);
+  return canUpdateTodo(x, myId.value, groupCreator.value, false, groupAdmins.value, myMembership.value);
 }
 /** 「我是不是本群成员」—— 删除已归档那一条窄档的判据（后端 `MemberLane.is_member` 的镜像）。 */
 const myMembership = computed(() => !!myId.value && groupMembers.value.includes(myId.value));
@@ -587,10 +613,10 @@ function canDelete(x: TodoItem): boolean {
   return canEditStructure(x) || canDeleteArchived(x);
 }
 function canEditStructure(x: TodoItem): boolean {
-  return canUpdateTodo(x, myId.value, groupCreator.value, true, groupAdmins.value);
+  return canUpdateTodo(x, myId.value, groupCreator.value, true, groupAdmins.value, myMembership.value);
 }
 function canEditAssigneesOf(x: TodoItem): boolean {
-  return canEditAssignees(x, myId.value, groupCreator.value, groupAdmins.value);
+  return canEditAssignees(x, myId.value, groupCreator.value, groupAdmins.value, myMembership.value);
 }
 /**
  * 「归档」这一档对**全体群成员**开放（用户 2026-09-24 #37），
@@ -1063,9 +1089,17 @@ function editFromDetail(x: TodoItem) {
   closeDetail();
   startEdit(x);
 }
+/** 正在编辑的任务是机器人发的 ⇒ 指派人锁定（负责人恒为机器人，不可取消/换人）。 */
+const draftAssigneeLocked = computed(() => !!draft.value && isBotOwnedTodo(draft.value));
+
 function toggleAssignee(id: string) {
   const d = draft.value;
   if (!d || !assignableMembers.value.includes(id)) return;
+  // 机器人任务：指派人锁定，任何点击都不改（后端也有同款 LOCKED 校验，这里只是显示层的即时反馈）。
+  if (draftAssigneeLocked.value) {
+    app.toast(t("todo.botAssigneeLocked"), "info");
+    return;
+  }
   d.assignees = d.assignees.includes(id) ? d.assignees.filter((a) => a !== id) : [...d.assignees, id];
 }
 
@@ -2055,7 +2089,7 @@ watch(
             :can-edit-attributes="myMembership"
             :can-claim="canClaim(detailItem)"
             :tag-candidates="tagCandidates"
-            :name-of="(id: string) => memberProfile(id).name"
+            :name-of="displayMemberName"
             :mention-names="mentionNames"
             :self-mention="selfMention"
             :history="detailHistory"
@@ -2112,7 +2146,7 @@ watch(
     :can-claim="detailItem ? canClaim(detailItem) : false"
     :can-edit-attributes="myMembership"
     :tag-candidates="tagCandidates"
-    :name-of="(id: string) => memberProfile(id).name"
+    :name-of="displayMemberName"
     :mention-names="mentionNames"
     :self-mention="selfMention"
     :replies="detailReplies"
@@ -2324,10 +2358,15 @@ watch(
                 : 'border-[var(--gosslan-border)] text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'
             "
             :aria-pressed="draft.assignees.includes(id)"
+            :aria-disabled="draftAssigneeLocked"
+            :title="draftAssigneeLocked ? t('todo.botAssigneeLocked') : undefined"
             @click="toggleAssignee(id)"
           >
             <Icon name="check" v-if="draft.assignees.includes(id)" class="h-3.5 w-3.5" />
-            {{ memberProfile(id).name }}
+            {{ displayMemberName(id) }}
+            <span v-if="id.startsWith('bot:')" class="text-caption text-[var(--gosslan-text-2)]">
+              · {{ t("todo.botAssigneeTag") }}
+            </span>
           </button>
         </div>
       </div>

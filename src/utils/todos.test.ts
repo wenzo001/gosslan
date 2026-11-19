@@ -14,6 +14,8 @@ import {
   canArchiveOrReopenTodo,
   canEditAssignees,
   canUpdateTodo,
+  botIdOfAssignee,
+  isBotOwnedTodo,
   foldTodos,
   isEffectivelyArchived,
   isTodoTerminalStatus,
@@ -1375,4 +1377,36 @@ test("首屏三态：成功读到过之后，残留的失败记录不能把内�
   const rows = { "group:a": [] };
   const state = todoRowsLoadState(rows, { "group:a": "上一次失败" }, "group:a");
   assert.deepEqual(state, { status: "ready", error: "" });
+});
+
+// ---------------- 机器人指派人 + 真人任务全员可编辑（2026-11-19）----------------
+
+test("botIdOfAssignee / isBotOwnedTodo：识别 bot: 假身份", () => {
+  assert.equal(botIdOfAssignee("bot:b1"), "b1");
+  assert.equal(botIdOfAssignee("bot:"), null, "空 botId 不算");
+  assert.equal(botIdOfAssignee("alice"), null, "真人 device_id 不算");
+  assert.equal(isBotOwnedTodo({ assignees: ["bot:b1"] }), true);
+  assert.equal(isBotOwnedTodo({ assignees: ["alice", "bot:b1"] }), true);
+  assert.equal(isBotOwnedTodo({ assignees: ["alice"] }), false);
+});
+
+test("真人任务：全体群成员可编辑（含结构），非成员仍不行", () => {
+  const item = { creator: "alice", assignees: ["alice"] };
+  assert.ok(canUpdateTodo(item, "bob", "owner", true, [], true), "成员改标题/删除");
+  assert.ok(canUpdateTodo(item, "bob", "owner", false, [], true), "成员改状态/指派");
+  assert.ok(canEditAssignees(item, "bob", "owner", [], true), "成员改指派人");
+  assert.equal(canUpdateTodo(item, "outsider", "owner", false, [], false), false, "非成员不可改");
+});
+
+test("机器人任务：不随真人任务全放开，普通成员不能改结构/指派", () => {
+  const item = { creator: "gateway", assignees: ["bot:b1"] };
+  assert.equal(canUpdateTodo(item, "bob", "owner", true, [], true), false, "机器人任务结构锁死");
+  assert.equal(canEditAssignees(item, "bob", "owner", [], true), false, "机器人任务指派锁死");
+  // 但创建者那台网关仍可改（后端 creator = 网关 device_id）。
+  assert.ok(canUpdateTodo(item, "gateway", "owner", true, [], true));
+});
+
+test("assigneesInGroup 放行合法 bot: 假身份，否则机器人指派人被误删", () => {
+  const out = assigneesInGroup(["bot:b1", "alice", "ghost"], ["alice"]);
+  assert.deepEqual(out, ["bot:b1", "alice"], "bot 保留、真人成员保留、非成员剔除");
 });
