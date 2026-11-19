@@ -339,9 +339,13 @@ function findChrome() {
     BROWSER_SOURCE = "GOSSLAN_CHROME 指定";
     return envBin;
   }
+  // 平台路径：macOS 是 Library/Caches，Linux 是 ~/.cache，**Windows 是 %LOCALAPPDATA%\\ms-playwright**
+  // （2026-11-18 Windows 腿实测：旧写法按 HOME 拼 .cache，Windows 上永远空手而归）。
   const base = process.platform === "darwin"
     ? path.join(os.homedir(), "Library", "Caches", "ms-playwright")
-    : path.join(process.env.HOME || os.homedir(), ".cache", "ms-playwright");
+    : process.platform === "win32"
+      ? path.join(process.env.LOCALAPPDATA || os.homedir(), "ms-playwright")
+      : path.join(process.env.HOME || os.homedir(), ".cache", "ms-playwright");
   const cands = [];
   if (fs.existsSync(base)) {
     for (const dir of fs.readdirSync(base)) {
@@ -349,6 +353,9 @@ function findChrome() {
       cands.push(path.join(base, dir, "chrome-mac-arm64", "Google Chrome for Testing.app",
         "Contents", "MacOS", "Google Chrome for Testing"));
       cands.push(path.join(base, dir, "chrome-linux64", "chrome"));
+      // Windows 播放wright 缓存布局（新旧两档：chrome-win / chrome-win64）
+      cands.push(path.join(base, dir, "chrome-win", "chrome.exe"));
+      cands.push(path.join(base, dir, "chrome-win64", "chrome.exe"));
     }
   }
   const pinned = cands.find(usable);
@@ -364,7 +371,17 @@ function findChrome() {
     "/usr/bin/google-chrome",
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
-  ];
+    // Windows 系统浏览器（2026-11-18 补：候选里原先一条 Windows 路径都没有 ⇒ 装了也白装）
+    // Brave 与 macOS 那一档同序（本机实测用它跑，见文件头注释）
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+    process.env["ProgramFiles(x86)"] && path.join(process.env["ProgramFiles(x86)"], "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, "Google", "Chrome", "Application", "chrome.exe"),
+    process.env["ProgramFiles(x86)"] && path.join(process.env["ProgramFiles(x86)"], "Google", "Chrome", "Application", "chrome.exe"),
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
+    process.env["ProgramFiles(x86)"] && path.join(process.env["ProgramFiles(x86)"], "Microsoft", "Edge", "Application", "msedge.exe"),
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
+  ].filter(Boolean);
   const fallback = system.find(usable);
   if (fallback) {
     BROWSER_SOURCE = cands.some((p) => fs.existsSync(p))
