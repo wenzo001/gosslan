@@ -1175,7 +1175,7 @@ CASES: list[Case] = [
             "test", "--lib", "--features", "bluetooth", "creator_recall_authority_is_wired_on_both_ends"
         ),
         cwd=TAURI,
-        expect_fail_hint="群撤回命令必须按本地 creator 现选档位",
+        expect_fail_hint="群撤回命令必须按本地群主/管理员身份现选档位",
         tags=["rust", "protocol", "privacy", "new-guards", "group-owner-recall"],
     ),
 ]
