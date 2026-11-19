@@ -957,6 +957,7 @@ network::file::tests::ble_only_link_must_not_start_a_hopeless_large_file
 network::file::tests::case_insensitive_and_multidot_and_chinese
 network::file::tests::chunk_length_may_fill_declared_size_but_must_not_exceed_it
 network::file::tests::chunk_seq_rule_only_rejects_real_gaps
+network::file::tests::clamp_resume_to_size_falls_back_to_full_send_when_out_of_range
 network::file::tests::code_extensions
 network::file::tests::completed_transfer_rejects_duplicate_offer_without_resend
 network::file::tests::content_ledger_write_failure_leaves_no_false_complete
@@ -1001,6 +1002,7 @@ network::file::tests::invalid_sha256_format_is_rejected
 network::file::tests::ledger_note_bounds_the_sqlite_error_text
 network::file::tests::ledger_primary_and_fallback_both_failing_says_the_row_may_stay_active
 network::file::tests::ledger_primary_write_failure_emits_one_diagnostic_note
+network::file::tests::live_file_snapshot_decision_uses_mtime_age
 network::file::tests::live_receiver_must_tell_the_sender_where_it_actually_is
 network::file::tests::markdown_is_a_document_not_code
 network::file::tests::matching_position_still_accepts_idempotently

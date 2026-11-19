@@ -598,8 +598,10 @@ fn already_have_shortcut_shares_the_send_finalization() {
              少于 3 = 又出现一条「发送成功却没落终态」的出口 —— 用户看到的是文件气泡一直转圈"
     );
     let arm = rust_fn_body(file, "pub async fn send_file_from_path_at(");
+    // 「对方已收完」用 n == size（恰好等于声明大小）；n > size 是旧/脏台账，走另一条
+    // RESUME_OFFSET_STALE 分支整份重发，不能再当 AlreadyHave（否则用户拿到旧字节）。
     let at = arm
-        .find("if n >= size && size > 0")
+        .find("if n == size && size > 0")
         .expect("Offer 阶段「对方已收完」那条分支的判据锚点不见了");
     assert!(
         arm[at..]
