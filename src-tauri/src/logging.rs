@@ -130,11 +130,10 @@ mod logcat {
 const MAX_MEM_LOGS: usize = 500;
 /// 落盘遇到"盘满"类错误后的**退避窗口**（行）：这段时间内不再试写文件（内存环照常），
 /// 窗口到点再试一次。为什么不"每条日志查一次可用空间"：查可用空间要 `statvfs` /
-/// `GetDiskFreeSpaceExW`，前者需要新依赖（本仓默认构建零新增第三方 crate，ADR-0015 §2），
-/// 后者只在 `bluetooth` feature 的 Windows 构建里才有 `windows` crate ⇒ 为一条日志
-/// 加一次系统调用 + 一个依赖不值。**盘真满时第一次写失败就会带 `StorageFull` /
-/// `ENOSPC(28)` / `ERROR_HANDLE_DISK_FULL(39)` / `ERROR_DISK_FULL(112)`**，
-/// 那个信号比任何预防性查询都准，因为它量的就是我们要做的这次写。
+/// `GetDiskFreeSpaceExW`（后者经 `windows-sys`，已随 `storage/disk_space.rs` 在册，
+/// 无新增依赖 —— 见 W13），但为**每一条日志**加一次系统调用仍不值。**盘真满时第一次写
+/// 失败就会带 `StorageFull` / `ENOSPC(28)` / `ERROR_HANDLE_DISK_FULL(39)` /
+/// `ERROR_DISK_FULL(112)`**，那个信号比任何预防性查询都准，因为它量的就是我们要做的这次写。
 const LOG_RETRY_BACKOFF_LINES: u64 = 256;
 /// 单个日志文件大小上限（字节），超出即轮转。
 const MAX_LOG_FILE_BYTES: u64 = 512 * 1024;
@@ -599,7 +598,16 @@ pub(crate) fn is_disk_full(e: &std::io::Error) -> bool {
         return true;
     }
     let t = e.to_string().to_lowercase();
-    t.contains("no space") || t.contains("not enough space") || t.contains("quota")
+    // 文本兜底（当上层包装丢掉了 raw_os_error 时靠它认盘满）。覆盖英/中/日三语，
+    // 因为非英文 Windows 的系统错误文本不含 "no space"。
+    // 注意 "quota"（管理员配额限制）已从盘满里拆出：那是另一种解法（找管理员提配额），
+    // 归成盘满会让用户白清磁盘。
+    t.contains("no space")
+        || t.contains("not enough space")
+        || t.contains("磁盘空间不足")
+        || t.contains("磁盘已满")
+        || t.contains("空间不够")
+        || t.contains("ディスクの空き領域が不足")
 }
 
 /// 哪些行必须"写完即持久"（fsync）。
@@ -2767,6 +2775,15 @@ mod tests {
         // 文本兜底：某个平台既给不出这些码又确实写不下
         let by_text = std::io::Error::other("There is not enough space on the disk");
         assert_eq!(classify_write_failure(&by_text), Some(FAIL_CODE_DISK_FULL));
+        // 非英文 Windows：raw_os_error 丢失时，中文文本兜底仍须认出盘满（W8）。
+        let by_text_zh = std::io::Error::other("磁盘空间不足，无法完成操作");
+        assert_eq!(
+            classify_write_failure(&by_text_zh),
+            Some(FAIL_CODE_DISK_FULL)
+        );
+        // 反例：配额限制不是"磁盘满"，归错类会让用户白清磁盘。
+        let quota = std::io::Error::other("The disk quota has been exceeded");
+        assert_eq!(classify_write_failure(&quota), None);
 
         // 反例：权限不足**不是**盘满 —— 归错类会让用户去清磁盘（白忙一场），
         // 而真正的解法是改目录权限。

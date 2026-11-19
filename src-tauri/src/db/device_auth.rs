@@ -418,16 +418,63 @@ pub fn touch_last_used(conn: &Connection, rp_origin: &str, client_id: &str, now:
     Ok(())
 }
 
+/// 绑定元数据（**只含非敏感列、不碰 secret_key**）：撤销/移除的 kid 来源。
+///
+/// 为什么单独取而不是复用 `get_binding`：`get_binding` 会解平台密钥库信封，异机封的
+/// 密钥（Windows DPAPI 绑机器 / Android Keystore 绑设备）在这台机器上解不开 ⇒ Err，
+/// 把「撤销本地生效」这个**只需要 UPDATE status** 的动作绑死在无关的「密钥库能否打开」
+/// 前提上（2026-11-19 真机事故：历史绑定能显示、删不掉）。撤销/移除拿 kid 只为通知 RP，
+/// 绝不读私钥 ⇒ 用这个轻量查询，失败只降级为「通知不到」，本地操作照常生效。
+pub struct RpBindingMeta {
+    pub kid: String,
+    pub status: String,
+}
+
+/// 取 kid/status（不解密、不升级密钥库、不写库）。
+pub fn get_binding_meta(
+    conn: &Connection,
+    rp_origin: &str,
+    client_id: &str,
+) -> Result<Option<RpBindingMeta>> {
+    conn.query_row(
+        "SELECT kid, status FROM rp_device_bindings WHERE rp_origin = ?1 AND client_id = ?2",
+        params![rp_origin, client_id],
+        |r| Ok(RpBindingMeta { kid: r.get(0)?, status: r.get(1)? }),
+    )
+    .optional()
+}
+
 /// 撤销绑定：只置 status/revoked_at，**不删密钥行**（旧公钥须由 RP 账号页撤销，本地保留审计痕迹）。
 /// 返回是否真的撤销了一条 active 绑定（幂等：已撤销/不存在 ⇒ false）。
 ///
 /// `WHERE status = 'active'` 即「撤销只允许 active」：pending_registration / registration_failed
 /// 这类未登记完成的绑定不许被撤销（它们应走批准重试重新登记，撤销没有意义）。
+/// 中间态/脏值/撤销态的清理走 [`remove_binding`]（物理删除）。
 pub fn revoke_binding(conn: &Connection, rp_origin: &str, client_id: &str, now: i64) -> Result<bool> {
     let n = conn.execute(
         "UPDATE rp_device_bindings SET status = 'revoked', revoked_at = ?3 \
          WHERE rp_origin = ?1 AND client_id = ?2 AND status = 'active'",
         params![rp_origin, client_id, now],
+    )?;
+    Ok(n > 0)
+}
+
+/// 移除绑定：**物理删除**任意状态的本地行（含中间态 / 撤销态 / 脏 status）。
+///
+/// 与 `revoke_binding` 的分工：
+/// - `revoke` = 撤销 active 授权、保留审计痕迹、通知 RP 作废公钥；
+/// - `remove` = 本地彻底清理（不再持有这把密钥），让「能绑也能解、所有状态可结束」闭环。
+///
+/// 为什么要它：历史遗留的中间态（pending_registration / registration_failed）、脏 status、
+/// 以及「对方账号页已解绑、本机还留着 revoked 痕迹」的行，原实现既无 UI 入口、DB 也只允许
+/// 撤 active ⇒ 用户永远清不掉。移除后该 RP 可以重新走完整绑定流程（生成新密钥）。
+///
+/// **绝不解密 secret_key**：删行只需主键定位。密钥库打不开照样能清理。
+/// 返回是否真的删掉了一行（不存在 ⇒ false，幂等）。
+pub fn remove_binding(conn: &Connection, rp_origin: &str, client_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "DELETE FROM rp_device_bindings WHERE rp_origin = ?1 AND client_id = ?2",
+        params![rp_origin, client_id],
     )?;
     Ok(n > 0)
 }

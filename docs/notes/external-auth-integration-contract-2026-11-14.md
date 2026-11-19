@@ -8,6 +8,19 @@
 > 不再强制 HTTPS；② 确认页**默认全勾、一键允许**（此前是默认全关 + 同 RP 记忆预勾）。
 > 给接入方看的完整说明以 [`external-integration-guide-2026-11-14.md`](external-integration-guide-2026-11-14.md)
 > 顶部的 2026-11-17 更新块为准。
+>
+> **2026-11-19 变更**（解绑与生产接入）：① **撤销与私钥解密解耦** —— `device_auth_revoke`
+> 只读轻量元数据（kid/status，见 `db::get_binding_meta`），不再解平台密钥库信封 ⇒ 异机封的
+> 密钥（DPAPI 绑机器 / Keystore 绑设备）打不开时，本地撤销仍立即生效（历史绑定"能显示、
+> 删不掉"的真机根因已修）；② **新增 `device_auth_remove_binding`**（物理删除本地行，任意
+> 状态）——中间态 / 失败态 / 撤销态 / 脏 status 都有"彻底结束"的出口，移除后该 RP 可重新
+> 完整绑定；③ **重复深链去重** —— 后端同 request_id 的重复深链不再重复 emit，前端同
+> request_id 不重置用户勾选（见 `is_duplicate_live_pending` / `shouldResetChecksForPrompt`）；
+> ④ **内网自签证书** —— reqwest 同时启用 webpki 公共根 + `rustls-tls-native-roots`，IT 装入
+> 系统信任库的企业 CA 生效，仍逐笔校验证书（不开 `danger_accept_invalid_certs`），失败文案
+> 按证书/连接/超时分类给可操作引导；⑤ App Link 真域名与 `assetlinks.json` 仍是**接入方部署
+> 项**（`NOT RUN`），未落地时用设置页"粘贴授权链接"兜底。复跑判据：`npm test`、
+> `cargo test --features bluetooth device_auth`、`node scripts/check-doc-citations.mjs`。
 > 范围：外部 RP 设备绑定/快捷认证、外链窗口、认证/分享深链、网页到聊天的分享
 
 ## 1. 文档定位
@@ -57,7 +70,8 @@
 - `denied`：可观察性已闭合。`DeviceAuthOutcome` 新增 `rp_notified`：`false` = 本机已拒绝、RP 未收到（事务保留可重试、留具名 `code=` 日志），`true` = RP 确认收到（此时才消费事务）；`decision` 仍恒为 `denied`，保持兼容语义。
 - `expired`：客户端已加本地 TTL 兜底（取 RP `expires_at` 与插入后固定上限的较早者）与读取时的明确过期错误码；仍是惰性清理、无后台定时器、无 RP 侧终态回写。
 - `pending_registration` / `registration_failed`：均已落地（见 `src-tauri/src/db/device_auth.rs`）。失败态可重试，`active` 不许被回退。
-- `active` / `revoked`：**双边撤销已接**（客户端侧）。`device_auth_revoke` 先本地立即生效，再按 metadata 的 `revocation_endpoint` 尽力回写 RP；回写结果由 `DeviceAuthRevokeOutcome.rp_notified` 单独表达，界面把「本机已撤、对方没收到」分开提示。RP 没提供端点的老 RP 仍只做本地撤销（不是失败）。撤销通知**不回 seed、不回断言**，只回 `client_id` 与 `kid`（见 §4「撤销双边语义」）。
+- `active` / `revoked`：**双边撤销已接**（客户端侧）。`device_auth_revoke` 先本地立即生效，再按 metadata 的 `revocation_endpoint` 尽力回写 RP；回写结果由 `DeviceAuthRevokeOutcome.rp_notified` 单独表达，界面把「本机已撤、对方没收到」分开提示。RP 没提供端点的老 RP 仍只做本地撤销（不是失败）。撤销通知**不回 seed、不回断言**，只回 `client_id` 与 `kid`（见 §4「撤销双边语义」）。2026-11-19 起撤销路径**不解密私钥**（只用 `db::get_binding_meta` 取 kid/status），异机密钥库打不开也能撤销。
+- **全状态可结束**（2026-11-19）：新增 `device_auth_remove_binding`（物理删除本地行，任意状态）。`revoke` 只作用于 `active` 并保留审计痕迹；`remove` 用于清理中间态 / 失败态 / `revoked` / 脏 status，移除后同一 RP 可重新走完整绑定流程。设置页对每一行都给出"撤销 / 重发通知 / 移除"入口（二次确认防误触）。判据：`remove_binding_deletes_every_status`、`revoke_meta_reads_kid_without_opening_foreign_keystore_envelope`、`deviceAuthRevokeWiring.test.ts`。
 - 队列边界：满载不再静默淘汰最老事务，改为返回明确错误「暂不能处理」并留具名 `code=` 日志；新事务不会顶掉用户正在看的确认页。
 - 断言时效：断言有效期常量仍只约束签名本身；事务 TTL 由上面的本地兜底与 RP `expires_at` 共同决定。
 - `/share` 深链：解析 + 内联闭环均已落地（面板、会话选择、显式发送、粘贴兜底都已接线，见 §6）。**定向分享已接**（`to` + `to_kind` 预填目标、目标不存在整笔拒、分享回执可选）。仍**没有**：受控 `share_request`（缺 RP 端点）、文件分享，见 §11。

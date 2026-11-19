@@ -761,12 +761,34 @@ const backups = new Map();
 // stall-mid 留下一个 B，后续 10 轮全灭）。只按**路径全等**精确匹配、逐 PID 杀 ——
 // 用户自己开的实例跑的是另一份构建（main tree 的 target/release），路径不同，不碰。
 if (process.platform === "win32") {
-  const ps = `Get-Process gosslan -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq '${BIN.replaceAll("'", "''")}' } | ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction Stop; Write-Output ("killed " + $_.Id) } catch {} }`;
+  // 按**可执行文件全路径**精确匹配（不经进程名过滤）：GOSSLAN_E2E_BIN 可能是改名过的
+  // 二进制，Get-Process gosslan 会漏掉它 ⇒ 清场静默失效（W5）。
+  const safeBin = BIN.replaceAll("'", "''");
+  const ps = `
+    $target = '${safeBin}'
+    $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -eq $target })
+    foreach ($h in $hits) {
+      try { Stop-Process -Id $h.ProcessId -Force -ErrorAction Stop; Write-Output ("killed " + $h.ProcessId) }
+      catch { Write-Output ("KILL_FAILED " + $h.ProcessId + " " + $_.Exception.Message) }
+    }`;
   const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps],
     { encoding: "utf8", timeout: 30_000 });
-  const killed = (r.stdout || "").trim();
-  if (killed) console.error(`⚠️ 起跑前清场：${killed.replaceAll("\n", "、")}（上一轮残留的被测实例）`);
-  if (killed) await sleep(500);
+  const lines = (r.stdout || "").trim().split("\n").map((s) => s.trim()).filter(Boolean);
+  const failed = lines.filter((l) => l.startsWith("KILL_FAILED"));
+  const killed = lines.filter((l) => l.startsWith("killed "));
+  if (killed.length) console.error(`⚠️ 起跑前清场：${killed.join("、")}（上一轮残留的被测实例）`);
+  if (failed.length) console.error(`⚠️ 起跑前清场失败（这些 PID 可能仍占着数据库）：${failed.join("；")}`);
+  if (killed.length || failed.length) {
+    // 不再固定 500ms 就往下走：循环确认目标 PID 真的消失（最多 ~5s），
+    // 否则后面的库备份会撞 EBUSY，逐轮速败。
+    for (let i = 0; i < 20; i++) {
+      const still = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command",
+        `$p = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq '${safeBin}' }); if ($p.Count) { Write-Output $p.Count }`],
+        { encoding: "utf8", timeout: 15_000 });
+      if (!(still.stdout || "").trim()) break;
+      await sleep(250);
+    }
+  }
 }
 try {
   fs.mkdirSync(RUN_DIR, { recursive: true });

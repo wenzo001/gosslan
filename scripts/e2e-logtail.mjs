@@ -94,6 +94,28 @@ export function countLogFields(file, prefix, fields) {
  * 时退化成 copy + unlink —— 语义仍等价于 rename（目标存在则覆盖）。
  * 2026-11-18 Windows 腿实测：裸 renameSync 在 C:→D: 一律 EXDEV ⇒ E2E 整层速败。
  */
+/** 忙等一下（Stop-Process 后句柄释放的窗口期）。 */
+function busyWait(ms = 200) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * 对每个文件系统操作套 EBUSY/EPERM 重试；非占用类错误（含 EXDEV）原样上抛给调用方分流。
+ * ⚠️ `fs.rmSync({force:true})` 的 force 只忽略 ENOENT，不忽略 EBUSY/EPERM ——
+ *    所以 copy + unlink 这一步必须自己重试，否则跨盘兜底在占用窗口期照样整层速败。
+ */
+function withBusyRetry(op, tries) {
+  for (let i = 0; ; i++) {
+    try { return op(); } catch (e) {
+      if ((e.code === "EBUSY" || e.code === "EPERM") && i < tries) {
+        busyWait(200 * (i + 1));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
 export function moveFile(src, dst, tries = 5) {
   for (let i = 0; ; i++) {
     try {
@@ -101,13 +123,20 @@ export function moveFile(src, dst, tries = 5) {
       return;
     } catch (e) {
       if (e.code === "EXDEV") {
-        fs.copyFileSync(src, dst);
-        fs.rmSync(src, { force: true });
+        // 跨卷：copy + unlink 三步都要走重试（目标写入、源删除都可能撞占用窗口）。
+        // 中途失败清掉可能留下的半截目标文件（best-effort），不静默吞。
+        try {
+          withBusyRetry(() => fs.copyFileSync(src, dst), tries);
+          withBusyRetry(() => fs.rmSync(src, { force: true }), tries);
+        } catch (copyErr) {
+          try { fs.rmSync(dst, { force: true }); } catch {}
+          throw copyErr;
+        }
         return;
       }
-      // EBUSY：句柄刚释放的窗口期（2026-11-19 实测 Stop-Process 后立刻搬必撞上）
-      if (e.code === "EBUSY" && i < tries) {
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+      // EBUSY/EPERM：句柄刚释放的窗口期（2026-11-19 实测 Stop-Process 后立刻搬必撞上）
+      if ((e.code === "EBUSY" || e.code === "EPERM") && i < tries) {
+        busyWait();
         continue;
       }
       throw e;

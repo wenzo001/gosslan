@@ -1073,6 +1073,7 @@ pub fn run() {
             commands::device_auth_deny,
             commands::device_auth_list_bindings,
             commands::device_auth_revoke,
+            commands::device_auth_remove_binding,
             commands::device_auth_export_bindings,
             commands::device_auth_preview_import,
             commands::device_auth_apply_import,

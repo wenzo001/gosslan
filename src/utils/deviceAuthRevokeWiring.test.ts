@@ -126,3 +126,47 @@ test("重试：本地早已撤销时仍要能再通知一次 RP", () => {
   );
   assert.match(sec, /deviceAuth\.revokeRenotify/, "缺「重发撤销通知」按钮文案");
 });
+
+test("解绑解耦判据：撤销/移除只读 kid 元数据，绝不解密 secret_key（历史绑定删不掉的根因）", () => {
+  const rust = read(RUST_CMD);
+  const cmdAt = rust.indexOf("pub async fn device_auth_revoke(");
+  const body = rust.slice(cmdAt, rust.indexOf("\n}\n", cmdAt));
+  // 撤销命令体必须走不解密的 get_binding_meta，绝不能调 get_binding/get_binding_with_secrets。
+  assert.match(body, /get_binding_meta/, "撤销没有走轻量元数据查询 ⇒ 异机密钥库打不开时本地撤销会被卡死");
+  assert.doesNotMatch(body, /get_binding\s*\(/, "撤销里出现 get_binding（会解密）⇒ 2026-11-19 事故复发");
+  assert.doesNotMatch(body, /list_bindings_with_secrets/, "撤销不该触碰任何解私钥的路径");
+
+  // 数据层必须提供不解密的 kid 查询与「任意状态物理删除」。
+  const db = read("src-tauri/src/db/device_auth.rs");
+  assert.match(db, /pub fn get_binding_meta\(/, "缺不解密的 kid 元数据查询");
+  assert.match(db, /pub fn remove_binding\(/, "缺任意状态的物理移除能力（中间态/脏值删不掉）");
+  // remove_binding 的 DELETE 不带 status 条件 —— 否则中间态/脏值照样删不掉。
+  const rmAt = db.indexOf("pub fn remove_binding(");
+  const rmBody = db.slice(rmAt, db.indexOf("\n}\n", rmAt));
+  assert.match(rmBody, /DELETE FROM rp_device_bindings WHERE rp_origin = \?1 AND client_id = \?2/,
+    "移除必须是纯主键删除（不带 status 条件），否则全状态走不通");
+  assert.doesNotMatch(rmBody, /status/, "移除语句出现 status 条件 ⇒ 中间态/脏值删不掉");
+});
+
+test("全状态走通判据：新 command 已注册（lib.rs / 架构图 / api / 前端）", () => {
+  const lib = read("src-tauri/src/lib.rs");
+  assert.match(lib, /commands::device_auth_remove_binding/, "新 command 未在 lib.rs 注册 ⇒ 前端调用找不到");
+  const map = read("docs/ARCHITECTURE-MAP.html");
+  assert.match(map, /\["device_auth_remove_binding"/, "架构地图 CMDS 未登记新 command ⇒ 架构守门红");
+  const api = read("src/api/index.ts");
+  assert.match(api, /invoke<boolean>\("device_auth_remove_binding"/, "api 门面缺移除方法");
+  const store = read("src/stores/useDeviceAuthStore.ts");
+  assert.match(store, /async function remove\(/, "store 缺移除动作");
+  const sec = read("src/components/settings/AuthorizedAppsSection.vue");
+  assert.match(sec, /onRemove/, "设置页缺移除入口 ⇒ 中间态/撤销态仍无出口");
+});
+
+test("重复展示判据：后端 emit 去重 + 前端同 request_id 不重置勾选", () => {
+  const rust = read(RUST_CMD);
+  assert.match(rust, /fn is_duplicate_live_pending\(/, "后端缺重复深链判定");
+  const handleAt = rust.indexOf("pub async fn handle_device_auth_link(");
+  const body = rust.slice(handleAt, rust.indexOf("\n/// 取（或建）同一 RP", handleAt));
+  assert.match(body, /if emit \{[\s\S]*?emit\("device-auth-request"/, "重复事务不应 emit（去重开关未生效）");
+  const modal = read("src/components/DeviceAuthConfirmModal.vue");
+  assert.match(modal, /shouldResetChecksForPrompt\(store\.pending, p\)/, "确认页未按 request_id 判断勾选重置");
+});

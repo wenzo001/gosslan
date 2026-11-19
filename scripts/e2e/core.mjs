@@ -699,13 +699,21 @@ export function launch(inst) {
 }
 export async function stopAll() {
   for (const [n, p] of procs) {
-    if (p.exitCode === null) p.kill("SIGTERM");
-    try {
-      await Promise.race([
-        new Promise((r) => p.once("exit", r)),
-        sleep(8000).then(() => { if (p.exitCode === null) p.kill("SIGKILL"); }),
-      ]);
-    } catch { /* 已经退了 */ }
+    const alive = () => {
+      try { process.kill(p.pid, 0); return true; } catch { return false; }
+    };
+    // 已经退出的进程直接跳过：否则 `p.once("exit")` 永远不会再触发（事件已发过），
+    // 只能白等 race 的 8s 超时。多轮 E2E 里每个已退出实例省 8s。
+    if (!alive()) { procs.delete(n); continue; }
+    p.kill("SIGTERM");
+    await Promise.race([
+      new Promise((r) => p.once("exit", r)),
+      sleep(8000).then(() => { if (alive()) p.kill("SIGKILL"); }),
+    ]);
+    // SIGKILL 之后必须**等 pid 真的消失**再往下走：race 的超时分支发完 SIGKILL 就
+    // resolve 了，Windows 上进程回收稍慢 ⇒ 下面的 procsLeft() 会误报"仍有实例活着"（假红）。
+    // 与 stopOne 同一口径：40 × 250ms 的存活探测循环。
+    for (let i = 0; i < 40 && alive(); i++) await sleep(250);
     procs.delete(n);
   }
   // 残留必须是 0 —— 「没清理干净」本身就是失败，不许静默
@@ -1057,14 +1065,40 @@ export function thawProc(pid) {
 function icacls(args) {
   return spawnSync("icacls", args, { encoding: "utf8", timeout: 20_000 });
 }
+// icacls 的 trustee **不能带字面引号**：spawnSync 用参数数组直接传给 CreateProcess
+// （不经 cmd shell），一个数组项就是一个 argv。加引号会让 icacls 把 `"USER` 当成用户名，
+// 把原本在 Windows 真机验证过的 deny 写法弄坏。用户名含空格也无需引号 —— argv 本身就是完整的。
+// ⚠️ 失败判据只用「退码 + 明确的错误关键词」，**绝不能匹配裸 "failed/失败"**：
+//    icacls 成功时也打印 "Successfully processed 1 files; Failed processing 0 files"，
+//    用 /failed/i 会把成功误判成失败。
+const ICACLS_DENIED = /access is denied|拒绝访问|the parameter is incorrect|参数不正确|invalid parameter|无效的参数/i;
+function icaclsUser() {
+  const u = process.env.USERNAME || "";
+  if (!u) throw new Error("icacls：环境变量 USERNAME 为空，无法构造 trustee");
+  return u;
+}
 export function denyDirWrites(dir) {
   if (process.platform !== "win32") { fs.chmodSync(dir, 0o500); return; }
-  const r = icacls([dir, "/deny", `${process.env.USERNAME}:(WD,AD,DC)`]);
-  if (r.status !== 0) throw new Error(`icacls deny 失败：${(r.stderr || r.stdout || "").trim()}`);
+  const user = icaclsUser();
+  const r = icacls([dir, "/deny", `${user}:(WD,AD,DC)`]);
+  const text = (r.stderr || r.stdout || "").trim();
+  if (r.status !== 0 || ICACLS_DENIED.test(text)) {
+    throw new Error(`icacls deny 失败：${text}`);
+  }
 }
 export function allowDirWrites(dir) {
   if (process.platform !== "win32") { fs.chmodSync(dir, 0o700); return; }
-  icacls([dir, "/remove:d", process.env.USERNAME]); // deny ACE 不存在时退码非 0，属正常
+  // /remove:d 的 trustee 不带 (perm)；deny ACE 不存在时 stdout 说"没有找到"属正常。
+  const user = icaclsUser();
+  const r = icacls([dir, "/remove:d", user]);
+  const text = (r.stderr || r.stdout || "").trim();
+  if (ICACLS_DENIED.test(text)) {
+    throw new Error(`icacls remove:d 还原失败：${text}`);
+  }
+  // 退码非 0 但本次没有"未找到"类提示 ⇒ 视作异常，报出来而不是静默。
+  if (r.status !== 0 && !/not found|没有找到|找不到|no mapping|没有映射/i.test(text)) {
+    throw new Error(`icacls remove:d 异常退码 ${r.status}：${text}`);
+  }
 }
 
 // ── 跨盘安全搬文件（EXDEV 兜底）────────────────────────────────────────────

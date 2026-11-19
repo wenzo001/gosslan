@@ -1323,6 +1323,11 @@ export const enUS: MessageDict = {
   "deviceAuth.revokeRenotified": "The other party has been notified of the revocation",
   "deviceAuth.revokeNotFound": "This device has no such authorization",
   "deviceAuth.revokeFail": "Revoke failed",
+  // Remove (physically delete the local binding row): a full "end" path for intermediate/revoked/dirty states.
+  "deviceAuth.remove": "Remove",
+  "deviceAuth.removeConfirm": "Permanently remove this binding from this device? The app can then be bound again; any authorization on the app's own account page must be revoked by you there.",
+  "deviceAuth.removed": "Removed",
+  "deviceAuth.removeFail": "Remove failed",
   "deviceAuth.statusActive": "Active",
   "deviceAuth.statusRevoked": "Revoked",
   // Shared by the first-bind intermediate/failed states and any unknown status:

@@ -131,8 +131,18 @@ export const useDeviceAuthStore = defineStore("deviceAuth", () => {
     return out;
   }
 
+  /**
+   * 移除本地绑定行（任意状态，物理删除）。与 revoke 的区别：这是「彻底结束」——
+   * 中间态/撤销态/脏值也能清掉，且不依赖密钥库能否解密。RP 侧作废仍需用户自行处理。
+   */
+  async function remove(rpOrigin: string, clientId: string): Promise<boolean> {
+    const removed = await api.deviceAuthRemoveBinding(rpOrigin, clientId);
+    await loadBindings();
+    return removed;
+  }
+
   return {
     pending, busy, bindings, denyNeedsRetry,
-    setPending, clear, handleLink, refreshPending, approve, deny, loadBindings, revoke,
+    setPending, clear, handleLink, refreshPending, approve, deny, loadBindings, revoke, remove,
   };
 });

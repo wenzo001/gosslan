@@ -22,7 +22,10 @@
 # =============================================================================
 [CmdletBinding()]
 param(
-    [switch]$SkipGuards,
+    # [string] 而非 [switch]：理由字符串是**必填**的（见 1/5 护栏段注释）。
+    # 用 [switch] 时传入值是 SwitchParameter 而非字符串，`-is [string]` 恒 false ⇒
+    # 只要带 -SkipGuards 就必然 Fail，注释里"带理由可跳过"那条路永远走不通。
+    [string]$SkipGuards = "",
     [switch]$Portable
 )
 
@@ -86,14 +89,11 @@ if (Test-Path $vswhere) {
 # ⚠️ -SkipGuards 必须**显式传入理由字符串**（例如 -SkipGuards "临时跳过：先修 cargo fmt"）。
 #     不加理由 = 等同于未跳过，强制跑全量。理由会打印进日志，事后可以 grep 追溯。
 # ---------------------------------------------------------------------------
-if (-not $SkipGuards) {
+if ([string]::IsNullOrWhiteSpace($SkipGuards)) {
     Step "1/5" "统一验证入口（npm run verify）"
     npm run verify
     if ($LASTEXITCODE -ne 0) { Fail "verify 未通过 —— 已中止打包（坏包比没有包更浪费时间）。确要跳过请加 -SkipGuards <理由>" }
 } else {
-    if (-not ($SkipGuards -is [string]) -or ($SkipGuards -eq "")) {
-        Fail "-SkipGuards 必须带理由字符串（例如 -SkipGuards '临时跳过：先修 cargo fmt'）。空理由视同未跳过。"
-    }
     Write-Host "⚠️  护栏已跳过（-SkipGuards）。理由：$SkipGuards" -ForegroundColor Yellow
     Write-Host "    这次发布的产物质量**未经验证**，请在发布前补跑 npm run verify" -ForegroundColor Yellow
 }

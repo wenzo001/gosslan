@@ -14,6 +14,7 @@ import {
   guardConsume,
   guardRefresh,
   guardSetPending,
+  shouldResetChecksForPrompt,
 } from "./deviceAuth.ts";
 import type { DeviceAuthPrompt } from "@/types";
 
@@ -140,4 +141,16 @@ test("预勾只取「上次允许过 ∩ 本次请求」——不跨应用、不
   assert.deepEqual(rememberedScopes([], ["friends.read"]), []);
   assert.deepEqual(rememberedScopes(null, ["friends.read"]), []);
   assert.deepEqual(rememberedScopes(undefined, undefined), []);
+});
+
+// ---------------- 重复深链不重置用户勾选（授权页重复展示修复） ----------------
+
+test("shouldResetChecks：同一 request_id 的重复事件不重置勾选，新事务才重置", () => {
+  const first = prompt("req-1");
+  // 当前确认页是 req-1，又来一发同一事务 ⇒ 不重置（用户正在改的 scope/昵称保住）。
+  assert.equal(shouldResetChecksForPrompt(first, prompt("req-1")), false);
+  // 真正的新事务 ⇒ 重置为服务端默认。
+  assert.equal(shouldResetChecksForPrompt(first, prompt("req-2")), true);
+  // 首次到达（当前无确认页）⇒ 重置。
+  assert.equal(shouldResetChecksForPrompt(null, first), true);
 });

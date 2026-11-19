@@ -964,6 +964,13 @@ export const api = {
   deviceAuthRevoke: (rpOrigin: string, clientId: string) =>
     invoke<DeviceAuthRevokeOutcome>("device_auth_revoke", { rpOrigin, clientId }),
   /**
+   * 移除本地绑定行（物理删除，任意状态）：撤销之外再给一条「彻底结束」的路——
+   * 中间态 / 撤销态 / 脏 status 都能清掉，清掉后该应用可重新走完整绑定流程。
+   * 返回是否真的删掉了一行。RP 侧的公钥作废仍需用户去该应用账号页处理。
+   */
+  deviceAuthRemoveBinding: (rpOrigin: string, clientId: string) =>
+    invoke<boolean>("device_auth_remove_binding", { rpOrigin, clientId }),
+  /**
    * 上报分享回执（可选能力）：RP 想知道「到底发出去没有」。
    *
    * 回执地址由**后端**从队列里取（不从前端收地址），回执体只含状态与条数，
