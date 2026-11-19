@@ -540,8 +540,8 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
 | `DEVICE_AUTH_NETWORK` | 拉元数据/事务超时或非 2xx | 与应用通信失败，请稍后再试 | 检查端点可达性、TLS 与状态码 |
 | `DEVICE_AUTH_REPLAYED` | 同一事务被再次批准（已消费），或事务代际已变更 | 该授权已处理过 | 一次事务只该有一次决策；你仍要做幂等（§1.7） |
 | `DEVICE_AUTH_NOT_FOUND` | 待确认事务已被清除/从未存在 | 授权请求不存在或已清除 | 重新发起 |
-| `DEVICE_AUTH_BINDING_REVOKED` | 本机对该应用是撤销态，又收到 `authenticate` | 绑定已撤销，请重新绑定 | 引导用户走 `link` 重新绑定 |
-| `DEVICE_AUTH_BINDING_EXISTS` | 已有撤销态绑定，又收到 `link` | 已有撤销态绑定，请先在应用账号页解绑 | 让用户在你这儿解绑后再绑 |
+| `DEVICE_AUTH_BINDING_REVOKED` | 本机对该应用是撤销态，又收到 `authenticate` | 绑定已撤销，请先在本机移除后重新绑定 | 引导用户在 Gosslan 设置页点「移除」清掉撤销态绑定，再走 `link`；你服务端那把公钥仍须按账号页流程作废 |
+| `DEVICE_AUTH_BINDING_EXISTS` | 已有撤销态绑定，又收到 `link` | 已有撤销态绑定，请先在本机移除后再绑定 | 引导用户在 Gosslan 设置页点「移除」清掉撤销态绑定后重新 `link`（移除后可绑出一把新密钥）；你账号页的授权仍需自行作废 |
 | `DEVICE_AUTH_NO_BINDING` | 本机没有该应用的 active 绑定就 `authenticate` | 尚未绑定该应用，请先绑定 | 先走 `link` |
 | `DEVICE_AUTH_BUSY` | 待确认队列已满（上限 4） | 待确认的授权太多，先处理手上这几条 | 别把多条授权并发塞给用户 |
 | `DEVICE_AUTH_DENY_NOTIFY_FAILED` | 本机已拒绝，回写你失败 | 本机已拒绝，但对方没收到通知，请重试 | 你的 `decision_endpoint` 要能接受重复的 `deny` |
