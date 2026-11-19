@@ -139,10 +139,11 @@ pub(crate) fn is_hidden_by_attributes(_meta: &std::fs::Metadata) -> bool {
     false
 }
 
-/// ⚠️ 这两个函数刻意**分开**而不是收成一个 `Option<&Metadata>` 的入口：
-/// 收成一个入口就得在调用点构造那个 `Option` ⇒ 只能写 `.ok()`（本仓的静默丢弃形状）
-/// 或 `match { Ok(v) => Some(v), Err(_) => None }`（clippy 判 `manual_ok_err`）
-/// ⇒ 两条门禁夹在一起时两边都不许写。分开之后调用点是两个纯判断，零死角。
+// ⚠️ 上面那两个「隐藏」判定刻意**分开**而不是收成一个 `Option<&Metadata>` 的入口：
+// 收成一个入口就得在调用点构造那个 `Option` ⇒ 只能写 `.ok()`（本仓的静默丢弃形状，
+// `check-silent-drops.mjs` 棘轮只许降）或 `match { Ok(v) => Some(v), Err(_) => None }`
+// （clippy 判 `manual_ok_err`）⇒ 两条门禁夹在一起时两边都不许写。
+// 分开之后调用点是两个纯判断，零死角。
 
 #[cfg(unix)]
 pub(crate) fn restrict_to_owner(path: &std::path::Path) {
