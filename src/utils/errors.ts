@@ -268,6 +268,8 @@ const CODE_RULES: Record<string, string> = {
   FAVORITE_DELETE_BATCH_TOO_LARGE: "errors.rule.favoriteDeleteBatchTooLarge",
   // B6 第十三批：群管理 reject 族。
   GROUP_TODO_ASSIGNEE_NOT_MEMBER: "errors.rule.groupTodoAssigneeNotMember",
+  GROUP_TODO_BOT_ASSIGNEE_INVALID: "errors.rule.groupTodoBotAssigneeInvalid",
+  GROUP_TODO_BOT_ASSIGNEE_LOCKED: "errors.rule.groupTodoBotAssigneeLocked",
   GROUP_TODO_EDIT_FORBIDDEN: "errors.rule.groupTodoEditForbidden",
   GROUP_TODO_ARCHIVE_STATE_INVALID: "errors.rule.groupTodoArchiveStateInvalid",
   GROUP_ANNOUNCEMENT_OWNER_ONLY: "errors.rule.groupAnnouncementOwnerOnly",

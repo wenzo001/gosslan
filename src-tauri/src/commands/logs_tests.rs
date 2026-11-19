@@ -1735,12 +1735,13 @@ mod tests {
         assert!(may(false, true, true), "群成员只还原 ⇒ 可以");
         assert!(!may(true, false, false), "不是本群成员 ⇒ 归档也不给");
         assert!(!may(false, true, false), "不是本群成员 ⇒ 还原也不给");
+        // 2026-11-19 产品决策：真人任务**全体群成员可编辑**（等同创建者，含状态/描述/指派人/结构）。
         assert!(
-            !may(false, false, true),
-            "普通成员改状态 / 描述 / 指派人仍然不行（放宽只覆盖那两位）"
+            may(false, false, true),
+            "真人任务：普通群成员改状态 / 描述 / 指派人可以（全放开等同创建者）"
         );
         assert!(
-            !super::may_change_todo(
+            super::may_change_todo(
                 &def,
                 "carol",
                 "owner",
@@ -1748,7 +1749,28 @@ mod tests {
                 true,
                 super::MemberLane { archive_only: false, reopen_only: false, claim_only: false, is_member: true, delete_archived: false, attributes_only: false }
             ),
-            "结构改动（改标题 / 删除）不开给普通成员"
+            "真人任务：结构改动（改标题 / 删除）也对全体群成员开放"
+        );
+        // 但非成员仍一律不给（全放开的前提是 is_member）。
+        assert!(
+            !may(false, false, false),
+            "不是群成员 ⇒ 真人任务也不给改"
+        );
+        // 机器人发的任务不放开给真人全改（指派人由 LOCKED 校验锁死，普通成员不能碰结构）。
+        let bot_def = TodoPayload {
+            assignees: vec!["bot:b1".into()],
+            ..def.clone()
+        };
+        assert!(
+            !super::may_change_todo(
+                &bot_def,
+                "carol",
+                "owner",
+                &[],
+                true,
+                super::MemberLane { archive_only: false, reopen_only: false, claim_only: false, is_member: true, delete_archived: false, attributes_only: false }
+            ),
+            "机器人任务：普通成员不能改结构（指派锁定，不随真人任务全放开）"
         );
 
         // 判权对了但**没接上命令**，这两条窄档就等于没做（而且没有任何测试会红）：
@@ -1762,6 +1784,16 @@ mod tests {
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect();
+        // 机器人任务指派锁定（2026-11-19）：更新命令必须在鉴权之外先调用纯判据，
+        // 否则真人可以借「全员可编辑」把机器人从指派人里移除 —— 安全约束，必须接线。
+        assert!(
+            cmd.contains("bot_assignee_locked_violation(&def.assignees,&assignees)"),
+            "update_group_todo 必须调用 bot_assignee_locked_violation 锁定机器人任务指派人"
+        );
+        assert!(
+            cmd.contains("GROUP_TODO_BOT_ASSIGNEE_LOCKED"),
+            "指派被篡改必须返回 GROUP_TODO_BOT_ASSIGNEE_LOCKED 具名错误"
+        );
         let at = cmd
             .find("if!may_change_todo(")
             .expect("鉴权调用点找不到（被改写了？守卫要同步）");
@@ -1980,4 +2012,21 @@ mod todo_image_size_tests {
             "错误文案没带 MB 上限：{err}"
         );
     }
+
+    /// 机器人任务的指派人锁定（2026-11-19）：bot: 标识不可增删/替换。
+    #[test]
+    fn bot_assignee_is_locked_against_tampering() {
+        let orig = vec!["bot:b1".to_string()];
+        // 原样保留 ⇒ 不算违规
+        assert!(!super::bot_assignee_locked_violation(&orig, &["bot:b1".into()]));
+        // 换成真人 / 加人 / 移除 ⇒ 都算违规
+        assert!(super::bot_assignee_locked_violation(&orig, &["alice".into()]));
+        assert!(super::bot_assignee_locked_violation(&orig, &["bot:b1".into(), "alice".into()]));
+        assert!(super::bot_assignee_locked_violation(&orig, &[]));
+        // 真人任务不受此锁（全员可编辑）
+        let human = vec!["alice".to_string()];
+        assert!(!super::bot_assignee_locked_violation(&human, &["bob".into()]));
+        assert!(!super::bot_assignee_locked_violation(&human, &[]));
+    }
+
 }

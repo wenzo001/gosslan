@@ -435,7 +435,9 @@ export const useChatStore = defineStore("chat", () => {
     void api.onBotGroupAction(async (a) => {
       if (a.type !== "create_todo" || !a.groupId) return;
       try {
-        await api.sendGroupTodo(a.groupId, t("bot.groupTaskTitle", { name: a.botName, title: a.title }), []);
+        // 机器人发的任务指派人固定为 bot:<botId>（2026-11-19）：既标记"这是机器人任务"，
+        // 也满足后端"至少一个指派人"校验（过去传 [] 必被拒，任务根本建不出来）。
+        await api.sendGroupTodo(a.groupId, t("bot.groupTaskTitle", { name: a.botName, title: a.title }), a.botId ? [`bot:${a.botId}`] : []);
       } catch (e) {
         // 失败不留静默：toast 让用户当场知道，同时写回 last_error 让详情页事后可查。
         app.toastError(e, t("bot.groupActionFailed"));
