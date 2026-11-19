@@ -31,6 +31,7 @@ import AvatarBox from "@/components/ui/AvatarBox.vue";
 import appMark from "@/assets/app-mark.png";
 import { api, APP_ACTION, onAction } from "@/api";
 import { groupByInitial } from "@/utils/nameGroup";
+import { pinyinMatch } from "@/utils/pinyinMatch";
 import { isSelfConversation, selfFriendOf } from "@/utils/selfChat";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import { formatQueueCount } from "@/utils/queueCount";
@@ -215,9 +216,10 @@ function linkOf(id: string): string | null {
 
 const filteredFriends = computed(() => {
   const all = selfFriend.value ? [selfFriend.value, ...chat.friends] : chat.friends;
-  const kw = query.value.trim().toLowerCase();
+  const kw = query.value.trim();
   if (!kw) return all;
-  return all.filter((f) => f.nickname.toLowerCase().includes(kw));
+  // 按人名搜：字面 / 全拼 / 首字母都能命中（如「张」「zhang」「zs」都找得到张三）。
+  return all.filter((f) => pinyinMatch(f.nickname, kw));
 });
 
 /**

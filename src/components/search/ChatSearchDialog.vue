@@ -29,6 +29,7 @@ import {
 } from "reka-ui";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
+import { useChatStore } from "@/stores/useChatStore";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { currentLocale, t } from "@/i18n";
 import BaseModal from "@/components/BaseModal.vue";
@@ -52,6 +53,7 @@ import { detailText } from "@/composables/useErrorText";
 import type { ChatSearchGroup, ChatSearchMessage } from "@/types";
 import { previewBody } from "@/utils/messages";
 import { POPOVER_EDGE } from "@/utils/popoverBounds";
+import { pinyinMatch } from "@/utils/pinyinMatch";
 
 const props = defineProps<{ open: boolean; initialKeyword?: string; routeDriven?: boolean }>();
 const emit = defineEmits<{
@@ -78,6 +80,7 @@ function cellText(m?: ChatSearchMessage): string {
 }
 
 const app = useAppStore();
+const chat = useChatStore();
 const route = inject(routeLocationKey, null);
 const router = inject(routerKey, null);
 /** 输入法守卫：拼音候选里按回车是选字，不该被当成"重新搜索"（与发送键同一套判定） */
@@ -156,6 +159,56 @@ const groups = computed<ChatSearchGroup[]>(() => {
   if (searchQuery.isError.value) return [];
   return searchQuery.data.value ?? [];
 });
+
+/**
+ * 人名命中（2026-11-19 用户需求：搜人名去聊天，汉字支持全拼/首字母）。
+ *
+ * 与消息命中并列、不混在一起：左栏顶部单独一块「联系人 / 群成员」，点一下直接进聊天
+ * （convId 用对端 device_id 或 group:<gid>，msgId 留空 = 只进会话不定位）。复用父级
+ * onOpenSearchHit → openConversation 的现成跳转链，没有历史会话也能由 ensureConversation 补建。
+ *
+ * 数据源都在前端 store，零 IPC：好友用 nickname（你给对方起的名字）；群成员是 device_id，
+ * 先经 chat.nicknameOf 解析成可显示名再匹配；群名本身也纳入（群聊按群名搜到）。
+ */
+interface PeopleHit {
+  convId: string;
+  name: string;
+  /** 群成员命中时标注所属群，便于区分同名的人。 */
+  sub?: string;
+  kind: "friend" | "member" | "group";
+}
+const MAX_PEOPLE_HITS = 20;
+const peopleHits = computed<PeopleHit[]>(() => {
+  const kw = keyword.value.trim();
+  if (!props.open || !kw) return [];
+  const out: PeopleHit[] = [];
+  // 1) 好友（含自己那条，如果有）
+  for (const f of chat.friends) {
+    if (pinyinMatch(f.nickname, kw)) out.push({ convId: f.device_id, name: f.nickname, kind: "friend" });
+  }
+  // 2) 群聊：群名命中 + 群成员按人名命中
+  for (const g of chat.groups) {
+    if (pinyinMatch(g.name, kw)) {
+      out.push({ convId: `group:${g.id}`, name: g.name, sub: t("search.peopleGroup"), kind: "group" });
+      continue;
+    }
+    for (const mid of g.members) {
+      const name = chat.nicknameOf(mid);
+      if (pinyinMatch(name, kw)) {
+        out.push({ convId: `group:${g.id}`, name, sub: g.name, kind: "member" });
+        if (out.length >= MAX_PEOPLE_HITS) break;
+      }
+    }
+    if (out.length >= MAX_PEOPLE_HITS) break;
+  }
+  return out.slice(0, MAX_PEOPLE_HITS);
+});
+
+/** 点人名结果：直接开对应会话（msgId 留空 = 只进会话，复用现成跳转链）。 */
+function openPerson(hit: PeopleHit) {
+  emit("open-conversation", { convId: hit.convId, msgId: "" });
+  if (!props.routeDriven) emit("close");
+}
 
 /** 搜索中提示：首轮（isPending）和"换条件重拉"（isFetching）都要显示。 */
 const searching = computed(
@@ -513,6 +566,29 @@ function showSender(group: ChatSearchGroup): boolean {
     <div class="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-divider)] desktop:md:h-[52vh] desktop:md:flex-none desktop:md:flex-row">
       <!-- 左栏 -->
       <div class="gosslan-scroll flex max-h-[38%] w-full shrink-0 flex-col overflow-y-auto border-b border-[var(--gosslan-divider-strong)] desktop:md:max-h-none desktop:md:w-[240px] desktop:md:border-b-0 desktop:md:border-r">
+        <!-- 人名命中（好友 / 群成员 / 群名）：支持汉字全拼与首字母。点一下直接进聊天。 -->
+        <template v-if="peopleHits.length">
+          <p class="shrink-0 px-3 pb-1 pt-2 text-caption text-[var(--gosslan-text-2)]">
+            {{ t("search.peopleSection") }}
+          </p>
+          <button
+            v-for="(p, pi) in peopleHits"
+            :key="`${p.kind}-${p.convId}-${pi}`"
+            type="button"
+            :data-people-hit="pi"
+            class="flex items-center gap-2.5 px-3 py-2 text-left transition hover:bg-[var(--gosslan-list-hover)]"
+            :title="p.sub ? `${p.name}（${p.sub}）` : p.name"
+            :aria-label="`${t('search.peopleOpen')}${p.name}`"
+            @click="openPerson(p)"
+          >
+            <MessageAvatar :id="p.convId" :name="p.name" />
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-body text-[var(--gosslan-text)]" :title="p.name" v-html="highlightText(p.name, keyword)"></span>
+              <span v-if="p.sub" class="block truncate text-caption text-[var(--gosslan-text-2)]" :title="p.sub">{{ p.sub }}</span>
+            </span>
+          </button>
+          <div class="mx-3 my-1 border-t border-[var(--gosslan-divider)]"></div>
+        </template>
         <p v-if="!keyword.trim()" class="px-3 py-6 text-center text-xs text-[var(--gosslan-text-2)]">
           {{ t("search.hint") }}
         </p>

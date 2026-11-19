@@ -12,6 +12,7 @@ import type { Conversation, SharePayload } from "@/types";
 // ⚠️ 值导入必须**相对路径带扩展名**：`npm test`（node:test + strip-types）不解析 `@/` 别名。
 // 类型导入无所谓（编译期擦除），所以 `@/types` 照旧。
 import { charCount } from "./text.ts";
+import { pinyinMatch } from "./pinyinMatch.ts";
 
 /** 后端 `share::MAX_TEXT_CHARS` / `MAX_TITLE_CHARS` / `MAX_URL_CHARS` 的镜像。 */
 export const MAX_SHARE_TEXT_CHARS = 2000;
@@ -62,18 +63,16 @@ export function shareTextError(text: string): "empty" | "tooLong" | null {
 }
 
 /**
- * 会话检索：按名字做大小写不敏感的包含匹配。
+ * 会话检索：按名字匹配（字面 / 全拼 / 首字母，统一走 pinyinMatch）。
  *
- * 不做拼音/首字母匹配：那需要一张表，而会话数量级（几十个）下用户直接打字更快。
- * 空查询返回 true（等于不筛）。
+ * 2026-11-19 起支持拼音：内置生成表让全仓按人名搜的规则只有一份（之前这里刻意不做，
+ * 因为当时还没有表；现在表随 hanInitials.ts 同构生成，零运行时依赖）。空查询返回 true（不筛）。
  */
 export function matchShareTarget(
   conv: Pick<Conversation, "name">,
   query: string,
 ): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  return conv.name.toLowerCase().includes(q);
+  return pinyinMatch(conv.name, query);
 }
 
 /**

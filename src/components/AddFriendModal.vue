@@ -14,6 +14,7 @@ import { api } from "@/api";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
+import { pinyinMatch } from "@/utils/pinyinMatch";
 import { shouldProbeOnSearchMiss } from "@/utils/addFriendProbe";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
@@ -125,7 +126,7 @@ const filteredPeers = computed(() => {
   const pool = k
     ? unique.filter(
         (p) =>
-          p.nickname.toLowerCase().includes(k) ||
+          pinyinMatch(p.nickname, k) ||
           p.ip.toLowerCase().includes(k) ||
           p.device_id.toLowerCase().includes(k),
       )
