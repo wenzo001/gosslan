@@ -294,6 +294,28 @@ fn prepare_assertion(
     let existing = crate::db::get_binding(conn, origin, &meta.client_id)
         .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("读取绑定失败：{e}")))?;
 
+    // 首绑（本机从未与这个 RP 建立绑定）：生成 RP 专属密钥 + 稳定 pairwise subject 并落库。
+    // 2026-11-19 产品决策：先登录后绑定 —— authenticate/sync 无绑定时也走这里，不再报
+    // NO_BINDING。第三方拿到断言里的稳定 subject：有账号则按 subject 登录，没账号则用
+    // subject（+ 用户批准的昵称）快速注册。subject 每 RP 独立且稳定，重复调用幂等复用。
+    //
+    // ⚠️ 安全边界（不可破）：
+    // - 只处理 `existing == None`（从没绑过）。**撤销态 / 中间态仍走各自分支报错**，撤销不会
+    //   被"自动重绑"悄悄绕过（否则撤销形同虚设）。
+    // - subject 是**稳定身份主键**，第三方必须用它关联账号；昵称只是可选展示字段，绝不能
+    //   用来匹配已有账号（否则任何人改个昵称就能冒充他人登录）。见接入指南。
+    let first_bind = || -> Result<crate::db::RpBindingRow, String> {
+        // 私钥的生成/编码/落库都在 crypto 能力封装 + 持久化路径内（#3）：
+        // 命令层只拿公钥面（public_b64/kid/subject）与能力 `key`，绝不触碰 secret 字节。
+        let (key, public_b64, kid, subject) = da::generate_rp_key();
+        let scopes = serde_json::to_string(&req.requested_claims).unwrap_or_else(|_| "[]".into());
+        crate::db::insert_rp_binding(
+            conn, origin, &meta.client_id, &meta.display_name,
+            &key, public_b64, kid, subject, scopes, now_ms,
+        )
+        .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("写入绑定失败：{e}")))
+    };
+
     let row = match (req.action.as_str(), existing) {
         ("link", Some(b)) if b.status == "revoked" => {
             return Err(error_codes::coded(error_codes::DEVICE_AUTH_BINDING_EXISTS, "该应用已有撤销态绑定，须先在其账号页解绑再重新绑定"));
@@ -302,17 +324,7 @@ fn prepare_assertion(
         // 不重复 insert。首绑分叉修复后：回写失败落 registration_failed 的重试、以及幂等
         // 重绑都走这里，签名后由回写结果再决定激活（见 activate_binding）。
         ("link", Some(b)) => b,
-        ("link", None) => {
-            // 私钥的生成/编码/落库都在 crypto 能力封装 + 持久化路径内（#3）：
-            // 命令层只拿公钥面（public_b64/kid/subject）与能力 `key`，绝不触碰 secret 字节。
-            let (key, public_b64, kid, subject) = da::generate_rp_key();
-            let scopes = serde_json::to_string(&req.requested_claims).unwrap_or_else(|_| "[]".into());
-            crate::db::insert_rp_binding(
-                conn, origin, &meta.client_id, &meta.display_name,
-                &key, public_b64, kid, subject, scopes, now_ms,
-            )
-            .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("写入绑定失败：{e}")))?
-        }
+        ("link", None) => first_bind()?,
         ("authenticate", Some(b)) if b.status == "active" => {
             crate::db::touch_last_used(conn, origin, &meta.client_id, now_ms)
                 .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("更新绑定失败：{e}")))?;
@@ -328,11 +340,11 @@ fn prepare_assertion(
         ("authenticate", Some(_)) => {
             return Err(error_codes::coded(error_codes::DEVICE_AUTH_BINDING_REVOKED, "绑定已撤销，请重新绑定"));
         }
-        ("authenticate", None) => {
-            return Err(error_codes::coded(error_codes::DEVICE_AUTH_NO_BINDING, "尚未绑定该应用，请先绑定"));
-        }
-        // `sync` = 申请一次数据交付。它**必须已有 active 绑定**（交付的前提是这台设备
-        // 已经被这个 RP 登记过），复用同一把密钥签断言 —— 与 authenticate 同一套语义。
+        // 先登录后绑定：从没绑过也允许 authenticate，自动生成 RP 专属密钥 + 稳定 subject。
+        // 第三方据此登录（有账号按 subject 找）或快速注册（无账号按 subject 建号）。
+        ("authenticate", None) => first_bind()?,
+        // `sync` = 申请一次数据交付。与 authenticate 同一套：无绑定也自动首绑（先登录后绑定），
+        // 复用同一把密钥签断言与交付数据。
         ("sync", Some(b)) if b.status == "active" => {
             crate::db::touch_last_used(conn, origin, &meta.client_id, now_ms)
                 .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("更新绑定失败：{e}")))?;
@@ -346,9 +358,7 @@ fn prepare_assertion(
         ("sync", Some(_)) => {
             return Err(error_codes::coded(error_codes::DEVICE_AUTH_BINDING_REVOKED, "绑定已撤销，请重新绑定"));
         }
-        ("sync", None) => {
-            return Err(error_codes::coded(error_codes::DEVICE_AUTH_NO_BINDING, "尚未绑定该应用，请先绑定"));
-        }
+        ("sync", None) => first_bind()?,
         _ => return Err(error_codes::coded(error_codes::DEVICE_AUTH_UNSUPPORTED, "不支持的动作")),
     };
 
@@ -1275,12 +1285,28 @@ mod device_auth_cmd_tests {
         assert_eq!(info1.pairwise_subject, info2.pairwise_subject);
     }
 
+    /// 先登录后绑定（2026-11-19 产品决策）：authenticate 无绑定也成功，自动首绑出稳定 subject。
+    /// 第三方拿这个 subject 登录（有账号）或快速注册（无账号）—— 昵称绝不能当账号主键。
     #[test]
-    fn authenticate_requires_active_binding() {
+    fn authenticate_without_binding_first_binds_with_stable_subject() {
         let conn = test_db();
         let p = pending("authenticate", vec!["device_subject".into()]);
-        let err = prepare_assertion(&conn, &p, false, 1_000, "my-device", &[]).unwrap_err();
-        assert!(err.contains("DEVICE_AUTH_NO_BINDING"));
+        let (assertion, info, _claims, _) =
+            prepare_assertion(&conn, &p, false, 1_000, "my-device", &[]).unwrap();
+        assert_eq!(info.status, "pending_registration", "回调前绝不提前写 active");
+        assert!(!info.pairwise_subject.is_empty(), "断言必须有稳定 subject 供 RP 建号/登录");
+        assert!(!info.public_key.is_empty());
+        assert_eq!(assertion.split('.').count(), 3, "JWS 三段");
+        // 首绑后、RP 还没回写激活（pending_registration）时再 authenticate 必须拒绝 ——
+        // 否则一个没在 RP 登记过的绑定就能直接登录，撤销/登记语义会被绕过。
+        let err = prepare_assertion(&conn, &p, false, 1_500, "my-device", &[]).unwrap_err();
+        assert!(err.contains("DEVICE_AUTH_NO_BINDING"), "未激活不得登录：{err}");
+        // 模拟 RP 回写 2xx 后才 active；再 authenticate 复用同一 subject/key（RP 认得出同一用户）。
+        assert!(crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap());
+        let (_, info2, _, _) =
+            prepare_assertion(&conn, &p, false, 2_000, "my-device", &[]).unwrap();
+        assert_eq!(info2.pairwise_subject, info.pairwise_subject, "subject 必须稳定，幂等复用首绑");
+        assert_eq!(info2.kid, info.kid, "密钥不许每次重新生成");
     }
 
     #[test]
@@ -1916,11 +1942,12 @@ mod device_auth_cmd_tests {
         assert!(none.get("groups").is_none(), "没勾就不许有 groups 键");
     }
 
-    /// `sync` 必须已有 active 绑定：没绑定就交付 = 没登记过的应用也能读你的数据。
+    /// 与 authenticate 同一套「先登录后绑定」：sync 无绑定也自动首绑，且只在用户确认页
+    /// 勾选 scope 后交付数据（交付内容见 build_delivery_data 的判据，这里只钉绑定与断言形状）。
     #[test]
-    fn sync_requires_an_active_binding() {
+    fn sync_without_binding_first_binds_and_signs() {
         let conn = test_db();
-        let err = prepare_assertion(
+        let (assertion, info, _claims, data) = prepare_assertion(
             &conn,
             &pending("sync", vec!["device_subject".into()]),
             false,
@@ -1928,11 +1955,12 @@ mod device_auth_cmd_tests {
             "my-device",
             &[],
         )
-        .unwrap_err();
-        assert!(
-            err.contains("DEVICE_AUTH_NO_BINDING"),
-            "sync 没有绑定时必须拒，实际：{err}"
-        );
+        .unwrap();
+        assert_eq!(info.status, "pending_registration", "回调前绝不提前写 active");
+        assert_eq!(assertion.split('.').count(), 3, "JWS 三段");
+        // 交付数据的 subject 必须与绑定 subject 一致（RP 用它关联账号）。
+        let data = data.expect("sync 必须产出交付数据");
+        assert_eq!(data.get("subject").and_then(|v| v.as_str()), Some(info.pairwise_subject.as_str()));
     }
 
     /// 撤销端点的解析：空串 = 该 RP 没提供（老 RP 兼容，不是失败）。

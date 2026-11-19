@@ -334,8 +334,13 @@ app.post("/device-auth/decisions/:id", express.json(), (req, res) => {
    应用闲置时不会向你发任何东西。
 2. **每次都要用户确认**。你的页面不能静默拿到数据。
 3. **scope 只对本次事务有效**，不落库。下次要数据就再走一遍流程。
-4. **`sync` 要求已有绑定**：用户必须先 `link` 过你的应用，否则整笔拒
-   （`DEVICE_AUTH_NO_BINDING`）。
+4. **先登录后绑定（2026-11-19 起）**：`authenticate` / `sync` 在该设备从没绑过你的应用时，
+   会自动生成一份 RP 专属密钥与稳定 `pairwise_subject`（与 `link` 首绑同一形状），批准即建立
+   本机身份，不要求预先 `link`。**你的服务端必须用断言里的 `pairwise_subject` 作为账号主键**：
+   已有该 subject 就登录对应账号，没有就用它（+ 用户批准的昵称）快速注册新账号。
+   ⚠️ 绝不能用昵称/设备名去匹配已有账号 —— 那会让任何人改用同名就能冒充他人登录。
+   仅当绑定处于「首绑后等你回调确认」的中间态（pending_registration）时再次登录会被拒
+   （`DEVICE_AUTH_NO_BINDING`）；正常流程里你的服务端收到断言后回写 2xx 即激活。
 5. **消息正文永远不外送**。`events` 里没有 `content`。
    如果你的产品需要正文，那是另一个决定，不在这份契约里。
    `groups` 同理：只有 id / 名称 / 人数，**没有成员明细**（成员明细基本就是好友集合，
@@ -490,7 +495,10 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
 - [ ] `data.events` 的每一条都有 `mentions_me` 与 `notifies` 两个布尔；
       一条 @ 了本机的消息 `mentions_me=true`，一条表情回应 `notifies=false`。
 - [ ] `data.friends` 的每一条都**没有**公钥字段。
-- [ ] 用没 `link` 过的应用申请 `sync`：被拒（`DEVICE_AUTH_NO_BINDING`）。
+- [ ] 用没 `link` 过的应用申请 `authenticate` / `sync`：批准即成功（自动首绑），
+      断言含稳定 `pairwise_subject`，你的服务端据此登录或快速注册。
+- [ ] 首绑后、你的服务端还没回写确认（pending_registration）时再次登录：被拒
+      （`DEVICE_AUTH_NO_BINDING`），提示对方稍后重试。
 - [ ] `requested_scopes` 里写 `groups.read`：整笔拒（`DEVICE_AUTH_UNKNOWN_SCOPE`）。
 - [ ] 同一个 `Idempotency-Key` 重放：你的服务端合并成一次。
 
@@ -542,7 +550,7 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
 | `DEVICE_AUTH_NOT_FOUND` | 待确认事务已被清除/从未存在 | 授权请求不存在或已清除 | 重新发起 |
 | `DEVICE_AUTH_BINDING_REVOKED` | 本机对该应用是撤销态，又收到 `authenticate` | 绑定已撤销，请先在本机移除后重新绑定 | 引导用户在 Gosslan 设置页点「移除」清掉撤销态绑定，再走 `link`；你服务端那把公钥仍须按账号页流程作废 |
 | `DEVICE_AUTH_BINDING_EXISTS` | 已有撤销态绑定，又收到 `link` | 已有撤销态绑定，请先在本机移除后再绑定 | 引导用户在 Gosslan 设置页点「移除」清掉撤销态绑定后重新 `link`（移除后可绑出一把新密钥）；你账号页的授权仍需自行作废 |
-| `DEVICE_AUTH_NO_BINDING` | 本机没有该应用的 active 绑定就 `authenticate`/`sync`（含从未绑定、绑定未完成登记） | 尚未绑定该应用，请先绑定 | **必须先用 `action=link` 建绑定事务**：在 Gosslan 确认页批准后再发 `authenticate`。绑定键是 `(规范化 origin, client_id)`，域名/端口/IP 或 client_id 与首次绑定不一致都会查不到绑定 —— 内网自签 + hosts 域名部署时尤其要先确认 origin 稳定。Gosslan 确认页对"登录但未绑定"会提前预警并引导用户走绑定；不要试图用 `authenticate` 代替首绑（协议不支持在登录流程里临时登记公钥） |
+| `DEVICE_AUTH_NO_BINDING` | 首绑后还处于 pending_registration（你的服务端尚未回写确认）时又来 `authenticate`/`sync`；或绑定是待登记/登记失败态 | 正在等待该应用完成登记，请稍后重试或重新发起 | 你的服务端收到断言后要按 §决策回写及时回 2xx 激活绑定；之后同一设备再登录即走 active 路径。**从没绑过**的设备现在不会报这个码——会自动首绑（先登录后绑定）。绑定键是 `(规范化 origin, client_id)`，域名/端口/IP 或 client_id 变化算另一个应用：内网自签 + hosts 部署要确保 origin 稳定，否则会被当成新设备重新注册 |
 | `DEVICE_AUTH_BUSY` | 待确认队列已满（上限 4） | 待确认的授权太多，先处理手上这几条 | 别把多条授权并发塞给用户 |
 | `DEVICE_AUTH_DENY_NOTIFY_FAILED` | 本机已拒绝，回写你失败 | 本机已拒绝，但对方没收到通知，请重试 | 你的 `decision_endpoint` 要能接受重复的 `deny` |
 | `EXTERNAL_SHARE_INVALID_LINK` | 分享链接形状不对（不是 share 入口） | 这个分享链接不正确 | 检查 scheme 与路径 |

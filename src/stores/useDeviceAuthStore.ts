@@ -31,8 +31,6 @@ export const useDeviceAuthStore = defineStore("deviceAuth", () => {
   const pending = computed(() => guard.pending);
   const busy = ref(false);
   const bindings = ref<RpBindingInfo[]>([]);
-  /** bindings 是否已成功加载过：加载前不预判"未绑定"，避免异步时序误报。 */
-  const bindingsLoaded = ref(false);
   /** 「本机已拒绝、RP 未收到」⇒ 显示重试入口且不清确认页（P1 拒绝可观察 / 失败可重试）。 */
   const denyNeedsRetry = ref(false);
 
@@ -119,20 +117,6 @@ export const useDeviceAuthStore = defineStore("deviceAuth", () => {
 
   async function loadBindings(): Promise<void> {
     bindings.value = await api.deviceAuthListBindings();
-    bindingsLoaded.value = true;
-  }
-
-  /**
-   * 本机是否已与该 RP 建立 active 绑定（按 rp_origin + client_id 复合键）。
-   * 供确认页在批准**之前**判断：authenticate/sync 无 active 绑定时批准必然失败，
-   * 提前引导去绑定，而不是让用户点了批准才看到一句看不懂的"未绑定应用"。
-   * 加载失败（bindingsLoaded=false）时返回 null = 未知，调用方据此不做预判。
-   */
-  function hasActiveBinding(rpOrigin: string, clientId: string): boolean | null {
-    if (!bindingsLoaded.value) return null;
-    return bindings.value.some(
-      (b) => b.rp_origin === rpOrigin && b.client_id === clientId && b.status === "active",
-    );
   }
 
   /**
@@ -158,7 +142,7 @@ export const useDeviceAuthStore = defineStore("deviceAuth", () => {
   }
 
   return {
-    pending, busy, bindings, bindingsLoaded, denyNeedsRetry,
-    setPending, clear, handleLink, refreshPending, approve, deny, loadBindings, hasActiveBinding, revoke, remove,
+    pending, busy, bindings, denyNeedsRetry,
+    setPending, clear, handleLink, refreshPending, approve, deny, loadBindings, revoke, remove,
   };
 });
