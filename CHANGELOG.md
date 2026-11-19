@@ -14,6 +14,13 @@
 
 ## [Unreleased]
 
+### 文档同步
+- **服务端 v6 已彻底删除**：`gosslan-relay-server` 移除了 `legacy/` 整个目录（v6
+  `webhook.mjs` + 两套自测 + 接口文档），现只支持 v7 通知协议。本仓
+  `docs/notify-bot-guide.md` 与 `docs/notes/webhook-simple-protocol-v7-2026-11-17.md`
+  里指向服务端 `legacy/` 的"归档留档"措辞同步改成"已删除、不兼容"。
+  7.1.11 节里那句"归档到 `legacy/`"是当时的历史事实，不改写。
+
 ### 测试基础设施
 - **反证基线补齐到 27 档并全量重算**（`scripts/fixtures/selfproof-baseline.json`）：此前缺
   bot / contentpull / friendreq / ghsync 四档（`npm run selfproof:check` 起跑即报缺档），
