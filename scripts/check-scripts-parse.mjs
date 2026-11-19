@@ -92,7 +92,34 @@ if (refs.size === 0) {
   process.exit(1);
 }
 
+/**
+ * 找一个能用的 Python 解释器。
+ *
+ * ⚠️ **Windows 上 `python3` 常常是 Microsoft Store 的占位符**（`WindowsApps\python3.exe`），
+ * 真装了 Python 的话它叫 `python`。占位符被调用时返回 9009（命令未找到），
+ * 于是「用 python3 判语法」这条在 Windows 上**每个 .py 都判成解析失败**
+ * ⇒ 这道门禁在 Windows 上恒红，而且红得不像自己的锅（真机 2026-11-19 撞上）。
+ *
+ * 口径与 `scripts/verify.mjs::findPython()` 同一套：**先试一个、再试另一个**，
+ * Windows 上优先 `python`（真解释器），其余平台优先 `python3`。
+ */
+function findPython() {
+  const candidates = process.platform === "win32" ? ["python", "python3"] : ["python3", "python"];
+  for (const c of candidates) {
+    const r = spawnSync(c, ["--version"], { encoding: "utf8", windowsHide: true });
+    if (r.status === 0) return c;
+  }
+  return null;
+}
+
 const bad = [];
+const pythonCmd = findPython();
+if (pythonCmd === null) {
+  console.error("✗ 找不到可用的 Python 解释器（试过 python / python3）。");
+  console.error("  这道门禁要用 Python 判判据脚本自身的语法 —— 没有解释器 ⇒ 一条都没在判，按红处理。");
+  console.error("  Windows 上注意：`python3` 可能是 Microsoft Store 的占位符，真正的解释器叫 `python`。");
+  process.exit(1);
+}
 for (const rel of [...refs].sort()) {
   const abs = path.join(ROOT, rel);
   if (!fs.existsSync(abs)) {
@@ -102,9 +129,9 @@ for (const rel of [...refs].sort()) {
   // 只用 `compile()` 在内存里判语法：`python3 -m py_compile` 会把 .pyc 写进
   // `scripts/__pycache__/`，那等于每跑一次门禁就往仓库里撒一个未跟踪目录。
   const [cmd, args] = rel.endsWith(".py")
-    ? ["python3", ["-c", "import sys; compile(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1], 'exec')", abs]]
+    ? [pythonCmd, ["-c", "import sys; compile(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1], 'exec')", abs]]
     : [process.execPath, ["--check", abs]];
-  const r = spawnSync(cmd, args, { encoding: "utf8" });
+  const r = spawnSync(cmd, args, { encoding: "utf8", windowsHide: true });
   if (r.status !== 0) {
     // 取**末尾**几行：node 与 python 都把"哪一行、为什么"放在最后，
     // 开头几行是内部调用栈（`-c` 那条尤其明显：开头是 Traceback 头，出错原因在最后）。

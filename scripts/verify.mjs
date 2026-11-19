@@ -211,7 +211,13 @@ if (badChains.length > 0) {
 
 // ⚠️ 快速层不跑护栏 ⇒ 连"找 python"都不做：否则没装 python 的机器上，一个与护栏无关的
 // 快速检查会因为找不到解释器直接红（分层时很容易顺手漏掉这一条）。
-const python = noGuards || !fullGate ? null : findPython();
+//
+// ⚠️ 但「护栏注入锚点静态核对」那一步（frontend 组，quick 层也跑）**需要**解释器
+// ⇒ 解释器要**处处现找**，不能硬写 `python3`（Windows 上那是 Microsoft Store 的占位符）。
+// 所以这里分成两个：`pythonCmd`（处处可用，找不到就由那一步显式跳过）、
+// `python`（只有全量层跑护栏扫描时才必须存在，找不到就是硬失败）。
+const pythonCmd = findPython();
+const python = noGuards || !fullGate ? null : pythonCmd;
 
 /**
  * Windows 的 Rust 测试壳没有 tauri-build 给正式二进制嵌的那份清单，而 `rfd`
@@ -410,8 +416,14 @@ const steps = [
       **只扫前端子集** ⇒ 两层当时都是绿的，这个洞只能靠 --list 或 40 分钟的整跑才看得见。
       跑的就是 --list 那条起跑前核对：不编译、不注入，秒级成本。`,
     cwd: ROOT,
-    cmd: "python3",
+    // ⚠️ 解释器**必须现找**，不能硬写 `python3`：Windows 上 `python3` 常常是 Microsoft Store
+    // 的占位符（`WindowsApps\python3.exe`，调用返回 9009）⇒ 这一步在 Windows 上恒红，
+    // 而 CI 的 frontend 腿在 macOS 上 ⇒ 本地红、CI 绿，最像"自己改坏了"。
+    cmd: pythonCmd ?? "python3",
     args: ["scripts/verify-guards.py", "--list"],
+    skipReason: pythonCmd
+      ? null
+      : "本机没有 Python 解释器（试过 python / python3）⇒ 这条锚点核对跑不了；CI 的 macOS 腿会跑",
   },
   {
     group: "frontend",

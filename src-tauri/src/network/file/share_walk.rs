@@ -53,7 +53,15 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<ShareEntry>, depth: usize) -> bool 
             continue;
         }
         let name = e.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') {
+        // ⚠️ 「隐藏」按**本机平台**判（2026-11-19 修）：Windows 的隐藏是文件属性位
+        // （用户勾了「隐藏」），不是点前缀 ⇒ 只看点前缀 ⇒ Windows 用户勾了隐藏的文件
+        // 照样进共享目录树**发给对端** ⇒ 同一份共享目录在两个平台暴露面不同
+        // （这是往别的设备泄数据，不是功能差异）。
+        // 读不到属性就按「没有隐藏属性位」处理（与旧行为一致：不因读不到就把条目丢掉），
+        // 点前缀那条仍然照拦。
+        let hidden = crate::private_fs::is_hidden_by_name(&name)
+            || std::fs::metadata(&path).is_ok_and(|m| crate::private_fs::is_hidden_by_attributes(&m));
+        if hidden {
             continue;
         }
         // 上限检查必须排在**过滤之后**：过滤掉的条目（隐藏文件/符号链接/读不到类型）
@@ -113,7 +121,9 @@ pub(crate) fn derive_file_name(raw_path: &str) -> String {
 
     // Case 2: file_name 没扩展名，但完整路径字符串末尾有类似 .mp4 / .jpg 的后缀
     let last_dot = raw_path.rfind('.');
-    let last_slash = raw_path.rfind('/').unwrap_or(0);
+    // ⚠️ 两种分隔符都要认（2026-11-19 修）：只认 `/` ⇒ Windows 路径 `C:\资料.v2\报告`
+    // 里「最后一个点」落在**目录名**上（`资料.v2`）⇒ 扩展名兜底取到错的那个候选。
+    let last_slash = raw_path.rfind(['/', '\\']).unwrap_or(0);
     if let Some(dot) = last_dot {
         if dot > last_slash && dot + 1 < raw_path.len() {
             let ext_candidate = &raw_path[dot + 1..];
@@ -305,6 +315,14 @@ pub(crate) fn unique_path(dir: &Path, name: &str) -> PathBuf {
 }
 
 /// 文件名来自远端协议，必须只允许 basename，避免 `../` / Windows `\\` 穿越下载目录。
+///
+/// ⚠️ **平台可用性**：Windows 的文件名规则比 Unix 严（非法字符 / 保留设备名 /
+/// 不能以点或空格结尾）。这些名字在 macOS/Linux 上**完全正常**，在 Windows 上根本
+/// 落不了盘（`ERROR_INVALID_NAME`）⇒ 以前只有 Windows 用户会整单接收失败
+/// （用户视角：「他发我文件，我这边收不下来」）。
+/// ⇒ 这里**改写**成「本机一定落得了盘」的样子，而不是拒绝 ——
+/// 平台差异对用户无感的含义是：同一个文件，两个平台都收得下来。
+/// 穿越类的问题（`/` `\` `..` NUL）仍然**拒绝**，那不是平台差异，是安全问题。
 pub(crate) fn safe_file_name(name: &str) -> Option<String> {
     if name.is_empty() || name == "." || name == ".." || name.contains('\0') {
         return None;
@@ -312,7 +330,7 @@ pub(crate) fn safe_file_name(name: &str) -> Option<String> {
     if name.contains('/') || name.contains('\\') {
         return None;
     }
-    Some(name.to_string())
+    crate::private_fs::rewrite_for_local_platform(name)
 }
 
 /// `transfer_id` 同样来自远端协议，而且**会被直接拼进落盘路径**（`{transfer_id}.part`）——

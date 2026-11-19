@@ -852,9 +852,21 @@ fn move_received_file(state: &AppState, name: &str, part: &Path) -> Result<PathB
     // 这里原先手写了一份 1..1000 的循环，到 999 就报「下载目录重名文件过多」，
     // 与单聊路径行为不同且必然继续漂移（审计 P1 #14）。
     let dest = file::unique_path(&dir, &safe_name);
-    std::fs::rename(part, &dest)
-        .or_else(|_| std::fs::copy(part, &dest).and_then(|_| std::fs::remove_file(part)))
-        .map_err(|e| {
+    // ⚠️ 改名失败就退回复制（跨卷 EXDEV / Windows 上目标正被占着）。
+    // 复制**不是原子**的：中途失败会在下载目录留下**半截文件** ⇒ 失败时必须删掉它，
+    // 否则用户看到「一个打不开的残缺文件 + 一条接收失败」（2026-11-19 修）。
+    // 源 `.part` 删不掉不算失败：它由 24h 清扫收走，而文件**已经**落到 dest 了。
+    let placed = std::fs::rename(part, &dest).or_else(|_| match std::fs::copy(part, &dest) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(part);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&dest);
+            Err(e)
+        }
+    });
+    placed.map_err(|e| {
             let code = crate::logging::classify_write_failure(&e)
                 .unwrap_or(crate::error_codes::FILE_RECEIVE_PLACE_FAILED);
             state.logger.error(

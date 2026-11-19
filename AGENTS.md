@@ -124,6 +124,29 @@ Change Budget 的分级必须在**提交那一刻**过闸，不能等推完再�
 - **局限**：`--no-verify`、别人机器上提交、远端直接合并的 patch 可以绕过；CI 的正式判定
   仍是最终事实，这一层只负责把"推完才发现"提前到 commit 那一刻。
 
+## Windows 构建卫生（2026-11-19）
+
+Windows 上有三类**只有 Windows 才有**的构建故障，各有固定解法（别每次重新查一遍）：
+
+- **`cargo clean` 报 `Caused by: 拒绝访问。 (os error 5)`** —— IDE 的
+  `rust-analyzer-proc-macro-srv` 把 `target/` 里的 proc-macro DLL **加载进自己的进程**，
+  而 Windows 不许删除已加载的 DLL ⇒ 清理只删一半 ⇒ 下一次构建在链接阶段报
+  `LINK : fatal error LNK1104: 无法打开文件 …\async_trait-….dll`
+  （看着像"环境坏了"，其实是上一轮没删干净）。
+  **解法**：`node scripts/cargo-clean.mjs --force`（结束这些辅助进程；IDE 会自己重启它们，
+  不动源码、不动用户数据）。
+- **测试 exe 在加载期就死（`0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND`，零测试输出）** ——
+  `rfd`（tauri-plugin-dialog）静态导入只有 Common-Controls **v6** 才有的
+  `comctl32!TaskDialogIndirect`；正式二进制由 tauri-build 嵌了带 v6 依赖的清单，
+  **libtest 的测试壳没有** ⇒ 进程在 `main` 之前就死。
+  **解法**：给这次编译合并 `src-tauri/windows-test.manifest`
+  （`scripts/verify.mjs` 的 `windowsTestLinkEnv`；Windows 上跑 `cargo test` 必须带这个
+  `RUSTFLAGS`）。⚠️ 裸跑 `cargo test`（不带它）必撞 —— **别把那条红当成自己的改动坏了**。
+  Windows 上仓库的正式口径是 `cargo test --features bluetooth --release --lib`
+  （见 `scripts/verify.mjs` 的 rust 组）。
+- **`os error 1455`（页面文件太小）** —— 本机页面文件只有 8GB，而并行度默认等于核数，
+  编译峰值会顶穿**提交内存**上限。内存紧张时降并行：`-j 2` / `-j 3`。
+
 ## 报告规范（2026-11-04）
 
 **原始读数不是结论。把读数推成结论前，先做一次证伪。**

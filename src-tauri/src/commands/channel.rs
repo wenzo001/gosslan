@@ -627,10 +627,15 @@ pub fn spawn_cache_auto_clean(s: &std::sync::Arc<crate::state::AppState>) {
 
 /// SQLite 数据库文件占用（含 -wal / -shm 两个伴随文件）。
 fn db_file_bytes(s: &AppState) -> u64 {
-    let base = s.db_path.to_string_lossy().to_string();
     let mut total = 0u64;
     for suffix in ["", "-wal", "-shm"] {
-        if let Ok(m) = std::fs::metadata(format!("{base}{suffix}")) {
+        // ⚠️ 不要 `to_string_lossy()` 再拼字符串（2026-11-19 修）：Windows 上含**未配对
+        // 代理项**的路径会被换成 U+FFFD ⇒ 拼出来的侧车路径根本不存在 ⇒ 占用读数少算
+        // wal/shm（界面上的「数据库占用」偏小）。用 `OsString::push` 追加后缀，
+        // 字节原样保留（与 `db.rs::sidecar_path` 同一口径）。
+        let mut p = s.db_path.clone().into_os_string();
+        p.push(suffix);
+        if let Ok(m) = std::fs::metadata(std::path::PathBuf::from(p)) {
             total += m.len();
         }
     }

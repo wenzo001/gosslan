@@ -95,6 +95,11 @@ pub const UNSAFE_IMAGE_EXTS: &[&str] = &["heic", "heif"];
 /// 不要合并（审计 P2 #37）：这条服务于"从系统选择器拿到的建议文件名"——用户选的文件
 /// 不该因为名字里有 `/` 就整个失败，改写后落进缓存目录最符合直觉；而协议来路的文件名
 /// 必须拒绝，因为对端可以借此探测/覆盖路径。
+///
+/// ⚠️ 但**平台可用性**是两边都要的（2026-11-19 修）：Windows 上 `CON`、`a:b.txt`、
+/// 结尾带点的名字根本落不了盘 ⇒ 用户在 Windows 上选一个叫 `CON.txt` 的文件会失败，
+/// 而 macOS/Android 正常。规则只有一份（`private_fs::rewrite_with_platform_rules`），
+/// 这里只负责「改写式」这个**取舍**，不自己抄一份 Windows 规则。
 pub fn rewrite_file_name_chars(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -106,10 +111,12 @@ pub fn rewrite_file_name_chars(name: &str) -> String {
         .collect();
     let trimmed = cleaned.trim().trim_start_matches('.').to_string();
     if trimmed.is_empty() {
-        "file.bin".to_string()
-    } else {
-        trimmed.chars().take(180).collect()
+        return "file.bin".to_string();
     }
+    let shortened: String = trimmed.chars().take(180).collect();
+    // 平台规则（Windows 的非法字符 / 保留设备名 / 结尾的点与空格）。
+    crate::private_fs::rewrite_for_local_platform(&shortened)
+        .unwrap_or_else(|| "file.bin".to_string())
 }
 
 /// 把「文件选择器」交给我们的东西**落地**成一个真实可读的文件路径。
