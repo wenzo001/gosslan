@@ -8,7 +8,8 @@ mod tests {
     use super::{
         build_group_resume_receiver, chunk_exceeds_declared, chunk_seq_decision,
         classify_file_subtype, clear_file_wire_progress_in, derive_file_name, file_peer_key,
-        finish_group_receive_into, inbound_quota_verdict, prefix_identity_usable,
+        finish_group_receive_into, inbound_quota_verdict, needs_send_snapshot,
+        clamp_resume_to_size, prefix_identity_usable,
         quota_error, receive_is_stale, PrefixIdentity,
         safe_file_name, safe_transfer_id, sweepable_part_name, unique_path, wire_progress_bytes,
         ChunkSeq, QuotaBreach, WireLedger, FILE_RECEIVE_IDLE_ABORT_MS, MAX_CONCURRENT_RECEIVES,
@@ -2946,8 +2947,16 @@ mod tests {
         let have = send
             .find("接收端已完整收下该文件，直接完成")
             .expect("AlreadyHave 那条留痕不在了 ⇒ 这条判据失去落点");
+        // 按**字符**数取窗口，不用固定字节偏移：锚点附近有中文注释，字节切片会踩中
+        // 多字节字符中间（end byte index is not a char boundary）让判据假红。
+        let tail = &send[have..];
+        let window = tail
+            .char_indices()
+            .nth(600)
+            .map(|(i, _)| i)
+            .unwrap_or(tail.len());
         assert!(
-            send[have..have + 600].contains("finalize_send_accepted("),
+            tail[..window].contains("finalize_send_accepted("),
             "AlreadyHave 快路没有接上这份收尾"
         );
     }
@@ -3432,6 +3441,30 @@ mod tests {
             PrefixIdentity::SameContent,
             "多份历史里命中任意一份即可续传"
         );
+    }
+
+    /// 活文件判定：mtime 很近（正在写入）⇒ 做快照；老文件 ⇒ 直接用原路径。
+    /// 这是 2026-11-19 真机"发活日志导致 size 漂移死循环"的第一道判据。
+    #[test]
+    fn live_file_snapshot_decision_uses_mtime_age() {
+        assert!(needs_send_snapshot(0), "刚刚写过的文件 = 活文件 ⇒ 快照");
+        assert!(needs_send_snapshot(5_000), "5 秒前写过 ⇒ 快照");
+        assert!(needs_send_snapshot(29_999), "阈值内 ⇒ 快照");
+        assert!(!needs_send_snapshot(30_000), "恰好到阈值 ⇒ 不算活文件（边界）");
+        assert!(!needs_send_snapshot(3_600_000), "一小时前的老文件 ⇒ 不快照");
+        assert!(needs_send_snapshot(-1), "未来 mtime（时钟异常）⇒ 保守快照");
+    }
+
+    /// 续传偏移超界 ⇒ 归零整份重发；正常偏移原样保留。
+    /// 真机 `size=998 resume_from=262144` 就是超界，不归零会两头卡死。
+    #[test]
+    fn clamp_resume_to_size_falls_back_to_full_send_when_out_of_range() {
+        assert_eq!(clamp_resume_to_size(0, 1000), 0, "从头发送保持 0");
+        assert_eq!(clamp_resume_to_size(500, 1000), 500, "合法偏移原样保留");
+        assert_eq!(clamp_resume_to_size(1000, 1000), 1000, "恰好等于 size 合法");
+        assert_eq!(clamp_resume_to_size(262_144, 998), 0, "真机超界场景 ⇒ 整份重发");
+        assert_eq!(clamp_resume_to_size(1001, 1000), 0, "超 1 字节也归零");
+        assert_eq!(clamp_resume_to_size(50, 0), 0, "空文件 ⇒ 归零");
     }
 
 }

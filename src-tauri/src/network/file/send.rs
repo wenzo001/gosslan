@@ -11,6 +11,139 @@
 // ⚠️ 搬家同批必须做的两件事：`network/mod.rs::file_src_for_guards()` 登记本册（漏了=形状守卫看不见这段生产码，假绿），
 //   以及 `docs/domains.data.mjs` 的 transport/file 领域 paths（漏了=判据 D 报无主文件）。
 
+/// 活文件判定阈值：文件修改时间距今小于这个值（毫秒）就当作"仍在被写入"。
+///
+/// 为什么用 mtime 而不是"哈希前后比大小"：真机 2026-11-19 那份 `gosslan.log` 每 5 分钟才写
+/// 一轮（+935 字节），而一次哈希对 100KB 的文件是毫秒级 —— 哈希前后两次采样必然相同，
+/// 检测不到。活文件的 mtime 一定是"刚刚"，这是零成本且可靠的信号（元数据本来就要读）。
+pub const LIVE_FILE_MTIME_MS: i64 = 30_000;
+
+/// 快照在多长没被命中后视为陈旧、可清理（毫秒）。进程重启会清空内存表，磁盘副本按此 TTL 兜底。
+pub const SEND_SNAPSHOT_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// 纯判据：这个文件此刻该不该先复制一份稳定快照再发。
+/// `mtime_age_ms < 0`（系统时钟异常 / 未来时间）时保守当作"不确定 ⇒ 做快照"。
+pub fn needs_send_snapshot(mtime_age_ms: i64) -> bool {
+    mtime_age_ms < 0 || mtime_age_ms < LIVE_FILE_MTIME_MS
+}
+
+/// 纯判据：把续传偏移夹到声明大小以内。超界（含等于上限的脏值由调用方另行处理）时归零 = 整份重发。
+///
+/// 为什么要它：真机 2026-11-19 出现 `size=998 resume_from=262144` —— 续传偏移比文件大 260 倍。
+/// 发送端据此 seek 超界读出 0 字节、接收端 `resume_receive` 的 `from_bytes > size` 直接拒绝 ⇒
+/// 两头卡死。偏移超界只可能是旧台账脏值或文件被截断，此时唯一正确的出路是整份重发。
+pub fn clamp_resume_to_size(from_bytes: u64, size: u64) -> u64 {
+    if from_bytes > size { 0 } else { from_bytes }
+}
+
+/// 准备发送源：活文件先复制成稳定快照，同一 transfer 的后续重试复用同一份。
+///
+/// 返回 `(实际发送路径, 该路径的大小, 是否新建了快照)`。纯同步 IO，调用方须放 spawn_blocking。
+/// - 命中内存缓存（send_snapshots）⇒ 直接返回缓存路径（size 恒定，根治跨重试漂移）；
+/// - 未命中且 mtime 判定为活文件 ⇒ 复制到下载目录下的 `.send-snapshots/<safe_tid>.bin`，登记缓存；
+/// - 否则原样返回（普通静态文件不做无谓复制）。
+fn prepare_send_source_blocking(
+    state: &Arc<AppState>,
+    transfer_id: &str,
+    path: &Path,
+) -> Result<(PathBuf, u64, bool), SendFileError> {
+    let src_meta = std::fs::metadata(path)
+        .map_err(|e| SendFileError::permanent(format!("文件不存在或不可读：{e}")))?;
+    if !src_meta.is_file() {
+        return Err(SendFileError::permanent("只能发送普通文件"));
+    }
+    let now = db::now_ms();
+    // 1) 命中缓存且未过期 ⇒ 复用（快照文件的 meta 就是稳定 size）。
+    {
+        let mut snaps = state.send_snapshots.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(snap) = snaps.get(transfer_id) {
+            if now - snap.created_ms < SEND_SNAPSHOT_TTL_MS && snap.path.exists() {
+                // 用登记时的 size，不再读磁盘（size 恒定正是这次修复的核心）。
+                return Ok((snap.path.clone(), snap.size, false));
+            }
+            snaps.remove(transfer_id); // 过期/文件没了 ⇒ 丢弃，下面重建
+        }
+    }
+    // 2) 非活文件 ⇒ 直接用原路径（普通图片/文档，零复制开销）。
+    let mtime_age_ms = src_meta
+        .modified()
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(-1);
+    if !needs_send_snapshot(mtime_age_ms) {
+        return Ok((path.to_path_buf(), src_meta.len(), false));
+    }
+    // 3) 活文件 ⇒ 复制稳定快照（IO 在调用方的 spawn_blocking 里）。
+    let Some(safe_tid) = safe_transfer_id(transfer_id) else {
+        // id 消毒失败（异常输入）⇒ 不做快照，退回原路径（后续 parity 由 size/sha 兜底）。
+        return Ok((path.to_path_buf(), src_meta.len(), false));
+    };
+    let dl = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let snap_dir = PathBuf::from(&dl).join(".send-snapshots");
+    std::fs::create_dir_all(&snap_dir)
+        .map_err(|e| SendFileError::permanent(format!("创建发送快照目录失败：{e}")))?;
+    // 顺手清扫超过 TTL 的陈旧快照（失败/取消终态不会走 finalize，靠这里兜底）。
+    // 只删本目录内 .bin、按 mtime 判，绝不碰用户文件。
+    if let Ok(entries) = std::fs::read_dir(&snap_dir) {
+        for ent in entries.flatten() {
+            let p = ent.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("bin") {
+                continue;
+            }
+            let stale = p
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|d| d.as_millis() as i64 > SEND_SNAPSHOT_TTL_MS);
+            if stale {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+    let snap_path = snap_dir.join(format!("{safe_tid}.bin"));
+    std::fs::copy(path, &snap_path)
+        .map_err(|e| SendFileError::permanent(format!("复制活文件快照失败：{e}")))?;
+    let snap_size = std::fs::metadata(&snap_path)
+        .map(|m| m.len())
+        .map_err(|e| SendFileError::permanent(format!("读取快照大小失败：{e}")))?;
+    state.send_snapshots.lock().unwrap_or_else(|e| e.into_inner()).insert(
+        transfer_id.to_string(),
+        crate::state::SendSnapshot { path: snap_path.clone(), size: snap_size, created_ms: now },
+    );
+    state.logger.warn(
+        "file",
+        format!(
+            "code=LIVE_FILE_SNAPSHOT tid={transfer_id} name={} 源文件仍在写入（mtime {mtime_age_ms}ms 前），已复制到稳定快照 size={snap_size} —— 本单所有重试都读快照，避免 size 漂移导致接收端判分片超限",
+            path.file_name().map(|s| s.to_string_lossy()).unwrap_or_default()
+        ),
+    );
+    Ok((snap_path, snap_size, true))
+}
+
+/// 清掉一个 transfer 的发送快照（成功收尾时调用）。内存表 + 磁盘副本一起清。
+/// 删文件是元数据操作（快），失败只留痕、不影响发送成功的结论。
+pub(crate) fn clear_send_snapshot(state: &Arc<AppState>, transfer_id: &str) {
+    let snap = state
+        .send_snapshots
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(transfer_id);
+    if let Some(snap) = snap {
+        if let Err(e) = std::fs::remove_file(&snap.path) {
+            state.logger.warn(
+                "file",
+                format!("code=SEND_SNAPSHOT_CLEANUP_FAILED tid={transfer_id} path={}：{e}", snap.path.display()),
+            );
+        }
+    }
+}
+
 /// 主动向 `peer_id` 发送本地文件。
 ///
 /// 这是一个低层投递原语：只负责把文件完整送达并拿到接收方完成确认。
@@ -35,23 +168,18 @@ pub async fn send_file_from_path_at(
     from_seq: u32,
     from_bytes: u64,
 ) -> Result<(), SendFileError> {
-    let meta = std::fs::metadata(&path)
-        .map_err(|e| SendFileError::permanent(format!("文件不存在或不可读：{e}")))?;
-    if !meta.is_file() {
-        return Err(SendFileError::permanent("只能发送普通文件"));
-    }
-    let size = meta.len();
+    // 文件名从**原始 path**取：活文件快照会被命名成 <tid>.bin，不能用它当展示名。
     let name = path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "unnamed".to_string());
-    // 📄 关键日志：文件发送入口
-    state.logger.info(
-        "file",
-        format!(
-            "[FILE] offer-sending peer={peer_id} tid={transfer_id} name={name} size={size} resume_from={from_bytes}"
-        ),
-    );
+    // 续传偏移超界（陈旧台账 / 文件被截断）⇒ 归零整份重发，否则 seek 超界 + 接收端
+    // resume_receive 的 `from_bytes > size` 拒绝 ⇒ 两头卡死（2026-11-19 真机）。
+    // 先用原始 size 夹一次；准备快照后再夹一次（快照 size 才是真正发出去的 size）。
+    let pre_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let from_bytes = clamp_resume_to_size(from_bytes, pre_size);
+    // 📄 关键日志：文件发送入口（真实 size 在快照准备后打，见下方 offer-sending）
+    state.logger.info("file", format!("[FILE] send-invoked peer={peer_id} tid={transfer_id} name={name} resume_from={from_bytes}"));
 
     // ---- 用户取消登记（提前到哈希之前）----
     // 整文件 SHA-256 是这条链路上最长的一段静默（600MB 要几十秒到几分钟），槽位若等哈希
@@ -83,13 +211,29 @@ pub async fn send_file_from_path_at(
 
     // ---- E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG），仅存内存 ----
     let file_key = crypto::random_key();
-    // 整文件哈希放阻塞线程池（群路径 group_announcements.rs 早就是这么做的）：这是 async
-    // 任务，600MB 的同步整读会把一个 tokio worker 占满，连带别的路径一起卡。
-    let hash_path = path.clone();
-    let file_sha256 = tokio::task::spawn_blocking(move || sha256_file_hex(&hash_path))
-        .await
-        .map_err(|e| SendFileError::permanent(format!("哈希任务失败：{e}")))?
-        .map_err(SendFileError::permanent)?;
+    // 快照准备 + 整文件哈希放同一个阻塞线程池：两者都是同步文件 IO（600MB 整读会占满一个
+    // tokio worker），合并成一次调度。活文件先复制成稳定副本，哈希与后续分片都读它 ⇒ size/sha
+    // 跨重试恒定，从根上断掉"每次重试 size 都变 → 接收端判分片超限"的死循环。
+    let prep_state = state.clone();
+    let prep_path = path.clone();
+    let prep_tid = transfer_id.to_string();
+    let (send_path, size, made_snapshot, file_sha256) = tokio::task::spawn_blocking(move || {
+        let (p, sz, snapped) = prepare_send_source_blocking(&prep_state, &prep_tid, &prep_path)?;
+        let sha = sha256_file_hex(&p).map_err(SendFileError::permanent)?;
+        Ok::<_, SendFileError>((p, sz, snapped, sha))
+    })
+    .await
+    .map_err(|e| SendFileError::permanent(format!("快照/哈希任务失败：{e}")))??;
+    // 快照 size 才是真正发出去的字节数：再夹一次续传偏移（快照可能与预读的 pre_size 不同）。
+    let from_bytes = clamp_resume_to_size(from_bytes, size);
+    let _ = made_snapshot; // 建快照时已在 prepare 里打了 LIVE_FILE_SNAPSHOT 日志
+    // 📄 关键日志：文件发送入口（size 为实际发送源大小，活文件时即快照大小）
+    state.logger.info(
+        "file",
+        format!(
+            "[FILE] offer-sending peer={peer_id} tid={transfer_id} name={name} size={size} resume_from={from_bytes}"
+        ),
+    );
     // 哈希期间被取消也要当场停：后面每一段（Offer 等待、分片循环、FileDone、ACK 等待）
     // 都各自盯这个槽位，唯独这一段是同步阻塞、盯不到 —— 所以补这一格检查。
     if cancel_requested(&mut cancel_rx) {
@@ -270,7 +414,7 @@ pub async fn send_file_from_path_at(
                         state,
                         peer_id,
                         transfer_id,
-                        path,
+                        send_path.clone(), // 读稳定快照（活文件），不是仍在写入的原始 path
                         name,
                         size,
                         file_key,
@@ -281,7 +425,7 @@ pub async fn send_file_from_path_at(
                     )
                     .await;
                 }
-                Ok(Ok(Err(n))) if n >= size && size > 0 => {
+                Ok(Ok(Err(n))) if n == size && size > 0 => {
                     // 接收端已完整持有这份文件（2026-09-23 审计 A6）：它的
                     // decide_offer 判定 AlreadyHave 后回 received = size ⇒ 一发分片
                     // 都不必再发。旧实现会继续重发 Offer（n > resume_from 不再成立 →
@@ -294,6 +438,19 @@ pub async fn send_file_from_path_at(
                     // 已经有了，本机气泡却永久转圈、transfer 行停在 pending。
                     finalize_send_accepted(state, transfer_id, peer_id, &name, size, &path);
                     return Ok(());
+                }
+                Ok(Ok(Err(n))) if n > size && size > 0 => {
+                    // 接收端报的已收字节超过了本次实际声明大小（快照 size）⇒ 是旧/脏台账，
+                    // 不是真的"已收这么多"。照单续发会让接收端 resume_receive 的 from_bytes>size
+                    // 拒绝（两头卡死），或把它误当 AlreadyHave（用户拿到旧字节）。整份重发。
+                    state.logger.warn(
+                        "file",
+                        format!(
+                            "code=RESUME_OFFSET_STALE tid={transfer_id} 接收端报已收 {n} > 声明 {size} ⇒ 忽略该偏移，本轮从 0 整份重发"
+                        ),
+                    );
+                    resume_from = 0;
+                    continue;
                 }
                 Ok(Ok(Err(n))) if n > resume_from => {
                     state.logger.info(
@@ -797,6 +954,8 @@ fn finalize_send_accepted(
             total: size,
         },
     );
+    // 发送成功 ⇒ 这份活文件快照已无用，立即清掉（不留盘）。
+    clear_send_snapshot(state, transfer_id);
 }
 
 /// 等 `FileCompleteAck`：按**链路上还有没有进展**判定，而不是固定墙钟。

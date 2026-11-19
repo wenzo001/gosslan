@@ -863,6 +863,14 @@ pub struct FileWireProgress {
     pub chunks: u64,
 }
 
+/// 活文件发送快照：一份稳定副本 + 建立时刻（用于陈旧清理）。
+#[derive(Clone)]
+pub struct SendSnapshot {
+    pub path: std::path::PathBuf,
+    pub size: u64,
+    pub created_ms: i64,
+}
+
 /// 正在接收的文件状态
 pub struct FileReceiver {
     pub file: std::fs::File,
@@ -1492,6 +1500,14 @@ pub struct AppState {
 
     /// 等待对方接受的文件传输：transfer_id -> 接受信号
     pub pending_file_accept: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Result<(), u64>>>>,
+    /// 活文件发送快照：transfer_id -> (稳定副本路径, 建立时刻 ms)。
+    ///
+    /// 为什么需要（2026-11-19 真机）：用户让对方发日志，而那份 `gosslan.log` 正在被应用持续
+    /// 写入 ⇒ 每次重试 `meta.len()` 都不同（39 秒内 56 次、size 从 76KB 涨到 127KB），接收端
+    /// 按"声明 size / 已收字节"判分片超限 ⇒ 回否定确认 ⇒ 无限重试。这里在第一次发送时把
+    /// "仍在写入的文件"复制成一份稳定副本，同一 transfer 的所有重试都读它 ⇒ size 恒定。
+    /// 键是 transfer_id（重试之间稳定），进程重启即失效（下次重新快照，不会有悬空引用）。
+    pub send_snapshots: Mutex<HashMap<String, SendSnapshot>>,
     /// 内容服务（`ContentRequest` 触发的回发）的**每对端有界串行队列**。
     ///
     /// 为什么必须在接收循环之外：那份服务的应答（`FileAccept`/`FileReject`）要由**同一条连接的
@@ -2588,6 +2604,7 @@ impl AppState {
             nickname: Mutex::new(nickname),
             avatar: Mutex::new(avatar),
             pending_file_accept: Mutex::new(HashMap::new()),
+            send_snapshots: Mutex::new(HashMap::new()),
             pending_file_complete: Mutex::new(HashMap::new()),
             relay_file_keys: Mutex::new(HashMap::new()),
             group_file_keys: Mutex::new(HashMap::new()),
