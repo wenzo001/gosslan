@@ -580,7 +580,7 @@ function showSender(group: ChatSearchGroup): boolean {
             type="button"
             :data-people-hit="pi"
             class="flex items-center gap-2.5 px-3 py-2 text-left transition hover:bg-[var(--gosslan-list-hover)]"
-            :title="p.sub ? `${p.name}（${p.sub}）` : p.name"
+            :title="p.sub ? t('search.peopleTitle', { name: p.name, sub: p.sub }) : p.name"
             :aria-label="`${t('search.peopleOpen')}${p.name}`"
             @click="openPerson(p)"
           >
