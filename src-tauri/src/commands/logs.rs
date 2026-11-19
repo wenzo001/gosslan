@@ -265,10 +265,40 @@ fn show_existing_aux_window(
         recenter_aux_window(&win, &g);
     }
     // `unminimize`：窗口被最小化过的话，只 show 不会把它拉回前台。
-    let _ = win.unminimize();
-    let _ = win.show();
-    let _ = win.set_focus();
+    // show/focus 的失败不再静默吞掉（2026-11-19「点了没反应」）：记埋点，让"建好却没显示"
+    // 从黑洞变成可诊断；但不改变返回语义（窗口确实在，返回它，由调用链继续）。
+    reveal_aux_window(app, label, &win);
     Some(win)
+}
+
+/// 把辅助窗口显示 + 聚焦，并把 show / set_focus 的失败记成具名日志（不再 `let _ =` 静默吞）。
+///
+/// 2026-11-19 用户「点了没反应」复核：`win.show()` / `set_focus()` 的 Err 过去全被丢弃，
+/// 于是"窗口建好了却没显示"这条路径命令仍返回 Ok、前端以为成功、用户什么都看不到，
+/// 且日志里没有任何痕迹。这里只补**可观测性**（写日志），不改变返回语义 —— show 失败多为
+/// 暂时性（窗口忙 / 系统限制），窗口实例本身是好的，贸然返回 Err 会让前端误判"创建失败"
+/// 而走回退分支，反而可能关掉已经存在的窗口。
+#[cfg(desktop)]
+fn reveal_aux_window(app: &tauri::AppHandle, label: &str, win: &tauri::WebviewWindow) {
+    if let Err(e) = win.unminimize() {
+        log_aux_reveal_failure(app, label, "unminimize", &e);
+    }
+    if let Err(e) = win.show() {
+        log_aux_reveal_failure(app, label, "show", &e);
+    }
+    if let Err(e) = win.set_focus() {
+        log_aux_reveal_failure(app, label, "set_focus", &e);
+    }
+}
+
+#[cfg(desktop)]
+fn log_aux_reveal_failure(app: &tauri::AppHandle, label: &str, step: &str, err: &impl std::fmt::Display) {
+    if let Some(state) = app.try_state::<std::sync::Arc<AppState>>() {
+        state.logger.warn(
+            "window",
+            format!("code=AUX_WINDOW_SHOW_FAILED label={label} step={step} error={err}"),
+        );
+    }
 }
 
 /// 关闭 → 隐藏（配合各窗口自己的 `AUX_*_RESIDENT`），让下一次打开是瞬时的。
@@ -422,17 +452,14 @@ where
             install_hide_on_close(&win);
         }
         if reveal {
-            let _ = win.show();
-            let _ = win.set_focus();
+            reveal_aux_window(app, label, &win);
         }
     } else if reveal {
         // 竞态：这扇窗是别人刚建好的 ⇒ 摆位归那一个创建者（它的 `placed`/显示还在后面）。
         // 这里刻意**不做任何要等主线程的摆位**（原先那条二次检查走 `show_existing_aux_window`
         // 会 `recenter` ⇒ 正是"带着创建锁等主线程"的形状），只补一次纯 setter 的唤起：
         // 万一对方那一路没显示（比如它被更早的异常打断），用户这次点击仍然有反应。
-        let _ = win.unminimize();
-        let _ = win.show();
-        let _ = win.set_focus();
+        reveal_aux_window(app, label, &win);
     }
     Ok((win, created))
 }

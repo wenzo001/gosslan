@@ -11,7 +11,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { shouldLaunchWindow, WINDOW_LAUNCH_MIN_INTERVAL_MS } from "./windowLaunch.ts";
+import {
+  raceWithTimeout,
+  shouldLaunchWindow,
+  WINDOW_LAUNCH_MIN_INTERVAL_MS,
+  WINDOW_LAUNCH_TIMEOUT_CODE,
+  WINDOW_LAUNCH_TIMEOUT_MS,
+} from "./windowLaunch.ts";
 
 const srcDir = join(import.meta.dirname, "..");
 
@@ -109,4 +115,66 @@ test("外部链接与群任务窗口也必须走 launchAuxWindow（不得在按�
   assert.match(layout, /useWindowOpening\("link"\)/, "ResponsiveLayout 要订阅 link 的打开状态");
   assert.match(layout, /:opening="linksOpening"/, "链接列表要拿到 link 的 pending 状态");
   assert.match(chatWindow, /:tasks-opening="tasksOpening"/, "聊天头要拿到群任务窗口的 pending 状态");
+});
+
+
+// ---------------- 开窗超时兜底（2026-11-19「点了没反应」）----------------
+
+/** 可控假定时器：手动 fire() 触发超时，并记录 clear 次数以证明无 timer 泄漏。 */
+function fakeTimer() {
+  let cb: (() => void) | null = null;
+  let cleared = 0;
+  return {
+    set(fn: () => void, _ms: number) { cb = fn; return 1; },
+    clear(_id: unknown) { cleared += 1; },
+    fire() { cb?.(); },
+    get cleared() { return cleared; },
+  };
+}
+
+test("raceWithTimeout：正常 resolve 透传且清理定时器", async () => {
+  const timer = fakeTimer();
+  await assert.doesNotReject(raceWithTimeout(Promise.resolve("ok"), WINDOW_LAUNCH_TIMEOUT_MS, timer));
+  assert.equal(timer.cleared, 1, "成功路径要清掉超时定时器，不留泄漏");
+});
+
+test("raceWithTimeout：原 Promise reject 原样透传且清理定时器", async () => {
+  const timer = fakeTimer();
+  const err = new Error("boom");
+  await assert.rejects(raceWithTimeout(Promise.reject(err), WINDOW_LAUNCH_TIMEOUT_MS, timer), (e) => e === err);
+  assert.equal(timer.cleared, 1, "失败路径也要清掉定时器");
+});
+
+test("raceWithTimeout：永不 settle 的 Promise 会超时 reject（拆掉兜底此条必红）", async () => {
+  const timer = fakeTimer();
+  const never = new Promise<void>(() => {});
+  const pending = raceWithTimeout(never, WINDOW_LAUNCH_TIMEOUT_MS, timer);
+  timer.fire(); // 模拟时间到
+  await assert.rejects(pending, (e: Error) => e.message.includes(WINDOW_LAUNCH_TIMEOUT_CODE));
+});
+
+test("raceWithTimeout：超时后原 Promise 才 resolve，不得二次 settle", async () => {
+  const timer = fakeTimer();
+  let resolveLate!: (v: string) => void;
+  const late = new Promise<string>((r) => { resolveLate = r; });
+  const pending = raceWithTimeout(late, WINDOW_LAUNCH_TIMEOUT_MS, timer);
+  timer.fire();
+  await assert.rejects(pending, (e: Error) => e.message.includes(WINDOW_LAUNCH_TIMEOUT_CODE));
+  resolveLate("late"); // 晚到的成功不能改变已 settle 的结果，也不必再清定时器
+  assert.equal(timer.cleared, 0, "超时路径不额外 clear（定时器已触发）");
+});
+
+test("接线守卫：launchAuxWindow 必须给 open() 加超时兜底（否则 opening 永久粘死）", () => {
+  const src = readFileSync(join(srcDir, "composables", "useWindowLauncher.ts"), "utf8");
+  assert.match(
+    src,
+    /raceWithTimeout\(\s*open\(\),\s*WINDOW_LAUNCH_TIMEOUT_MS,/,
+    "launchAuxWindow 必须用 raceWithTimeout 包住 open()，否则 IPC 永不 settle 时 opening 永久卡 true、后续点击全被吞",
+  );
+  // 反例自证：如果直接裸 await open()（无超时），这条守卫必须红。
+  assert.equal(
+    /await open\(\);/.test(src),
+    false,
+    "不能再出现裸 await open()（无超时兜底）",
+  );
 });

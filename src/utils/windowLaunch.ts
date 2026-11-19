@@ -27,3 +27,51 @@ export function shouldLaunchWindow(
   if (isOpening) return false;
   return shouldRunThrottled(now, lastLaunchAt, minIntervalMs);
 }
+
+/**
+ * 开窗 IPC 的超时上限（用户 2026-11-19「点了没反应」）。
+ *
+ * 为什么需要：单飞靠 `opening` 这个 Set 防重复，清理在 `finally` 里。若 `open()` 返回的 Promise
+ * 永不 settle（IPC 通道丢失 / 页面导航导致 pending 永不回调），`finally` 永不执行 ⇒ `opening`
+ * 永久为 true ⇒ 该窗口之后每次点击都被 `shouldLaunchWindow` 的 isOpening 判据吞掉，表现就是
+ * "按钮一直转、窗口永远不出来，而且再点也没用"。加一道超时让 Promise 必定 settle。
+ *
+ * 10s 的取值：WebView2 冷建在慢机上可能几秒，太短会误伤正常开窗；10s 已经远超正常耗时，
+ * 又不至于让用户等太久。超时只是**释放单飞、让下一次点击能重试**，不代表窗口一定没开——
+ * 后端 `ensure_aux_window` 幂等，晚到的成功建窗不会重复。
+ */
+export const WINDOW_LAUNCH_TIMEOUT_MS = 10_000;
+
+/** 开窗超时抛出的错误码（前端回退/埋点可认）。 */
+export const WINDOW_LAUNCH_TIMEOUT_CODE = "WINDOW_LAUNCH_TIMEOUT";
+
+/** 带超时的 Promise 竞速：超时或原 Promise 先完成都清理定时器，绝不泄漏 timer。 */
+export function raceWithTimeout<T>(
+  p: Promise<T>,
+  timeoutMs: number,
+  timer: { set: (fn: () => void, ms: number) => unknown; clear: (id: unknown) => void },
+  code: string = WINDOW_LAUNCH_TIMEOUT_CODE,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const id = timer.set(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(`code=${code} 打开窗口超时（${timeoutMs}ms）`));
+    }, timeoutMs);
+    p.then(
+      (v) => {
+        if (settled) return;
+        settled = true;
+        timer.clear(id);
+        resolve(v);
+      },
+      (e) => {
+        if (settled) return;
+        settled = true;
+        timer.clear(id);
+        reject(e);
+      },
+    );
+  });
+}
