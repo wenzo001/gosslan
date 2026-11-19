@@ -1068,16 +1068,10 @@ export function allowDirWrites(dir) {
 }
 
 // ── 跨盘安全搬文件（EXDEV 兜底）────────────────────────────────────────────
+// 实现在 e2e-logtail.mjs（core 反过来 import 它，不能形成环）；这里原样再导出，
+// 轮次分册与驱动脚本统一从 core 取。
 // rename 成功就完事；EXDEV（跨卷，例如 appdata 在 C:、run 目录在 D:）时退化成
 // copy + unlink —— 语义仍等价于 rename（目标存在则覆盖）。
-// 2026-11-18 Windows 腿实测：备份/还原用户库那两段用裸 renameSync，C:→D: 一律
-// EXDEV ⇒ 整层 E2E 在"停机预置备份"就崩，24 轮全部 2~7 秒速败（mac 单卷所以从未暴露）。
-export function moveFile(src, dst) {
-  try {
-    fs.renameSync(src, dst);
-  } catch (e) {
-    if (e.code !== "EXDEV") throw e;
-    fs.copyFileSync(src, dst);
-    fs.rmSync(src, { force: true });
-  }
-}
+// 2026-11-18 Windows 腿实测：备份/还原用户库与日志留证两处用裸 renameSync，
+// C:→D: 一律 EXDEV ⇒ 整层 E2E 速败（mac 单卷所以从未暴露）。
+export { moveFile } from "../e2e-logtail.mjs";

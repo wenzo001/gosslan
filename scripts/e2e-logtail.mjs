@@ -89,13 +89,28 @@ export function countLogFields(file, prefix, fields) {
  * 每次 launch 前调用一次 ⇒ 本轮启动写下的行必然在 `.log` 里，判据不再和轮转时间赛跑。
  * 是移动不是删除：文件内容逐字节进 `runDir`，事后照样能在报告目录里翻。
  */
+/**
+ * 跨盘安全搬文件（EXDEV 兜底）：rename 成功就完事；跨卷（appdata 在 C:、run 目录在 D:）
+ * 时退化成 copy + unlink —— 语义仍等价于 rename（目标存在则覆盖）。
+ * 2026-11-18 Windows 腿实测：裸 renameSync 在 C:→D: 一律 EXDEV ⇒ E2E 整层速败。
+ */
+export function moveFile(src, dst) {
+  try {
+    fs.renameSync(src, dst);
+  } catch (e) {
+    if (e.code !== "EXDEV") throw e;
+    fs.copyFileSync(src, dst);
+    fs.rmSync(src, { force: true });
+  }
+}
+
 export function stashLogs(file, runDir, tag) {
   fs.mkdirSync(runDir, { recursive: true });
   const moved = [];
   for (const f of [file, rolledLog(file)]) {
     if (!fs.existsSync(f)) continue;
     const to = path.join(runDir, `instance-${tag}.stashed-${path.basename(f)}`);
-    fs.renameSync(f, to);
+    moveFile(f, to);
     moved.push(to);
   }
   return moved;
