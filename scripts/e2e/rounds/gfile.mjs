@@ -25,7 +25,9 @@ export async function run() {
     // 密封 file_key 这一步必须过生产 crypto ⇒ 先确保协议对端的构建产物在位（dev 档，实测十几秒）。
     // 为什么不在 JS 里自己封：nonce 与标签的摆法是协议的一部分，复刻就是拿测试自己的实现去验实现自己。
     const taui = path.join(ROOT, "src-tauri");
-    const peerBin = path.join(taui, "target", "debug", "examples", "e2e_peer");
+    // Windows 的 cargo example 产物带 .exe 后缀（2026-11-19 实测：路径算错 ⇒ 「退 0 但二进制缺失」）
+    const peerBin = path.join(taui, "target", "debug", "examples",
+      process.platform === "win32" ? "e2e_peer.exe" : "e2e_peer");
     const built = spawnSync("cargo", ["build", "--example", "e2e_peer"], {
       cwd: taui, encoding: "utf8", timeout: 900_000,
     });
