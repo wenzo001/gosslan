@@ -1794,6 +1794,10 @@ mod tests {
             cmd.contains("GROUP_TODO_BOT_ASSIGNEE_LOCKED"),
             "指派被篡改必须返回 GROUP_TODO_BOT_ASSIGNEE_LOCKED 具名错误"
         );
+        assert!(
+            cmd.contains("bot_assignee_injection_violation(&def.assignees,&assignees)"),
+            "必须挡住给真人任务注入 bot 指派人（否则成员可收缩他人编辑权）"
+        );
         let at = cmd
             .find("if!may_change_todo(")
             .expect("鉴权调用点找不到（被改写了？守卫要同步）");
@@ -2027,6 +2031,19 @@ mod todo_image_size_tests {
         let human = vec!["alice".to_string()];
         assert!(!super::bot_assignee_locked_violation(&human, &["bob".into()]));
         assert!(!super::bot_assignee_locked_violation(&human, &[]));
+    }
+
+    /// 真人任务不许注入 bot 指派人（2026-11-19 review：否则成员可收缩他人编辑权）。
+    #[test]
+    fn bot_assignee_cannot_be_injected_into_human_todo() {
+        let human = vec!["alice".to_string()];
+        // 真人任务新增 bot ⇒ 违规；只改真人 ⇒ 合法
+        assert!(super::bot_assignee_injection_violation(&human, &["alice".into(), "bot:b1".into()]));
+        assert!(!super::bot_assignee_injection_violation(&human, &["bob".into()]));
+        assert!(!super::bot_assignee_injection_violation(&human, &human));
+        // 机器人任务本身（old 已含 bot）不归这条管，归 LOCKED 那条
+        let bot = vec!["bot:b1".to_string()];
+        assert!(!super::bot_assignee_injection_violation(&bot, &["bot:b1".into(), "alice".into()]));
     }
 
 }

@@ -11,11 +11,13 @@
  * - 后端 `ensure_aux_window`：窗口实例唯一（已存在就 show + focus，绝不建第二个）。
  */
 import { computed, reactive, type ComputedRef } from "vue";
+// 用相对路径 + .ts 后缀（不用 @/ 别名）：这样 node:test + strip-types 能直接 import 本文件做
+// 运行时行为判据（opening 超时释放），否则 @/ 别名在 node:test 下解析不了。
 import {
   raceWithTimeout,
   shouldLaunchWindow,
   WINDOW_LAUNCH_TIMEOUT_MS,
-} from "@/utils/windowLaunch";
+} from "../utils/windowLaunch.ts";
 
 /**
  * 桌面独立窗口的 label，与 Rust `lib.rs` 的 `WINDOW_*` 常量一一对应
@@ -54,9 +56,20 @@ export function isWindowOpening(label: AuxWindowLabel): boolean {
  * 错误（窗口创建失败等）会**原样抛出**，由调用方决定回退策略
  * （设置回退到应用内设置页、日志提示失败）—— 这里绝不吞异常。
  */
+/** 可注入的定时器（测试用假 timer；运行时用 window 的）。 */
+export interface WindowTimer {
+  set: (fn: () => void, ms: number) => unknown;
+  clear: (id: unknown) => void;
+}
+const browserTimer: WindowTimer = {
+  set: (fn, ms) => window.setTimeout(fn, ms),
+  clear: (id) => window.clearTimeout(id as number),
+};
+
 export async function launchAuxWindow(
   label: AuxWindowLabel,
   open: () => Promise<void>,
+  timer: WindowTimer = browserTimer,
 ): Promise<boolean> {
   const last = lastLaunchAt.get(label) ?? 0;
   if (!shouldLaunchWindow(Date.now(), opening.has(label), last)) return false;
@@ -65,12 +78,14 @@ export async function launchAuxWindow(
   try {
     // 超时兜底（2026-11-19「点了没反应」）：open() 若永不 settle，finally 就永不执行，
     // opening 会永久卡 true、此后该窗口每次点击都被吞。加超时保证必定走到 finally 释放单飞。
-    await raceWithTimeout(open(), WINDOW_LAUNCH_TIMEOUT_MS, {
-      set: (fn, ms) => window.setTimeout(fn, ms),
-      clear: (id) => window.clearTimeout(id as number),
-    });
+    await raceWithTimeout(open(), WINDOW_LAUNCH_TIMEOUT_MS, timer);
     return true;
   } finally {
     opening.delete(label);
   }
+}
+
+/** 仅供测试：读某窗口 opening 状态（生产按钮用 useWindowOpening）。 */
+export function __isOpeningForTest(label: AuxWindowLabel): boolean {
+  return opening.has(label);
 }

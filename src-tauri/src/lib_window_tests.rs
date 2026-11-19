@@ -743,10 +743,16 @@
             helper.contains("reveal_aux_window(app, label, &win)"),
             "`ensure_aux_window` 的显示必须走 reveal_aux_window（show/focus 失败要写 AUX_WINDOW_SHOW_FAILED 埋点）"
         );
+        // ⚠️ 只扫 logs.rs（include_str! 的是**生产源文件**，不是 all_commands_src 全集）：
+        // 其它命令（network.rs 的 focus_window 等）历史上也有 `let _ = win.show()`，那是**另一个
+        // 已立案的问题**（见 closedloop-matrix-2026-10-26.md），不在这次辅助窗口收敛范围内。
+        // 搜索词必须**同样 flatten**（code_flat 去掉了空白），否则带空格的串永远匹配不上 ⇒ 空转。
+        let logs_src_flat = code_flat(include_str!("commands/logs.rs"));
         assert!(
-            !code_flat(commands).contains("let _ = win.show()")
-                && !code_flat(commands).contains("let _ = win.set_focus()"),
-            "不许再用 `let _ = win.show()/set_focus()` 静默吞错：窗口建好却没显示时会变成无日志的黑洞"
+            !logs_src_flat.is_empty()
+                && !logs_src_flat.contains("let_=win.show()")
+                && !logs_src_flat.contains("let_=win.set_focus()"),
+            "logs.rs 里不许再用 `let _ = win.show()/set_focus()` 静默吞错（搜索词要去空白，否则判据空转）"
         );
         assert!(
             commands.contains("code=AUX_WINDOW_SHOW_FAILED"),

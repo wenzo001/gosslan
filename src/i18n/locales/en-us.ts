@@ -115,7 +115,7 @@ export const enUS: MessageDict = {
   "search.hint": "Type a keyword to search chat history",
   "search.peopleSection": "People / group members",
   "search.peopleOpen": "Open chat with ",
-  "search.peopleGroup": "group member",
+  "search.peopleGroupChat": "Group chat",
   "search.empty": "No matching messages",
   "search.searching": "Searching…",
   "search.fail": "Search failed",

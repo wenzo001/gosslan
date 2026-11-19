@@ -28,6 +28,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { api } from "@/api";
 import { t } from "@/i18n";
 import { takeImageOrigin, type ImageRect } from "@/utils/imageZoom";
+import { raceWithTimeout, WINDOW_LAUNCH_TIMEOUT_MS } from "@/utils/windowLaunch";
 import type { PreviewImage } from "@/types";
 
 /** 线格式与渲染入参是同一个类型（放在 `@/types`：api 与 store 都要用，别互相 import）。 */
@@ -124,7 +125,12 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
       return;
     }
     inWindow.value = true;
-    api.openImagePreview(items, at).catch((e) => {
+    // 超时兜底（2026-11-19 review 补）：IPC 永不 settle 时 .catch 不触发，inWindow 卡 true
+    // ⇒ 主文档覆盖层一直让位，窗口又没出来 = 用户点图"什么都没发生"。超时按失败恢复。
+    raceWithTimeout(api.openImagePreview(items, at), WINDOW_LAUNCH_TIMEOUT_MS, {
+      set: (fn, ms) => window.setTimeout(fn, ms),
+      clear: (id) => window.clearTimeout(id as number),
+    }).catch((e) => {
       inWindow.value = false;
       if (isAuxWindowCreateFailure(e)) {
         // 渲染环境残留：覆盖层照旧接管（用户点了就必须看到图），但要说清为什么
