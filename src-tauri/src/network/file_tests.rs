@@ -3443,6 +3443,22 @@ mod tests {
         );
     }
 
+    /// 活文件发送快照必须挂到每小时定时清扫：失败/取消终态不走 finalize 即时清理，
+    /// 若没有这趟兜底，磁盘 .send-snapshots/*.bin 会永久残留（内存表重启即清但磁盘不清）。
+    #[test]
+    fn sweep_stale_parts_also_clears_send_snapshots() {
+        let receive = include_str!("file/receive.rs");
+        let fn_at = receive
+            .find("pub fn sweep_stale_parts(")
+            .expect("sweep_stale_parts 定义不在了");
+        let tail = &receive[fn_at..];
+        let body_end = tail.find("\n}").unwrap_or(tail.len());
+        assert!(
+            tail[..body_end].contains("sweep_stale_send_snapshots("),
+            "每小时定时清扫必须连活文件发送快照一起清，否则失败/取消的快照永久留盘"
+        );
+    }
+
     /// 活文件判定：mtime 很近（正在写入）⇒ 做快照；老文件 ⇒ 直接用原路径。
     /// 这是 2026-11-19 真机"发活日志导致 size 漂移死循环"的第一道判据。
     #[test]
