@@ -355,7 +355,7 @@ pub async fn send_group_todo(
         ));
     }
     let images = images.unwrap_or_default();
-    check_todo_assignees(s, &group_id, &assignees)?;
+    check_todo_assignees(s, &group_id, &assignees, true)?; // 创建：bot 必须存在且属于本群
     // 编号在**建这一条**时分配一次（锁只在取号期间持有：发出去的那条路径还要再锁一次 db）。
     let number = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -529,6 +529,13 @@ fn bot_assignee_locked_violation(old: &[String], new: &[String]) -> bool {
     is_bot_owned_todo(old) && old != new
 }
 
+/// 纯判据：给一条**真人任务**注入 bot 指派人（2026-11-19 review 发现）。
+/// 一旦注入，任务就变成 bot-owned，其他成员随即失去"全员可编辑"——成员可主动触发的权限收缩。
+/// 真人任务永远不许新增 bot: 指派人（机器人任务本身由创建走，不经过这里）。
+fn bot_assignee_injection_violation(old: &[String], new: &[String]) -> bool {
+    !is_bot_owned_todo(old) && is_bot_owned_todo(new)
+}
+
 /// 校验一个 bot: 指派人是否合法：bot 存在、scope=group、target.group_id 正好是当前群。
 /// 三条缺一不可 —— 尤其跨群校验，防止真人在别的群里伪造一个 bot 指派混进来。
 fn check_bot_assignee(s: &AppState, group_id: &str, bot_id: &str) -> Result<(), String> {
@@ -553,6 +560,13 @@ fn check_bot_assignee(s: &AppState, group_id: &str, bot_id: &str) -> Result<(), 
             format!("机器人 {bot_id} 不属于本群"),
         ));
     }
+    // 暂停/撤销的机器人不能当新任务指派人，否则造出"谁都改不了的僵尸任务"。
+    if rec.status != "active" {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_BOT_ASSIGNEE_INVALID,
+            format!("机器人 {bot_id} 不在可用状态"),
+        ));
+    }
     Ok(())
 }
 
@@ -563,7 +577,16 @@ fn check_bot_assignee(s: &AppState, group_id: &str, bot_id: &str) -> Result<(), 
 ///
 /// 2026-11-19：`bot:<botId>` 假身份也放行，但必须过 [`check_bot_assignee`]（存在 + 群机器人 +
 /// 目标群匹配）。其余非 bot 指派人仍须是真实群成员。
-fn check_todo_assignees(s: &AppState, group_id: &str, assignees: &[String]) -> Result<(), String> {
+/// `verify_bot_exists`：创建时 true（bot 必须存在且属于本群）；编辑时 false —— 机器人任务
+/// 的指派人被 LOCKED 锁死、真人任务被 injection 校验挡住新增 bot，所以编辑时 bot 指派人一定是
+/// 原样保留的存量；此时若 bot 已被删/移出群还强制校验，就会让这条任务永远无法编辑（只能删），
+/// 而普通成员又无权删机器人任务 ⇒ 僵尸任务（2026-11-19 review 发现）。
+fn check_todo_assignees(
+    s: &AppState,
+    group_id: &str,
+    assignees: &[String],
+    verify_bot_exists: bool,
+) -> Result<(), String> {
     if assignees.is_empty() {
         return Err(crate::error_codes::coded(
             crate::error_codes::GROUP_TODO_ASSIGNEE_REQUIRED,
@@ -581,8 +604,11 @@ fn check_todo_assignees(s: &AppState, group_id: &str, assignees: &[String]) -> R
     // ⚠️ `resolve_nickname` 内部会再锁一次 db，必须在放锁之后调用（见文件里那条同名注释）
     for a in assignees {
         if let Some(bot_id) = bot_id_of_assignee(a) {
-            // 机器人假身份：必须存在 + 是本群机器人（跨群/伪造一律拒）。
-            check_bot_assignee(s, group_id, bot_id)?;
+            // 机器人假身份：创建时必须存在 + 是本群机器人（跨群/伪造一律拒）；
+            // 编辑时跳过存在性校验（存量指派人可能因 bot 被删而失配，但 LOCKED 保证没被改）。
+            if verify_bot_exists {
+                check_bot_assignee(s, group_id, bot_id)?;
+            }
             continue;
         }
         if !members.contains(a) {
@@ -1171,7 +1197,7 @@ pub async fn update_group_todo(
             "任务状态不合法",
         ));
         }
-        check_todo_assignees(s, &group_id, &assignees)?;
+        check_todo_assignees(s, &group_id, &assignees, false)?; // 编辑：存量 bot 指派人可能是已删的，放行
     }
     // 优先级只在**给了值**时校验并覆盖；没给就沿用库里那份（编辑描述不该顺手把号改掉，
     // 同理编辑状态也不该把优先级重置成"常规"）。非法值明确拒绝，不静默吞。
@@ -1206,6 +1232,13 @@ pub async fn update_group_todo(
         return Err(crate::error_codes::coded(
             crate::error_codes::GROUP_TODO_BOT_ASSIGNEE_LOCKED,
             "机器人发布的任务，负责人固定为该机器人，不能修改",
+        ));
+    }
+    // 真人任务不许注入 bot 指派人：否则成员可把任务变成 bot-owned，收缩其他人的编辑权。
+    if !deleted && bot_assignee_injection_violation(&def.assignees, &assignees) {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_BOT_ASSIGNEE_INVALID,
+            "不能把机器人设为人工任务的负责人",
         ));
     }
     // `None` ⇒ 保留库里原值（不让"只改状态"的请求把描述/图片清空）；

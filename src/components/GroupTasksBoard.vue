@@ -647,6 +647,8 @@ function canClaim(x: TodoItem): boolean {
   return (
     x.category === "requirement" &&
     !x.archived &&
+    // 机器人任务指派人被锁死，认领必被后端 LOCKED 拒 ⇒ 不给按钮（2026-11-19）
+    !isBotOwnedTodo(x) &&
     !!myId.value &&
     !x.assignees.includes(myId.value) &&
     groupMembers.value.includes(myId.value)

@@ -187,13 +187,16 @@ const peopleHits = computed<PeopleHit[]>(() => {
     if (pinyinMatch(f.nickname, kw)) out.push({ convId: f.device_id, name: f.nickname, kind: "friend" });
   }
   // 2) 群聊：群名命中 + 群成员按人名命中
+  const unknownPrefix = t("common.unknownMember");
   for (const g of chat.groups) {
     if (pinyinMatch(g.name, kw)) {
-      out.push({ convId: `group:${g.id}`, name: g.name, sub: t("search.peopleGroup"), kind: "group" });
+      out.push({ convId: `group:${g.id}`, name: g.name, sub: t("search.peopleGroupChat"), kind: "group" });
       continue;
     }
     for (const mid of g.members) {
       const name = chat.nicknameOf(mid);
+      // 跳过「未知成员 xxxx」兜底：那不是真人名，拼音命中它只会把一堆无名成员列出来（如搜 wz）。
+      if (name.startsWith(unknownPrefix)) continue;
       if (pinyinMatch(name, kw)) {
         out.push({ convId: `group:${g.id}`, name, sub: g.name, kind: "member" });
         if (out.length >= MAX_PEOPLE_HITS) break;

@@ -156,4 +156,11 @@ test("人名搜索（拼音/首字母）能搜到人并直接进聊天", () => {
     "utf8",
   );
   assert.match(convListSrc, /pinyinMatch\(f\.nickname, kw\)/, "会话列表筛人也要走拼音匹配");
+  // 转发目标 / @提及：也是"按人名搜"，必须走同一判据（兑现"全仓唯一判据"）
+  const forwardSrc = readFileSync(
+    new URL("../components/message/ForwardModal.vue", import.meta.url), "utf8");
+  const composerSrc = readFileSync(
+    new URL("../components/chat/MessageComposer.vue", import.meta.url), "utf8");
+  assert.match(forwardSrc, /pinyinMatch\(c\.name, kw\)/, "转发目标按会话名搜也要走拼音匹配");
+  assert.match(composerSrc, /pinyinMatch\(m\.name, q\)/, "@提及候选也要走拼音匹配");
 });

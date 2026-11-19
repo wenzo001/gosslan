@@ -13,6 +13,7 @@ import { clearComposerDraft, getComposerDraft, saveComposerDraft } from "@/utils
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import { haptic } from "@/utils/haptics";
 import { shouldRunThrottled } from "@/utils/defer";
+import { pinyinMatch } from "@/utils/pinyinMatch";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { classifyPaste } from "@/utils/clipboard";
 import { isImeKey } from "@/utils/ime";
@@ -702,9 +703,9 @@ const mentionCandidates = computed(() => [
 
 const mentionFiltered = computed(() => {
   if (!mention.value) return [];
-  const q = mention.value.query.toLowerCase();
+  const q = mention.value.query;
   const list = mentionCandidates.value;
-  return (q ? list.filter((m) => m.name.toLowerCase().includes(q)) : list).slice(0, 8);
+  return (q ? list.filter((m) => pinyinMatch(m.name, q)) : list).slice(0, 8);
 });
 
 /** 原子 token：@提及 与 表情 都是 contentEditable=false 的 span，退格时都应整体删除。 */

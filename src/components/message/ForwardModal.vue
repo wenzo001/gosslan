@@ -5,6 +5,7 @@ import { INPUT_DEFER_MS } from "@/utils/defer";
 import { refDebounced } from "@vueuse/core";
 import { useChatStore } from "@/stores/useChatStore";
 import { MAX_LIST_FILTER_KEYWORD_CHARS } from "@/utils/validation";
+import { pinyinMatch } from "@/utils/pinyinMatch";
 import BaseModal from "@/components/BaseModal.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
@@ -62,9 +63,9 @@ const keyword = ref("");
 const query = refDebounced(keyword, INPUT_DEFER_MS);
 
 const filtered = computed(() => {
-  const kw = query.value.trim().toLowerCase();
+  const kw = query.value.trim();
   if (!kw) return chat.conversations;
-  return chat.conversations.filter((c) => c.name.toLowerCase().includes(kw));
+  return chat.conversations.filter((c) => pinyinMatch(c.name, kw));
 });
 
 // 穷举所有 MsgKind：新增 kind 时这里会编译报错，逼你决定它的展示文案 ——
