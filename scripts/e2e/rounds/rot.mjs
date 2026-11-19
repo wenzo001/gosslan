@@ -8,7 +8,7 @@
 // ⚠️ 判据 C（scripts/check-doc-numbers.mjs）按下面这行 export const MODE 把本文件的 check( 归到这一轮：
 //    改这行、或把断言挪去别的分册，都会让活文档里那句「N 条断言」当场对不上。
 export const MODE = "ROT";
-import { DISK_MAX_ATTEMPTS, INSTANCES, LIE, RUN_DIR, S, check, eid, nowMs, openDb, seed, sleep, step, tailLog, waitFor } from "../core.mjs";
+import { DISK_MAX_ATTEMPTS, INSTANCES, LIE, RUN_DIR, S, allowDirWrites, check, denyDirWrites, eid, nowMs, openDb, seed, sleep, step, tailLog, waitFor } from "../core.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -44,7 +44,9 @@ export async function run() {
     //      这正是⑤的注释里点名"要另开一条"的 A-5 形状。
     fs.writeFileSync(part8, buf8.subarray(0, ROT_PREFIX));
     const t0 = nowMs();
-    fs.chmodSync(dl, 0o500);
+    // 平台差异：macOS/Linux 是 chmod 0500；Windows 是目录 ACL 拒绝 (WD,AD,DC)（见 core.mjs denyDirWrites）。
+    // 关键语义：已存在的 .part 仍可续写（写权限在文件上），只有 create / rename / unlink 塌 ⇒ 与⑤分道。
+    denyDirWrites(dl);
     let bTerminal = null;
     let aGrew = false;
     let partGrew = 0;
@@ -103,7 +105,7 @@ export async function run() {
       for (const l of (tailLog(INSTANCES[1].log, 200000) || "").split("\n")
         .filter((x) => x.includes(xferId8) || /rename|重命名|写失败|finalize|终态/i.test(x)).slice(-8)) console.log("      B│ " + l.slice(0, 220));
     } finally {
-      fs.chmodSync(dl, 0o700);
+      allowDirWrites(dl);
     }
     // ── 反空转前提（⑤的教训：先量"我以为已经成立的前提"，再判结论）──
     // 前缀真的被续写 ⇒ 这一轮走的是"收到一半才失败"，而不是⑤那条"offer 期就被拒"。

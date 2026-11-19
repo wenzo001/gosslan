@@ -8,7 +8,7 @@
 // ⚠️ 判据 C（scripts/check-doc-numbers.mjs）按下面这行 export const MODE 把本文件的 check( 归到这一轮：
 //    改这行、或把断言挪去别的分册，都会让活文档里那句「N 条断言」当场对不上。
 export const MODE = "SHRINK";
-import { INSTANCES, LIE, LIE_SHA, RUN_DIR, S, check, eid, nowMs, openDb, procs, seed, sleep, step, tailLog, waitFor } from "../core.mjs";
+import { INSTANCES, LIE, LIE_SHA, RUN_DIR, S, check, eid, freezeProc, nowMs, openDb, procs, seed, sleep, step, tailLog, thawProc, waitFor } from "../core.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -39,7 +39,7 @@ export async function run() {
     let sent = null;
     try {
       // 顺序不能换：先冻住 B，A 才有"不读盘"的确定窗口（A 只在收到入站帧时才 flush，见 A-9）。
-      pB.kill("SIGSTOP");
+      freezeProc(pB.pid);
       // 入队 = 复刻 `send_file` 命令在点击那一刻写的三行（气泡 / 传输台账 / 队列）。
       // 少写一行就测不到这一格的疑点：气泡与台账的 size 都是**按当时磁盘**算出来的。
       for (let i = 0; ; i++) {
@@ -75,7 +75,7 @@ export async function run() {
       // 注入：入队之后把原件改小（用户在同一批"等着对方上线"的单子还没发出去时改了那个文件）。
       fs.truncateSync(srcFile7, SHRINK_TO);
       const shrunkSha = createHash("sha256").update(fs.readFileSync(srcFile7)).digest("hex");
-      pB.kill("SIGCONT");
+      thawProc(pB.pid);
       thawed = true;
       const t0 = nowMs();
       await waitFor(() => {
@@ -103,7 +103,7 @@ export async function run() {
         .filter((x) => x.includes(xferId7)).slice(-6)) console.log("      A│ " + l.slice(0, 220));
     } finally {
       // 被 SIGSTOP 停住的进程收不到 SIGTERM ⇒ 不解冻会把整条 harness 挂死（冻结轮的教训）。
-      if (!thawed) { try { pB.kill("SIGCONT"); } catch { /* 已经退了 */ } }
+      if (!thawed) { try { thawProc(pB.pid); } catch { /* 已经退了 */ } }
     }
     const landedBytes = sizeOf(landed);
     const got = landedBytes >= 0
