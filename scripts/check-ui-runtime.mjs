@@ -3221,7 +3221,9 @@ window.__probe = (() => {
     // 还返回裸数组的话，parseIpcValue 会在边界直接拒绝 ⇒ 面板永远显示"目录为空"，
     // 这不是产品缺陷、是夹具过期（2026-10-24 复跑时实测）。
     r({
-      entries: names.map((name) => ({ name, path: fid + '/' + name, is_dir: false, size: 10 })),
+      // 根级文件的 path 就是文件名本身（后端 share_walk 的 rel 从空串开始拼）——
+      // 曾经在这里加 fid 前缀，等于把每个条目都塞进一层假目录，默认折叠 ⇒ 4 条判据全红。
+      entries: names.map((name) => ({ name, path: name, is_dir: false, size: 10 })),
       truncated: false,
     });
     return true;
@@ -3729,7 +3731,26 @@ window.__probe = (() => {
       preScrollH: pre.scrollHeight,
       // 「可滚」只看 overflow 值：overflow:hidden 时 scrollHeight 仍会 > clientHeight（那是被裁掉的内容）。
       preScrollable: /auto|scroll/.test(overflowY),
-      contentClipped: pre.scrollHeight > pre.clientHeight + 1,
+      // 折叠态用的是 overflow-y:clip（不是 hidden）：clip 的盒子不是滚动容器，
+      // 浏览器把 scrollHeight 夹成 clientHeight ⇒ 拿它判"内容被截断"永远为假
+      // （2026-11-20 实测：99 行夹具 preScrollH=172=preH，24 条红是同一个根因）。
+      // 改量内容元素自己（pre 里那个 code）的矩形高度。
+      contentClipped: (() => {
+        const code = pre.querySelector("code");
+        const h = code ? Math.round(code.getBoundingClientRect().height) : pre.scrollHeight;
+        return h > pre.clientHeight + 1;
+      })(),
+      // 折叠态的实现已经从"渲染全部再裁掉"改成"只传前 8 行预览"（CodeBlock 的 clipped 注释），
+      // 所以判"内容被裁掉"没有意义；真正该看的是**渲染了几行**与省略号。
+      renderedLines: (() => {
+        const code = pre.querySelector("code");
+        const txt = code ? (code.textContent || "") : "";
+        return txt ? txt.replace(/\\n+$/, "").split("\\n").length : 0;
+      })(),
+      endsWithEllipsis: (() => {
+        const code = pre.querySelector("code");
+        return !!code && /…\\s*$/.test(code.textContent || "");
+      })(),
       overflowY,
       scrollMode: pre.getAttribute('data-code-scroll'),
       preScrollTop: Math.round(pre.scrollTop),
@@ -8820,11 +8841,14 @@ async function runCodeFold(cdp, url) {
         "data-code-scroll=clip + overflow-y=hidden + pre.scrollTop=0",
         JSON.stringify(before),
       );
+      // 窄屏（390/430）下逻辑行会折成两行视觉行 ⇒ 按固定高度切出来的逻辑行数会少于 8。
+      // 契约是"按高度切、不滚、有内容"，不是"恒定 8 个逻辑行"。
       check(
-        `[${tag}] 折叠态真的把 99 行截断了（scrollHeight > clientHeight 但不许滚）`,
-        !!before && before.contentClipped === true && before.preScrollable === false,
-        "cut=true / scrollable=false",
-        JSON.stringify(before && { preH: before.preH, preScrollH: before.preScrollH }),
+        `[${tag}] 折叠态只渲染高度容得下的预览行（不是渲染 99 行再裁掉），且不是滚动容器`,
+        !!before && before.renderedLines >= 4 && before.renderedLines <= 8
+          && before.preScrollable === false,
+        "4 <= renderedLines <= 8 / scrollable=false",
+        JSON.stringify(before && { lines: before.renderedLines, preScrollable: before.preScrollable }),
       );
       check(
         `[${tag}] 折叠高度固定为 204px（toolbar 32 + 上 padding 12 + 8×20，下 padding 归零）`,
@@ -8851,10 +8875,10 @@ async function runCodeFold(cdp, url) {
         JSON.stringify(before && { btn: before.expandBtn, focusable: before.expandFocusable, aria: before.expandAria }),
       );
       check(
-        `[${tag}] 截断有可发现信号：淡出遮罩 +「还有 N 行」`,
-        !!before && before.fade === true && /\d+\s*行|line/i.test(before.hint || ""),
-        "fade=true + hint 含数字",
-        JSON.stringify(before && { fade: before.fade, hint: before.hint }),
+        `[${tag}] 截断有可发现信号：结尾省略号 +「还有 N 行」`,
+        !!before && before.endsWithEllipsis === true && /\d+\s*行|line/i.test(before.hint || ""),
+        "ellipsis=true + hint 含数字",
+        JSON.stringify(before && { ellipsis: before.endsWithEllipsis, hint: before.hint }),
       );
       await shot(`folded-${tag}`);
 
@@ -24541,8 +24565,8 @@ async function runShareDirectory(cdp, url) {
   await sleep(250);
   s = await info();
   check("下载归属来自树的快照：向 B 要 B 的文件",
-    s.downloads.length === 1 && s.downloads[0][0] === "B" && s.downloads[0][1] === "B/b.txt",
-    'downloads=[["B","B/b.txt"]]', JSON.stringify(s.downloads));
+    s.downloads.length === 1 && s.downloads[0][0] === "B" && s.downloads[0][1] === "b.txt",
+    'downloads=[["B","b.txt"]]', JSON.stringify(s.downloads));
 
   await cdp.eval("window.__probe.setConv('A')");
   await sleep(350);
