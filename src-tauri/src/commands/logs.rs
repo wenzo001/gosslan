@@ -345,7 +345,19 @@ fn decorate_aux_window(win: &tauri::WebviewWindow, app: &tauri::AppHandle) {
             crate::macos_window::use_native_titlebar(&w);
         });
     }
-    #[cfg(not(target_os = "macos"))]
+    // Windows：系统圆角（DWM）。与 macOS 的 squircle 对称 —— 那一边补 AppKit 的圆角/阴影，
+    // 这一边补 DWM 的；Win10 上 DWM 不认这个属性 ⇒ 安静降级成直角（只记日志）。
+    #[cfg(target_os = "windows")]
+    {
+        if let Err(e) = crate::window_chrome::apply(win) {
+            if let Some(state) = app.try_state::<std::sync::Arc<AppState>>() {
+                state
+                    .logger
+                    .warn("window", format!("系统圆角不可用（按直角降级）: {e}"));
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = (win, app);
 }
 

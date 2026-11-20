@@ -14,6 +14,19 @@
 
 ## [Unreleased]
 
+## [7.1.40] - 2026-11-20
+
+### 平台外壳（Windows 视觉对齐，2026-11-20）
+- **Windows 窗口改用系统圆角**：`decorations: false` 下 Windows 是直角，与 macOS 的窗口圆角
+  对不上（方角露在 CSS 圆角外面，外层细边/玻璃观感也跟着歪）。现在建窗后调 DWM 的
+  `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND`，由合成器裁剪整窗 —— 阴影与边界跟着圆角走。
+  Win10 / 组策略禁用时返回 `E_INVALIDARG`，**安静降级成直角**（只记一条日志，不影响启动与窗口可用性）。
+  主窗与所有独立窗口（`decorate_aux_window` 一个出口）都接上，与 macOS 的 `macos_window` 对称。
+
+> 已知边界：DWM 只提供 8px（`ROUND`）/ 4px（`ROUNDSMALL`）两档，**没有 20px**；
+> macOS 那边是系统给的 20px。要两端半径完全一致，只能放弃系统圆角改"透明窗 + CSS 圆角 + 自绘阴影"。
+> 这条待定，见下方取舍说明。
+
 ## [7.1.39] - 2026-11-20
 
 ### 修复

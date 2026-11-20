@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "7.1.39"
+version = "7.1.40"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -145,6 +145,9 @@ clipboard-win = "5"
 # 同样必须逐个点名（windows-sys 的 feature 没有传递关系）。
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    # 2026-11-20：窗口圆角走系统合成器（DwmSetWindowAttribute）。Win10 上返回
+    # E_INVALIDARG，按"系统不支持"降级成直角 —— 不是故障。
+    "Win32_Graphics_Dwm",
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
     "Win32_System_Memory",
