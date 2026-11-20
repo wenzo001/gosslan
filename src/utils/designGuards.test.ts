@@ -5296,6 +5296,35 @@ test("㊿ 字号只走令牌：生产码 0 处 text-[NNpx]，且画板字阶像�
   assert.ok(ARB.test("class=\"text-[13px]\""), "签名认不出旧形状 ⇒ 这一格在测空气");
   assert.ok(!ARB.test("class=\"text-body\""));
 
+  /**
+   * 2026-11-20 补漏：㊿ 原来只扫 Tailwind 的 `text-[NNpx]`，`<style>` 里的
+   * `font-size: NNpx` 完全在守卫面外（DESIGN-HANDOFF 里登记为"靠人审"的那条）。
+   * 现在按同一张档位表判：值必须是已登记的像素（micro…display），
+   * 否则就是又长出一套字号 —— 这类只在某个组件里出现，肉眼几乎发现不了。
+   */
+  const REGISTERED_PX = new Set([11, 12, 12.5, 13, 14, 14.5, 15, 17, 18, 20, 22]);
+  // ⚠️ 正控用**不带 g** 的签名：带 g 的 `test()` 会推进 lastIndex，
+  // 随后的 `matchAll` 会从那个位置起扫 ⇒ 每个块的第一处被跳过（本轮实测踩过：
+  // 注入 13.5px 仍然全绿）。扫描用字面量正则，每次都是新的。
+  assert.ok(/font-size:\s*[0-9.]+px/.test("<style>.a { font-size: 13.5px }</style>"), "签名认不出 scoped CSS 字号");
+  assert.ok(!REGISTERED_PX.has(13.5), "13.5 不在档位表里，反例才成立");
+  const styleOffenders: string[] = [];
+  for (const f of files) {
+    const src = code691(readFileSync(f, "utf8"));
+    const rel = f.slice(srcDir691.length + 1).replaceAll("\\", "/");
+    for (const block of src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) {
+      for (const m of block[1].matchAll(/font-size:\s*([0-9.]+)px/g)) {
+        if (!REGISTERED_PX.has(Number(m[1]))) styleOffenders.push(`${rel} → ${m[1]}px`);
+      }
+    }
+  }
+  assert.deepEqual(
+    styleOffenders,
+    [],
+    "scoped CSS 里写了不在字阶表里的字号（要么改用令牌类，要么先把新档登记进 tailwind.config 与这张表）：" +
+      styleOffenders.join(", "),
+  );
+
   const cfg = readFileSync(join(srcDir691, "..", "tailwind.config.js"), "utf8");
   for (const [name, px] of [
     // 2026-11-06 第 6 段统一抬档：micro 10 → 11（与 caption 同值、语义不同）。
