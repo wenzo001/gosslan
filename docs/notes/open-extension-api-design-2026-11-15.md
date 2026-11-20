@@ -33,10 +33,12 @@
 | 能力 | 现状 | 位置 |
 |---|---|---|
 | 快捷登录 | ✅ 已实现（device auth：深链 → 用户确认 → 绑定 → JWS 断言 → 决策回写） | `src-tauri/src/device_auth.rs`、`commands/device_auth.rs` |
-| 分享到会话 | ✅ 已实现，但**单向**：RP 触发 → 用户在面板里**自己勾选**会话 → 发送；**无回执** | `src-tauri/src/share.rs`、`commands/external_share.rs` |
-| 好友列表 | 内部命令已有（`get_friends`），**没有任何对外通道** | `src-tauri/src/commands/friends.rs` |
-| 定向分享（指定目标） | ❌ 无（深链无 `to` 参数，面板不预选） | `src-tauri/src/share.rs` |
-| 分享回执 | ❌ 无（接入指南 §2.4 明写「没有回调」） | — |
+| 分享到会话 | ✅ 已实现：RP 触发 → 面板勾选 → 显式发送；可选回执 | `src-tauri/src/share.rs`、`commands/external_share.rs` |
+| 好友列表 | 内部命令已有（`get_friends`），**没有对外通道**（仅 `sync` scope 交付 device_id+昵称） | `src-tauri/src/commands/friends.rs` |
+| 定向分享（指定目标） | ✅ 已实现（深链 `to` + `to_kind` 预选，目标不存在整笔拒） | `src-tauri/src/share.rs` |
+| 分享回执 | ✅ 已实现（可选，深链带 `receipt=` + 同源 `origin`；回执体见 §4.2） | `commands/external_share.rs` |
+
+> 2026-11-20 更正：本表旧版写「无回执 / 定向分享 ❌ / 分享回执 ❌」是**实现前快照**，与 §4.2「已实现」自相矛盾；现已按实现更正。
 | 消息事件外送 | ❌ 无（`message-received` 只 emit 到本机前端） | `src-tauri/src/state.rs` |
 
 ## 2. 通道模型（先定这个，否则后面全是空谈）
@@ -133,8 +135,9 @@
   - 匹配不到就报「目标不存在」，**绝不新建会话、绝不广播**。
   - **例外**：目标好友**还没聊过**（库里没有会话行）⇒ 客户端先建一个**空会话**（不发任何消息），
     否则面板列不出这个目标，「一键发给他」就无从谈起。
-- 回执：可选 `share_receipt_endpoint`（同源）⇒ 发送完成后 POST
-  `{subject, share_id, status: "sent" | "partial" | "failed", targets: [...]}`。
+- 回执：深链可选 `receipt=`（必须与 `origin` 同协议同源，2026-11-20 起无 `origin` 的回执整笔拒）⇒
+  发送完成后 POST `{ share_id, status: "sent" | "partial" | "failed", sent, failed }`。
+  （旧文写的 `share_receipt_endpoint` 是死字段、body 含 `subject`/`targets` 均已过时，以 §2.7 接入指南为准。）
 - 群与单聊**同一条路径**：都走既有发送通道（乐观上屏 / 台账 / 失败态），不改消息语义。
 
 ### 4.2.1 群列表（2026-11-15 已开放）
@@ -200,7 +203,7 @@ Gosslan 侧用**双向好友表**匹配（§4.2）。
 2. 未知 scope 整笔拒（与未知 claim 同口径）。
 3. 决策回写体里**没有** `content` 字段（事件元数据形状断言）。
 4. 好友交付载荷里**没有**公钥字段。
-5. 定向分享：`to` 不在双向好友表 ⇒ 回执 `unknown_target`，**不新建会话**。
+5. 定向分享：`to` 不在双向好友表 ⇒ 整笔拒 `EXTERNAL_SHARE_BAD_TARGET`，面板不出现、**不新建会话**（旧文"回执 unknown_target"已过时，实际上没有这种回执状态）。
 6. 定向分享：面板仍出现、目标预填，**未点发送则一条都不发**。
 7. 同源：新端点非 HTTPS 或跨域 ⇒ 拒（复用既有 metadata 校验判据）。
 8. 撤销绑定后 ⇒ 后续 sync 事务被拒。

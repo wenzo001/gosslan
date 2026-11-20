@@ -31,11 +31,18 @@
 
 | 平台 | 目录 |
 |---|---|
-| macOS | `<App Group 容器>/incoming-shares/`（有 App Group 时）；否则退回 `app_local_data_dir()/incoming-shares/` |
+| macOS | `<App Group 容器>/incoming-shares/`（**写入端骨架**，见下）；读取端当前只扫 `app_local_data_dir()/incoming-shares/` |
 | Windows | `%LOCALAPPDATA%\<包标识>\incoming-shares\` |
 
 读取端一律以 `app_local_data_dir()` 为基准（见 `src-tauri/src/incoming_share.rs` 的
 `incoming_dir`）：**不是漫游目录** —— 分享是本机的事，不该跟着账号跑到别的机器上去。
+
+> ⚠️ **2026-11-20 审计更正（未落地边界）**：macOS 系统分享扩展仍是**未完成的骨架**——
+> `platform/macos-share-extension/ShareViewController.swift` 的 `appGroupIdentifier` 还是占位符
+> `<你的 Team ID>.group.com.gosslan.app`（Team ID / App Group 都没配置），且它写入 App Group 容器，
+> 而读取端 `scan_incoming_shares` 只读 `app_local_data_dir()`，**两者目录不一致**。也就是说 macOS
+> 系统分享目前端到端不通，需在确定 Team ID 后：① 配好 App Group  entitlements；② 让读取端也扫
+> App Group 容器（有则优先、无则退回 local）。修好真机验收前，不要对外声称 macOS 系统分享可用。
 
 ### 3.2 文件名
 

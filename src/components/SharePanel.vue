@@ -147,7 +147,10 @@ async function onSend() {
   // 回执（可选）：告诉 RP 到底发出去了几条。
   // 后端自己从队列里取回执地址（前端不传地址 ⇒ 前端无法把回执发去别处），
   // 没提供端点时后端回 false，不算错误。
-  void reportReceipt(ids.length - failed.length, failed.length, failed.length ? "partial" : "sent");
+  // ⚠️ 必须 await（2026-11-20 审计修）：过去 fire-and-forget 与下面的 dismiss 竞争同一队列项，
+  // dismiss 先删条目 ⇒ reportReceipt 取不到端点 ⇒ 全成功路径的回执必丢。回执失败内部已吞错，
+  // await 只会稍等一拍、不会给用户弹错。
+  await reportReceipt(ids.length - failed.length, failed.length, failed.length ? "partial" : "sent");
 
   if (!failed.length) {
     app.toast(

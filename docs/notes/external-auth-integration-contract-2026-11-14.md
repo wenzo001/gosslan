@@ -75,8 +75,9 @@
 - 队列边界：满载不再静默淘汰最老事务，改为返回明确错误「暂不能处理」并留具名 `code=` 日志；新事务不会顶掉用户正在看的确认页。
 - 断言时效：断言有效期常量仍只约束签名本身；事务 TTL 由上面的本地兜底与 RP `expires_at` 共同决定。
 - `/share` 深链：解析 + 内联闭环均已落地（面板、会话选择、显式发送、粘贴兜底都已接线，见 §6）。**定向分享已接**（`to` + `to_kind` 预填目标、目标不存在整笔拒、分享回执可选）。仍**没有**：受控 `share_request`（缺 RP 端点）、文件分享，见 §11。
-- **数据交付（`sync` 动作）**：已接（客户端侧，2026-11-15 裁决后落地）。scope 只有 `friends.read` 与
-  `events.metadata` 两项。
+- **数据交付（`sync` 动作）**：已接（客户端侧，2026-11-15 裁决后落地）。scope 有三项
+  （2026-11-20 更正：2026-11-15 追加了 `groups.read`，旧正文写"两项"已过时）：
+  `friends.read`、`events.metadata`、`groups.read`。
   **2026-11-17 起：请求的 scope 默认全勾、用户点一次「允许」即完成**
   （用户要求「对方接入，点击弹出应用，用户直接确认就行」）。
   ⚠️ 一键允许**不是无条件授权**：交付集合仍是 `grantedScopes(本次请求 ∩ 实际勾选 ∩ allowlist)`，
@@ -93,7 +94,7 @@
 
 - **RP session/CSRF 绑定**
   - 要求：绑定场景必须 RP 已登录会话且通过 CSRF 检查；登录场景事务必须绑定发起它的浏览器会话，状态轮询仍校验同源 session。
-  - 当前状态：需 RP 侧实现。客户端只校验 HTTPS 同源 metadata 与端点，不参与 RP 会话；`scripts/device-auth-rp-mock.mjs` 免 session/CSRF。
+  - 当前状态：需 RP 侧实现。客户端只校验**同源（同协议）** metadata 与端点——2026-11-17 起支持 http（内网 IP:端口 / localhost），旧文"只校验 HTTPS 同源"已过时；不参与 RP 会话；`scripts/device-auth-rp-mock.mjs` 免 session/CSRF。
 - **挑战一次性消费**
   - 要求：challenge、transaction_id、jti 与 RP/action/audience/会话绑定后原子消费；重放旧签名、旧事务一律拒绝且保持终态。
   - 当前状态：已具备（客户端层）。`jti` 与幂等键现在挂在 pending 事务上、跨重试复用，**并且跨应用重启复用**（幂等键单独落库，2026-11-16），不再每次 `sign_assertion` 重生成；`src-tauri/src/commands/device_auth.rs` 的一次性消费、复合键与代际对账保持。RP 侧原子消费与**持久化**重放库仍需 RP 实现；mock 只提供进程级 `jti` 去重。

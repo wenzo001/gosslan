@@ -480,6 +480,30 @@ pub async fn bot_set_status(
     // 极简协议：服务端只有 DELETE（撤销）= hook 立即失效；
     // pause/resume 只是本机开关（轮询时不拉 paused 的机器人），不再问服务端。
     if next == "revoked" {
+        // 撤销 = 远端撤回 hook，和 bot_delete 一样会影响群里其他人 ⇒ 群机器人必须群主/管理员
+        // 才能撤销（2026-11-20 审计：过去只有 bot_delete 有这道校验，set_status 可绕过）。
+        // 群已解散/已退群 ⇒ 机器人无归属，允许清理本地记录（与 bot_delete 同口径）。
+        if record.target.kind == "group" {
+            if let Some(gid) = record.target.group_id.clone() {
+                let sd = s.clone();
+                let me = sd.device_id.clone();
+                let allowed = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+                    let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
+                    Ok(match db::get_group(&dbc, &gid) {
+                        Some(g) => g.is_manager(&me),
+                        None => true,
+                    })
+                })
+                .await
+                .map_err(|e| format!("权限检查中断：{e}"))??;
+                if !allowed {
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::BOT_TARGET_INVALID,
+                        "只有群主或管理员可以撤销群机器人",
+                    ));
+                }
+            }
+        }
         let client = bot_client()?;
         let resp = client
             .delete(format!("{}/v1/bots/{}", record.server_url, record.client_token))
@@ -1007,47 +1031,6 @@ async fn deliver_event(
             })
             .await
             .map_err(|e| format!("校验群失败：{e}"))??;
-            // 白名单群管理指令（第三方通过 Webhook 正文 action 触发）。
-            // 只认 create_todo；其它 type 一律**当普通通知处理**（不执行、不报错），
-            // 杜绝构造 action 触达踢人/任免/转让等危险路径。
-            if let Some(action) = entry.action.as_ref() {
-                let kind = action.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                if kind == "create_todo" {
-                    // 双重校验：机器人 scope=group + 本机仍是该群管理员（权限撤销后立即失效）。
-                    let permitted = {
-                        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                        match db::get_group(&dbc, &group_id) {
-                            Some(g) => g.is_manager(&s.device_id),
-                            None => false,
-                        }
-                    };
-                    if permitted {
-                        let title = action.get("title").and_then(|v| v.as_str())
-                            .filter(|t| !t.trim().is_empty())
-                            .map(|t| t.chars().take(120).collect::<String>())
-                            .unwrap_or_else(|| entry.text.chars().take(60).collect());
-                        // 发内部事件让前端调既有 send_group_todo（不复制建任务逻辑）。
-                        // 带 botId：前端建任务失败时据此把原因写回 last_error（详情页可见）。
-                        let _ = s.app.emit("bot-group-action", serde_json::json!({
-                            "type": "create_todo",
-                            "groupId": group_id,
-                            "title": title,
-                            "botName": record.name,
-                            "botId": record.bot_id,
-                        }));
-                        s.logger.info("bot", format!("群机器人 {} 触发建任务：{title}", record.bot_id));
-                    } else {
-                        // 权限被拒不能只写日志（用户只会看到「没建成」却不知为什么）：写 last_error。
-                        let sd = s.clone();
-                        let bid = record.bot_id.clone();
-                        let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
-                            let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
-                            write_bot_last_error(&dbc, &bid, "建任务被拒：本机已不是该群管理员")
-                        }).await;
-                        s.logger.info("bot", format!("群机器人 {} 的建任务被拒（已非管理员）", record.bot_id));
-                    }
-                }
-            }
             // `local_id` 记下「这条是哪个机器人代发的」：机器人被删/退群后，
             // 历史消息仍能留在发送方侧（用户 2026-11-18）。不改表结构，也不进线格式。
             // `bot-md:` = markdown 正文（前端按富文本渲染），`bot:` = 纯文本；两者都带 botId 供归因。
@@ -1076,9 +1059,55 @@ async fn deliver_event(
                         .map_err(|e| format!("记录群消息去重失败：{e}"))
                 })
                 .await;
+                let mark_ok = marked.is_ok();
                 if let Err(e) = marked {
                     // 已发出但去重没记上 ⇒ 重申风险可观测（不能假装 exactly-once）。
                     s.logger.error("bot", format!("event={eid_for_log} {e}：服务端重投可能重复发一条"));
+                }
+                // ★ Webhook action（建任务）必须与投递幂等**同一单元**（2026-11-20 审计修）：
+                // 过去 emit 在发消息之前，若发消息失败 → 不记去重 → 服务端重投 → action 再 emit
+                // ⇒ 群里重复建任务；反之消息已发并 ACK、前端没接住事件则任务永久缺失。
+                // 现在只有「消息发出 + 去重记住」之后才执行 action：重投会被开头 was_delivered
+                // 提前拦下，不会再建一次；发送/去重失败则本轮不执行、留给重投完整重试。
+                if mark_ok {
+                    if let Some(action) = entry.action.as_ref() {
+                        let kind = action.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        if kind == "create_todo" {
+                            // 双重校验：机器人 scope=group + 本机仍是该群管理员（权限撤销后立即失效）。
+                            let permitted = {
+                                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                                match db::get_group(&dbc, &group_id) {
+                                    Some(g) => g.is_manager(&s.device_id),
+                                    None => false,
+                                }
+                            };
+                            if permitted {
+                                let title = action.get("title").and_then(|v| v.as_str())
+                                    .filter(|t| !t.trim().is_empty())
+                                    .map(|t| t.chars().take(120).collect::<String>())
+                                    .unwrap_or_else(|| entry.text.chars().take(60).collect());
+                                // 发内部事件让前端调既有 send_group_todo（不复制建任务逻辑）。
+                                // 带 botId：前端建任务失败时据此把原因写回 last_error（详情页可见）。
+                                let _ = s.app.emit("bot-group-action", serde_json::json!({
+                                    "type": "create_todo",
+                                    "groupId": group_id,
+                                    "title": title,
+                                    "botName": record.name,
+                                    "botId": record.bot_id,
+                                }));
+                                s.logger.info("bot", format!("群机器人 {} 触发建任务：{title}", record.bot_id));
+                            } else {
+                                // 权限被拒不能只写日志（用户只会看到「没建成」却不知为什么）：写 last_error。
+                                let sd = s.clone();
+                                let bid = record.bot_id.clone();
+                                let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                                    let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
+                                    write_bot_last_error(&dbc, &bid, "建任务被拒：本机已不是该群管理员")
+                                }).await;
+                                s.logger.info("bot", format!("群机器人 {} 的建任务被拒（已非管理员）", record.bot_id));
+                            }
+                        }
+                    }
                 }
             }
             sent

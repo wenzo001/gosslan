@@ -380,7 +380,7 @@ https://your-app.example.com/share?url=…&title=…&text=…
 | `url` | 否* | 2048 码点 | 被分享的链接。**只接受 `http` / `https`**；`javascript:` / `data:` / `file:` 一律整笔拒 |
 | `title` | 否* | 300 码点 | 标题 |
 | `text` | 否* | 2000 码点 | 原文 / 选中文字 |
-| `origin` | 否 | — | 你**自称**的来源，必须是 HTTPS origin。仅用于在面板上给用户一个线索，**不参与任何信任判断** |
+| `origin` | 否 | — | 你**自称**的来源，必须是 http/https origin（2026-11-17 起允许 http 内网 IP:端口 / localhost）。仅用于在面板上给用户一个线索，**不参与任何信任判断**；但带 `receipt` 时必填，用于校验回执同源（2026-11-20 起无 `origin` 的 `receipt` 整笔拒，防 SSRF） |
 
 \* 三者至少给一个，否则整笔被拒（不会弹一个空面板）。
 
@@ -434,7 +434,7 @@ location.href = link;
 | 系统分享面板（macOS Share Extension / Windows 分享目标 / Android ACTION_SEND） | **读取端已实现，平台写入端未实现**：应用会捡起平台扩展写进「落地区」的文件，与深链走同一个面板、同一套限额（协议见 [`system-share-target-design-2026-11-15.md`](system-share-target-design-2026-11-15.md)）；但 macOS/Windows 的扩展本体需要独立工程与签名证书，**用户现在装不上** |
 | 受控分享 `gosslan://share/<ref>` 或 `https://<host>/share/<ref>` | 链接形状已能解析，但需要 RP 侧提供一个「用 ref 换内容」的端点；**本期明确回「暂不支持」** |
 | 网页预览 / 抓取 OG 标签 | 不做。抓取等于把任意 URL 交给本机去请求（SSRF / 内网探测 / 跟踪像素） |
-| 分享结果的回执 | **可做（可选）**：带 `receipt=<https 同源地址>` 才有，见 §2.7；回执只含状态与条数 |
+| 分享结果的回执 | **可做（可选）**：带 `receipt=<http(s) 同源地址>` 且同时带 `origin` 才有，见 §2.7；回执只含状态与条数 |
 | 定向分享（预填目标） | **可做（可选）**：带 `to` + `to_kind` 才有，见 §2.7。**只是预填，用户仍要点发送**；目标不存在则整笔拒 |
 | 群密钥、群成员明细 | 不做。§1.10 的 `groups.read` 只给群 id / 名称 / 人数 |
 
@@ -463,9 +463,9 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
 3. **没聊过的朋友也会出现在面板里**：客户端会先为这个好友建一个空会话（不发任何消息），
    否则面板列不出来，就没法「一键发给他」。
 4. **群 id 从 §1.10 的 `groups.read` 拿**（`groups[].group_id`，拼成 `group:<群 id>`）；
-   没申请这个 scope 时就拿不到 ⇒ 让用户自己在面板里选
-   （群列表不在本次授权范围内）。所以「一键发到某个群」需要你另行知道 `group:<群 id>`；
-   拿不到就让用户在面板里自己选群。
+   没申请这个 scope 时就拿不到 ⇒ 让用户自己在面板里选。
+   （2026-11-20 更正：括号内旧句"群列表不在本次授权范围内"已过时——`groups.read` 已于
+   2026-11-15 开放，交付群 id / 群名 / 人数，不含群成员明细。所以申请了该 scope 就能拿到群列表。）
 5. **回执是可选的**：加 `receipt=<地址>`（必须与 `origin` 同协议同源），
    用户点完发送后客户端会 `POST` 一次 `{ share_id, status, sent, failed }`。
    回执**不含会话名、不含分享内容**。不写 `receipt` ⇒ 不回执（不是错误）。
@@ -521,9 +521,10 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
 - [ ] 带 `to` 指向一个不在好友列表里的设备 id：整笔拒（`EXTERNAL_SHARE_BAD_TARGET`），
       **面板不出现**，且**没有新建会话**。
 - [ ] 带 `to=group:<群 id>`（已知群）：面板出现、那个群被勾上。
-- [ ] 带 `receipt=`（https、与 `origin` 同源）：发送后你收到一次 `POST`，
-      体是 `{ share_id, status, sent, failed }`，**没有会话名与内容**。
-- [ ] 带 `receipt=`（http 或跨源）：整笔拒。
+- [ ] 带 `receipt=`（http 或 https，**与 `origin` 同协议同源**，且必须同时带 `origin`）：
+      发送后你收到一次 `POST`，体是 `{ share_id, status, sent, failed }`，**没有会话名与内容**。
+- [ ] 带 `receipt=` 但**不带 `origin`**：整笔拒（2026-11-20 SSRF 加固，无来源无从校验回执归属）。
+- [ ] 带 `receipt=`（跨协议 / 跨源 / 非 http(s) scheme，如 `file:`）：整笔拒。
 
 ## 5. 验收状态（诚实边界）
 
@@ -544,7 +545,7 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
 | 错误码 | 触发条件 | 用户看到 | 你该做什么 |
 |---|---|---|---|
 | `DEVICE_AUTH_INVALID_LINK` | 深链形状不对（scheme / 路径不认识，或缺 `<ref>`） | 授权链接不正确 | 检查深链拼装与 URL 编码 |
-| `DEVICE_AUTH_INVALID_ORIGIN` | `origin` 不是合法 HTTPS origin（带 userinfo / query / fragment） | 应用来源不是有效的 HTTPS 地址 | 传干净的 `https://host[:port]` |
+| `DEVICE_AUTH_INVALID_ORIGIN` | `origin` 不是合法 http/https origin（带 userinfo / query / fragment） | 应用来源不是有效的 http(s) 地址 | 传干净的 `https://host[:port]` 或 `http://host[:port]` |
 | `DEVICE_AUTH_CROSS_ORIGIN` | 元数据 `issuer` 与深链 origin 不同源 | 应用来源与端点不一致，已拒绝 | 两者必须是同一个 origin |
 | `DEVICE_AUTH_BAD_METADATA` | 元数据缺字段、端点非 HTTPS、端点是跨源 | 应用认证信息不完整 | 按 §1.3 补齐；端点必须同源 HTTPS |
 | `DEVICE_AUTH_UNSUPPORTED` | `protocol_version` 不认识，或不支持该 `action` | 不支持的认证协议或动作 | 用 `"1"`，并在 `supported_actions` 里声明要用的动作 |
@@ -561,7 +562,7 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
 | `DEVICE_AUTH_BUSY` | 待确认队列已满（上限 4） | 待确认的授权太多，先处理手上这几条 | 别把多条授权并发塞给用户 |
 | `DEVICE_AUTH_DENY_NOTIFY_FAILED` | 本机已拒绝，回写你失败 | 本机已拒绝，但对方没收到通知，请重试 | 你的 `decision_endpoint` 要能接受重复的 `deny` |
 | `EXTERNAL_SHARE_INVALID_LINK` | 分享链接形状不对（不是 share 入口） | 这个分享链接不正确 | 检查 scheme 与路径 |
-| `EXTERNAL_SHARE_BAD_CONTENT` | 三个内容参数全空；`url` 不是 http(s)；或 `origin` 给了但不是合法 HTTPS origin | 分享内容为空，或链接不是 http/https（三种情况共用这一条提示） | 至少给一个内容；`url` 只放 http(s) |
+| `EXTERNAL_SHARE_BAD_CONTENT` | 三个内容参数全空；`url` 不是 http(s)；`origin` 给了但不是合法 http(s) origin；或 `receipt` 无 `origin` / 跨源 / 非 http(s) | 分享内容为空或链接非法（共用这一条提示） | 至少给一个内容；`url` 只放 http(s)；`receipt` 必须配同源 `origin` |
 | `EXTERNAL_SHARE_TOO_LARGE` | 超出 §2.2 的码点上限 | 分享内容太长了 | 见 §2.2 三个上限 |
 | `EXTERNAL_SHARE_BUSY` | 待处理分享已达 8 条 | 还有几条分享没处理，先处理完再分享 | 不要循环触发；等用户处理 |
 | `EXTERNAL_SHARE_REFERENCE_UNSUPPORTED` | 用了受控形态 `/share/<ref>` | 这个分享需要应用侧配合，暂不支持 | 改用内联参数（§2.1） |

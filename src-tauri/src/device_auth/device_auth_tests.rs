@@ -56,7 +56,7 @@ fn good_request() -> RpRequest {
 }
 
 #[test]
-fn normalize_origin_https_only_and_strips_extras() {
+fn normalize_origin_accepts_https_and_http_and_strips_extras() {
     assert_eq!(
         normalize_rp_origin("https://app.example.com").unwrap(),
         ORIGIN

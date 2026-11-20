@@ -181,7 +181,16 @@ function displayMemberName(id: string): string {
   return memberProfile(id).name;
 }
 
-const assignableMembers = computed<string[]>(() => [...groupMembers.value, ...groupBotAssignees.value]);
+/**
+ * 指派候选人。机器人**只放在机器人任务的候选里**（那条指派被锁定、仅用于显示机器人名）；
+ * 真人任务的候选必须排除 bot —— 后端 `bot_assignee_injection_violation` 会拒绝对真人任务
+ * 新增 bot 指派人（2026-11-19 安全修），界面若仍列出机器人，用户勾了保存必失败（2026-11-20 审计修）。
+ */
+const assignableMembers = computed<string[]>(() =>
+  draftAssigneeLocked.value
+    ? [...groupMembers.value, ...groupBotAssignees.value]
+    : [...groupMembers.value],
+);
 
 /**
  * 行内状态切换的**乐观覆盖**：`todoId -> 临时状态`。

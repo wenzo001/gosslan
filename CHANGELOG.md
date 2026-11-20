@@ -14,6 +14,23 @@
 
 ## [Unreleased]
 
+## [7.1.28] - 2026-11-20
+
+### 审计修复（机器人 / 快捷登录 / 快捷分享 + 文档同步）
+- **机器人**：Webhook action（建任务）改为与群消息投递幂等同一单元，重投不再重复建任务；
+  撤销群机器人补群主/管理员校验（堵住 set_status 绕过 bot_delete）；Android release 打开
+  明文流量（http 内网通知服务，与桌面一致）；真人任务指派候选排除机器人（保存必被拒）。
+- **快捷登录**：确认页 warning 不再谎称「不共享好友/群」（实际 scope 默认全勾）；登记失败后
+  authenticate/sync 原事务可重试（过去被 NO_BINDING 锁死，pending_registration 仍拒绝）；
+  撤销通知用本地绑定 client_id；绑定 scopes 改存真实 requested_scopes；冷启动粗筛认 http
+  授权深链；RP mock 支持先登录后绑定（与后端契约一致）。
+- **快捷分享**：回执端点无 origin 时整笔拒 + 只接受 http(s)（堵 SSRF）；回执改 await 后再
+  dismiss（全成功路径回执不再丢）；ShareDirectory 切好友清展开态/下载进度。
+- 文档同步：机器人 note 更正公告未接线/assignees 失效；契约/指南更正 scope 三项、http
+  同源、回执字段与自测口径；ux-audit 标注记忆预勾已成死代码；extension design 现状表与回执
+  字段按实现更正；系统分享标注 macOS App Group 未落地边界。
+- 判据：SSRF / 首绑重试 / 冷启动深链 / mock 契约新增判据，反例自证通过。
+
 ## [7.1.27] - 2026-11-20
 
 ### 修复（CI）

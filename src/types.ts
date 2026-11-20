@@ -1087,7 +1087,7 @@ export interface DeviceAuthPrompt {
   /**
    * 本次事务请求的交付范围（scope）：`friends.read` | `events.metadata` | `groups.read`。
    *
-   * **默认全关**：确认页要逐项让用户勾，不预勾。
+   * 2026-11-17 起请求 scope **默认全勾**（一键允许，用户仍可逐项取消）；旧注释"默认全关"已过时。
    */
   requested_scopes: string[];
   /**

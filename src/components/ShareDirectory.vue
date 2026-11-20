@@ -2,7 +2,7 @@
 import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -98,6 +98,13 @@ const treeQuery = useQuery(
   }),
 );
 const snapshot = computed(() => treeQuery.data.value ?? null);
+// 组件跨会话不销毁：切到另一个好友时，展开态与下载进度必须跟着清掉（2026-11-20 审计修）。
+// 树数据本身按 friendId 分键是一对的，但这两个本地 UI 状态过去只按 path 索引，切人后会串台
+// （同名目录继承旧展开态、旧下载进度禁用新好友的下载按钮）。
+watch(friendId, () => {
+  expanded.value = new Set();
+  dirTasks.value = new Map();
+});
 const entries = computed<ShareEntry[]>(() => snapshot.value?.entries ?? []);
 /** 共享方有条数上限：截断时必须提示，否则用户会把"前 N 条"读成"对方就这些文件"。 */
 const truncated = computed(() => snapshot.value?.truncated ?? false);
