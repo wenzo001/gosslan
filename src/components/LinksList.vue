@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 /**
  * 左栏「链接」视图：用户配置的外部链接列表 + 增 / 改 / 删（用户 2026-09-17）。
  *
@@ -461,7 +462,7 @@ function sourceText(l: ExternalLink): string {
       >{{ t("common.retry") }}</button>
     </div>
 
-    <div class="gosslan-list-scroll min-h-0 flex-1 overflow-y-auto pb-2">
+    <OverlayScroll class="gosslan-list-scroll min-h-0 flex-1 pb-2">
       <!-- 新增 / 编辑：只负责一条链接的名称与网址。 -->
       <BaseModal
         :open="dialogOpen"
@@ -716,6 +717,6 @@ function sourceText(l: ExternalLink): string {
         <!-- 行间内缩分隔线：从文本列起（px-3 + 按钮 px-1.5 + 16 图标 + gap-2 = 42px） -->
         <div class="pointer-events-none absolute bottom-0 left-[42px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
       </div>
-    </div>
+    </OverlayScroll>
   </MobilePageFrame>
 </template>

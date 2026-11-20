@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { useVirtualizer } from "@tanstack/vue-virtual";
@@ -170,7 +171,12 @@ const selectedRow = computed(() =>
   mergedRows.value.find((r) => r.key === selectedKey.value) ?? null,
 );
 
-const logScroll = ref<HTMLElement | null>(null);
+/**
+ * 统一滚动容器（2026-11-20）：滚动的是 OS 建的 viewport，组件根（host）自己不滚。
+ * TanStack 的 getScrollElement 必须拿到**真正在滚的那个元素**，否则量不到高度。
+ */
+const logOs = ref<InstanceType<typeof OverlayScroll> | null>(null);
+const logScroll = computed<HTMLElement | null>(() => logOs.value?.scrollElement() ?? null);
 const virtualizer = useVirtualizer(computed(() => ({
   count: mergedRows.value.length,
   getScrollElement: () => logScroll.value,
@@ -494,7 +500,7 @@ function close() {
 
     <!-- 日志区：宽窗（≥ Tailwind md）右侧常驻详情面板；窄窗退回画板的底部详情条。 -->
     <div class="flex min-h-0 flex-1">
-      <div ref="logScroll" class="gosslan-scroll gosslan-selectable min-h-0 flex-1 overflow-y-auto py-2 font-mono text-caption leading-relaxed">
+      <OverlayScroll ref="logOs" class="gosslan-scroll gosslan-selectable min-h-0 flex-1 py-2 font-mono text-caption leading-relaxed">
         <StateBlock
           v-if="logs.length === 0 && loadError"
           kind="error"
@@ -515,7 +521,7 @@ function close() {
           :selected-key="selectedKey"
           @select="onSelect"
         />
-      </div>
+      </OverlayScroll>
       <LogDetailPanel v-if="selectedRow && wide" :row="selectedRow" placement="side" />
     </div>
     <LogDetailPanel v-if="selectedRow && !wide" :row="selectedRow" placement="bottom" />
@@ -675,7 +681,7 @@ function close() {
         </button>
       </div>
 
-      <div ref="logScroll" class="gosslan-scroll gosslan-selectable min-h-0 flex-1 overflow-y-auto py-2 font-mono text-body leading-relaxed">
+      <OverlayScroll ref="logOs" class="gosslan-scroll gosslan-selectable min-h-0 flex-1 py-2 font-mono text-body leading-relaxed">
         <StateBlock
           v-if="logs.length === 0 && loadError"
           kind="error"
@@ -694,7 +700,7 @@ function close() {
           :selected-key="selectedKey"
           @select="onSelect"
         />
-      </div>
+      </OverlayScroll>
       <!-- 移动端：详情落底部（窄窗回退，画板 detail 的同一份内容）。 -->
       <LogDetailPanel v-if="selectedRow" :row="selectedRow" placement="bottom" />
     </MobilePageFrame>

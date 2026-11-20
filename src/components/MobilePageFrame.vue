@@ -23,6 +23,7 @@
  * 转场由父级用 `<Transition name="page-slide">` 包裹本组件即可（见各调用处）。
  */
 import { t } from "@/i18n";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import BackArrow from "@/components/ui/BackArrow.vue";
 
 const props = withDefaults(
@@ -94,11 +95,21 @@ const backAria = () => props.backLabel ?? t("common.back");
          那一行会落在 iOS Home Indicator / Android 手势条底下（iOS 34px）。放在滚动层而不是根层，
          是与 iOS `contentInset.bottom` 同一个口径：内容能滚过指示条，但停在底部时最后一行不被压住。
          inline 形态（桌面内嵌）不写 ⇒ 不占空间，行为与改前一致。 -->
+    <!-- 滚动交给统一容器；列布局（flex-col）搬进内容那层盒子 ——
+         统一容器的宿主是 OS 的结构盒，**不是**内容盒，列布局留在宿主上会失效。 -->
+    <OverlayScroll
+      v-if="scroll"
+      class="min-h-0 flex-1"
+      :class="mode === 'overlay' ? 'safe-bottom' : ''"
+    >
+      <div class="flex h-full flex-col">
+        <slot />
+      </div>
+    </OverlayScroll>
     <div
-      :class="[
-        scroll ? 'scrollbar-both min-h-0 flex-1 flex flex-col overflow-y-auto' : 'min-h-0 flex-1 flex flex-col',
-        mode === 'overlay' ? 'safe-bottom' : '',
-      ]"
+      v-else
+      class="min-h-0 flex-1 flex flex-col"
+      :class="mode === 'overlay' ? 'safe-bottom' : ''"
     >
       <slot />
     </div>

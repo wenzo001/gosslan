@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { safeStorageBackend } from "../utils/safeStorage.ts";
 import { EMOJIS, type EmojiDef } from "@/utils/emoji";
 import {
@@ -132,10 +133,14 @@ watch(
     @click.stop
     @keydown="onKey"
   >
-    <div
-      class="my-2 grid grid-cols-8 content-start gap-2.5 overflow-y-auto p-2"
+    <!-- 车道：滑块浮在右侧车道里，不压最后一列表情（overlay 不占内容宽度，间距靠车道让）。
+         ⚠️ 高度必须留在**宿主**上：原来那个 `min(300px, …)` 挂在网格自己身上，
+         迁移时若丢掉，宿主就没有高度 ⇒ 滑块按内容高度铺开（会伸出面板外）。 -->
+    <OverlayScroll
+      size="thin"
+      class="my-2 pr-[var(--gosslan-os-lane)]"
       :style="{ height: 'min(300px, calc(100dvh - var(--gosslan-pop-edge) * 2 - 18px))' }"
-    >
+    ><div class="grid grid-cols-8 content-start gap-2.5 p-2">
       <!-- 两段各自的小标题（用户 2026-10-09 拿参照图定的样式：「最常使用 / 全部表情」那种分块）。
            ⚠️ 两个标题都是网格里 `col-span-8` 的子元素且**都不是 button** ⇒ 它们各占一整行，
            却不进下面 `buttons()` 的下标，所以键盘的整行步长照旧（运行时探针量真实列数与 y 对齐）。
@@ -174,6 +179,6 @@ watch(
           />
         </button>
       </template>
-    </div>
+    </div></OverlayScroll>
   </div>
 </template>

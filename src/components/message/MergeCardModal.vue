@@ -13,6 +13,7 @@
  * 不带 cid 的旧载荷 / 文件（非图片）没有回源钥匙，只能显示 `[图片] 名字` / `[文件] 名字`。
  */
 import { computed, onBeforeUnmount, reactive, watch } from "vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import BaseModal from "@/components/BaseModal.vue";
@@ -215,7 +216,7 @@ onBeforeUnmount(() => {
         {{ t("merge.mediaNotIncluded") }}
       </div>
 
-      <div class="scrollbar-both max-h-80 space-y-2 overflow-y-auto">
+      <OverlayScroll class="max-h-80 space-y-2">
         <div v-for="(it, i) in items" :key="i" class="space-y-0.5">
           <div class="flex items-baseline gap-1.5 text-caption text-[var(--gosslan-text-2)]">
             <span class="truncate font-medium" :title="it.sender">{{ it.sender }}</span>
@@ -280,7 +281,7 @@ onBeforeUnmount(() => {
             <div class="gosslan-selectable break-words whitespace-pre-wrap text-body text-[var(--gosslan-text)]">{{ mergeItemLine(it) }}</div>
           </template>
         </div>
-      </div>
+      </OverlayScroll>
     </div>
   </BaseModal>
 

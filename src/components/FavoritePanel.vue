@@ -22,6 +22,7 @@
  * 会随页面一起卸载。
  */
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { refDebounced } from "@vueuse/core";
 import { routeLocationKey, routerKey } from "vue-router";
 import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
@@ -774,7 +775,7 @@ async function confirmDelete() {
               </button>
             </div>
           </div>
-          <div class="gosslan-list-scroll min-h-0 min-w-0 flex-1 overflow-y-auto">
+          <OverlayScroll class="gosslan-list-scroll min-h-0 min-w-0 flex-1">
           <!-- 每行：行本身是 <button>（可聚焦、可回车），移动端的「⋯」放在**兄弟层**用绝对定位
                —— 不能嵌在行按钮里（<button> 套 <button> 是非法 HTML，浏览器会把它拆出去，
                表现是"⋯ 点了没反应"或整行都被点）。 -->
@@ -828,7 +829,7 @@ async function confirmDelete() {
           </div>
           </TransitionGroup>
           <StateBlock v-if="filtered.length === 0" kind="empty" :title="t('favorite.noMatch')" />
-        </div>
+        </OverlayScroll>
         </div>
 
         <!-- 右侧详情：全文 / 大图 / 文件卡片 + 底部操作条（PC 微信的收藏详情同样如此）。
@@ -865,7 +866,7 @@ async function confirmDelete() {
             <span class="min-w-0 truncate text-title font-medium text-[var(--gosslan-text)]" :title="favTitle">{{ favTitle }}</span>
           </header>
 
-          <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto py-3 pb-[max(var(--gosslan-inset-bottom),0.75rem)]">
+          <OverlayScroll class="gosslan-scroll min-h-0 flex-1 py-3 pb-[max(var(--gosslan-inset-bottom),0.75rem)]">
             <div class="mb-2 flex items-center gap-2 text-caption text-[var(--gosslan-text-2)]">
               <span class="truncate" :title="senderName(active)">{{ senderName(active) }}</span>
               <span>·</span>
@@ -987,7 +988,7 @@ async function confirmDelete() {
                 {{ formatBytes(metaOf(active)?.size ?? active.media_size) }}
               </div>
             </div>
-          </div>
+          </OverlayScroll>
 
           <!-- 底部操作条：图标在上、11px 字在下、等宽分布（微信 PC 收藏详情同款）。
                每项**必带图标** —— 旧版"查看图片/另存为"是裸文字，跟带图标项混排就是参差感的主因。

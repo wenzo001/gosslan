@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { t } from "@/i18n";
 import { LOG_LEVEL_TEXT, stripTags } from "@/utils/logFilter";
 import Icon from "@/components/ui/Icon.vue";
@@ -42,8 +43,9 @@ function copyRow() {
 </script>
 
 <template>
-  <aside
-    class="gosslan-selectable shrink-0 overflow-y-auto bg-[var(--gosslan-app-bg)]"
+  <!-- 统一滚动容器（2026-11-20）：滚动交给它，面板本体只管外观与摆放。 -->
+  <OverlayScroll
+    class="gosslan-selectable shrink-0 bg-[var(--gosslan-app-bg)]"
     :class="placement === 'side'
       ? 'w-[300px] border-l border-[var(--gosslan-divider)] px-3.5 py-3'
       : 'max-h-[40%] border-t border-[var(--gosslan-divider)] px-3.5 py-2.5'"
@@ -79,5 +81,5 @@ function copyRow() {
       class="mt-2 whitespace-pre-wrap break-all font-mono text-caption leading-relaxed text-[var(--gosslan-text)]"
       data-log-detail-message
     >{{ message }}</div>
-  </aside>
+  </OverlayScroll>
 </template>

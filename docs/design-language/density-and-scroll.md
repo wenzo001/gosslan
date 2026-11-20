@@ -51,40 +51,44 @@
 | 桌面常规 | **本仓默认档**（12 / 16 / 40 / 8） | 与画板缩放一致；会话列表与消息流仍是 62/64（画板 + 触控目标） |
 | 桌面紧凑（可选档） | **不提供用户开关** | 用户要的是"紧凑但井然有序"，不是"多档让用户选"；再多一档会让 QA 面翻倍而收益极小 |
 
-## 4. 滚动条规范
+## 4. 滚动条规范（2026-11-20 改为统一滚动容器）
 
-1. **不占内容**：滚动条只活在 `--gosslan-scroll-track`（8px）的独立带里；
-   内容侧另有 `--gosslan-scroll-gap`（8px）⇒ 焦点/hover 环落在空隙内，thumb 不压文字与控件。
-   `scrollbar-gutter: stable both-edges` 保证有/无滚动条时内容盒宽度逐像素相等且左右对称。
-2. **找得到**：静止态 thumb 就可见（不靠滚动时浮出）；对比度见刻度表。
-   轨道低一档但仍可辨，避免"一条白线突然出现"。
-3. **带内变化**：hover / 拖动只把内容盒 4px → 6px（`border` 2px → 1px），总宽恒 8px ⇒ **无位移、无抖动**。
-4. **可用性**：thumb 最小长度由 WebKit 原生保证；点击轨道翻页、滚轮/触控/键盘（PageUp/Down、Home/End）都由原生滚动行为提供。
-5. **不叠加**：全站只用一套原生 `::-webkit-scrollbar`；Firefox 走 `scrollbar-color` 回退；
-   不出现"私有滚动条 + 系统滚动条"两层。
-6. **一页一层**：同一屏只留一层滚动条。子列表随内容展开或折叠，不再自套
+**口径变更**：滚动条从「原生 `::-webkit-scrollbar` + `scrollbar-gutter` 预留槽位」改成
+**true overlay**（`overlayscrollbars` v2，统一容器 `components/ui/OverlayScroll.vue`）。
+`scrollbar-gutter` / `.scrollbar-both` 随之退役 —— 槽位没了，内容盒**恒为满宽**，
+标题/页脚/内容那条竖线不再会因为"有没有滚动条"而横移。
+
+1. **不占内容**：滑块浮在容器右缘，**不占布局宽度** ⇒ 内容盒宽度与滚动条在不在**逐像素相等**。
+2. **默认看不见**：静止态整条滚动条 `opacity: 0`；**轨道完全透明**（不画底色），
+   只有滑块出现时才看得见（避免一条灰带贴着气泡右缘）。
+3. **hover / 滚动才出现**：`autoHide: "move"`（指针在容器内移动或滚动时出现，停手 1.2s 淡出）。
+4. **粗细分档**：`thin` 8px / `normal` 10px / `thick` 12px（`--os-size`）——
+   按业务挑：**消息流 thin**（尾巴要留空隙，见下）、会话列表与内容页 normal、弹窗小列表 thin。
+5. **车道**：滑块会盖住"伸到盒子外面"的东西（聊天气泡的小尾巴超出气泡 10px）。
+   ⇒ 消息流容器给宿主留 `--gosslan-os-lane`（6px）的右内边距：OS 把它搬进视口，
+   滑块正好浮在这条空隙里，**尾巴不被压**。车道宽度按档位给，**不许**把内容的边距撑大
+   （用户 2026-11-20：「间距看起来太大，不和谐」—— 微信 PC 的气泡到右缘约 20px，
+   且滚动条在不在都一样）。
+6. **可用性**：点轨道翻页由 `ClickScrollPlugin` 提供（**必须注册插件**，
+   `clickScroll: true` 只是它的配置）；滚轮/触控/键盘由原生滚动行为提供。
+7. **一页一层**：同一屏只留一层滚动条；子列表随内容展开或折叠，不再自套
    `max-h-* + overflow-y-auto`（2026-11-08 诊断页四处子列表已按此收口，判据 `PG-03`）。
-7. **左列只预留右侧**：会话列表之外的两个左列列表面板（外部链接、收藏左栏）用
-   `.gosslan-list-scroll`（`scrollbar-gutter: stable`，**不**用 `both-edges`）。
-   原因：`both-edges` 的左侧空带宽度 = 平台滚动条宽度，头部/工具栏没法用固定 px 对上它 ⇒
-   同一列出现多条内容竖线（实测差 4~16px）。左列的行内容统一 `px-3`、行 hover 面通宽
-   （左缘 = 容器左缘，右缘 = 滚动条带左缘），竖线与滚动条宽度、平台解耦。
-   框架层（`MobilePageFrame` 等）在左列里必须 `scroll=false`，否则它的 `both-edges`
-   左侧空带会把内层列表整体推离头部竖线（实测 8px）。判据 `LH-01`。
+8. **例外**：输入框编辑器（textarea）与浮层内的原生滚动（Reka popper 定位依赖内容盒原样）
+   暂不迁移，前者靠 `scrollbar-width: none` 保持空态干净。
 
 ## 5. 验收表（逐面板）
 
-| 面板 | 滚动容器 | 独立带 | thumb 宽（静止 / hover） | 静止可见 | 对比（亮 / 暗） | 遮挡内容 |
+| 面板 | 滚动容器 | 滑块带宽 | 车道 | 静止可见 | 对比（亮 / 暗） | 遮挡内容 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 设置（独立窗/移动页） | `.gosslan-scroll` | 8px | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否 |
-| 日志 | `.gosslan-scroll` | 8px | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否 |
-| 群任务（列表 + 表单弹层） | `.gosslan-scroll` | 8px | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否 |
-| 群成员 / 好友请求 | `.gosslan-scroll` | 8px | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否 |
-| 搜索 | `.gosslan-scroll` | 8px | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否 |
-| 收藏 | `.gosslan-scroll` | 8px | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否 |
-| 转发 / 群文件 / @提醒 | `.gosslan-scroll` | 8px | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否 |
-| 会话列表 / 消息流 | `.scrollbar-both` | 8px | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否（行高 62/64 不动） |
-| 左列：外部链接 / 收藏左栏 | `.gosslan-list-scroll` | 8px（仅右侧） | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否（行 hover 通宽） |
+| 设置（独立窗/移动页） | `<OverlayScroll>` normal | 10px | — | 否（hover 才现） | 3.35 / 4.30 : 1 | 否 |
+| 日志 | `<OverlayScroll>` normal | 10px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 群任务（列表 + 表单弹层） | `<OverlayScroll>` normal | 10px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 群成员 / 好友请求 | `<OverlayScroll>` normal | 10px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 搜索 | `<OverlayScroll>` normal | 10px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 收藏 | `<OverlayScroll>` normal | 10px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 转发 / 群文件 / @提醒 | `<OverlayScroll>` thin | 8px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 会话列表（左列） | `<OverlayScroll>` normal | 10px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 消息流（聊天区） | `<OverlayScroll>` thin | 8px | 6px | 否 | 3.35 / 4.30 : 1 | 否（车道保住小尾巴） |
 
 > 读数口径：带/thumb 来自 `style.css` 的 token 与 border 计算；对比度按 WCAG 2.x 公式，
 > 把 `--gosslan-text-2` 以 72% / 88% / 12% 混到 `--gosslan-panel` 上计算，亮暗两个主题各算一次。
@@ -92,8 +96,12 @@
 
 ## 6. 判据
 
-- `SC-01`：滚动容器必须挂 `.gosslan-scroll` / `.scrollbar-both`；焦点环必须 `ring-inset`。
-- `SC-02`：`track + gap = 16`；`.gosslan-scroll` 必须同时有两侧 gutter 与 `padding-inline`；反例 4 条。
+- `SC-01`：滚动容器必须用统一容器 `<OverlayScroll>`，且不许再挂 `scrollbar-gutter` / `.scrollbar-both`；
+  焦点环必须 `ring-inset`。
+- `SC-02`：`track + gap = 16`（原生兜底滚动条）；`.gosslan-scroll` 必须有
+  `padding-inline: var(--gosslan-scroll-inset)` 且**不再**有 `scrollbar-gutter`；
+  滑块三档 `--os-size` 必须 8 / 10 / 12；反例 6 条。
+- `SC-03`：设置窗口的滚动区走统一容器（不再靠常驻轨道兑现两侧预留）。
 - `LH-01`：左列列表面板必须挂 `.gosslan-list-scroll`、行/头部/工具栏同为 `px-3`、
   框架层 `scroll=false`；反例 3 条（换回 `.gosslan-scroll` / 行改回 `px-2` / 去掉 `:scroll="false"`）。
 - `SP-01`：分栏把手命中区整体落在 main 一侧（`-mr-2`，收藏页 `left` 不加 `-4`），

@@ -16,6 +16,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/vue-virtual";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { classifyItemsChange } from "@/utils/scrollIntent";
 import { computeListBuffer } from "@/utils/listBuffer";
 import { gapAtBottom, shouldShowBackToLatest } from "@/utils/backToLatest";
@@ -63,7 +64,15 @@ const emit = defineEmits<{
   (e: "offBottom", v: boolean): void;
 }>();
 
-const container = ref<HTMLElement | null>(null);
+/**
+ * 滚动几何的唯一入口 = OverlayScroll 的 **viewport**（2026-11-20 迁移）。
+ *
+ * host 自己不滚（OS 把内容搬进它建的视口），所以 `scrollTop/scrollHeight/clientHeight`
+ * 一律读视口。视口的盒子与 host 完全重合（host 不设 padding）⇒ 所有基于
+ * `getBoundingClientRect()` 的行位置算术**逐像素不变**，只是换了个元素读。
+ */
+const osRef = ref<InstanceType<typeof OverlayScroll> | null>(null);
+const container = computed<HTMLElement | null>(() => osRef.value?.scrollElement() ?? null);
 
 /** 消息身份：持久本地 id 优先；其次 msg_id；再次行 id。**绝不回退数组下标**。 */
 function keyOf(it: any): string {
@@ -921,13 +930,20 @@ defineExpose({
 </script>
 
 <template>
-  <div
-    ref="container"
-    class="vlist-no-anchor h-full overflow-y-auto overflow-x-hidden pb-6"
+  <!-- 滚动交给统一容器（轨道不可见 / hover 才显 / 不占布局宽度，见 ui/OverlayScroll.vue）。
+       `overflow-y-auto` 不能再写（会和 OS 抢滚动条 ⇒ 双份滚动条）；
+       `pb-6` 照旧留在容器上 —— OS 会把宿主的 padding **搬进** viewport 并让它盖住宿主的
+       padding 盒（内容盒因此与原生逐像素一致：clientHeight 含 24px padding、
+       内容盒少 24px、scrollHeight 多 24px）。这条不能改成"占位块"：
+       那样留白就跑到滚动内容里去了（贴底时末行下面会多出一截 24px）。 -->
+  <OverlayScroll
+    ref="osRef"
+    size="thin"
+    class="vlist-no-anchor h-full pb-6 pr-[var(--gosslan-os-lane)]"
     :role="live ? 'log' : undefined"
     :aria-live="live ? 'polite' : undefined"
     :aria-relevant="live ? 'additions' : undefined"
-    @scroll.passive="onScroll"
+    @scroll="onScroll"
     @wheel.passive="onUserInput"
     @touchstart.passive="onUserInput"
     @pointerdown.passive="onUserInput"
@@ -951,5 +967,5 @@ defineExpose({
         <slot :item="items[v.index]" :index="v.index" />
       </div>
     </div>
-  </div>
+  </OverlayScroll>
 </template>

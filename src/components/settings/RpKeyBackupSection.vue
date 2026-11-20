@@ -10,6 +10,7 @@
  * - 落点由系统对话框给：后端不替用户决定写到哪，也不在后台留副本。
  */
 import { computed, onMounted, ref } from "vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import BaseModal from "@/components/BaseModal.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
@@ -277,7 +278,7 @@ const addable = computed(() => preview.value?.added ?? 0);
         <p class="text-meta text-[var(--gosslan-text-2)]">
           {{ t("deviceAuth.backup.summary", { add: addable, skip: preview?.skipped ?? 0, other: (preview?.conflicts ?? 0) + (preview?.refused ?? 0) + (preview?.rejected ?? 0) }) }}
         </p>
-        <ul class="min-h-0 flex-1 space-y-1.5 overflow-y-auto">
+        <OverlayScroll size="thin" class="min-h-0 flex-1"><ul class="space-y-1.5">
           <li
             v-for="it in preview?.items ?? []"
             :key="it.rpOrigin + it.clientId"
@@ -297,7 +298,7 @@ const addable = computed(() => preview.value?.added ?? 0);
             <div class="truncate font-mono text-caption text-[var(--gosslan-text-2)]" :title="it.rpOrigin">{{ it.rpOrigin }}</div>
             <p v-if="it.reason" class="mt-0.5 text-caption text-[var(--gosslan-text-2)]">{{ it.reason }}</p>
           </li>
-        </ul>
+        </ul></OverlayScroll>
         <div class="flex justify-end gap-2">
           <SecondaryBtn :disabled="busy" @click="reset">{{ t("common.cancel") }}</SecondaryBtn>
           <DangerBtn v-if="addable > 0" :disabled="busy" @click="onApply">

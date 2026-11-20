@@ -19,6 +19,7 @@
  * `canArchiveOrReopenTodo` 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from "vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { useEventListener, useResizeObserver } from "@vueuse/core";
 import {
   DropdownMenuContent,
@@ -1806,7 +1807,7 @@ watch(
 
     <!-- 内容区：弹窗形态由 BaseModal 自己滚；窗口形态撑满剩余空间。
          标签页自带下边框，内容区直接接上，不再额外叠 `pt`。 -->
-    <div class="gosslan-scroll overflow-y-auto" :class="standalone || fill ? 'min-h-0 flex-1' : ''" @keydown="onListKeydown">
+    <OverlayScroll class="gosslan-scroll" :class="standalone || fill ? 'min-h-0 flex-1' : ''" @keydown="onListKeydown">
       <!-- 首屏还在路上：**必须**是"正在加载"而不是空态。窗口现在先挂载、数据后台取
            （用户 2026-09-24 报"弹窗弹出很慢"），没有这一档的话首帧会理直气壮地显示
            「暂无任务」—— 那是假空态，比慢更糟。两种形态都判：应用内弹窗同样要先读
@@ -2106,7 +2107,7 @@ watch(
         </div>
       </template>
       </div>
-    </div>
+    </OverlayScroll>
     </div>
 
     <!-- 两栏分隔条：拖拽改左列宽（用户 2026-11-11）。指针捕获保证拖出条外仍跟手；
@@ -2154,7 +2155,7 @@ watch(
             @dblclick="copyWithToast(detailItem.title)"
           >{{ detailItem.title }}</h3>
         </div>
-        <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto px-[var(--gosslan-scroll-inset)] py-3">
+        <OverlayScroll class="gosslan-scroll min-h-0 flex-1 px-[var(--gosslan-scroll-inset)] py-3">
           <TodoDetailFields
             :item="detailItem"
             :can-change-status="canChangeStatus(detailItem)"
@@ -2183,7 +2184,7 @@ watch(
             @open-linked="openLinkedTodo"
             @create-linked="createLinkedFromDetail"
           />
-        </div>
+        </OverlayScroll>
         <div class="shrink-0 border-t border-[var(--gosslan-divider)] px-[var(--gosslan-scroll-inset)] py-2.5">
           <TodoDetailActions
             :item="detailItem"

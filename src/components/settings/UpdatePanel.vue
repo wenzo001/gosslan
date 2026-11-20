@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import MarkdownText from "@/components/ui/MarkdownText.vue";
@@ -237,11 +238,17 @@ function formatDate(seconds: number | null | undefined): string {
       </p>
       <!-- 说明是 Markdown（我们自己的 CHANGELOG 片段）⇒ 渲染成标题/列表/粗体，
            不再原样显示 `###` 与 `**`。内容来自网络 ⇒ `MarkdownText` 里过白名单消毒。 -->
-      <MarkdownText
+      <!-- 统一滚动容器（轨道不可见 / hover 才显 / 不占布局宽度）；小段文本用最细一档滑块。 -->
+      <OverlayScroll
         v-if="state.info?.notes"
-        :source="state.info.notes"
-        class="scrollbar-both mt-1 max-h-36 overflow-y-auto text-caption leading-relaxed text-[var(--gosslan-text-2)]"
-      />
+        size="thin"
+        class="mt-1 max-h-36"
+      >
+        <MarkdownText
+          :source="state.info.notes"
+          class="text-caption leading-relaxed text-[var(--gosslan-text-2)]"
+        />
+      </OverlayScroll>
 
       <div v-if="state.phase === 'downloading'" class="mt-3">
         <div

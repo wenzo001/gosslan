@@ -233,7 +233,9 @@ test("CodeLangMenu：弹层绑聊天区边界并限高内部滚动（防回退�
     "极窄容器的 min-width 必须可被 CodeLangMenu 覆盖",
   );
   assert.match(cssBlock, /overflow-y:\s*auto/, "超出部分必须在弹层内部滚动");
-  assert.match(cssBlock, /scrollbar-gutter:\s*stable/, "滚动条不许盖住文字/让文字横向跳");
+  // 2026-11-20：gutter 口径退役（统一滚动容器是 overlay，不占布局宽度）⇒
+  // 这里反过来钉：弹层里不许再预留 8px 槽位（那会让选项文字比别处窄一截）。
+  assert.doesNotMatch(cssBlock, /scrollbar-gutter/, "弹层不许再预留滚动条槽位（gutter 口径已退役）");
 
   assert.match(src, /function resolveBoundary/, "边界必须是运行时解析的滚动容器，不许写死视口");
   assert.match(src, /boundary\.value = resolveBoundary\(triggerEl\.value\)/, "打开时要从触发器上溯定边界");

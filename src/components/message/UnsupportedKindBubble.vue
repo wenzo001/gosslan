@@ -17,6 +17,7 @@
  * 虚拟列表按 `utils/previewMetrics.ts` 的常量估高，不一致会让相邻消息互相遮挡。
  */
 import { t } from "@/i18n";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { ref, type CSSProperties } from "vue";
 
 defineProps<{ kind: string; content: string; bubbleStyle: CSSProperties }>();
@@ -35,9 +36,12 @@ const expanded = ref(false);
     </button>
     <!-- 展开后才给原文：默认状态时间线上不出现任何载荷字节 -->
     <template v-if="expanded">
-      <pre
-        class="gosslan-selectable mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-hover)] p-2 font-mono text-caption"
-      >{{ content }}</pre>
+      <!-- 统一滚动容器（细一档）：原文可能很长，滚动交给它，pre 只管排版。 -->
+      <OverlayScroll size="thin" class="mt-1 max-h-40">
+        <pre
+          class="gosslan-selectable whitespace-pre-wrap break-all rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-hover)] p-2 font-mono text-caption"
+        >{{ content }}</pre>
+      </OverlayScroll>
       <div class="mt-1 font-mono text-caption opacity-60">type: {{ kind }}</div>
     </template>
   </div>

@@ -25,6 +25,7 @@ import ConversationContextMenu from "@/components/conversation/ConversationConte
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import SelfAvatar from "@/components/SelfAvatar.vue";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
@@ -700,8 +701,9 @@ useEventListener(document, "click", closeFriendMenu);
          键盘弹出时导航收起，补偿随之换成键盘补量（由外层容器负责）。
          ⚠️ 条高读 `--gosslan-mobile-tabbar-h`（家 = `src/style.css`），与 `ResponsiveLayout` 主内容区
          那份占位同源 —— 这里再抄一个字面量，改一处就会让另一处的最后一行被压住（判据 ㊻）。 -->
-    <div
-      class="scrollbar-both flex-1 select-none overflow-y-auto"
+    <OverlayScroll
+      size="normal"
+      class="flex-1 select-none"
       :class="[
         viewFadeClass,
         app.isMobile && !app.keyboardOpen ? 'pb-[calc(var(--gosslan-mobile-tabbar-h)+var(--gosslan-inset-bottom))]' : '',
@@ -731,7 +733,7 @@ useEventListener(document, "click", closeFriendMenu);
         <!-- 移动端首启空态（画板 MobileEmpty）：整屏，品牌底盘 + 说明 + 主/次动作 + 发现设备卡 + 三条特性。 -->
         <div
           v-if="app.isMobile && listConversations.length === 0 && !query.trim()"
-          class="flex min-h-full flex-col items-center justify-center px-9 pb-10 text-center"
+          class="flex flex-1 flex-col items-center justify-center px-9 pb-10 text-center"
         >
           <div
             data-orb
@@ -949,7 +951,7 @@ useEventListener(document, "click", closeFriendMenu);
           </PrimaryBtn>
         </StateBlock>
       </template>
-    </div>
+    </OverlayScroll>
 
     <!-- 页脚任务入口（用户 2026-10-25：药丸总挡界面，入口收进列表页脚）。
          放在滚动容器**之外**（不随列表滚走），只在会话/联系人列表这一栏出现。

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import { safeStorageBackend } from "../utils/safeStorage.ts";
@@ -2043,7 +2044,7 @@ function retryHistory() {
         </button>
       </div>
       <!-- 展开态：纵向列出全部置顶，带高度上限（置顶再多也不会吃掉消息区） -->
-      <div v-if="pinsExpanded" class="scrollbar-both max-h-32 overflow-y-auto px-4 pb-1.5">
+      <OverlayScroll v-if="pinsExpanded" size="thin" class="max-h-32 px-4 pb-1.5">
         <div
           v-for="p in pinnedItems"
           :key="`all-${p.id}`"
@@ -2070,7 +2071,7 @@ function retryHistory() {
             <Icon name="x" class="h-3 w-3" aria-hidden="true" />
           </button>
         </div>
-      </div>
+      </OverlayScroll>
     </div>
 
     <!-- 蓝牙链路速度提示（用户 2026-09-13 要求）：蓝牙分片载荷受 20 字节 MTU 限制，
@@ -2314,7 +2315,9 @@ function retryHistory() {
       :style="{
         // 键盘弹起时底部安全区已经被 IME 占用：再留 `--gosslan-inset-bottom` 就是那段
         // 「输入卡和键盘之间空一大截」（用户 2026-11-09 安卓截图）。只留 8px 呼吸位。
-        paddingBottom: app.keyboardOpen ? '8px' : 'calc(var(--gosslan-inset-bottom) + 8px)',
+        // ⚠️ 非键盘态必须是 **16px**（＝左右 `px-4`）：用户 2026-11-20 指出「左/右/底三边距
+        // 要相等」—— 底只留 8px 时，输入卡离底比离左右更近，整张卡看着往上飘。
+        paddingBottom: app.keyboardOpen ? '8px' : 'calc(var(--gosslan-inset-bottom) + 16px)',
       }"
     >
       <!-- 多选态：输入区被操作条**替换**（微信同款）。

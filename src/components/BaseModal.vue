@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from "reka-ui";
 import { nextTick, watch } from "vue";
 import { useBackLayer } from "@/composables/useBackLayer";
@@ -254,9 +255,9 @@ function onOpenChange(value: boolean) {
                  标题/固定头部/页脚同样吃这 16px，三者左右对齐。
                  旧写法（卡片 `p-5` 再在滚动区加补偿）会让右侧空隙与左侧不对称。
                  守卫：designGuards `SC-01`/`SC-02` + 运行时 `--only=scrollstable`。 -->
-            <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto">
+            <OverlayScroll class="gosslan-scroll min-h-0 flex-1">
               <slot />
-            </div>
+            </OverlayScroll>
             <!-- 固定页脚（可选插槽）：**在滚动区之外**，因此永远钉在卡片底部不随内容滚走。
                  为什么要有它（2026-10-12 用户实测：「中间可滚动的区域应该不包含下面操作按钮那块」）：
                  这里原先只有默认插槽 ⇒ 调用方把操作按钮写在内容的最后一项，它就跟着内容一起滚，

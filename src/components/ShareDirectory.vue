@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import { computed, ref, watch } from "vue";
@@ -256,7 +257,7 @@ async function download(e: ShareEntry) {
       {{ entries.length > 0 ? t("share.offlineBanner") : t("share.offlineHint") }}
     </div>
 
-    <div class="scrollbar-both max-h-80 overflow-y-auto">
+    <OverlayScroll class="max-h-80">
       <!-- 首次读取：此前这里**什么都不画**，弹窗里一片空白 ⇒ 用户分不清"在读"与"对方没有文件"。
            有旧清单时不换成整块状态（保留仍可用的数据，只在上面提示一行）。 -->
       <StateBlock
@@ -350,6 +351,6 @@ async function download(e: ShareEntry) {
           </button>
         </template>
       </div>
-    </div>
+    </OverlayScroll>
   </BaseModal>
 </template>

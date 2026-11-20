@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { useReducedMotion } from "@/utils/motion";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from "reka-ui";
@@ -156,10 +157,10 @@ function onContentClick() {
         <!-- DialogTitle 是 Reka 的可访问名称来源；本面板的标题是可选装饰文案，
              没有标题时用通用「操作」占位，读屏仍能报出这个对话框是什么。 -->
         <DialogTitle class="sr-only">{{ title || t("common.actions") }}</DialogTitle>
-        <div
+        <OverlayScroll
           ref="card"
           :style="cardStyle"
-          class="glass-3 max-h-[calc(100dvh_-_var(--gosslan-pop-edge)*2)] overflow-y-auto overscroll-contain rounded-t-[var(--gosslan-radius-xl)] px-2 pt-2 pb-[max(var(--gosslan-inset-bottom),0.5rem)]"
+          class="glass-3 max-h-[calc(100dvh_-_var(--gosslan-pop-edge)*2)] overscroll-contain rounded-t-[var(--gosslan-radius-xl)] px-2 pt-2 pb-[max(var(--gosslan-inset-bottom),0.5rem)]"
         >
           <!-- 抓取区：grabber + 标题行。`touch-none` 必须有 —— 不关掉浏览器手势，
                下拉会被当成滚动/橡皮筋overscroll，pointermove 根本发不到这里。
@@ -187,7 +188,7 @@ function onContentClick() {
           >
             <slot name="cancel">{{ t("common.cancel") }}</slot>
           </button>
-        </div>
+        </OverlayScroll>
       </DialogContent>
     </DialogPortal>
   </DialogRoot>

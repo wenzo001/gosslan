@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { t } from "@/i18n";
 import { computed, defineAsyncComponent, ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
 import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
@@ -1103,7 +1104,7 @@ function onResizeEnd() {
           <!-- 与聊天/通讯录列表**同族**：列表底 `--gosslan-list`、行悬停 `--gosslan-list-hover`、
                行间内缩分隔线。此前是白底 + `--gosslan-hover` + 无分隔线，和别的列表对不上
                （用户 2026-09-20：「我的也是一样的问题」）。 -->
-          <div class="ambient-canvas-child flex h-full flex-col overflow-y-auto bg-[var(--gosslan-list)]">
+          <OverlayScroll class="ambient-canvas-child h-full bg-[var(--gosslan-list)]"><div class="flex h-full flex-col">
             <!-- 头部：头像 + 昵称（点进去编辑资料） -->
             <button
               class="flex w-full shrink-0 items-center gap-3 border-b border-[var(--gosslan-divider)] px-4 py-4 text-left transition hover:bg-[var(--gosslan-list-hover)]"
@@ -1148,7 +1149,7 @@ function onResizeEnd() {
                 <span class="flex-1 text-sm">{{ t("nav.logs") }}</span>
               </button>
             </div>
-          </div>
+          </div></OverlayScroll>
         </template>
         <!-- 收藏页：桌面端在右栏整页渲染（左列表 + 右详情两栏）；
              移动端作为普通底部 tab（保留 tab 栏），点具体收藏才在 FavoritePanel 内部新开详情页。
@@ -1172,7 +1173,7 @@ function onResizeEnd() {
           <div class="ambient-canvas-child flex shrink-0 items-center border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4" :style="{ height: 'var(--gosslan-header-h)' }">
             <span class="text-title font-medium">{{ t("conv.newFriends") }}</span>
           </div>
-          <div class="ambient-canvas-child gosslan-scroll min-h-0 flex-1 overflow-y-auto bg-[var(--gosslan-chat)] py-2">
+          <OverlayScroll class="ambient-canvas-child gosslan-scroll min-h-0 flex-1 bg-[var(--gosslan-chat)] py-2">
             <FriendRequestList
               :requests="chat.pendingRequests"
               :outgoing="chat.outgoingRequests"
@@ -1182,7 +1183,7 @@ function onResizeEnd() {
               @reject="rejectRequest"
               @cancel="cancelOutgoingRequest"
             />
-          </div>
+          </OverlayScroll>
         </div>
         <FriendProfile
           v-else-if="navState === 'contacts' && profileFriend !== null"

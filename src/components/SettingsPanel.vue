@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { routeLocationKey, routerKey } from "vue-router";
 import { computed, inject, nextTick, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
@@ -182,12 +183,14 @@ function onSettingsBack() {
  * 一级/二级共享同一个滚动容器，切页时显式回到顶端 —— 高度变化只发生在内容里，
  * 不再有机会重算滚动条宽度或留住上一页的滚动位置。
  */
-const scrollEl = ref<HTMLElement | null>(null);
+/** 统一滚动容器（2026-11-20）：滚动的是 viewport，组件根不滚。 */
+const scrollOs = ref<InstanceType<typeof OverlayScroll> | null>(null);
 watch(
   [() => props.open, mobileNav],
   async () => {
     await nextTick();
-    if (scrollEl.value) scrollEl.value.scrollTop = 0;
+    const el = scrollOs.value?.scrollElement();
+    if (el) el.scrollTop = 0;
   },
   { flush: "post" },
 );
@@ -211,10 +214,10 @@ watch(
       <!-- ⚠️ 必须是 `overflow-y-scroll`，不是 `auto`（用户 2026-10-25：从网络二级页上滑后返回，
            一级列表卡片先变窄、过一会儿又还原）。`scrollbar-gutter` 在部分 WebView 上不生效，
            滚动条出现/消失会实时吃掉 8px 内容宽度；固定滚动条槽位后宽度与页面内容长度无关。 -->
-      <div
-        ref="scrollEl"
+      <OverlayScroll
+        ref="scrollOs"
         data-settings-scroll
-        class="gosslan-scroll min-h-0 flex-1 overflow-y-scroll overflow-x-hidden overscroll-contain"
+        class="gosslan-scroll min-h-0 flex-1 overflow-x-hidden overscroll-contain"
       >
         <div class="py-[var(--gosslan-card-pad)]">
           <!-- 一级页：分组列表 -->
@@ -268,7 +271,7 @@ watch(
             <ResetSection v-else-if="mobileNav === 'reset'" @restored="reloadToken++" />
           </div>
         </div>
-      </div>
+      </OverlayScroll>
     </MobilePageFrame>
   </Transition>
 

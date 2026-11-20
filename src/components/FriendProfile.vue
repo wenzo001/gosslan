@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 /**
  * 好友资料页（用户 2026-09-12 晚 #14：「用户详情页的样式也参考微信。信息还是现有的」）。
  *
@@ -139,7 +140,7 @@ const confirmRemove = ref(false);
       <span class="truncate text-title font-medium" :title="friend.nickname">{{ friend.nickname }}</span>
     </div>
 
-    <div class="gosslan-scroll flex-1 overflow-y-auto py-6">
+    <OverlayScroll class="gosslan-scroll flex-1 py-6">
       <div class="mx-auto w-full max-w-[560px]">
         <!-- 头部（紧凑版）：头像 + 昵称行（含在线状态 + 发消息按钮一行内）
              信息密度翻倍：原来 mt-7 才到分组卡，现在 mt-3 就到了。
@@ -277,7 +278,7 @@ const confirmRemove = ref(false);
             {{ t("common.deleteFriend") }}          </button>
         </div>
       </div>
-    </div>
+    </OverlayScroll>
 
     <!-- 删除好友二次确认 -->
     <BaseModal :open="confirmRemove" :title="t('friend.remove.title')" @close="confirmRemove = false">

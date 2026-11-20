@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { computed, ref, watch } from "vue";
 import { INPUT_DEFER_MS } from "@/utils/defer";
 import { refDebounced } from "@vueuse/core";
@@ -125,7 +126,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
         class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-3 py-1.5 text-body outline-none placeholder:text-[var(--gosslan-placeholder)] focus:border-[var(--gosslan-primary)]"
       />
 
-      <div class="gosslan-scroll max-h-64 select-none overflow-y-auto">
+      <OverlayScroll class="gosslan-scroll max-h-64 select-none">
         <!-- 选中态用**内缩**环（ring-inset）：Tailwind 的 ring 默认画在元素**外面**，
              而本行在 `overflow-y-auto` 的滚动容器里 —— 外扩的 1px 会被容器裁掉左右两边
              （`overflow-y: auto` 会把 `overflow-x` 一并算成 auto），上下则压到相邻的 52px 行上，
@@ -151,7 +152,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
           <span class="min-w-0 flex-1 truncate text-body text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
         </button>
         <StateBlock v-if="filtered.length === 0" kind="empty" compact :title="t('msg.noMatch')" />
-      </div>
+      </OverlayScroll>
 
       <!-- 批量转发且**调用方没给方式**时的兜底：先选会话，再选转发方式（微信同款）。
            正常入口（多选操作条）已经在条上把方式选好了 ⇒ 这里不出现，点会话直接转发。
