@@ -69,8 +69,12 @@ Users do not need the `.sig` files: they are for the desktop updater's signature
 
 ## Decentralization and privacy
 
-- Messages, keys, contacts and files live in the local SQLite database and the local cache directory.
-  There is no cloud backup and no telemetry.
+- Everything stays on this device: messages, keys and contacts in the local SQLite database;
+  image and file content in the local storage folder (their records in SQLite). No cloud backup,
+  no telemetry.
+- Storage cleanup (retention / size limit) frees space by deleting media files only — chat text is
+  kept, and cleaned-up items remain in history without their content. "Clear Chat Data" wipes local
+  chats, file-transfer records and media, and leaves all groups; friends and device identity stay.
 - The network is the local link: same LAN, or Bluetooth LE at short range. There is no default
   cross-subnet reachability; for CGNAT-to-CGNAT cases you can run the optional
   [blind relay](https://github.com/wenzo001/gosslan-relay-server), which forwards ciphertext bytes
@@ -93,8 +97,10 @@ self-hosted relay.
 **How do I update?** Windows and macOS check the signed update manifest in the release. On Android,
 install the newer APK.
 
-**Where is my data?** Only on this device, in the app's local data directory. You can export chat
-history as a plain Markdown file from Settings → Files & storage.
+**Where is my data?** Only on this device, in the app's local data directory. Settings → Files &
+Storage can export chat history to a single Markdown file — chat text only; images and files keep
+their filenames, not the content. It is a self-rescue export (broken database, device move), not a
+media backup.
 
 ## Development
 
