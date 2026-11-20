@@ -38,7 +38,20 @@ const peerOnline = computed(() => {
   // 「和自己聊天」：自己永远"在线"（同一个进程读自己那份共享目录），
   // 不能因为好友表里没有自己就判离线 —— 那是把一个可用功能误关掉。
   if (id === app.device?.device_id) return true;
-  return chat.friends.find((f) => f.device_id === id)?.online ?? false;
+  const f = chat.friends.find((x) => x.device_id === id);
+  /**
+   * ⚠️ 查不到这条好友时**不判离线**（返回 true = 照常读取）。
+   *
+   * 这是本判据最容易写错的一格：把"不知道"当成"不在线"，会在好友表还没加载完
+   * （首屏、窗口刚起）时把功能整个关掉，用户看到的是"对方离线"，而其实只是没查到。
+   * 判据只在**明确读到 online === false** 时才截停 —— 与"确定才截停"的原则一致，
+   * 不确定就走原路径让后端给答案。
+   */
+  if (!f) return true;
+  // `online` 不是布尔（旧后端 / 载荷缺字段 / 夹具没种）同样算"不知道"：
+  // `return f.online` 会返回 undefined ⇒ 假值 ⇒ 被当成离线，等于把未知当成了确定。
+  if (typeof f.online !== "boolean") return true;
+  return f.online;
 });
 
 function depth(p: string) {
