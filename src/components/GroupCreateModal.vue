@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { t } from "@/i18n";
 import { ref, watch } from "vue";
 import { useRouter } from "vue-router";
@@ -98,7 +99,7 @@ async function create() {
     </div>
 
     <div class="mb-1.5 text-sm">{{ t("group.selectMembers") }}</div>
-    <div class="scrollbar-both max-h-56 overflow-y-auto">
+    <OverlayScroll class="max-h-56">
       <!-- 选择行必须是**真按钮**：`div @click` 触屏/鼠标能用，键盘 Tab 不到、回车没反应，
            读屏也只会念成一段普通文本。`aria-pressed` 表达"选中/未选中"开关语义。 -->
       <button
@@ -120,7 +121,7 @@ async function create() {
         <span class="text-xs text-[var(--gosslan-text-2)]">{{ f.online ? t("common.online") : t("common.offline") }}</span>
       </button>
       <StateBlock v-if="chat.friends.length === 0" kind="empty" compact :title="t('group.noFriends')" />
-    </div>
+    </OverlayScroll>
 
     <PrimaryBtn size="dense" class="mt-4 w-full" :disabled="selected.length === 0 || !name.trim() || creating" @click="create">
       {{ t("common.createGroup") }}

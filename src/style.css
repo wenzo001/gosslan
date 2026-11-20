@@ -1094,15 +1094,20 @@ body {
 .overflow-y-auto,
 .overflow-auto,
 .overflow-y-scroll {
+  /* 2026-11-20：gutter 口径退役 —— 统一滚动容器（overlay）不占布局宽度，
+     留 gutter 反而让内容凭空窄 8px、头部与内容错开。
+     这一族现在只剩"滚到边界不把整页带出去"这一件事。 */
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
 }
 /* 输入编辑器例外：它按内容自动长高（到上限才滚），空内容/单行时**不该出现滚动条**。
    `scrollbar-gutter: stable` 会常留 8px 槽位，配合自定义滚动条视觉上就是一条空栏
    （用户 2026-11-10：「移动端双滚动条，输入框没输内容不应该有滚动条」）。
    只在真正溢出时才让滚动条出现（宽度会跳 8px，但编辑器是编辑中状态，可接受）。 */
+/* 输入编辑器例外：它按内容自动长高（到上限才滚），空内容/单行时**不该出现滚动条**。
+   统一滚动容器是 overlay（hover 才显），输入框这条是**原生**滚动（textarea 换不了），
+   所以这里靠"不预留槽位"保持空态干净。 */
 .gosslan-composer-editor {
-  scrollbar-gutter: auto;
+  scrollbar-width: none;
 }
 /* 移动端软键盘弹起时由系统 resize 布局：整页/头部不跟随滚动，只有内容区自己滚。 */
 html.is-mobile,
@@ -1124,37 +1129,27 @@ html.is-mobile #app {
   overflow-y: hidden;
   scrollbar-gutter: auto;
 }
-/* 面板级滚动容器（内容页统一口径，2026-11-07 第二轮）：
-     `scrollbar-gutter: stable both-edges` → 有/无滚动条时内容盒宽度逐像素相等、左右对称；
-     `padding-inline: var(--gosslan-scroll-gap)` → 内容与滚动条带之间固定留 8px 空隙。
-     两者相加 = `--gosslan-scroll-inset`（16px）：标题/页脚/内容共用同一条竖线。
+/* 面板级滚动容器（内容页统一口径，2026-11-20 改为统一滚动容器）：
+     滚动条改成 **true overlay**（OverlayScrollbars，轨道透明、hover 才显、**不占布局宽度**），
+     于是 `scrollbar-gutter` 这一族全部退役 —— 它原本是为了"有/无滚动条宽度一致"，
+     现在内容盒**永远**是满宽，不需要预留任何带。
+   ⚠️ 内容缩进**不能因此变窄**：原来 = gutter(8) + gap(8) = 16px，
+     现在只剩 `padding-inline: var(--gosslan-scroll-inset)`（仍是 16px）⇒
+     标题/页脚/内容**共用同一条竖线**，迁移不会让整页内容横移 8px。
    ⚠️ 空隙**只能**由这里产生：不许在调用点写 `pr-*` / `-mr-*` / 条件 padding 补偿宽度，
-     否则"有/无滚动条"又出现第二套数字（守卫 SC-01/SC-02）。 */
+     否则又出现第二套数字（守卫 SC-01/SC-02）。 */
 .gosslan-scroll {
-  scrollbar-gutter: stable both-edges;
   overscroll-behavior: contain;
-  padding-inline: var(--gosslan-scroll-gap);
+  padding-inline: var(--gosslan-scroll-inset);
 }
-/* 滚动条带宽度也是 token 本身（与全局 `::-webkit-scrollbar` 的 8px 同源）：
-   任何容器改带宽都只改 `--gosslan-scroll-track` 一处，守卫 SC-02 对账。 */
-.gosslan-scroll::-webkit-scrollbar {
-  width: var(--gosslan-scroll-track);
-}
-.scrollbar-both {
-  scrollbar-gutter: stable both-edges;
-}
-/* 左列列表（会话列表 / 外部链接 / 收藏左栏）专用口径（2026-11-08）：
-   只预留滚动条那一侧的空带，**不预留左侧**。
-   为什么不用 `stable both-edges`：左侧空带的宽度 = 平台滚动条宽度，头部/工具栏没法用固定
-   px 对上它，于是「头部按钮和列表内容不在同一条竖线」在不同平台上差 4~16px 不等（用户实测：
-   外部链接、收藏两个面板）。列表行的 hover 面本身是通宽的，行内容用固定 `px-3`，
-   头部也用 `px-3` ⇒ 竖线对齐与滚动条宽度无关。内容盒宽度仍由 `stable` 保证不跳。 */
+/* 旧口径退役：`scrollbar-gutter`（both-edges / 单侧）不再用于任何容器 ——
+   统一滚动容器是 overlay，轨道不占位，留 gutter 反而会让内容与标题错开 8px。
+   `.scrollbar-both` 这个类名随之清零（迁移后没有消费者）。 */
+/* 左列列表（会话列表 / 外部链接 / 收藏左栏）专用口径：
+   同样不再预留滚动条带（overlay 不占位）；行内容用固定 `px-3`，
+   头部也用 `px-3` ⇒ 竖线对齐与滚动条宽度无关。 */
 .gosslan-list-scroll {
-  scrollbar-gutter: stable;
   overscroll-behavior: contain;
-}
-.gosslan-list-scroll::-webkit-scrollbar {
-  width: var(--gosslan-scroll-track);
 }
 /* 搜索/筛选小胶囊（「发送人」「日期」这类开关）。
    与 `.gosslan-menu` 同族取值：圆角用统一 token、颜色全部走语义变量 —— 不写死微信色值。 */
@@ -2137,6 +2132,102 @@ html.is-mobile {
       color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-track), transparent);
   }
 }
+
+/* ---------------- 统一滚动容器（OverlayScrollbars v2，2026-11-20） ----------------
+   入口是 `components/ui/OverlayScroll.vue`。上面那套 `::-webkit-scrollbar` 仍是
+   **尚未迁移**的容器的兜底；已迁移的容器（会话列表 / 消息列表 …）走下面这一族。
+   四条口径（用户 2026-11-20 拍板）：
+     ① 轨道默认**完全不可见** —— `.os-scrollbar` 自身 opacity 0，只有 OS 判定"该出现"
+        时才加 `.os-scrollbar-visible`（轨道与滑块一起出现，一起消失）；
+     ② hover 或滚动才出现，停手 1.2s 淡出（`autoHide: "move"`，见组件 props）；
+     ③ true overlay：**不写 `scrollbar-gutter`、不吃内容宽度** ⇒ 输入卡左/右/底三边距
+        才可能相等。这是本次迁移的目的，不要为了"滑块不压内容"把 gutter 加回来；
+     ④ 出现时不挤压内容：滑块画在 overlay 带上，内容盒宽度逐像素不变（不重排、不抖动）。
+   颜色全部复用 `--gosslan-scrollbar-*` 三档百分比 ⇒ 亮/暗/换主题跟随同一套令牌。 */
+
+/* 稳定包裹层：Vue 的插入容器（详见组件头部注释）。
+   ⚠️ 必须是**有盒子的真块**：OS 用它测内容高度来决定滑块行程与滚动范围 ——
+   `display: contents` 的盒子是 0×0 ⇒ 内容变高（设置页异步加载完）时 OS 测不到，
+   滑块行程停在旧值上 ⇒ 用户「拖到底也到不了底」（用户 2026-11-20 实测）。
+   `min-height: 100%` 让短内容也撑满视口（空态不塌）。
+   `display: flex; flex-direction: column` 让里面的 `flex-1` 段（空态居中）有确定高度可分。 */
+.gosslan-os-wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* 滚到边界不要把整页带出去（原先由 `.overflow-y-auto` 提供，迁移后这里接手）。 */
+.gosslan-os [data-overlayscrollbars-viewport] {
+  overscroll-behavior: contain;
+}
+
+/* 虚拟列表关掉浏览器原生滚动锚定：高度变化由 VirtualList 同帧显式补偿。
+   锚定属性必须落在**真正滚动的元素**上（viewport），挂在 host 上不生效。 */
+.vlist-no-anchor [data-overlayscrollbars-viewport] {
+  overflow-anchor: none;
+}
+
+.os-theme-gosslan.os-scrollbar {
+  box-sizing: border-box;
+  /* 带宽 10px：够拖（旧原生滑块只有 8px，用户反馈"偏细不好拖"）；
+     `--os-padding-perpendicular` 1px ⇒ 滑块本体 8px、上下各留 1px 呼吸位。 */
+  --os-size: 10px;
+  --os-padding-perpendicular: 1px;
+  --os-padding-axis: 1px;
+  --os-track-border-radius: var(--gosslan-radius-pill);
+  --os-handle-border-radius: var(--gosslan-radius-pill);
+  --os-handle-min-size: 40px;
+  /* 命中区比滑块本体宽 4px（左右各 2px）：够拖，又不至于伸进内容太多。 */
+  --os-handle-interactive-area-offset: 4px;
+}
+
+.os-theme-gosslan .os-scrollbar-track {
+  /* 轨道**完全透明**（用户 2026-11-20：「不需要轨道能看见，现在滚动轨道也是能看见。需要透明」）。
+     轨道只作为滑块的定位面存在，不画任何底色 ⇒ 消息气泡右缘不会被一条灰带"贴脸"。 */
+  background: transparent;
+}
+
+.os-theme-gosslan .os-scrollbar-handle {
+  background: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-thumb), transparent);
+}
+
+.os-theme-gosslan .os-scrollbar-handle:hover,
+.os-theme-gosslan .os-scrollbar-handle:active {
+  background: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-thumb-active), transparent);
+}
+
+/* 滑块粗细分档（写在主题规则之后 ⇒ 同特异性时以本段为准）。
+   一档 = 一条视觉重量：主内容区（会话列表 / 消息列表）最粗好拖，
+   内容页（设置 / 日志 / 任务）中等，弹窗里的小列表最细。
+   `--os-size` 是**带**宽，滑块本体 = 带宽 − 2×padding-perpendicular。 */
+.gosslan-os--thin .os-scrollbar {
+  --os-size: 8px;
+  --os-padding-perpendicular: 1px;
+}
+.gosslan-os--normal .os-scrollbar {
+  --os-size: 10px;
+  --os-padding-perpendicular: 1px;
+}
+.gosslan-os--thick .os-scrollbar {
+  --os-size: 12px;
+  --os-padding-perpendicular: 1px;
+}
+
+/* 滑块"车道"：滑块浮在容器右缘，**会盖住靠右的内容**。
+   旧口径靠 `scrollbar-gutter` 预留一条空带（内容自动缩进），overlay 之后那条带没了 ——
+   聊天区的气泡小尾巴（超出气泡 10px）就被滑块压掉半截（用户 2026-11-20 截图）。
+   ⇒ 需要留车道的容器给宿主加 `padding-right: var(--gosslan-os-lane)`：
+   OS 会把宿主的 padding 搬进视口 ⇒ 内容盒自动让出一条与滑块等宽的槽，滑块正好浮在槽里。
+   ⚠️ 车道宽度必须与滑块带宽度同源，否则要么还压一点、要么多留一条空白。 */
+/* 车道宽度按档位给：它要保证「滑块不压到会伸到盒子外面的东西」（聊天区的小尾巴），
+   同时**不能把内容的边距撑大**（用户 2026-11-20：「间距看起来太大，不和谐」——
+   微信 PC 的气泡到右缘约 20px，且滚动条在不在都一模一样）。
+   ⇒ 车道只补「尾巴突出量 + 滑块带宽」真正需要的那么多，其余留白还给内容。 */
+.gosslan-os--thin { --gosslan-os-lane: 6px; }
+.gosslan-os--normal { --gosslan-os-lane: 10px; }
+.gosslan-os--thick { --gosslan-os-lane: 12px; }
+
 /* macOS 不再单独压标题栏高度：红绿灯由 AppKit 原生绘制（`decorations:false` +
    `Titled`），其纵向位置不读本变量；把 caption 压到 28px 只会让右侧功能组贴边。
    两个平台统一 40px，见上面 `--gosslan-title-h` 的注释。 */
@@ -2490,7 +2581,8 @@ img {
   max-height: var(--reka-dropdown-menu-content-available-height, calc(100dvh - 16px));
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  /* 2026-11-20：gutter 退役（overlay 口径）。浮层这块**暂不迁**统一容器 ——
+     Reka popper 的定位依赖内容盒原样，OS 会重排子节点；等有实测再动。 */
 }
 
 /* ---------------- 浮层限高统一口径（2026-11-07） ----------------
@@ -2522,7 +2614,7 @@ img {
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  /* 2026-11-20：gutter 退役（overlay 口径）；浮层内的原生滚动暂不迁统一容器。 */
 }
 
 /* 表情面板自己不是滚动层（用户 2026-11-09：「这个面板的滚动条怪怪的」）。

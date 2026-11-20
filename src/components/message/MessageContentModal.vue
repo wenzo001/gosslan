@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { t } from "@/i18n";
 import { computed } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -76,7 +77,7 @@ async function openLink(href: string) {
       scrollable
       max-height="60vh"
     />
-    <div v-else class="scrollbar-both max-h-[70vh] overflow-y-auto">
+    <OverlayScroll v-else class="max-h-[70vh]">
       <div
         class="gosslan-selectable whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--gosslan-text)]"
         :style="{ wordBreak: 'break-word' }"
@@ -106,7 +107,7 @@ async function openLink(href: string) {
           <span v-else>{{ seg.value }}</span>
         </template>
       </div>
-    </div>
+    </OverlayScroll>
     <div class="mt-3 flex justify-end">
       <button
         class="tap-safe preview-action"

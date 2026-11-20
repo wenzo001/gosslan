@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { t } from "@/i18n";
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
@@ -1404,9 +1405,9 @@ async function onPaste(e: ClipboardEvent) {
          视觉距离要相等；底边原本 9px、左右 13px，看起来"贴着底"）。WebView 中 1dp ≈ 1px。 -->
     <div ref="composerCard" class="gosslan-composer relative rounded-[var(--gosslan-radius-2xl)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-panel)] px-4 pb-3 pt-2">
       <!-- 群聊 @ 成员选择：输入 @ 后浮出，↑↓ 导航 / Enter 或点击选中 -->
-      <div
+      <OverlayScroll
         v-if="mention && mentionFiltered.length > 0"
-        class="frost absolute bottom-full left-2 right-2 z-30 mb-2 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1 shadow-[var(--gosslan-glass-2-shadow)]"
+        class="frost absolute bottom-full left-2 right-2 z-30 mb-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1 shadow-[var(--gosslan-glass-2-shadow)]"
         :style="{ maxHeight: `${MENTION_POP_MAX_H}px` }"
       >
         <div class="px-2 py-1 text-caption text-[var(--gosslan-text-2)]">{{ t("chat.composer.remind") }}</div>
@@ -1428,7 +1429,7 @@ async function onPaste(e: ClipboardEvent) {
           <AvatarBox v-else class="h-6 w-6 shrink-0" round="full" :id="m.id" />
           <span class="min-w-0 flex-1 truncate" :title="m.name">{{ m.name }}</span>
         </button>
-      </div>
+      </OverlayScroll>
       <!-- 引用预览条：右键"引用"后出现在输入框上方，可取消 -->
       <div
         v-if="quote"

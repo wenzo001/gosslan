@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 /**
  * 群文件面板：把该群**全部**群文件汇总成一份清单（钉钉/飞书「群文件」的等价物）。
  *
@@ -323,7 +324,7 @@ function stateText(state: GroupFileEntry["local_state"]): string {
 
       <!-- 列表间距：原来 0.5（2px）挤成一坨（用户 2026-11-16）⇒ 放宽到 1（4px），
            行内留白也松一格，扫起来一眼能分清哪一行。 -->
-      <div v-else class="gosslan-scroll max-h-80 space-y-1 overflow-y-auto">
+      <OverlayScroll v-else class="gosslan-scroll max-h-80 space-y-1">
         <div
           v-for="f in files"
           :key="f.transfer_id"
@@ -408,7 +409,7 @@ function stateText(state: GroupFileEntry["local_state"]): string {
         <p v-if="truncated" class="px-2 py-2 text-caption text-[var(--gosslan-text-2)]">
           {{ t("group.files.truncated") }}
         </p>
-      </div>
+      </OverlayScroll>
     </div>
     <!-- 右键菜单：整表一个实例，用 `ctx.f` 记住是那一行（与好友/会话列表同款） -->
     <ContextMenu v-if="ctx" :x="ctx.x" :y="ctx.y" @close="ctx = null">

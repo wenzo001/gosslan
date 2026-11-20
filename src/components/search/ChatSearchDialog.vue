@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 /**
  * 「搜索聊天记录」结果页（用户需求 2026-09-12 晚）：
  * 「搜索并点击回车后，弹出一个框。样式参考微信，但配色/圆角按本项目的约束标准。」
@@ -240,7 +241,9 @@ const activeGroup = computed(
 const activeIdx = ref(0);
 /** 已出结果的那个关键词（trim 后）；与输入框当前值不等 ⇒ 回车=立刻重搜。 */
 const searched = ref("");
-const listRef = ref<HTMLDivElement | null>(null);
+/** 统一滚动容器（2026-11-20）：滚动的是 viewport，组件根不滚。 */
+const listOs = ref<InstanceType<typeof OverlayScroll> | null>(null);
+const listRef = computed<HTMLElement | null>(() => listOs.value?.scrollElement() ?? null);
 
 function stepHit(d: number) {
   const n = activeGroup.value?.messages.length ?? 0;
@@ -568,7 +571,7 @@ function showSender(group: ChatSearchGroup): boolean {
     <!-- 结果：左会话 / 右命中消息（微信同款两栏） -->
     <div class="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-divider)] desktop:md:h-[52vh] desktop:md:flex-none desktop:md:flex-row">
       <!-- 左栏 -->
-      <div class="gosslan-scroll flex max-h-[38%] w-full shrink-0 flex-col overflow-y-auto border-b border-[var(--gosslan-divider-strong)] desktop:md:max-h-none desktop:md:w-[240px] desktop:md:border-b-0 desktop:md:border-r">
+      <OverlayScroll class="gosslan-scroll max-h-[38%] w-full shrink-0 border-b border-[var(--gosslan-divider-strong)] desktop:md:max-h-none desktop:md:w-[240px] desktop:md:border-b-0 desktop:md:border-r"><div class="flex flex-col">
         <!-- 人名命中（好友 / 群成员 / 群名）：支持汉字全拼与首字母。点一下直接进聊天。 -->
         <template v-if="peopleHits.length">
           <p class="shrink-0 px-3 pb-1 pt-2 text-caption text-[var(--gosslan-text-2)]">
@@ -638,7 +641,7 @@ function showSender(group: ChatSearchGroup): boolean {
             </span>
           </span>
         </button>
-      </div>
+      </div></OverlayScroll>
 
       <!-- 右栏 -->
       <div class="flex min-w-0 flex-1 flex-col">
@@ -661,7 +664,7 @@ function showSender(group: ChatSearchGroup): boolean {
             <Icon name="chevron-right" class="h-3.5 w-3.5" />
           </button>
         </div>
-        <div ref="listRef" class="gosslan-scroll min-h-0 flex-1 overflow-y-auto py-3">
+        <OverlayScroll ref="listOs" class="gosslan-scroll min-h-0 flex-1 py-3">
           <p
             v-if="activeGroup?.messages.length"
             class="px-2 pb-2 text-caption text-[var(--gosslan-text-2)]"
@@ -708,7 +711,7 @@ function showSender(group: ChatSearchGroup): boolean {
           >
             {{ t("search.more", { n: activeGroup.total - activeGroup.messages.length }) }}
           </p>
-        </div>
+        </OverlayScroll>
       </div>
     </div>
     </div>

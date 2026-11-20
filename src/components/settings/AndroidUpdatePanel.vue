@@ -16,6 +16,7 @@
  * 每一步都有 `androidService.test.ts` 的转移断言兜底。
  */
 import { computed, ref, watch } from "vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import MarkdownText from "@/components/ui/MarkdownText.vue";
@@ -190,11 +191,17 @@ const downloadLabel = computed(() =>
       <p v-if="state.info?.notes" class="mt-2 text-caption font-medium text-[var(--gosslan-text-2)]">
         {{ t("settings.updates.notes") }}
       </p>
-      <MarkdownText
+      <!-- 统一滚动容器（轨道不可见 / hover 才显 / 不占布局宽度）；小段文本用最细一档滑块。 -->
+      <OverlayScroll
         v-if="state.info?.notes"
-        :source="state.info.notes"
-        class="scrollbar-both mt-1 max-h-36 overflow-y-auto text-caption leading-relaxed text-[var(--gosslan-text-2)]"
-      />
+        size="thin"
+        class="mt-1 max-h-36"
+      >
+        <MarkdownText
+          :source="state.info.notes"
+          class="text-caption leading-relaxed text-[var(--gosslan-text-2)]"
+        />
+      </OverlayScroll>
 
       <div v-if="state.phase === 'downloading'" class="mt-3">
         <div

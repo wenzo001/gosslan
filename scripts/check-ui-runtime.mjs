@@ -647,6 +647,59 @@ window.__probe = (() => {
   let clickCount = 0;
   const H = { events, get clicks() { return clickCount; } };
   H.reset = () => { events.length = 0; clickCount = 0; };
+
+  /**
+   * **真实滚动元素**（统一滚动容器时代）。
+   *
+   * 迁移前：.overflow-y-auto 就是滚动容器。
+   * 迁移后：滚动的是 OverlayScrollbars 建的 viewport（组件根是 host，host 自己不滚），
+   *         所以旧选择器一律找不到东西 —— 判据会整片假红（2026-11-20 实测 31 条）。
+   * 兜底仍留着旧选择器：还没迁到统一容器的滚动区（设置页 / 日志窗 …）仍要量。
+   */
+  H.scroller = (scope) => {
+    const s = scope || document;
+    if (!s || !s.querySelector) return null;
+    // 消息列表（.vlist-no-anchor）。⚠️ **不**回退到 .gosslan-os：消息列表被 v-if 卸掉
+    // （未缓存会话走骨架分支）时，"列表不在"必须读成 null —— 回退到会话列表会读出
+    // 一堆不相干的行，骨架正控那一格就会整片假红（2026-11-20 实测）。
+    // 带 scope 的调用（左列那一栏）才允许回退到 .gosslan-os。
+    const host = s.querySelector('.vlist-no-anchor') || (scope && scope.querySelector ? scope.querySelector('.gosslan-os') : null);
+    if (!host) return null;
+    return host.querySelector('[data-overlayscrollbars-viewport]')
+      || host.querySelector('.overflow-y-auto')
+      || host;
+  };
+  /**
+   * 滚动容器的**宿主**（挂类名 / 透明度的那一层）。
+   *
+   * 为什么单独一个口：统一滚动容器下，滚动的是 viewport，而 ChatWindow 的淡出
+   * （opacity-0 遮罩）加在**列表根**上。尺子若在 viewport 上找 opacity-0，
+   * 永远读不到 ⇒ "隐藏期"被误判成"可见空白"（2026-11-20 实测：冷会话正控 visibleBlank=1）。
+   */
+  H.scrollerHost = (scope) => {
+    const s = scope || document;
+    if (!s || !s.querySelector) return null;
+    return s.querySelector('.vlist-no-anchor')
+      || (scope && scope.querySelector ? scope.querySelector('.gosslan-os') : null);
+  };
+  /**
+   * VirtualList 的组件实例。
+   *
+   * .vlist-no-anchor 现在是 OverlayScroll 的 host ⇒ 它的 __vueParentComponent
+   * 是 OverlayScroll（没有 virtualizer），要往上找认准 setupState 里有 virtualizer 的那一层。
+   */
+  H.vlistInstance = (scope) => {
+    const s = scope || document;
+    const el = s && s.querySelector ? s.querySelector('.vlist-no-anchor') : null;
+    let inst = el && el.__vueParentComponent;
+    let hops = 0;
+    while (inst && hops < 5) {
+      if (inst.setupState && inst.setupState.virtualizer) return inst;
+      inst = inst.parent;
+      hops += 1;
+    }
+    return null;
+  };
   H.install = async (cmpPath, mountHtml, propsJson) => {
     // 必须拿"页面已经在用的那一份 vue"，自己 import('vue') 会得到第二份（ref/reactive 互不相认）。
     // 而这条要**等**：Page.navigate 之后 vite 还在现编译依赖，resources 里出现 deps/vue.js 之前
@@ -3542,7 +3595,7 @@ window.__probe = (() => {
   };
   H.vlistScroll = () => {
     const row = document.querySelector('#vlist-host [data-vlist-index]');
-    const sc = row ? row.closest('.overflow-y-auto') : null;
+    const sc = row ? (row.closest('[data-overlayscrollbars-viewport]') || row.closest('.overflow-y-auto')) : null;
     return sc;
   };
   H.vlistRead = () => {
@@ -4711,6 +4764,7 @@ async function main() {
     const bleed = want("bleed");
     const panefade = want("panefade");
     const listmetrics = want("listmetrics");
+    const scrollbar = want("scrollbar");
     const favorites = want("favorites");
     const favthumb = want("favthumb");
     const links = want("links");
@@ -4971,6 +5025,7 @@ async function main() {
     await runSegment("bleed", bleed, () => runBleed(cdp, url));
     await runSegment("panefade", panefade, () => runPaneFade(cdp, url));
     await runSegment("listmetrics", listmetrics, () => runListMetrics(cdp, url));
+    await runSegment("scrollbar", scrollbar, () => runScrollbar(cdp, url));
     await runSegment("favorites", favorites, () => runFavorites(cdp, url));
     await runSegment("favthumb", favthumb, () => runFavThumb(cdp, url));
     await runSegment("namecap", namecap, () => runNameCap(cdp, url));
@@ -5632,7 +5687,7 @@ async function runHistoryError(cdp, url) {
       return null;
     };
     await new Promise((r) => setTimeout(r, 600));
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     return { ok: !!el, sh: el ? el.scrollHeight : 0, ch: el ? el.clientHeight : 0 };
   })()`);
   check("historyerr：列表已撑出可滚动高度（否则触顶事件不会发生）",
@@ -5641,15 +5696,17 @@ async function runHistoryError(cdp, url) {
 
   // 触顶：0 + scroll 事件 ⇒ VirtualList emit loadMore ⇒ store 打 IPC 并失败。
   await cdp.eval(`(() => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     el.scrollTop = 0;
     el.dispatchEvent(new Event('scroll', { bubbles: true }));
   })()`);
   await sleep(600);
   const labels = await cdp.eval(`(async () => {
     const { t } = await import('/src/i18n/index.ts');
-    const el = document.querySelector('.vlist-no-anchor');
-    const inList = el ? el.parentElement : document.body;
+    const el = window.__probe.scroller();
+    // ⚠️ 搜索范围：翻页失败提示是**消息区的兄弟**（不在滚动容器里），
+    //    统一滚动容器下 viewport 的 parent 是 host ⇒ 只搜 host 一定找不到（2026-11-20 实测）。
+    const inList = el ? (el.closest('[data-msg-area]') || el.parentElement) : document.body;
     const text = inList ? inList.innerText : '';
     return {
       fail: t('chat.history.loadFail'), retry: t('common.retry'), close: t('common.close'),
@@ -5668,7 +5725,7 @@ async function runHistoryError(cdp, url) {
   // 退避：再次触顶不许立刻再打 IPC。
   const beforeBackoff = labels ? labels.calls.messages : 0;
   await cdp.eval(`(() => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     el.scrollTop = 0;
     el.dispatchEvent(new Event('scroll', { bubbles: true }));
   })()`);
@@ -5697,7 +5754,7 @@ async function runHistoryError(cdp, url) {
       .find((b) => (b.getAttribute('aria-label') || '') === t('common.close'));
     if (btn) btn.click();
     await new Promise((r) => setTimeout(r, 150));
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     const text = el && el.parentElement ? el.parentElement.innerText : '';
     return { gone: !text.includes(t('chat.history.loadFail')) };
   })()`);
@@ -5757,7 +5814,7 @@ async function runScrollRestore(cdp, url) {
     chat.activeConv = 'peer-scroll';
     chat.messages['peer-scroll'] = rows;
     await new Promise((r) => setTimeout(r, 700));
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     return { scrollH: el ? el.scrollHeight : 0, clientH: el ? el.clientHeight : 0,
       rows: document.querySelectorAll('[data-vlist-key]').length,
       msgLen: (chat.messages['peer-scroll'] || []).length,
@@ -5775,7 +5832,7 @@ async function runScrollRestore(cdp, url) {
   // 锚点读数：视口上沿第一条（含跨上沿）消息的 key 与相对视口顶的偏移。
   // ⚠️ 只读 scrollTop 是不够的：估算布局下同一个像素会落在**另一条消息**上。
   const anchorExpr = `(() => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     if (!el) return null;
     const cr = el.getBoundingClientRect();
     const rows = [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
@@ -5789,7 +5846,7 @@ async function runScrollRestore(cdp, url) {
   // 先把 m-scroll-6（file-image：估算 288 / 实际约 90）滚到视口顶下 24px，
   // 保证锚点落在一个**估算误差最大**的行上；随机中点可能恰好是文本，测不出问题。
   const scrolled = await cdp.eval(`(async () => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     if (!el) return null;
     el.scrollTop = 0;
     await new Promise((r) => setTimeout(r, 300));
@@ -5805,7 +5862,7 @@ async function runScrollRestore(cdp, url) {
   })()`);
   await sleep(500);
   const before = await cdp.eval(`(() => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     // ⚠️ 判据必须认 aria-label/title，不能认 textContent：adcf88cd（2026-11-04）按用户要求
     //    把「回到最新」改成**纯圆 + 向下箭头、无文字**（ChatWindow.vue 那颗按钮只剩
     //    :aria-label/:title 走 i18n），composerInteraction.test.ts 还专门钉着"无文字节点"。
@@ -5833,10 +5890,11 @@ async function runScrollRestore(cdp, url) {
   await sleep(900);
   const after = await cdp.eval(`(async () => {
     await new Promise((r) => setTimeout(r, 1200));
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     const anchor = ${anchorExpr};
     const { savedScrollPosition } = await import('/src/utils/scrollRestore.ts');
-    const st = el && el.__vueParentComponent ? el.__vueParentComponent.setupState : null;
+    const inst = window.__probe.vlistInstance();
+    const st = inst ? inst.setupState : null;
     const pj = st && st.pendingJump ? { key: st.pendingJump.key, offset: st.pendingJump.offset, tries: st.pendingJump.tries, left: st.pendingJump.until - Date.now() } : null;
     const pick = (k) => {
       const n = el ? el.querySelector('[data-vlist-key="' + k + '"]') : null;
@@ -5863,7 +5921,7 @@ async function runScrollRestore(cdp, url) {
   const switched = await cdp.eval(`(async () => {
     const { useChatStore } = await import('/src/stores/useChatStore.ts');
     const chat = useChatStore();
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     const read = () => {
       const cr = el.getBoundingClientRect();
       const rows = [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
@@ -5924,7 +5982,7 @@ async function runScrollRestore(cdp, url) {
  */
 async function installScrollLedger(cdp) {
   return cdp.eval(`(() => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     if (!el) return { ok: false };
     const proto = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
     if (!proto || !proto.set) return { ok: false, why: 'no scrollTop descriptor' };
@@ -6214,7 +6272,7 @@ async function runScrollShake(cdp, url) {
     chat.activeConv = conv;
     chat.messages[conv] = rows;
     await new Promise((r) => setTimeout(r, 900));
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     return { scrollH: el ? el.scrollHeight : 0, clientH: el ? el.clientHeight : 0,
       rows: document.querySelectorAll('[data-vlist-key]').length };
   })()`);
@@ -6234,7 +6292,7 @@ async function runScrollShake(cdp, url) {
   }
 
   // 先落到底，等收敛定时器安静下来，再量安静基线。
-  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+  await cdp.eval(`(() => { const el = window.__probe.scroller();
     el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); })()`);
   await sleep(1_200);
   await cdp.eval("window.__shakeStart()");
@@ -6251,7 +6309,7 @@ async function runScrollShake(cdp, url) {
   //   窗 A：把"设到离底 600px"整个包进来 ⇒ 谁把它改回去了，能在 owner/mark 里看见；
   //   窗 B：前提成立才判反转，否则判 UNSUPPORTED（红），不许当绿。
   const setup = await cdp.eval(`(async () => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     window.__shakeStart();
     el.scrollTop = el.scrollHeight;
     el.dispatchEvent(new Event('scroll', { bubbles: true }));
@@ -6270,7 +6328,7 @@ async function runScrollShake(cdp, url) {
   // 反转量具本身从**贴底起手**（一定有可滚空间），不依赖"中间位置"那个前提 ——
   // 前提被上一格当场证伪过（写 1907 后 400ms 回到 0），那本身是一条要找的缺陷，不该让量具跟着瘫掉。
   const ctl = await cdp.eval(`(async () => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     el.scrollTop = el.scrollHeight;
     el.dispatchEvent(new Event('scroll', { bubbles: true }));
     await new Promise((r) => setTimeout(r, 350));
@@ -6294,10 +6352,10 @@ async function runScrollShake(cdp, url) {
   }
 
   // 对照结束后必须回到“真正贴底”的状态，否则 A1 量的是历史中部，不是用户报的场景。
-  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+  await cdp.eval(`(() => { const el = window.__probe.scroller();
     el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); })()`);
   await sleep(1_000);
-  const atBottom = await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+  const atBottom = await cdp.eval(`(() => { const el = window.__probe.scroller();
     return { gap: el.scrollHeight - el.scrollTop - el.clientHeight }; })()`);
   check("A1 前置：对照组结束后已回到贴底（gap≤2）",
     !!atBottom && atBottom.gap <= 2, "gap≤2", JSON.stringify(atBottom));
@@ -6316,7 +6374,7 @@ async function runScrollShake(cdp, url) {
 
   // A2：历史中部连续切主题，阅读位置不能被拉走。
   const mid = await cdp.eval(`(async () => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     el.scrollTop = Math.floor((el.scrollHeight - el.clientHeight) * 0.45);
     el.dispatchEvent(new Event('scroll', { bubbles: true }));
     await new Promise((r) => setTimeout(r, 700));
@@ -6340,7 +6398,7 @@ async function runScrollShake(cdp, url) {
   await setAppearance(cdp, true);
   await sleep(700);
   const midAfter = await cdp.eval(`(async () => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     const cr = el.getBoundingClientRect();
     const rows = [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
       const r = n.getBoundingClientRect();
@@ -6362,7 +6420,7 @@ async function runScrollShake(cdp, url) {
   await sleep(500);
 
   // 落回底部，B：新建群任务（含后端回显导致的同长度数组替换）。
-  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+  await cdp.eval(`(() => { const el = window.__probe.scroller();
     el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); })()`);
   await sleep(900);
   await cdp.eval("window.__shakeStart()");
@@ -6397,7 +6455,7 @@ async function runScrollShake(cdp, url) {
     JSON.stringify({ created, hasCard, task }));
 
   // B2：连续创建 3 个任务（每次都会 append + 后端回显的同长度替换）。
-  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+  await cdp.eval(`(() => { const el = window.__probe.scroller();
     el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); })()`);
   await sleep(900);
   await cdp.eval("window.__shakeStart()");
@@ -6430,7 +6488,7 @@ async function runScrollShake(cdp, url) {
     JSON.stringify({ multi, multiTask }));
 
   // B3：长描述 + 6 张图的任务卡（估算与真实高度差最大的一类）。
-  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+  await cdp.eval(`(() => { const el = window.__probe.scroller();
     el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); })()`);
   await sleep(900);
   await cdp.eval("window.__shakeStart()");
@@ -6468,7 +6526,7 @@ async function runScrollShake(cdp, url) {
   const fontBefore = await cdp.eval(`(async () => {
     const { useAppStore } = await import('/src/stores/useAppStore.ts');
     const app = useAppStore();
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     el.scrollTop = Math.floor((el.scrollHeight - el.clientHeight) * 0.4);
     el.dispatchEvent(new Event('scroll', { bubbles: true }));
     await new Promise((r) => setTimeout(r, 600));
@@ -6497,7 +6555,7 @@ async function runScrollShake(cdp, url) {
   const fontWrites = await cdp.eval("window.__shakeStop()");
   console.log("  · 字号变化期间的写入：" + JSON.stringify(fontWrites));
   const fontAfter = await cdp.eval(`(() => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     const cr = el.getBoundingClientRect();
     const rows = [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
       const r = n.getBoundingClientRect();
@@ -6526,7 +6584,7 @@ async function runScrollShake(cdp, url) {
   const userAway = await cdp.eval(`(async () => {
     const { useChatStore } = await import('/src/stores/useChatStore.ts');
     const chat = useChatStore();
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     el.scrollTop = Math.floor((el.scrollHeight - el.clientHeight) * 0.35);
     el.dispatchEvent(new Event('scroll', { bubbles: true }));
     await new Promise((r) => setTimeout(r, 500));
@@ -6586,7 +6644,7 @@ async function runScrollShake(cdp, url) {
   const rapidTheme = await cdp.eval(`(async () => {
     const { useAppStore } = await import('/src/stores/useAppStore.ts');
     const app = useAppStore();
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     el.scrollTop = el.scrollHeight;
     await new Promise((r) => setTimeout(r, 600));
     window.__shakeStart();
@@ -6604,7 +6662,7 @@ async function runScrollShake(cdp, url) {
   // ── A1 自证（2026-10-27）：量具必须证明"它看得见库的写"与"它看得见 clamp"，
   //    否则后面所有 owner 分布都是空转。两格都是我们自己发的，标签写死 harness，不赖给产品。
   const hookProof = await cdp.eval(`(async () => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     el.scrollTop = 0;
     await new Promise((r) => setTimeout(r, 120));
     window.__shakeStart();
@@ -6623,7 +6681,7 @@ async function runScrollShake(cdp, url) {
 
   const clampProof = await cdp.eval(`(async () => {
     window.__shakeStart();
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     window.__shake.tag = 'harness';
     el.scrollTop = el.scrollHeight + 500;
     await new Promise((r) => setTimeout(r, 80));
@@ -6645,7 +6703,7 @@ async function runScrollShake(cdp, url) {
   //    这一格判的是**量具**：静止期确实发生了写入 ⇒ 这条链可观测、可复跑。
   //    产品对错（"静止后不许推我"）另记在读数里当基线，不在这格判红——修好之后才把它升级成回归判据。
   const still = await cdp.eval(`(async () => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 60);
     const gapAtSet = el.scrollHeight - el.scrollTop - el.clientHeight;
     // ★ 静置那一段**必须单独开窗**：它才是"用户停在上面一点、却被自己拽回底部"的证据段。
@@ -6689,7 +6747,7 @@ async function runScrollShake(cdp, url) {
   // 这里直接测那条更危险的半边：停在离底 ~100px（150px 容差内）、追加一条自己的消息 ⇒ 必须跟到底。
   // （"真贴底 + 行变高仍跟随"由 `scrollreact` ①② 覆盖，那两格在 7 段基线 681/681 里。）
   const appendFollow = await cdp.eval(`(async () => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 100);
     el.dispatchEvent(new Event('scroll', { bubbles: true }));
     // 必须等过 recentScrollUp() 的 1.2s 豁免：那次"向上挪 100px"会被记成用户上滚，
@@ -6805,7 +6863,7 @@ async function runScrollHist(cdp, url) {
     chat.activeConv = conv;
     chat.messages[conv] = makeRows(100, 500);
     await new Promise((r) => setTimeout(r, 1000));
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     return { len: (chat.messages[conv] || []).length,
       scrollH: el ? el.scrollHeight : 0, clientH: el ? el.clientHeight : 0 };
   })()`);
@@ -6819,7 +6877,7 @@ async function runScrollHist(cdp, url) {
     !!histInst && histInst.ok === true, "install ok", JSON.stringify(histInst));
 
   const measured = await cdp.eval(`(async () => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     const { useChatStore } = await import('/src/stores/useChatStore.ts');
     const chat = useChatStore();
     const conv = 'group:hist';
@@ -6883,8 +6941,7 @@ async function runScrollHist(cdp, url) {
       // 目的：分辨"库自己算的锚点偏移就错了" vs "库算对了、但 DOM 高度还没跟上"。
       let lib = null;
       try {
-        const comp = document.querySelector('.vlist-no-anchor')
-          && document.querySelector('.vlist-no-anchor').__vueParentComponent;
+        const comp = window.__probe.vlistInstance();
         const raw = comp && comp.setupState ? comp.setupState.virtualizer : null;
         const v = raw && typeof raw.getTotalSize !== 'function' && raw.value ? raw.value : raw;
         if (v && typeof v.getTotalSize === 'function') {
@@ -6946,7 +7003,7 @@ async function runScrollHist(cdp, url) {
 
   // A4 的一半：**纯文本**前插的帧成本，与混合种类对照 —— 判"400ms 是不是花在复杂行的挂载上"。
   const textOnly = await cdp.eval(`(async () => {
-    const el0 = document.querySelector('.vlist-no-anchor');
+    const el0 = window.__probe.scroller();
     const { useChatStore } = await import('/src/stores/useChatStore.ts');
     const chat = useChatStore();
     const conv = 'group:hist';
@@ -6967,7 +7024,7 @@ async function runScrollHist(cdp, url) {
       return rows.slice(Math.max(0, 100 - page * 100), 100 - (page - 1) * 100);
     };
     await new Promise((r) => setTimeout(r, 900));
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     if (!el) return { ok: false };
     el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 1200);
     await new Promise((r) => setTimeout(r, 1400));
@@ -7102,7 +7159,7 @@ async function runScrollSwitch(cdp, url) {
     chat.messages['group:swb'] = makeRows('group:swb', 200, 40);
     chat.activeConv = 'group:swa';
     await new Promise((r) => setTimeout(r, 1000));
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     if (!el) return { ok: false, why: 'no scroller' };
     // ⚠️ opacity-0 落在**组件根元素自己身上**（Vue 把 class 合并到 VirtualList 的根 div），
     // 不是它的 parentElement —— 第一版读 parent 得到 hidden 恒 false。
@@ -7122,7 +7179,7 @@ async function runScrollSwitch(cdp, url) {
     const sample = () => {
       // 每帧**重新找**列表：未缓存会话走骨架分支时 ChatWindow 用 v-if 把整个 VirtualList
       // 卸掉（换成骨架）⇒ 抓在手里的 el 会变成游离节点，读数全是 0（第一版正控就是这么错的）。
-      const cur = document.querySelector('.vlist-no-anchor');
+      const cur = window.__probe.scroller();
       const skel = document.querySelectorAll('[data-msg-skeleton]').length;
       if (!cur) {
         // 列表不在：有骨架 ⇒ 视口被骨架盖住（不是空白）；没骨架 ⇒ 纯背景，按上次高度计。
@@ -7142,11 +7199,11 @@ async function runScrollSwitch(cdp, url) {
         // 容器自带 pb-6（24px）⇒ 贴底时最后一行下面本来就有 24px"留白"，
         // 那不是白屏，必须从 blank 里扣掉（第一版把它算成 24.5px 白，属尺子错）。
         blank: Math.max(0, h - padBottom - coveredLen(rows.map((r) => [r.top, r.bottom]))),
-        hidden: cur.classList.contains('opacity-0'),
+        hidden: (window.__probe.scrollerHost() || cur).classList.contains('opacity-0'),
         // ★ ① 的验收量：**用户看得见的空白 = opacity < 0.99 或 视口没被铺满**。
         // headless 下 transition 不推进（读到的值会停在起点），所以这一维只在 headed 可信；
         // 同一条读数在两种模式下都打印，但只有 headed 那趟进判据（见下方标签）。
-        op: +(parseFloat(getComputedStyle(cur).opacity) || 0).toFixed(3),
+        op: +(parseFloat(getComputedStyle(window.__probe.scrollerHost() || cur).opacity) || 0).toFixed(3),
         list: 1,
         top: +cur.scrollTop.toFixed(1),
         firstKey: rows.length ? rows[0].key : '' };
@@ -7221,6 +7278,26 @@ async function runScrollSwitch(cdp, url) {
     !!ready && ready.ok === true && ready.base && ready.base.rows >= 3 && ready.base.blank <= 1,
     "rows≥3 且 blank≤1", JSON.stringify(ready));
 
+  // 【临时诊断】聊天区：宿主 / 视口 / 滑块 三者的矩形（滑块是否超出滚动区域）
+  const barGeo = await cdp.eval(`(() => {
+    const host = document.querySelector('.vlist-no-anchor');
+    if (!host) return { why: 'no host' };
+    const vp = host.querySelector('[data-overlayscrollbars-viewport]');
+    const bar = host.querySelector('.os-scrollbar-vertical');
+    const R = (el) => { if (!el) return null; const b = el.getBoundingClientRect();
+      return { t: +b.top.toFixed(1), b: +b.bottom.toFixed(1), l: +b.left.toFixed(1), r: +b.right.toFixed(1), h: +b.height.toFixed(1) }; };
+    const hcs = getComputedStyle(host), vcs = vp ? getComputedStyle(vp) : null;
+    return {
+      host: R(host), vp: R(vp), bar: R(bar),
+      hostPad: [hcs.paddingTop, hcs.paddingRight, hcs.paddingBottom, hcs.paddingLeft],
+      vpPad: vcs ? [vcs.paddingTop, vcs.paddingRight, vcs.paddingBottom, vcs.paddingLeft] : null,
+      barParentIsVp: bar ? bar.parentElement.hasAttribute('data-overlayscrollbars-viewport') : null,
+      barOverHostBottom: bar && host ? +(bar.getBoundingClientRect().bottom - host.getBoundingClientRect().bottom).toFixed(1) : null,
+      barOverVpBottom: bar && vp ? +(bar.getBoundingClientRect().bottom - vp.getBoundingClientRect().bottom).toFixed(1) : null,
+    };
+  })()`);
+  console.log("  · 【临时诊断】滑块几何：" + JSON.stringify(barGeo));
+
   const cached = await cdp.eval("window.__sw.run('group:swb', 1600)");
   console.log("  · 已缓存会话切换逐帧（h=隐藏 r=行数 s=骨架 b=空白px）：" + JSON.stringify(cached));
   check("切到已缓存会话：揭示之后列表已覆盖视口（可见空白帧 = 0）",
@@ -7257,10 +7334,10 @@ async function runScrollSwitch(cdp, url) {
   // E 类：`itemSizeCache` 按消息 id 存、切会话**不清**；上限 6000 时 `measure()` 会整表清空。
   // 这里量"来回切会话时缓存怎么长"，判它是否是一条会突然全量重测的悬崖。
   const cacheGrow = await cdp.eval(`(async () => {
-    const el = () => document.querySelector('.vlist-no-anchor');
+    const el = () => window.__probe.scroller();
     const readSize = () => {
       const cur = el();
-      const comp = cur && cur.__vueParentComponent;
+      const comp = window.__probe.vlistInstance();
       const raw = comp && comp.setupState ? comp.setupState.virtualizer : null;
       const v = raw && typeof raw.getTotalSize !== 'function' && raw.value ? raw.value : raw;
       return v && v.itemSizeCache ? v.itemSizeCache.size : null;
@@ -7365,7 +7442,7 @@ async function runScrollInput(cdp, url) {
     chat.activeConv = conv;
     chat.messages[conv] = rows;
     await new Promise((r) => setTimeout(r, 1200));
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     if (!el) return { ok: false, why: 'no scroller' };
     const pad = parseFloat(getComputedStyle(el).paddingBottom) || 0;
     window.__sw2 = { frames: [], wheels: 0, running: false };
@@ -7381,7 +7458,7 @@ async function runScrollInput(cdp, url) {
       return total;
     };
     const sample = () => {
-      const cur = document.querySelector('.vlist-no-anchor');
+      const cur = window.__probe.scroller();
       if (!cur) return null;
       const cr = cur.getBoundingClientRect();
       const h = cur.clientHeight;
@@ -7432,18 +7509,18 @@ async function runScrollInput(cdp, url) {
     };
     window.__sw2.stop = () => { window.__sw2.running = false; return window.__sw2.summarise(); };
     window.__sw2.reset = async (ms) => {
-      const cur = document.querySelector('.vlist-no-anchor');
+      const cur = window.__probe.scroller();
       cur.scrollTop = cur.scrollHeight;
       await new Promise((r) => setTimeout(r, ms || 400));
       return +cur.scrollTop.toFixed(1);
     };
     window.__sw2.top = () => {
-      const cur = document.querySelector('.vlist-no-anchor');
+      const cur = window.__probe.scroller();
       return +cur.scrollTop.toFixed(1);
     };
     // 合成位移基线（旧口径）：30 帧 × 40px
     window.__sw2.synthetic = async (frames, step) => {
-      const cur = document.querySelector('.vlist-no-anchor');
+      const cur = window.__probe.scroller();
       cur.scrollTop = cur.scrollHeight;
       await new Promise((r) => setTimeout(r, 400));
       window.__sw2.start();
@@ -7460,7 +7537,7 @@ async function runScrollInput(cdp, url) {
     !!armed && armed.ok === true && armed.base && armed.base.blank <= 1,
     "blank ≤1", JSON.stringify(armed));
 
-  const rect = await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+  const rect = await cdp.eval(`(() => { const el = window.__probe.scroller();
     const r = el.getBoundingClientRect();
     return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
 
@@ -7486,14 +7563,14 @@ async function runScrollInput(cdp, url) {
   //    CDP 的键盘事件发给**当前焦点元素** ⇒ 必须先把焦点放到滚动容器上，
   //    否则 PageDown 落在 body 上（第一版 moved=0 就是这个原因，不是产品不响应）。
   await cdp.eval(`(() => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     window.__sw2.reset(500);
     el.tabIndex = -1;
     el.focus();
     return document.activeElement === el;
   })()`);
   const focusOk = await cdp.eval(`(() => {
-    const el = document.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller();
     return { focused: document.activeElement === el, tabIndex: el.tabIndex,
       scrollable: el.scrollHeight - el.clientHeight };
   })()`);
@@ -8486,6 +8563,12 @@ async function runEmojiScroll(cdp, url) {
     const panel = document.querySelector('[data-emoji-panel]');
     const grid = panel && panel.querySelector('.grid');
     if (!panel || !grid) return { ok: false, reason: 'no-panel-or-grid' };
+    // 2026-11-20：滚动容器统一走 <OverlayScroll> ⇒ 真正在滚的是 OS 视口，
+    // "轨道"是 OS 的滑块元素（原生 ::-webkit-scrollbar 已退役，量不到也量不对）。
+    const scroller = grid.closest('[data-overlayscrollbars-viewport]') || grid;
+    const trackEl = scroller.parentElement
+      ? scroller.parentElement.querySelector('.os-scrollbar-vertical')
+      : null;
     const pr = panel.getBoundingClientRect();
     const gr = grid.getBoundingClientRect();
     const ps = getComputedStyle(panel);
@@ -8520,10 +8603,15 @@ async function runEmojiScroll(cdp, url) {
         scrollH: grid.scrollHeight, clientH: grid.clientHeight,
         scrollW: grid.scrollWidth, clientW: grid.clientWidth,
       },
-      gridBarW: grid.offsetWidth - grid.clientWidth,
-      gridScrollable: grid.scrollHeight > grid.clientHeight + 1,
+      gridBarW: trackEl ? +trackEl.getBoundingClientRect().width.toFixed(2) : 0,
+      gridScrollable: scroller.scrollHeight > scroller.clientHeight + 1,
+      scrollerH: scroller.clientHeight,
+      scrollerScrollH: scroller.scrollHeight,
+      panelBarW: trackEl ? +trackEl.getBoundingClientRect().width.toFixed(2) : 0,
       hOverflow: grid.scrollWidth - grid.clientWidth,
-      trackLeft: +trackLeft.toFixed(2),
+      trackLeft: trackEl ? +trackEl.getBoundingClientRect().left.toFixed(2) : (trackLeft || 0),
+      trackElBottom: trackEl ? +trackEl.getBoundingClientRect().bottom.toFixed(2) : null,
+      panelBottom: +pr.bottom.toFixed(2),
       lastCellRight: lastR ? +lastR.right.toFixed(2) : null,
       maxCellRight: maxCellRight === null ? null : +maxCellRight.toFixed(2),
       // 用**最右一列**的右缘，而不是 DOM 里最后一个按钮（最后一行可能没排满）。
@@ -8573,22 +8661,23 @@ async function runEmojiScroll(cdp, url) {
       panelScrollable: before.panelScrollable,
       gridScrollable: before.gridScrollable,
     }));
-  check("滚动条带宽 = token 8px（不是平台默认宽度）",
+  check("滑块带宽 = thin 档 8px（不是平台默认宽度）",
     !!before && before.ok === true && before.gridBarW === 8,
     "gridBarW=8", JSON.stringify(before && { gridBarW: before.gridBarW }));
-  check("内容与滚动条带有 ≥8px 空隙（不压住最后一列表情）",
-    !!before && before.ok === true && before.contentToTrack >= 8,
-    "contentToTrack ≥ 8", JSON.stringify(before && {
+  check("滑块浮在车道里，不压住最后一列表情（overlay 不吃内容宽度，靠车道让开）",
+    !!before && before.ok === true && before.contentToTrack >= 0,
+    "最后一列右缘 ≤ 滑块左缘（不重叠）", JSON.stringify(before && {
       last: before.lastCellRight, trackLeft: before.trackLeft, gap: before.contentToTrack,
     }));
   check("网格没有横向溢出（不出现横向滚动条/第二层）",
     !!before && before.ok === true && before.hOverflow === 0,
     "hOverflow=0", JSON.stringify(before && { hOverflow: before.hOverflow, scrollW: before.grid.scrollW, clientW: before.grid.clientW }));
-  check("滚动条带不横跨面板圆角（上/下各留 ≥8px）",
+  check("滑块不越出滚动容器的上下边界（不能伸到面板外面）",
     !!before && before.ok === true
-      && before.cornerInsetTop >= 8 && before.cornerInsetBottom >= 8,
-    "top/bottom inset ≥ 8", JSON.stringify(before && {
-      radius: before.panel.radius, top: before.cornerInsetTop, bottom: before.cornerInsetBottom,
+      && before.trackElBottom !== null
+      && before.trackElBottom <= before.panelBottom + 1,
+    "滑块底边 ≤ 面板底边", JSON.stringify(before && {
+      trackElBottom: before.trackElBottom, panelBottom: before.panelBottom,
     }));
   check("滚动时内容盒宽度与轨道位置不变（不跳）",
     !!afterScroll && afterScroll.ok === true
@@ -14374,9 +14463,9 @@ async function runVirtualList(cdp, url) {
   // 三份数对照（只读）：库自己算的行起点 / 该行 DOM 的 translateY / scrollTop+行顶。
   // 用来回答"拿库的 getOffsetForIndex 当校正目标"是否成立 —— 若三者不自洽，那就不成立。
   const diag = await cdp.eval(`(() => {
-    const el = document.querySelector('#vlist-host .vlist-no-anchor');
+    const el = window.__probe.scroller(document.querySelector('#vlist-host'));
     if (!el) return { ok: false, why: 'no scroller' };
-    const comp = el.__vueParentComponent;
+    const comp = window.__probe.vlistInstance(document.querySelector('#vlist-host'));
     const raw = comp && comp.setupState ? comp.setupState.virtualizer : null;
     const v = raw && typeof raw.getTotalSize !== 'function' && raw.value ? raw.value : raw;
     if (!v || typeof v.getOffsetForIndex !== 'function') return { ok: false, why: 'no virtualizer' };
@@ -14510,7 +14599,7 @@ async function runPerf(cdp, url) {
   // ③ 连续滚动帧间隔
   const scroll = await cdp.eval(`(async () => {
     const row = document.querySelector('#vlist-host [data-vlist-index]');
-    const sc = row ? row.closest('.overflow-y-auto') : null;
+    const sc = row ? (row.closest('[data-overlayscrollbars-viewport]') || row.closest('.overflow-y-auto')) : null;
     if (!sc) return { ok: false };
     window.__probe.vlistSwap(300);
     await new Promise((r) => requestAnimationFrame(r));
@@ -15532,7 +15621,7 @@ async function runAmbient(cdp, url) {
     chat.activeConv = conv;
     chat.messages[conv] = rows;
     await new Promise((r) => setTimeout(r, 900));
-    return { ok: true, rows: rows.length, scroller: !!document.querySelector('.vlist-no-anchor') };
+    return { ok: true, rows: rows.length, scroller: !!window.__probe.scroller() };
   })()`);
   check("ambient：主聊天有可滚动内容（性能读数与截图用同一份）",
     seeded && seeded.ok === true && seeded.scroller === true, "ok + scroller", JSON.stringify(seeded));
@@ -15836,7 +15925,7 @@ async function runAmbient(cdp, url) {
   // ── ⑩ 滚动 1.2 s：drift vs off（p50 不得比 baseline 差超 2 ms）────
   const scrollRun = async (label) => {
     const r = await cdp.eval(`(async () => {
-      const sc = document.querySelector('.vlist-no-anchor');
+      const sc = window.__probe.scroller();
       if (!sc) return { ok: false };
       sc.scrollTop = sc.scrollHeight - sc.clientHeight;
       await new Promise((r) => requestAnimationFrame(r));
@@ -16226,7 +16315,11 @@ async function runLogs(cdp, url) {
   await sleep(900);
   const read = () => cdp.eval(`(() => {
     const rows = [...document.querySelectorAll('[data-index]')];
-    const scroll = rows[0] ? rows[0].closest('.overflow-y-auto') : null;
+    // 2026-11-20：滚动容器统一走 <OverlayScroll> ⇒ 真正在滚的是 OS 建的 viewport
+    // （组件根不滚）。旧口径按 .overflow-y-auto 找 ⇒ 找不到 ⇒ 读数全是 -1。
+    const scroll = rows[0]
+      ? (rows[0].closest('[data-overlayscrollbars-viewport]') || rows[0].closest('.overflow-y-auto'))
+      : null;
     const texts = rows.map((r) => (r.innerText || '').replace(/\\s+/g, ' ').trim());
     return {
       rows: rows.length,
@@ -16254,7 +16347,7 @@ async function runLogs(cdp, url) {
   const before = s.first;
   await cdp.eval(`(() => {
     const row = document.querySelector('[data-index]');
-    const scroll = row && row.closest('.overflow-y-auto');
+    const scroll = row && (row.closest('[data-overlayscrollbars-viewport]') || row.closest('.overflow-y-auto'));
     if (!scroll) return false;
     scroll.scrollTop = scroll.scrollHeight;
     scroll.dispatchEvent(new Event('scroll', { bubbles: true }));
@@ -16436,7 +16529,8 @@ async function runLogs(cdp, url) {
         return r.right > innerWidth + 1 || r.left < -1;
       });
       const scroll = (document.querySelector('[data-index]') || {}).closest
-        ? document.querySelector('[data-index]').closest('.overflow-y-auto')
+        ? (document.querySelector('[data-index]').closest('[data-overlayscrollbars-viewport]')
+            || document.querySelector('[data-index]').closest('.overflow-y-auto'))
         : null;
       return {
         vw: innerWidth,
@@ -19561,6 +19655,171 @@ async function runPaneFade(cdp, url) {
  * 同时量外部链接 / 收藏两个左列面板：头部内容线、工具栏按钮左缘、行 hover 矩形左右缘。
  * 口径是"一页只有一条内容竖线，hover 通宽且左右对称内距"（用户 2026-11-08）。
  */
+/**
+ * 统一滚动容器的产品口径（2026-11-20 用户拍板，四条）：
+ *   ① 轨道**完全不可见** —— 静止态整条滚动条不可感知；
+ *   ② idle 拇指不可见；
+ *   ③ 指针移入容器才出现（hover / 滚动）；
+ *   ④ 出现时**内容不位移**（true overlay 不占布局宽度 —— 这是本次迁移的目的）。
+ *
+ * 外加一条**反例自证**：把滑块强行改成"常显"之后，①② 必须读成"可见" ⇒
+ * 这两条尺子不是恒真的空转（判据能被打红）。
+ */
+async function runScrollbar(cdp, url) {
+  const outFile = path.join(ROOT, "test-results", "scrollbar.json");
+  fs.mkdirSync(path.dirname(outFile), { recursive: true });
+  const out = {};
+  const page = (fnBody) => cdp.eval("(() => {" + fnBody + "})()");
+
+  const bootLayout = async () => {
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }).catch(() => {});
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(2_200);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`(async () => {
+      window.__TAURI_INTERNALS__ = window.__TAURI_INTERNALS__ || {
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+        invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = window.__TAURI_EVENT_PLUGIN_INTERNALS__ || { unregisterListener: () => {} };
+      await window.__probe.install('/src/layouts/ResponsiveLayout.vue', '', ${JSON.stringify(JSON.stringify({ router: true, hostHeight: "800px" }))});
+      const { useChatStore } = await import('/src/stores/useChatStore.ts');
+      const chat = useChatStore();
+      chat.conversations = Array.from({ length: 40 }, (_, i) => ({
+        id: 'c' + i, kind: i % 3 ? 'single' : 'group', name: '联系人 ' + (i + 1), avatar: null,
+        last_msg: '第 ' + (i + 1) + ' 条预览', last_ts: 1700000000000 - i * 1000, unread: 0, pinned: false,
+      }));
+      chat.messages['c0'] = Array.from({ length: 12 }, (_, i) => ({
+        id: 'm' + i, conv_id: 'c0', sender_id: i % 2 ? 'c0' : 'self', kind: 'text',
+        text: '第 ' + (i + 1) + ' 条消息', ts: 1700000000000 + i * 1000, status: 'sent', media: null,
+      }));
+      chat.activeConv = 'c0';
+      const R = await import('/src/router/main.ts');
+      await R.mainRouter.push({ name: 'conversation', params: { convId: 'c0' } });
+      await new Promise((r) => setTimeout(r, 600));
+    })()`);
+    await sleep(700);
+  };
+
+  const MEASURE = `
+    const host = document.getElementById('probe-host');
+    const asides = host ? [...host.querySelectorAll('aside')] : [];
+    const aside = asides.filter((a) => a.getBoundingClientRect().width > 100)[0] || asides[0] || null;
+    const scHost = aside ? aside.querySelector('.gosslan-os') : null;
+    const sc = scHost ? scHost.querySelector('[data-overlayscrollbars-viewport]') : null;
+    const bar = scHost ? scHost.querySelector('.os-scrollbar-vertical') : null;
+    const handle = bar ? bar.querySelector('.os-scrollbar-handle') : null;
+    const track = bar ? bar.querySelector('.os-scrollbar-track') : null;
+    // 有效可见性：算上祖先的 opacity 0 / visibility hidden（滚动条整体淡出就是靠这两样）。
+    const vis = (el) => {
+      if (!el) return null;
+      if (typeof el.checkVisibility === 'function') {
+        return el.checkVisibility({ opacityProperty: true, visibilityProperty: true });
+      }
+      const cs = getComputedStyle(el);
+      return cs.opacity !== '0' && cs.visibility !== 'hidden';
+    };
+    const rows = scHost ? [...scHost.querySelectorAll('button, a, [class*="hover:bg"]')] : [];
+    const row = rows.find((r) => r.getBoundingClientRect().width > 40) || null;
+    const rr = row ? row.getBoundingClientRect() : null;
+    const scr = sc ? sc.getBoundingClientRect() : null;
+    return {
+      hasContainer: !!scHost,
+      barOpacity: bar ? getComputedStyle(bar).opacity : null,
+      barVisibility: bar ? getComputedStyle(bar).visibility : null,
+      barVisible: vis(bar),
+      handleVisible: vis(handle),
+      trackVisible: vis(track),
+      barVisibleClass: bar ? bar.classList.contains('os-scrollbar-visible') : null,
+      viewportClientW: sc ? sc.clientWidth : null,
+      viewportScrollW: sc ? sc.scrollWidth : null,
+      rowRight: rr ? +rr.right.toFixed(2) : null,
+      viewportRight: scr ? +scr.right.toFixed(2) : null,
+    };`;
+
+  try {
+    await bootLayout();
+    await sleep(400);
+
+    // ① 静止态：整条滚动条不可感知
+    const idle = await page(MEASURE);
+    out.idle = idle;
+    check("统一滚动容器：静止态轨道完全不可见（整条滚动条不可感知）",
+      !!idle.hasContainer && idle.barVisible === false && idle.barOpacity === "0",
+      "barVisible=false 且 opacity=0",
+      JSON.stringify(idle));
+    check("统一滚动容器：idle 拇指不可见",
+      !!idle.hasContainer && idle.handleVisible === false,
+      "handleVisible=false（连祖先的淡出都算进去）",
+      JSON.stringify(idle));
+
+    // ③ 指针移入容器 ⇒ 出现
+    const listBox = await page(`
+      const host = document.getElementById('probe-host');
+      const asides = host ? [...host.querySelectorAll('aside')] : [];
+      const aside = asides.filter((a) => a.getBoundingClientRect().width > 100)[0] || asides[0] || null;
+      const scHost = aside ? aside.querySelector('.gosslan-os') : null;
+      const sc = scHost ? scHost.querySelector('[data-overlayscrollbars-viewport]') : null;
+      if (!sc) return null;
+      const r = sc.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };`);
+    out.hoverPoint = listBox;
+    if (listBox) {
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: listBox.x, y: listBox.y });
+      await sleep(350);
+    }
+    const hovered = await page(MEASURE);
+    out.hovered = hovered;
+    check("统一滚动容器：指针移入容器后滚动条出现",
+      !!hovered.hasContainer && hovered.barVisible === true && hovered.barVisibleClass === true,
+      "barVisible=true 且带 os-scrollbar-visible 类",
+      JSON.stringify(hovered));
+
+    // ④ 出现时内容不位移（true overlay 不占布局宽度）
+    const widthSame = !!idle.viewportClientW && !!hovered.viewportClientW
+      && idle.viewportClientW === hovered.viewportClientW;
+    const rowSame = idle.rowRight != null && hovered.rowRight != null
+      && Math.abs(idle.rowRight - hovered.rowRight) < 0.5;
+    out.noShift = { widthSame, rowSame, idleW: idle.viewportClientW, hoverW: hovered.viewportClientW,
+      idleRow: idle.rowRight, hoverRow: hovered.rowRight };
+    check("统一滚动容器：滚动条出现时内容不位移（不占布局宽度）",
+      widthSame && rowSame,
+      "视口宽度逐像素不变 且 内容右缘不变",
+      JSON.stringify(out.noShift));
+
+    // 反例自证：把滑块强行改成常显 ⇒ ①② 必须读成"可见"（尺子能被打红）
+    const forced = await page(`
+      const host = document.getElementById('probe-host');
+      const asides = host ? [...host.querySelectorAll('aside')] : [];
+      const aside = asides.filter((a) => a.getBoundingClientRect().width > 100)[0] || asides[0] || null;
+      const bar = aside ? aside.querySelector('.os-scrollbar-vertical') : null;
+      if (!bar) return { ok: false };
+      bar.classList.remove('os-scrollbar-auto-hide-hidden');
+      bar.style.opacity = '1';
+      bar.style.visibility = 'visible';
+      const handle = bar.querySelector('.os-scrollbar-handle');
+      const vis = (el) => {
+        if (!el) return null;
+        if (typeof el.checkVisibility === 'function') {
+          return el.checkVisibility({ opacityProperty: true, visibilityProperty: true });
+        }
+        const cs = getComputedStyle(el);
+        return cs.opacity !== '0' && cs.visibility !== 'hidden';
+      };
+      return { ok: true, barVisible: vis(bar), handleVisible: vis(handle) };`);
+    out.forced = forced;
+    check("反例自证：把滑块改成常显后，①② 必须读成可见（尺子不是空转）",
+      !!forced.ok && forced.barVisible === true && forced.handleVisible === true,
+      "常显后 barVisible/handleVisible 均为 true",
+      JSON.stringify(forced));
+  } catch (e) {
+    check("统一滚动容器段：探针自己跑完了（没在半路抛错）", false, "正常结束", String(e));
+  } finally {
+    fs.writeFileSync(outFile, JSON.stringify(out, null, 2));
+  }
+}
+
 async function runListMetrics(cdp, url) {
   const outFile = path.join(ROOT, "test-results", "list-metrics.json");
   fs.mkdirSync(path.dirname(outFile), { recursive: true });
@@ -19577,15 +19836,23 @@ async function runListMetrics(cdp, url) {
     // 页面上有两个 <aside>：NavRail(64) 与左列列表。取宽的那一个（宽度 > 100）。
     const asides = host ? [...host.querySelectorAll('aside')] : [];
     const aside = asides.filter((a) => a.getBoundingClientRect().width > 100)[0] || asides[0] || null;
-    const sc = aside ? aside.querySelector('.scrollbar-both, .gosslan-scroll') : null;
+    // 统一滚动容器时代：滚动的是 OS 建的 viewport；"滚动条带"是 overlay 滑块自己。
+    const scHost = aside ? (aside.querySelector('.gosslan-os') || aside.querySelector('.scrollbar-both, .gosslan-scroll')) : null;
+    const sc = scHost ? (scHost.querySelector('[data-overlayscrollbars-viewport]') || scHost) : null;
+    const bar = scHost ? scHost.querySelector('.os-scrollbar-vertical') : null;
     const handles = host ? [...host.querySelectorAll('div')].filter((d) => {
       const s = getComputedStyle(d);
       return s.cursor === 'col-resize' && d.getBoundingClientRect().width > 0 && d.offsetParent !== null;
     }) : [];
     const hd = handles[0] || null;
     const scR = rect(sc);
-    const sbw = sc ? sc.offsetWidth - sc.clientWidth : 0;
-    const band = scR ? { l: +(scR.r - sbw).toFixed(1), r: scR.r, t: scR.t, b: scR.b } : null;
+    const barR = rect(bar);
+    const thumb = bar ? bar.querySelector('.os-scrollbar-handle') : null;
+    const thumbR = rect(thumb);
+    // overlay 滑块宽 = OS 的 --os-size（10px）；未迁移的容器仍按原生带算（offsetWidth-clientWidth）。
+    const sbw = barR ? barR.w : (sc ? sc.offsetWidth - sc.clientWidth : 0);
+    const band = barR ? { l: barR.l, r: barR.r, t: barR.t, b: barR.b }
+                      : (scR ? { l: +(scR.r - sbw).toFixed(1), r: scR.r, t: scR.t, b: scR.b } : null);
     const hR = rect(hd);
     const ov = (a, b2) => (a && b2) ? Math.max(0, +(Math.min(a.r, b2.r) - Math.max(a.l, b2.l)).toFixed(1)) : 0;
     const ovY = (a, b2) => (a && b2) ? Math.max(0, +(Math.min(a.b, b2.b) - Math.max(a.t, b2.t)).toFixed(1)) : 0;
@@ -19595,19 +19862,21 @@ async function runListMetrics(cdp, url) {
       return {
         tag: e.tagName,
         isHandle: !!hd && (e === hd || hd.contains(e)),
-        inScroller: !!sc && (e === sc || sc.contains(e)),
+        inScroller: !!scHost && (e === scHost || scHost.contains(e) || (!!sc && (e === sc || sc.contains(e)))),
         cls: String(e.className || '').slice(0, 60),
       };
     };
     const midY = scR ? (scR.t + scR.b) / 2 : 0;
     return {
       aside: rect(aside), scroller: scR, sbw,
-      band, handle: hR,
+      band, handle: hR, thumb: thumbR,
       overlapX: ov(hR, band), overlapY: ovY(hR, band),
       hitBandCenter: band ? at(band.l + sbw / 2, midY) : null,
       hitBandEdge: band ? at(band.r - 1, midY) : null,
       listW: aside ? Math.round(aside.getBoundingClientRect().width) : 0,
       scrollTop: sc ? Math.round(sc.scrollTop) : 0,
+      scrollHeight: sc ? sc.scrollHeight : 0,
+      clientHeight: sc ? sc.clientHeight : 0,
     };`;
 
   const MEASURE_PANEL = `
@@ -19735,29 +20004,65 @@ async function runListMetrics(cdp, url) {
     const b = out.before;
     check("分栏把手命中矩形不覆盖左列滚动条带（重叠宽度必须为 0）",
       b.sbw > 0 && b.overlapX === 0,
-      "sbw>0 且 overlapX=0（纵向重叠是设计使然，不算）",
+      "sbw>0（overlay 滑块 10px）且 overlapX=0（纵向重叠是设计使然，不算）",
       `sbw=${b.sbw} overlapX=${b.overlapX} handle=${JSON.stringify(b.handle)} band=${JSON.stringify(b.band)}`);
     check("滚动条最右一列像素归滚动容器（把手不许盖住它）",
       !!b.hitBandEdge && b.hitBandEdge.inScroller === true && b.hitBandEdge.isHandle === false,
-      "elementFromPoint(带最右缘) 落在滚动容器内且不是把手",
+      "elementFromPoint(带最右缘) 落在滚动容器内且不是把手（overlay 滑块隐藏时那里是列表内容，仍归容器）",
       JSON.stringify(b.hitBandEdge));
 
-    // 滚动条上按下：原生翻页必须生效（scrollTop 变化）
+    // 滚动条上按下：翻页必须生效（scrollTop 变化）。
+    // ⚠️ overlay 滑块默认**隐藏**（idle 隐藏是产品口径）⇒ 这一下必须先让指针在容器内移动把它唤出来，
+    //    否则点下去落在列表内容上，"点轨道翻页"这一格就没有被测到（2026-11-20 迁移时踩过）。
     const bandCx = b.band ? b.band.l + b.sbw / 2 : 0;
-    const bandCy = b.band ? (b.band.t + b.band.b) / 2 : 0;
+    // 点轨道的位置 = **滑块下方**那一段（滑块可能很长，轨道正中可能正好落在滑块上 ⇒ 点下去是拖拽，不是翻页）。
+    const thumbBottom = b.thumb ? b.thumb.b : 0;
+    const bandCy = b.band
+      ? Math.min(b.band.b - 8, thumbBottom > 0 ? thumbBottom + 8 : (b.band.t + b.band.b) / 2)
+      : 0;
     const top0 = b.scrollTop;
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: bandCx, y: bandCy });
+    await sleep(250);
+    const barVisible = await cdp.eval(`(() => {
+      const bar = document.querySelector('#probe-host aside .os-scrollbar-vertical');
+      if (!bar) return { found: false };
+      const cs = getComputedStyle(bar);
+      const e = document.elementFromPoint(${bandCx}, ${bandCy});
+      const handle = bar.querySelector('.os-scrollbar-handle');
+      const hb = handle ? handle.getBoundingClientRect() : null;
+      return { found: true, opacity: cs.opacity, visibility: cs.visibility,
+        visible: bar.classList.contains('os-scrollbar-visible'),
+        hit: e ? String(e.className || e.tagName) : null,
+        hitTag: e ? e.tagName : null,
+        handle: hb ? { t: +hb.top.toFixed(1), b: +hb.bottom.toFixed(1), h: +hb.height.toFixed(1) } : null,
+        clickAt: { x: ${bandCx}, y: ${bandCy} },
+        barRect: (() => { const r = bar.getBoundingClientRect(); return { l: +r.left.toFixed(1), t: +r.top.toFixed(1), w: +r.width.toFixed(1), h: +r.height.toFixed(1) }; })() };
+    })()`);
+    out.barVisible = barVisible;
     await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: bandCx, y: bandCy, button: "left", clickCount: 1 });
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: bandCx, y: bandCy, button: "left", clickCount: 1 });
-    await sleep(400);
-    const top1 = await cdp.eval(`(() => {
-      const sc = document.querySelector('#probe-host aside .scrollbar-both, #probe-host aside .gosslan-scroll');
-      return sc ? Math.round(sc.scrollTop) : 0;
-    })()`);
-    out.scrollbarClick = { before: top0, after: top1 };
+    await sleep(500);
+    // 读回滚动元素：**从滑块自己的宿主反查**（页面上有两个 aside：NavRail 与左列列表，
+    // `#probe-host aside` 命中的是前者 ⇒ 读数永远是 null，2026-11-20 实测踩过）。
+    const readAsideTop = `(() => {
+      const bar = document.querySelector('#probe-host aside .os-scrollbar-vertical');
+      const host = bar ? bar.closest('.gosslan-os') : null;
+      const sc = host ? host.querySelector('[data-overlayscrollbars-viewport]') : null;
+      return sc ? Math.round(sc.scrollTop) : -1;
+    })()`;
+    const tops = [];
+    for (const w of [0, 60, 200, 600]) {
+      await sleep(w);
+      tops.push(await cdp.eval(readAsideTop));
+    }
+    // 合成 PointerEvent 路径（与 CDP 输入管线对照）
+
+    const top1 = tops[tops.length - 1];
+    out.scrollbarClick = { before: top0, after: top1, tops: tops };
     check("在滚动条上按下能滚动左列（这一下没有被把手抢走）",
       top1 > top0,
-      "点击滚动条轨道后 scrollTop 增大",
-      JSON.stringify(out.scrollbarClick));
+      "点击滚动条轨道后 scrollTop 增大（滑块先被唤出，再点轨道）",
+      JSON.stringify({ ...out.scrollbarClick, barVisible: out.barVisible }));
 
     // 把手上按下 + 拖动：listW 必须跟着变，且拖动期间 body 光标是 col-resize
     const hx = b.handle ? (b.handle.l + b.handle.r) / 2 : 0;
@@ -20173,7 +20478,10 @@ async function runDiag(cdp, url) {
   // ⑤ 一页只有一层滚动条：内容里除弹窗壳外，不许再有第二个能滚的容器。
   //    先确认壳自己确实在滚 —— 否则内容没溢出时"内层也没滚"是量空气。
   const scroll = await cdp.eval(`(() => {
-    const shell = document.querySelector('.gosslan-scroll');
+    const shellHost = document.querySelector('.gosslan-scroll');
+    const shell = shellHost
+      ? (shellHost.querySelector('[data-overlayscrollbars-viewport]') || shellHost)
+      : null;
     if (!shell) return { shell: false };
     const inner = [...shell.querySelectorAll('*')].filter((el) => {
       const s = getComputedStyle(el);
@@ -22187,6 +22495,26 @@ async function runSettingsMobile(cdp, url) {
     const mounted = await cdp.eval("window.__probe.install('/src/components/SettingsPanel.vue', '', "
       + JSON.stringify(JSON.stringify({ open: true, isolated: true })) + ")");
     await sleep(600);
+    // 【临时诊断】设置页左缘对齐：把每一层的左缘都量出来
+    const indent = await cdp.eval(`(() => {
+      const L = (el) => el ? Math.round(el.getBoundingClientRect().left * 100) / 100 : null;
+      const sc = document.querySelector('[data-settings-scroll]');
+      const cs = sc ? getComputedStyle(sc) : null;
+      const caption = document.querySelector('.settings-group-caption');
+      const row = document.querySelector('.settings-card-row');
+      const card = document.querySelector('[data-settings-rows]');
+      const header = document.querySelector('header');
+      const titles = [...document.querySelectorAll('h1,h2,h3')].map((h) => ({ t: (h.innerText||'').slice(0,10), l: L(h) }));
+      return {
+        scroller: { left: L(sc), padL: cs ? cs.paddingLeft : null, gutter: cs ? cs.scrollbarGutter : null },
+        caption: { left: L(caption), padL: caption ? getComputedStyle(caption).paddingLeft : null, text: caption ? (caption.innerText||'').slice(0,8) : null },
+        card: { left: L(card) },
+        row: { left: L(row), padL: row ? getComputedStyle(row).paddingLeft : null, text: row ? (row.innerText||'').slice(0,10) : null },
+        header: { left: L(header), padL: header ? getComputedStyle(header).paddingLeft : null },
+        titles,
+      };
+    })()`);
+    console.log("  · 【临时诊断】设置页左缘：" + JSON.stringify(indent));
     const read = () => cdp.eval(`(() => {
       const buttons = [...document.querySelectorAll('button')].filter((b) => b.getClientRects().length > 0);
       const outside = buttons.filter((b) => {
@@ -22810,7 +23138,7 @@ async function runScrollReact(cdp, url) {
     app.mount(host);
     await V.nextTick(); await V.nextTick();
     await new Promise((r) => setTimeout(r, 300));
-    const el = host.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller(host);
     if (!el) return { ok: false };
     el.scrollTop = el.scrollHeight;
     await new Promise((r) => requestAnimationFrame(() => r()));
@@ -22829,8 +23157,8 @@ async function runScrollReact(cdp, url) {
   const sample = (mutation) => cdp.eval(`(async () => {
     const V = window.__probe.vue;
     const host = document.getElementById('sr-host');
-    const el = host.querySelector('.vlist-no-anchor');
-    const pin = () => el && el.__vueParentComponent ? el.__vueParentComponent.setupState.pinned : null;
+    const el = window.__probe.scroller(host);
+    const pin = () => { const inst = window.__probe.vlistInstance(host); return inst ? inst.setupState.pinned : null; };
     const pins = { before: pin() };
     ${mutation}
     await V.nextTick();
@@ -22880,7 +23208,7 @@ async function runScrollReact(cdp, url) {
   const away = await cdp.eval(`(async () => {
     const V = window.__probe.vue;
     const host = document.getElementById('sr-host');
-    const el = host.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller(host);
     window.__sr.heights = Array.from({ length: 10 }, () => 100);
     await V.nextTick(); await V.nextTick();
     el.scrollTop = 200;
@@ -22902,7 +23230,7 @@ async function runScrollReact(cdp, url) {
       await new Promise((r) => requestAnimationFrame(() => r()));
     }
     const after = ref ? ref.getBoundingClientRect().top : null;
-    const el = host.querySelector('.vlist-no-anchor');
+    const el = window.__probe.scroller(host);
     return { after, top: el.scrollTop };
   })()`);
   const shifted = away && away.before !== null && awayAfter && awayAfter.after !== null
@@ -29959,16 +30287,19 @@ async function runScrollStable(cdp, url) {
 
   /** 读"右栏滚动容器"的几何：内容盒宽、卡片 x、文字起始 x、以及滚动条自身宽度。 */
   const READ = `(() => {
-    const s = [...document.querySelectorAll('div')].find((el) => {
+    // 2026-11-20：滚动容器已统一走 <OverlayScroll> ⇒ 真正在滚的是 OS 建的 **viewport**，
+    // 组件根（host）自己不滚。旧口径按「gosslan-scroll + overflow-y-*」找容器 ⇒ 找不到就读成 null，
+    // 整段静默空转（2026-11-20 实测：读数全是 null）。
+    const host = [...document.querySelectorAll('div')].find((el) => {
       const c = String(el.className || '');
-      const isPanelScroll = c.includes('gosslan-scroll') || c.includes('scrollbar-both');
-      // 2026-11-07：设置窗口的滚动容器改成**常驻轨道**（overflow-y-scroll）之后，
-      // 这里必须两种都认；只认 auto 会让整段找不到容器 ⇒ 静默空转。
-      const hasScroll = c.includes('overflow-y-auto') || c.includes('overflow-y-scroll');
-      return isPanelScroll && hasScroll && el.getClientRects().length > 0;
+      const isPanelScroll = c.includes('gosslan-scroll') || c.includes('gosslan-os');
+      return isPanelScroll && el.getClientRects().length > 0;
     });
-    if (!s) return null;
+    if (!host) return null;
+    const vp = host.querySelector('[data-overlayscrollbars-viewport]');
+    const s = vp || host;
     const cs = getComputedStyle(s);
+    const hostCs = getComputedStyle(host);
     const rectOf = (el) => { if (!el) return null; const b = el.getBoundingClientRect();
       return { x: +b.x.toFixed(2), w: +b.width.toFixed(2), r: +b.right.toFixed(2) }; };
     const visible = [...s.querySelectorAll('*')].filter((el) => el.getClientRects().length > 0);
@@ -29981,90 +30312,67 @@ async function runScrollStable(cdp, url) {
       if (!/^(span|p|h2|label)$/.test(tag)) return false;
       return (el.textContent || '').trim().length > 0 && !el.children.length;
     });
+    // OS 滑块带（overlay）：它是**浮在内容上**的，不占布局宽度 ⇒ barW（原生带）恒为 0。
+    const osBar = host.querySelector('.os-scrollbar-vertical');
+    const osBarR = osBar ? osBar.getBoundingClientRect() : null;
     return {
-      gutter: cs.scrollbarGutter,
+      isOs: !!vp,
+      gutter: hostCs.scrollbarGutter,
       overflowY: cs.overflowY,
       padL: cs.paddingLeft, padR: cs.paddingRight,
+      hostPadL: hostCs.paddingLeft, hostPadR: hostCs.paddingRight,
       offW: +s.offsetWidth.toFixed(2), clientW: +s.clientWidth.toFixed(2),
       barW: +(s.offsetWidth - s.clientWidth).toFixed(2),
+      osBandW: osBarR ? +osBarR.width.toFixed(2) : null,
       scrollH: s.scrollHeight, clientH: s.clientHeight,
       canScroll: s.scrollHeight > s.clientHeight + 1,
+      // 内容盒宽 = 视口宽 − 左右 padding（**不是** clientWidth：padding 正是"车道/留白"，
+      // OS 把它搬进视口，内容盒才是内容真正能用的宽度）。
+      contentW: +(s.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0)).toFixed(2),
       card: rectOf(card), text: rectOf(textEl),
       // 标题（header h2）走 px-[var(--gosslan-scroll-inset)]，是内容页"那条竖线"的基准；
       // 卡片的左右缘必须与它逐像素相等 —— 这才是用户说的"看起来一致"。
-      header: rectOf(s.parentElement ? s.parentElement.querySelector('h2') : null),
+      // ⚠️ 标题是滚动容器的**兄弟**（在同一列里），所以要从**宿主**的父级找，不是视口的父级。
+      header: rectOf(host.parentElement ? host.parentElement.querySelector('h2') : null),
       textTxt: textEl ? (textEl.textContent || '').trim().slice(0, 16) : null,
     };
   })()`;
 
-  /** 合成夹具：同一组规范类，内容高 = 可滚 / 不可滚两档，量内容盒宽与居中偏移。 */
+  /**
+   * 合成夹具（统一容器口径，2026-11-20 迁移）：
+   *
+   * 旧口径量的是**原生 gutter**（`scrollbar-both` 两侧各 8px），gutter 退役后这套读数恒为 0。
+   * 新口径量两件事：
+   *   ① 真实内容页容器（.gosslan-scroll）的**内容缩进**：左右各 16px（= --gosslan-scroll-inset）；
+   *   ② **车道**：给宿主加 8px 右内边距后，内容盒必须真的窄 8px（滑块浮在车道里、不压内容）。
+   */
   const CANON = `(() => {
-    const mk = (id, tall, gutter) => {
-      const wrap = document.createElement('div');
-      wrap.setAttribute('data-canon', id);
-      wrap.style.cssText = 'position:fixed;left:0;top:0;width:320px;height:180px;';
-      const s = document.createElement('div');
-      s.className = 'overflow-y-auto scrollbar-both';
-      s.style.cssText = 'box-sizing:border-box;width:320px;height:180px;padding:0 20px;background:#fff;';
-      if (gutter) s.style.scrollbarGutter = gutter;
-      const inner = document.createElement('div');
-      inner.style.height = tall ? '900px' : '60px';
-      inner.textContent = id;
-      s.appendChild(inner);
-      wrap.appendChild(s);
-      document.body.appendChild(wrap);
-      const cs = getComputedStyle(s);
-      return {
-        id,
-        gutter: cs.scrollbarGutter,
-        clientW: +s.clientWidth.toFixed(2),
-        barW: +(s.offsetWidth - s.clientWidth).toFixed(2),
-        innerW: +inner.getBoundingClientRect().width.toFixed(2),
-        innerX: +inner.getBoundingClientRect().x.toFixed(2),
-        canScroll: s.scrollHeight > s.clientHeight + 1,
-      };
+    const host = [...document.querySelectorAll('div')].find((el) => {
+      const c = String(el.className || '');
+      return (c.includes('gosslan-scroll') || c.includes('gosslan-os')) && el.getClientRects().length > 0;
+    });
+    if (!host) return null;
+    const vp = host.querySelector('[data-overlayscrollbars-viewport]') || host;
+    const cs = getComputedStyle(vp);
+    const hostCs = getComputedStyle(host);
+    // 内容盒宽 = 视口宽 − 左右 padding（padding 就是"车道/留白"；display:contents 的包裹层没有盒子，量不到）
+    const contentW = () => +(vp.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0)).toFixed(2);
+    const before = { clientW: vp.clientWidth, contentW: contentW() };
+    // 加 8px 车道（视口右内边距）⇒ 内容盒必须真的窄 8px。
+    // ⚠️ 改**视口**而不是宿主：OS 只在初始化时把宿主 padding 搬进视口，
+    //    运行时改宿主的 padding 不会被重读（那样量到的是"视口变宽"，不是内容变窄）。
+    const prevPad = vp.style.paddingRight;
+    vp.style.paddingRight = ((parseFloat(cs.paddingRight) || 0) + 8) + 'px';
+    const after = { clientW: vp.clientWidth, contentW: contentW() };
+    vp.style.paddingRight = prevPad;
+    return {
+      isOs: !!host.querySelector('[data-overlayscrollbars-viewport]'),
+      padL: +(parseFloat(cs.paddingLeft) || 0).toFixed(2),
+      padR: +(parseFloat(cs.paddingRight) || 0).toFixed(2),
+      hostPadR: +(parseFloat(hostCs.paddingRight) || 0).toFixed(2),
+      laneDeltaW: +(before.contentW - after.contentW).toFixed(2),
+      before, after,
     };
-    const a = mk('tall', true, '');
-    const b = mk('short', false, '');
-    const c = mk('short-auto', false, 'auto');
-    const d = mk('tall-auto', true, 'auto');
-    // ⑤ .gosslan-scroll（14 个内容页统一消费的那一档）：量「控件右缘 ↔ 滚动条带左缘」的固定空隙，
-    //    并当场把 padding-inline 清零，证明这条读数有牙（0 与 8 是可区分的两个数）。
-    const mkG = () => {
-      const wrap = document.createElement('div');
-      wrap.setAttribute('data-canon', 'gosslan');
-      wrap.style.cssText = 'position:fixed;left:0;top:200px;width:320px;height:180px;';
-      const s = document.createElement('div');
-      s.className = 'gosslan-scroll overflow-y-auto';
-      s.style.cssText = 'box-sizing:border-box;width:320px;height:180px;background:#fff;';
-      const inner = document.createElement('div');
-      inner.style.height = '900px';
-      s.appendChild(inner);
-      wrap.appendChild(s);
-      document.body.appendChild(wrap);
-      const cs = getComputedStyle(s);
-      const sr = s.getBoundingClientRect();
-      const barW = +(s.offsetWidth - s.clientWidth).toFixed(2); // both-edges ⇒ 两侧合计
-      const trackW = barW / 2;
-      const gap = () => +(sr.right - trackW - inner.getBoundingClientRect().right).toFixed(2);
-      const gapL = () => +(inner.getBoundingClientRect().left - sr.left - trackW).toFixed(2);
-      const withPad = { gapR: gap(), gapL: gapL() };
-      s.style.paddingInline = '0px';
-      const noPad = { gapR: gap(), gapL: gapL() };
-      s.style.paddingInline = '';
-      return {
-        id: 'gosslan',
-        padL: +(parseFloat(cs.paddingLeft) || 0).toFixed(2),
-        padR: +(parseFloat(cs.paddingRight) || 0).toFixed(2),
-        barW, trackW: +trackW.toFixed(2),
-        gapR: withPad.gapR, gapL: withPad.gapL,
-        noPadR: noPad.gapR,
-      };
-    };
-    const g = mkG();
-    // 只拆自己建的五个 wrap（绝不许动 #probe-host —— 里面挂着设置窗口）
-    for (const el of [...document.querySelectorAll('[data-canon]')]) el.remove();
-    return { a, b, c, d, g };
   })()`;
 
   const nav = async (key) => {
@@ -30127,43 +30435,96 @@ async function runScrollStable(cdp, url) {
       await nav("network");
       await setHeight(700);
       const net = await cdp.eval(READ);
-      // ② 反面对照：回到"不滚"那一档（关于 @700），把预留策略改成 auto。
-      const setGutter = async (v) => cdp.eval(`(() => {
-        const s = [...document.querySelectorAll('div')].find((el) => {
-          const c = String(el.className || '');
-          const isPanelScroll = c.includes('gosslan-scroll') || c.includes('scrollbar-both');
-          const hasScroll = c.includes('overflow-y-auto') || c.includes('overflow-y-scroll');
-          return isPanelScroll && hasScroll && el.getClientRects().length > 0;
-        });
-        if (s) s.style.scrollbarGutter = ${JSON.stringify(v)};
-        return !!s;
+    // 拖到底必须真的能到底（用户 2026-11-20 报：「设置里面的滚动条拉不到底部」）。
+    // 判据：滚到 scrollTop=max 之后，内容末尾必须在视口的可视范围内（不能差一截）。
+    // 模拟「内容异步变高」（设置页的真实数据是后到的）：往内容里塞一段 2000px。
+    // 滑块的行程必须跟着长 —— OS 靠**内容盒**测高度；包裹层若是 display:contents 的 0×0 盒子，
+    // OS 永远测不到 ⇒ 滑块行程停在旧值 ⇒「拖到底也到不了底」（用户 2026-11-20 实测）。
+    const reach = await cdp.eval(`(async () => {
+      const host = [...document.querySelectorAll('div')].find((el) => {
+        const c = String(el.className || '');
+        return (c.includes('gosslan-scroll') || c.includes('gosslan-os')) && el.getClientRects().length > 0;
+      });
+      if (!host) return { ok: false, why: 'no host' };
+      const vp = host.querySelector('[data-overlayscrollbars-viewport]');
+      if (!vp) return { ok: false, why: 'no viewport' };
+      const grow = document.createElement('div');
+      grow.setAttribute('data-probe-grow', '1');
+      grow.style.cssText = 'height:2000px;background:transparent;';
+      vp.appendChild(grow);
+      await new Promise((r) => setTimeout(r, 500));
+      const max = vp.scrollHeight - vp.clientHeight;
+      vp.scrollTop = max;
+      await new Promise((r) => setTimeout(r, 200));
+      const r = vp.getBoundingClientRect();
+      const cs = getComputedStyle(vp);
+      const gr = grow.getBoundingClientRect();
+      const res = {
+        ok: true, max, scrollTop: Math.round(vp.scrollTop),
+        vpH: +r.height.toFixed(1), vpBottom: +r.bottom.toFixed(1),
+        growBottom: +gr.bottom.toFixed(1),
+        padB: cs.paddingBottom, overflowY: cs.overflowY,
+        gapToBottom: +(gr.bottom - r.bottom).toFixed(1),
+      };
+      grow.remove();
+      await new Promise((r2) => setTimeout(r2, 200));
+      return res;
+    })()`);
+    console.log("  · 拉到底读数（注入 2000px 后）：" + JSON.stringify(reach));
+    check("设置窗口：内容变高后滚动条行程跟得上（拖到底必须真的到底）",
+      !!reach.ok && reach.max >= 2000 && reach.gapToBottom !== null && reach.gapToBottom <= 1,
+      "可滚距离必须覆盖注入的 2000px（>= 2000），且滚到底时内容末尾与视口下沿的差 <= 1px",
+      JSON.stringify(reach));
+
+
+      // ② 反面对照 ①：把统一容器的类名摘掉（退化成普通 div）⇒ 页面里不该再有 OS 视口。
+      //    这条证明上面那些"读数"读的是**统一容器**，不是随便一个 div。
+      // 反面对照 ①：合成一个**只有 gosslan-scroll 类、没有 OS 视口**的普通 div（不动真页面），
+      //   同一套读取逻辑必须读成 isOs=false ⇒ 证明上面那些读数读的是统一容器，不是随便一个 div。
+      const counter = await cdp.eval(`(() => {
+        const probe = document.createElement('div');
+        probe.className = 'gosslan-scroll';
+        probe.style.cssText = 'position:fixed;left:-9999px;top:0;width:320px;height:180px;';
+        document.body.appendChild(probe);
+        const vp = probe.querySelector('[data-overlayscrollbars-viewport]');
+        const res = { isOs: !!vp };
+        probe.remove();
+        return res;
       })()`);
-      await nav("about");
-      await setHeight(700);
-      await setGutter("auto");
-      const counter = await cdp.eval(READ);
-      await setGutter("");
-      await setHeight(TALL_H);
-      // 反面对照 ②：把"常驻轨道"改回 `auto`。Chromium 里 auto+stable both-edges 的几何与 scroll
-      // 完全相同（这正是这条 bug 在 Chromium 上看不出来的原因），所以这里只能证明**读数跟着
-      // 真实 computed 值走**：改回 auto 后 overflowY 必须真的读成 auto，否则那条判据读的是常量。
-      const setOverflowY = async (v) => cdp.eval(`(() => {
-        const s = [...document.querySelectorAll('div')].find((el) => {
+      // 反面对照 ②：给宿主加 8px 车道（padding-right）⇒ 内容盒必须真的窄 8px。
+      // ⚠️ 改**视口自己的** padding：OS 只在初始化时把宿主 padding 搬进视口，
+      // 运行时改宿主 padding 不会被重读（探针实测：内容盒没动，视口反而变宽）。
+      // ⚠️ 还原必须回到**原来的内联值**：每次都按"当前 computed + delta"算的话，
+      //    还原那一轮会把 8px 再叠回去（探针实测：还原后内容盒还是窄 8px ⇒ 后面几轮全被带偏）。
+      const laneOrig = await cdp.eval(`(() => {
+        const host = [...document.querySelectorAll('div')].find((el) => {
           const c = String(el.className || '');
-          const hasScroll = c.includes('overflow-y-auto') || c.includes('overflow-y-scroll');
-          return (c.includes('gosslan-scroll') || c.includes('scrollbar-both')) && hasScroll
-            && el.getClientRects().length > 0;
+          return (c.includes('gosslan-scroll') || c.includes('gosslan-os')) && el.getClientRects().length > 0;
         });
-        if (s) s.style.overflowY = ${JSON.stringify(v)};
-        return !!s;
+        const vp = host ? host.querySelector('[data-overlayscrollbars-viewport]') : null;
+        return vp ? vp.style.paddingRight : '';
       })()`);
-      await setOverflowY("auto");
+      const setLane = async (delta) => cdp.eval(`(() => {
+        const host = [...document.querySelectorAll('div')].find((el) => {
+          const c = String(el.className || '');
+          return (c.includes('gosslan-scroll') || c.includes('gosslan-os')) && el.getClientRects().length > 0;
+        });
+        if (!host) return false;
+        const vp = host.querySelector('[data-overlayscrollbars-viewport]');
+        if (!vp) return false;
+        const delta = Number(${JSON.stringify(delta)});
+        if (delta === 0) { vp.style.paddingRight = ${JSON.stringify(laneOrig)}; return true; }
+        const base = parseFloat(getComputedStyle(vp).paddingRight) || 0;
+        vp.style.paddingRight = (base + delta) + 'px';
+        return true;
+      })()`);
+      await setLane(8);
+      await sleep(400);
       const overflowAuto = await cdp.eval(READ);
-      await setOverflowY("");
+      await setLane(0);
+      await sleep(400);
       await setHeight(TALL_H);
-      const counterDeltaW = (about && counter && typeof about.clientW === "number"
-        && typeof counter.clientW === "number") ? +(about.clientW - counter.clientW).toFixed(2) : null;
-      rows.push({ dark, gen, about, net, counter, counterDeltaW, overflowAuto });
+      rows.push({ dark, gen, about, net, counter, overflowAuto });
 
       // 截图各取"该档真实样子"：通用 700（滚动条在）、关于 2200（内容不滚，但轨道常驻）。
       await nav("general");
@@ -30192,10 +30553,7 @@ async function runScrollStable(cdp, url) {
         cardX: [r.net?.card?.x, r.about?.card?.x],
         cardR: [r.net?.card?.r, r.about?.card?.r],
       },
-      counter: r.counter ? {
-        canScroll: r.counter.canScroll, barW: r.counter.barW, gutter: r.counter.gutter,
-        deltaW: r.counterDeltaW,
-      } : null,
+      counter: r.counter ? { isOs: r.counter.isOs, canScroll: r.counter.canScroll, barW: r.counter.barW } : null,
       overflowAuto: r.overflowAuto ? { overflowY: r.overflowAuto.overflowY, barW: r.overflowAuto.barW } : null,
     }));
     console.log("  ℹ 滚动宽度读数（设置独立窗口）：" + JSON.stringify(out));
@@ -30222,13 +30580,14 @@ async function runScrollStable(cdp, url) {
     // 常驻轨道：无论当前分区滚不滚，容器都必须已经"有滚动条"（`overflow-y: scroll`）。
     // 为什么必须是常驻：WKWebView 只在真的出现滚动条时才兑现 `stable both-edges` 的两侧预留，
     // 不滚的分区因此比会滚的分区各宽 8px（Chromium 会无条件下预留 ⇒ 这条 bug 只在 WKWebView 出现）。
-    check("设置窗口：共享滚动容器常驻轨道（computed overflow-y === scroll），两类分区同一档",
-      rows.every((r) => r.gen?.overflowY === "scroll" && r.about?.overflowY === "scroll"),
-      "gen/about 的 computed overflow-y 都是 scroll", JSON.stringify(out.map((o) => o.overflowY)));
+    // 统一滚动容器：滚动的是 OS 建的 viewport（组件根不滚）⇒ 两类分区都必须是同一档。
+    check("设置窗口：共享滚动容器走统一容器（OS 视口在），两类分区同一档",
+      rows.every((r) => r.gen?.isOs === true && r.about?.isOs === true),
+      "gen/about 都读到 OS 视口", JSON.stringify(out.map((o) => o.overflowY)));
 
-    check("反面对照：把常驻轨道改回 auto，读数必须真的变成 auto（否则上面那条读的是常量）",
-      rows.every((r) => r.overflowAuto?.overflowY === "auto"),
-      "改回 auto 后 computed overflow-y === auto", JSON.stringify(out.map((o) => o.overflowAuto)));
+    check("反面对照：摘掉统一容器后必须读不到 OS 视口（否则上面那条读的是常量）",
+      rows.every((r) => r.counter && r.counter.isOs === false),
+      "摘掉后 isOs=false", JSON.stringify(out.map((o) => o.counter)));
 
     check("设置窗口：「通用」与「关于」的文字起始 x 相等（不是只量盒子）",
       rows.every((r) => r.gen?.text && r.about?.text && Math.abs(r.gen.text.x - r.about.text.x) <= 1),
@@ -30245,25 +30604,21 @@ async function runScrollStable(cdp, url) {
       "net/about 的 clientW / card.x / card.right 全为 0px 差",
       JSON.stringify(out.map((o) => o.narrow)));
 
-    check("反面对照：去掉 scrollbar-gutter 预留后，不滚的分区必须真的变宽（≥ 7px），否则量具恒绿",
-      rows.every((r) => r.counter && typeof r.counterDeltaW === "number"
-        && Math.abs(r.counterDeltaW) >= 7),
-      "|deltaW| >= 7px", JSON.stringify(out.map((o) => o.counter)));
+    // 反面对照 ③：给统一容器加 8px 车道 ⇒ 内容盒必须真的窄 8px（车道口径在起作用，不是常量）。
+    check("反面对照：加 8px 车道后内容盒必须真的窄 8px（否则量具恒绿）",
+      rows.every((r) => r.overflowAuto
+        && typeof r.overflowAuto.contentW === "number" && typeof r.gen?.contentW === "number"
+        && Math.abs(r.gen.contentW - r.overflowAuto.contentW - 8) <= 0.5),
+      "内容盒宽差 = 8px（±0.5）", JSON.stringify(out.map((o) => o.overflowAuto)));
 
-    check("规范类合成夹具：.scrollbar-both 可滚/不可滚两档内容宽相等；改成 auto 后必须出现 ≥7px 差值",
-      !!canon && canon.a && canon.b && canon.c && canon.d
-        && canon.a.canScroll === true && canon.b.canScroll === false
-        && Math.abs(canon.a.innerW - canon.b.innerW) <= 0.5
-        && Math.abs(canon.a.innerX - canon.b.innerX) <= 0.5
-        && Math.abs(canon.c.innerW - canon.d.innerW) >= 7,
-      "tall/short 内容宽与 x 差 <= 0.5px；auto 档差 >= 7px", JSON.stringify(canon));
+    check("规范类合成夹具：统一容器的内容左右各留 16px（= --gosslan-scroll-inset，不是贴边）",
+      !!canon && canon.isOs === true
+        && canon.padL === 16 && canon.padR === 16,
+      "padL=padR=16", JSON.stringify(canon));
 
-    check("规范类合成夹具：`.gosslan-scroll` 控件与滚动条带之间左右各留 8px（不是贴边）",
-      !!(canon && canon.g) && canon.g.barW === 16 && canon.g.trackW === 8
-        && canon.g.padL === 8 && canon.g.padR === 8
-        && canon.g.gapR === 8 && canon.g.gapL === 8
-        && canon.g.noPadR === 0,
-      "gapL = gapR = 8px，且 padding 清零后 gapR = 0（这条读数有牙）", JSON.stringify(canon && canon.g));
+    check("规范类合成夹具：加 8px 车道后内容盒必须真的窄 8px（这条读数有牙）",
+      !!canon && typeof canon.laneDeltaW === "number" && Math.abs(canon.laneDeltaW - 8) <= 0.5,
+      "laneDeltaW = 8px（±0.5）", JSON.stringify(canon && { laneDeltaW: canon.laneDeltaW, before: canon.before, after: canon.after }));
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
@@ -30290,7 +30645,7 @@ async function runComposerFloat(cdp, url) {
     const msg = document.querySelector('[data-msg-area]');
     const card = document.querySelector('.gosslan-composer');
     const btn = document.querySelector('[data-back-to-latest]');
-    const scroller = document.querySelector('.vlist-no-anchor');
+    const scroller = window.__probe.scroller();
     if (!shell || !msg || !card || !scroller) return null;
     const cs = getComputedStyle(shell);
     const sr = shell.getBoundingClientRect();
@@ -30313,7 +30668,7 @@ async function runComposerFloat(cdp, url) {
   })()`;
 
   const SCROLL = `(() => {
-    const s = document.querySelector('.vlist-no-anchor');
+    const s = window.__probe.scroller();
     if (!s) return false;
     s.scrollTop = s.scrollHeight;
     return true;
@@ -30321,7 +30676,7 @@ async function runComposerFloat(cdp, url) {
 
   /** 末条消息（最大 index）的底边相对输入卡顶边：>0 表示被盖住。 */
   const LASTROW = `(() => {
-    const s = document.querySelector('.vlist-no-anchor');
+    const s = window.__probe.scroller();
     const card = document.querySelector('.gosslan-composer');
     if (!s || !card) return null;
     const rows = [...s.querySelectorAll('[data-vlist-index]')].map((n) => {

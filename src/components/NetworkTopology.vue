@@ -23,6 +23,7 @@
  * - 图例、颜色、线型、图标**各自独立**表达路径含义（不靠颜色当唯一信号）。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { useMediaQuery } from "@vueuse/core";
 import ForceGraph from "force-graph";
 import Icon from "@/components/ui/Icon.vue";
@@ -795,7 +796,7 @@ const selectedRole = computed(() => {
       <div v-show="view === 'graph'" ref="host" class="absolute inset-0"></div>
 
       <!-- 列表视图：与图**同源**（同一份语义数据），加筛选与可执行动作。 -->
-      <div v-if="view === 'list'" class="absolute inset-0 overflow-y-auto p-3" data-topo-list>
+      <OverlayScroll v-if="view === 'list'" class="absolute inset-0 p-3" data-topo-list>
         <div class="mb-2 flex flex-wrap items-center gap-1.5">
           <button
             v-for="f in (['all', 'friends', 'offline'] as const)"
@@ -858,7 +859,7 @@ const selectedRole = computed(() => {
         >
           {{ t("topology.list.more", { n: listItems.length - listShown }) }}
         </button>
-      </div>
+      </OverlayScroll>
 
       <!-- 路径摘要（**图外**）：公网中转 / Mesh 是**路径类型**，不是设备清单；
            展开后说明「中间节点当前不可见」与「这不是本机控制中心」。 -->

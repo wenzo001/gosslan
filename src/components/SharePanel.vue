@@ -15,6 +15,7 @@
  *   本期只显示调用方**自己给的**标题与正文，来源只作为线索展示、不参与任何信任判断。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import Icon from "@/components/ui/Icon.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
@@ -200,7 +201,9 @@ async function onClose() {
     :width="app.isMobile ? undefined : 'max-w-lg'"
     @close="onClose"
   >
-    <div class="flex min-h-0 flex-1 flex-col gap-3 px-1">
+    <!-- `h-full`：把弹窗内容区的高度**接到底**，会话列表那层 `flex-1` 才有确定高度可分 ——
+         否则最外层会自己长出一根滚动条（用户 2026-11-20：「最外层应该没有滚动条」）。 -->
+    <div class="flex h-full min-h-0 flex-col gap-3 px-1">
       <!-- 来源线索：调用方自称的站点，只用于让用户判断"这是不是我以为的那一页"。 -->
       <div class="flex items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
         <Icon name="link2" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -255,10 +258,10 @@ async function onClose() {
       </div>
 
       <!-- 会话列表：逐项勾选（可多选），必须显式点；不预选（预选 + 回车就是一路点确定）。 -->
-      <div
+      <OverlayScroll
         role="group"
         :aria-label="t('shareToChat.pickHint')"
-        class="min-h-0 flex-1 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-divider)]"
+        class="min-h-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-divider)]"
       >
         <p v-if="!targets.length" class="px-3 py-4 text-center text-xs text-[var(--gosslan-text-2)]">
           {{ t("shareToChat.noTargets") }}
@@ -286,13 +289,18 @@ async function onClose() {
             aria-hidden="true"
           />
         </button>
-      </div>
+      </OverlayScroll>
 
       <p v-if="textError === 'tooLong'" class="text-xs text-[var(--gosslan-danger-ink)]">
         {{ t("shareToChat.tooLong", { max: MAX_SHARE_TEXT_CHARS }) }}
       </p>
 
-      <div class="flex items-center justify-end gap-2 pt-1">
+    </div>
+
+    <!-- 操作按钮走 BaseModal 的 **footer 插槽**：它在内容滚动区**之外**，
+         所以永远钉在弹窗底部（用户 2026-11-20：「发送和取消应该固定在弹窗底部」）。 -->
+    <template #footer>
+      <div class="flex items-center justify-end gap-2">
         <SecondaryBtn :disabled="sending" @click="onClose">
           {{ t("common.cancel") }}
         </SecondaryBtn>
@@ -305,6 +313,6 @@ async function onClose() {
           <template v-else>{{ t("shareToChat.send") }}</template>
         </PrimaryBtn>
       </div>
-    </div>
+    </template>
   </BaseModal>
 </template>

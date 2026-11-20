@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { t } from "@/i18n";
 import { addressText, linkLabelKey, linkLabelParams, maybeOffline } from "@/utils/peerConnectionInfo";
 import { computed, onUnmounted, ref, watch } from "vue";
@@ -474,7 +475,7 @@ async function add(peerId: string) {
         class="mb-2 h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-3 py-1.5 text-sm outline-none transition focus:border-[var(--gosslan-primary)]"
         :placeholder="t('friend.add.searchPlaceholder')"
       />
-      <div class="gosslan-scroll max-h-72 overflow-y-auto">
+      <OverlayScroll class="gosslan-scroll max-h-72">
         <div
           v-for="p in filteredPeers.list"
           :key="p.device_id"
@@ -568,7 +569,7 @@ async function add(peerId: string) {
             {{ t("friend.add.add") }}
           </button>
         </div>
-      </div>
+      </OverlayScroll>
       <div
         v-if="filteredPeers.total > MAX_RENDER"
         class="mt-1 text-center text-xs text-[var(--gosslan-text-2)]"

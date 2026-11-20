@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 /**
  * 群聊强提醒 · 受众选择弹窗（第一版不默认全群）。
  *
@@ -63,7 +64,7 @@ function confirm() {
     <p class="mb-2 text-xs text-[var(--gosslan-text-2)]">
       {{ t("remind.audienceHint") }}
     </p>
-    <div class="gosslan-scroll max-h-72 overflow-y-auto">
+    <OverlayScroll class="gosslan-scroll max-h-72">
       <button
         v-for="id in candidates"
         :key="id"
@@ -91,7 +92,7 @@ function confirm() {
         </span>
         <span v-else class="h-5 w-5 rounded-full border border-[var(--gosslan-divider)]" />
       </button>
-    </div>
+    </OverlayScroll>
     <div class="mt-5 flex items-center justify-between gap-2">
       <span class="text-xs text-[var(--gosslan-text-2)]">
         {{ t("remind.audienceCount", { n: selected.size }) }}

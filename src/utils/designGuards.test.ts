@@ -3341,8 +3341,9 @@ test("㊱ 真实树：BaseModal 的外壳层确实读了 window-safe-top，且�
   //    防止有人把宽度补偿 hack 加回来（否则"有/无滚动条"又变成两套数字）。
   assert.ok(!/--gosslan-scroll-gutter\s*:/.test(css),
     "`--gosslan-scroll-gutter` 已废弃：滚动条留白改由 `.scrollbar-both` 的恒定 gutter 承担（SC-01）");
-  assert.match(css, /\.scrollbar-both\s*\{\s*scrollbar-gutter:\s*stable both-edges;/,
-    "style.css 必须提供 `.scrollbar-both`（`stable both-edges`：内容盒宽度与居中都不随滚动条出现而变）");
+  // 2026-11-20：`.scrollbar-both` 随 gutter 口径一起退役（两侧留白改由 overlay 自然保证）。
+  assert.ok(!/\.scrollbar-both\s*\{/.test(css),
+    "`.scrollbar-both` 已退役：style.css 不该再有这个类（overlay 滚动条不占位，留 gutter 会让内容窄 8px）");
 
   // Reka 的 DialogContent 要求每个对话框都有可访问名称（DialogTitle）。整页形态允许不传 title，
   // 所以两条分支各要有一份 sr-only 兜底；删掉任何一份，读屏就只能报一个没有名字的对话框。
@@ -3419,7 +3420,8 @@ test("㊲ BaseModal：标题栏不塌、页脚不滚走（用户实测两条）"
   // ② 滚动区必须是唯一可压缩项（min-h-0 + flex-1 成对，缺一就可能被下方内容顶出可视区）
   //    ⚠️ 文件里有**两个** overflow-y-auto：外层那个铺满视口的滚动容器（fixed inset-x-0），
   //    和卡片内部真正滚内容的那一层。判据要认准后者 —— 它带 min-h-0 + flex-1。
-  const scroller = /class="([^"]*\bmin-h-0 flex-1\b[^"]*overflow-y-auto[^"]*)"/.exec(src)?.[1] ?? "";
+  // 2026-11-20：滚动区已迁到统一滚动容器 <OverlayScroll>（自己管滚动，不再写 overflow-y-auto）。
+  const scroller = /<OverlayScroll\s+class="([^"]*\bmin-h-0 flex-1\b[^"]*)"/.exec(src)?.[1] ?? "";
   assert.ok(scroller.includes("min-h-0") && scroller.includes("flex-1"),
     `滚动区必须写 \`min-h-0 flex-1\`（唯一可压缩项）。当前：${scroller}`);
   // ②b 滚动留白只许走 `.scrollbar-both`（`scrollbar-gutter: stable both-edges`）：
@@ -8280,17 +8282,33 @@ function scrollSurfaceFiles(): Array<{ name: string; src: string }> {
   return out;
 }
 
+/**
+ * 去注释（判据读的是**代码**，不是注释里的字面量）。
+ *
+ * 为什么必须去：gutter 口径退役后，CSS/模板里仍会**提到** `scrollbar-gutter`（说明它为什么退役），
+ * 不去注释就会被当成"还在用"而假红；反过来，真正写回去的也会被注释掩盖。
+ */
+function stripComments(src: string): string {
+  return src.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " ")).replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+}
+
 /** CSS 侧缺项逐条报出；齐 → 空数组。 */
 function findScrollGutterIssues(css: string): string[] {
   const at = css.indexOf(SCROLL_BASE);
   if (at < 0) return ["找不到 `.overflow-y-auto/.overflow-auto/.overflow-y-scroll` 全局滚动口径"];
   const block = css.slice(at, css.indexOf("}", at));
   const issues: string[] = [];
-  if (!/scrollbar-gutter:\s*stable;/.test(block)) issues.push("全局滚动口径缺 `scrollbar-gutter: stable`");
-  const both = /\.scrollbar-both\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  if (!both) issues.push("缺 `.scrollbar-both` 类");
-  else if (!/scrollbar-gutter:\s*stable both-edges/.test(both))
-    issues.push("`.scrollbar-both` 必须是 `scrollbar-gutter: stable both-edges`（否则内容偏左）");
+  // 2026-11-20：滚动条改成 true overlay（OverlayScrollbars）⇒ **gutter 口径全部退役**。
+  // 全局口径块现在只负责 overscroll-behavior；再写 scrollbar-gutter 会让内容凭空窄 8px，
+  // 头部与内容就错开同一条竖线（用户 2026-11-20「缩进不舒服」）。
+  if (/scrollbar-gutter/.test(block))
+    issues.push("全局滚动口径里不许再有 `scrollbar-gutter`（overlay 滚动条不占布局宽度）");
+  if (/\.scrollbar-both\b/.test(stripComments(css)))
+    issues.push("`.scrollbar-both` 已退役（迁移后没有消费者：两侧留白改由 overlay 自然保证）");
+  // 内容页那一档同样不许留 gutter（SC-02 负责对账，这里负责"别把它加回来"）。
+  const contentBlock = /\.gosslan-scroll\s*\{([^}]*)\}/.exec(stripComments(css))?.[1] ?? "";
+  if (/scrollbar-gutter/.test(contentBlock))
+    issues.push("`.gosslan-scroll` 不许再有 `scrollbar-gutter`（overlay 滚动条不占位，留 gutter 内容会窄 8px）");
   return issues;
 }
 
@@ -8333,14 +8351,13 @@ test("SC-01 真实树：全局滚动口径齐备，且没有任何宽度补偿 h
   console.log(`· SC-01 分母：扫 ${files.length} 份 .vue，宽度补偿 hack 0 处`);
 });
 
-test("SC-01 真实树：设置/日志/群任务/会话/搜索/收藏/转发/成员都挂同一档两侧留白", () => {
+test("SC-01 真实树：设置/日志/群任务/会话/搜索/收藏/转发/成员都走统一滚动容器", () => {
   const mustHave = [
     "../components/SettingsWindow.vue",
     "../components/SettingsPanel.vue",
     "../components/BaseModal.vue",
     "../components/LogViewer.vue",
     "../components/GroupTasksBoard.vue",
-    "../components/ConversationList.vue",
     "../components/search/ChatSearchDialog.vue",
     "../components/FavoritePanel.vue",
     "../components/message/ForwardModal.vue",
@@ -8350,9 +8367,39 @@ test("SC-01 真实树：设置/日志/群任务/会话/搜索/收藏/转发/成�
   ];
   for (const rel of mustHave) {
     const src = readFileSync(new URL(rel, import.meta.url), "utf8");
+    // 2026-11-20 起全仓滚动区统一走 <OverlayScroll>（true overlay：轨道透明、hover 才显、
+    // **不占布局宽度**）。旧的 `.gosslan-scroll` / `.scrollbar-both`（scrollbar-gutter）口径退役 ——
+    // 留着它内容盒会凭空少 8px，头部与内容就对不上同一条竖线。
     assert.ok(
-      src.includes("gosslan-scroll") || src.includes("scrollbar-both"),
-      `${rel} 的滚动容器必须挂 .gosslan-scroll / .scrollbar-both（两侧同宽 + 固定空隙）`,
+      src.includes("<OverlayScroll"),
+      `${rel} 的滚动容器必须用统一滚动容器 <OverlayScroll>（不许再挂 gutter 口径）`,
+    );
+    assert.ok(
+      !/scrollbar-gutter|scrollbar-both/.test(stripComments(src)),
+      `${rel} 不许再挂 scrollbar-gutter / .scrollbar-both（overlay 滚动条不占位）`,
+    );
+  }
+});
+
+/**
+ * 已迁到统一滚动容器（OverlayScrollbars）的容器**不许**再挂 gutter 类。
+ *
+ * 为什么单列一条而不是把它从上面那份名单里删掉就算了：删掉等于这一格没人守，
+ * 旧类被写回去（或干脆退回原生 `overflow-y-auto`）都不会红。这里钉两个方向：
+ *   ① 必须用 `<OverlayScroll`（统一容器的唯一入口）；
+ *   ② 不许出现 `scrollbar-gutter` / `.scrollbar-both` —— true overlay 一旦再留 gutter，
+ *      右边距会重新比左边多 8px（用户 2026-11-20 报的就是这个）。
+ * 会话列表 2026-11-20 迁移；消息列表的滚动容器是 `VirtualList` 本身，同一提交迁完。
+ */
+test("SC-01 真实树：已迁移的滚动容器走统一容器，且不再各自留 gutter", () => {
+  const migrated = ["../components/ConversationList.vue", "../components/VirtualList.vue"];
+  for (const rel of migrated) {
+    const src = readFileSync(new URL(rel, import.meta.url), "utf8");
+    assert.ok(src.includes("<OverlayScroll"), `${rel} 必须用统一滚动容器（ui/OverlayScroll.vue）`);
+    assert.doesNotMatch(
+      src,
+      /scrollbar-gutter|scrollbar-both|scrollbar-width\s*:/,
+      `${rel} 迁移后不许再挂 gutter / scrollbar-width（true overlay 不占布局宽度）`,
     );
   }
 });
@@ -8421,13 +8468,16 @@ function findScrollGapIssues(css: string): string[] {
   const block = /\.gosslan-scroll\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   if (!block) issues.push("缺 `.gosslan-scroll` 类（内容页滚动容器没有统一口径）");
   else {
-    if (!/scrollbar-gutter:\s*stable both-edges/.test(block))
-      issues.push("`.gosslan-scroll` 缺 `scrollbar-gutter: stable both-edges`（内容会偏左）");
-    if (!/padding-inline:\s*var\(--gosslan-scroll-gap\)/.test(block))
-      issues.push("`.gosslan-scroll` 缺 `padding-inline: var(--gosslan-scroll-gap)`（内容会贴滚动条带）");
+    // 2026-11-20：滚动条改成 true overlay（不占布局宽度）⇒ gutter 口径退役。
+    // 内容缩进必须**原样保留**（16px = track + gap），否则迁移会让整页内容横移 8px、
+    // 标题与内容错开同一条竖线（用户 2026-11-20：「缩进不舒服」）。
+    if (!/padding-inline:\s*var\(--gosslan-scroll-inset\)/.test(block))
+      issues.push("`.gosslan-scroll` 缺 `padding-inline: var(--gosslan-scroll-inset)`（内容会贴边 / 与标题错开）");
+    if (/scrollbar-gutter/.test(block))
+      issues.push("`.gosslan-scroll` 不许再写 `scrollbar-gutter`（overlay 滚动条不占位，留 gutter 内容会窄 8px）");
   }
   const track = Number(css.match(/--gosslan-scroll-track:\s*(\d+)px/)?.[1]);
-  if (!track) issues.push("缺 `--gosslan-scroll-track`（滚动条带宽度没有唯一来源）");
+  if (!track) issues.push("缺 `--gosslan-scroll-track`（原生兜底滚动条宽度没有唯一来源）");
   const barRaw = /::-webkit-scrollbar\s*\{\s*width:\s*([^;]+);/.exec(css)?.[1].trim();
   const barIsToken = !!barRaw && barRaw.includes("--gosslan-scroll-track");
   const bar = Number(barRaw?.match(/(\d+)px/)?.[1]);
@@ -8443,6 +8493,17 @@ function findScrollGapIssues(css: string): string[] {
     issues.push(`track(${track}) + gutter(${gutter}) = ${track + gutter} ≠ 16（滚动条带 + 空隙的固定缩进）`);
   if (!/--gosslan-scroll-inset:\s*calc\(var\(--gosslan-scroll-track\)\s*\+\s*var\(--gosslan-scroll-gap\)\)/.test(css))
     issues.push("缺 `--gosslan-scroll-inset`（标题/页脚与内容没有同一条竖线）");
+  // 统一容器的滑块粗细分档（用户 2026-11-20：「滚动把手宽度可以按照业务不同粗细不同」）。
+  // 三档是这件事的唯一口径：thin 8 / normal 10 / thick 12（带宽 = 滑块 + 2×padding）。
+  for (const [cls, want] of [["thin", 8], ["normal", 10], ["thick", 12]] as const) {
+    const m = new RegExp(`\\.gosslan-os--${cls} \\.os-scrollbar \\{([^}]*)\\}`).exec(css);
+    if (!m) {
+      issues.push(`缺 .gosslan-os--${cls} 档（统一容器的滑块粗细分档）`);
+      continue;
+    }
+    const size = Number(/--os-size:\s*(\d+)px/.exec(m[1])?.[1]);
+    if (size !== want) issues.push(`.gosslan-os--${cls} 的 --os-size 应为 ${want}px（实为 ${size}）`);
+  }
   return issues;
 }
 
@@ -8473,7 +8534,7 @@ test("SC-02 真实树：内容页滚动容器必须消费 .gosslan-scroll", () =
   }
 });
 
-test("SC-02 反例自证：删掉空隙 / 改滚动条带宽度 / 只留单侧都必须红", () => {
+test("SC-02 反例自证：删掉缩进 / 加回 gutter / 改档位宽度 都必须红", () => {
   const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
   const mut = (from: RegExp, to: string) => {
     const out = css.replace(from, to);
@@ -8481,16 +8542,16 @@ test("SC-02 反例自证：删掉空隙 / 改滚动条带宽度 / 只留单侧�
     return out;
   };
   assert.ok(
-    findScrollGapIssues(mut(/padding-inline:\s*var\(--gosslan-scroll-gap\);/, "padding-inline: 0px;")).length > 0,
-    "把预留空隙删掉必须命中",
+    findScrollGapIssues(mut(/padding-inline:\s*var\(--gosslan-scroll-inset\);/, "padding-inline: 0px;")).length > 0,
+    "把内容缩进删掉必须命中（迁移后内容会贴边 / 与标题错开）",
   );
   assert.ok(
     findScrollGapIssues(mut("--gosslan-scroll-track: 8px;", "--gosslan-scroll-track: 10px;")).length > 0,
     "滚动条带宽度与 ::-webkit-scrollbar 不一致必须命中",
   );
   assert.ok(
-    findScrollGapIssues(mut(/\.gosslan-scroll\s*\{\s*scrollbar-gutter:\s*stable both-edges;/, ".gosslan-scroll { scrollbar-gutter: stable;")).length > 0,
-    "只留单侧 gutter 必须命中",
+    findScrollGapIssues(mut(/(\.gosslan-scroll\s*\{\s*)overscroll-behavior:\s*contain;/, "$1scrollbar-gutter: stable both-edges;\n  overscroll-behavior: contain;")).length > 0,
+    "把 gutter 加回内容页必须命中（overlay 滚动条不占位）",
   );
   assert.ok(
     findScrollGapIssues(mut(/--gosslan-scroll-gap:\s*var\(--gosslan-gutter\);/, "--gosslan-scroll-gap: 5px;")).length > 0,
@@ -8499,6 +8560,10 @@ test("SC-02 反例自证：删掉空隙 / 改滚动条带宽度 / 只留单侧�
   assert.ok(
     findScrollGapIssues(mut(/--gosslan-scroll-inset:\s*calc\(var\(--gosslan-scroll-track\)\s*\+\s*var\(--gosslan-scroll-gap\)\);/, "--gosslan-scroll-inset: 0px;")).length > 0,
     "删掉 scroll-inset（标题与内容对齐）必须命中",
+  );
+  assert.ok(
+    findScrollGapIssues(mut(/(\.gosslan-os--thick \.os-scrollbar \{[^}]*?)--os-size:\s*12px;/, "$1--os-size: 9px;")).length > 0,
+    "滑块粗细分档被改掉必须命中（粗细是分档口径，不许随手改）",
   );
 });
 
@@ -8616,35 +8681,43 @@ test("SP-01 反例自证：把手改回 -mx-1 / 收藏页 left 改回 -4 必须�
 // 修法（不许在分区里补 padding）：让共享容器的滚动条**常驻**（`overflow-y-scroll`），
 // 两类分区走同一档几何。判据：共享容器必须 `overflow-y-scroll`，且不许回 `auto`。
 
-/** 取设置窗口里挂 `.gosslan-scroll` 的那个标签的 class 串。 */
+/** 取设置窗口里挂 `.gosslan-scroll` 的那个**统一滚动容器**的 class 串。 */
 function settingsScrollClass(src: string): string {
-  return /<div\s+class="([^"]*\bgosslan-scroll\b[^"]*)"/.exec(src)?.[1] ?? "";
+  return /<OverlayScroll\s+class="([^"]*\bgosslan-scroll\b[^"]*)"/.exec(src)?.[1] ?? "";
 }
 
+/**
+ * 设置窗口的滚动区口径（2026-11-20 迁移后）。
+ *
+ * 旧口径是"原生容器 + `overflow-y-scroll` 常驻轨道"—— 常驻是为了让 WKWebView 在
+ * 不滚的分区也兑现两侧 gutter（否则「关于页边距变小」）。
+ * 现在滚动条是 **true overlay**（不占布局宽度、不需要 gutter），常驻反而会让轨道一直挂着 ⇒ 退役。
+ */
 function findSettingsTrackIssues(src: string): string[] {
   const cls = settingsScrollClass(src);
-  if (!cls) return ["SettingsWindow.vue 里找不到挂 `.gosslan-scroll` 的滚动容器"];
+  if (!cls) return ["SettingsWindow.vue 里找不到挂 `.gosslan-scroll` 的统一滚动容器"];
   const issues: string[] = [];
-  if (!cls.includes("overflow-y-scroll"))
-    issues.push("共享滚动容器必须 `overflow-y-scroll`（常驻轨道）；`auto` 在不滚的分区上会让 WKWebView 丢掉两侧 gutter");
-  if (/\boverflow-y-auto\b/.test(cls)) issues.push("共享滚动容器不许同时写 `overflow-y-auto`（会覆盖常驻轨道）");
+  if (/overflow-y-/.test(cls))
+    issues.push("统一滚动容器自己管滚动，不许再写 overflow-y-*（会双份滚动条）");
+  if (/\bscrollbar-gutter\b/.test(cls))
+    issues.push("统一滚动容器不许再挂 scrollbar-gutter（overlay 不占位）");
   return issues;
 }
 
-test("SC-03 真实树：设置窗口共享滚动容器常驻轨道", () => {
+test("SC-03 真实树：设置窗口的滚动区走统一容器（不靠 gutter 撑宽度）", () => {
   const src = readFileSync(new URL("../components/SettingsWindow.vue", import.meta.url), "utf8");
   assert.deepEqual(findSettingsTrackIssues(src), [], findSettingsTrackIssues(src).join("\n"));
 });
 
-test("SC-03 反例自证：把常驻轨道改回 auto 必须红", () => {
+test("SC-03 反例自证：把统一容器改回原生 overflow-y-scroll 必须红", () => {
   const src = readFileSync(new URL("../components/SettingsWindow.vue", import.meta.url), "utf8");
-  // 只替换 class 串里的那一处（注释里也写了 `overflow-y-scroll`，不能让它先被替换掉）。
+  // 只替换 class 串里的那一处（注释里也可能出现同样的字样，不能让它先被替换掉）。
   const mutated = src.replace(
-    /(class="[^"]*\bgosslan-scroll\b[^"]*)\boverflow-y-scroll\b/,
-    "$1overflow-y-auto",
+    /(<OverlayScroll\s+class="[^"]*\bgosslan-scroll\b[^"]*)/,
+    "$1 overflow-y-scroll",
   );
-  assert.notEqual(mutated, src, "反例自证：class 串里的 `overflow-y-scroll` 没被替换到，锚点已漂");
-  assert.ok(findSettingsTrackIssues(mutated).length > 0, "改回 auto 必须命中（不许空转）");
+  assert.notEqual(mutated, src, "反例自证：class 串里的 `<OverlayScroll class=...gosslan-scroll` 没被替换到，锚点已漂");
+  assert.ok(findSettingsTrackIssues(mutated).length > 0, "改回原生滚动必须命中（不许空转）");
 });
 
 // ---------------- SC-04 横排容器不许吃纵向滚动条/纵向槽位（2026-11-08） ----------------
@@ -8855,24 +8928,25 @@ test("SC-01 真实树：消息里的焦点环必须内缩（外扩环会被列�
   assert.deepEqual(bad, [], `焦点环缺 focus-visible:ring-inset（会被 overflow 裁切）：\n${bad.join("\n")}`);
 });
 
-test("SC-01 反例自证：去掉 gutter / 只留单边 / 加回补偿 hack 都必须红", () => {
+test("SC-01 反例自证：加回 gutter / 复活 .scrollbar-both / 加回补偿 hack 都必须红", () => {
   const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
   const mut = (from: RegExp, to: string) => {
     const out = css.replace(from, to);
     assert.notEqual(out, css, `反例自证：${from} 没被替换到，锚点已漂`);
     return out;
   };
+  // 2026-11-20：gutter 口径退役 ⇒ 反例方向也反过来：**加回** gutter 必须命中。
   assert.ok(
-    findScrollGutterIssues(mut(/scrollbar-gutter:\s*stable;/g, "scrollbar-gutter: auto;")).length > 0,
-    "去掉稳定 gutter 必须命中",
+    findScrollGutterIssues(mut(/(\.overflow-y-scroll\s*\{[\s\S]{0,200}?)overscroll-behavior:\s*contain;/, "$1scrollbar-gutter: stable;\n  overscroll-behavior: contain;")).length > 0,
+    "加回 scrollbar-gutter 必须命中（overlay 滚动条不占布局宽度）",
   );
   assert.ok(
-    findScrollGutterIssues(mut(/scrollbar-gutter:\s*stable both-edges;/g, "scrollbar-gutter: stable;")).length > 0,
-    "两侧改成单侧必须命中（内容会偏左）",
+    findScrollGutterIssues(mut(/(\.gosslan-scroll\s*\{)/, "$1scrollbar-gutter: stable both-edges;")).length > 0,
+    "内容页加回 gutter 必须命中",
   );
   assert.ok(
-    findScrollGutterIssues(mut(SCROLL_BASE, ".overflow-y-auto,\n.overflow-auto {")).length > 0,
-    "漏掉 overflow-y-scroll 必须命中",
+    findScrollGutterIssues(mut(/(\.gosslan-scroll\s*\{)/, ".scrollbar-both { scrollbar-gutter: stable both-edges; }\n$1")).length > 0,
+    "复活 .scrollbar-both 必须命中",
   );
   const hack = `<div class="overflow-y-auto pr-[var(--gosslan-scroll-gutter)] -mr-[var(--gosslan-scroll-gutter)]"></div>`;
   assert.ok(findScrollHacks(hack).length >= 1, "补偿 hack 必须命中");
@@ -8922,10 +8996,13 @@ function findPopClampIssues(css: string): string[] {
   if (!/max-width:\s*var\(--reka-popper-available-width/.test(block))
     issues.push("共享限高块没有吃 `--reka-popper-available-width`（弹层会横向溢出）");
   if (!/overflow-y:\s*auto/.test(block)) issues.push("共享限高块没有 `overflow-y: auto`（超出部分被裁）");
+  // 2026-11-20：`scrollbar-gutter` 口径退役（统一滚动容器是 overlay，不占布局宽度）。
+  // 浮层这块**暂不迁**统一容器（Reka popper 的定位依赖内容盒原样）⇒ 至少不许再预留 8px 槽位，
+  // 否则浮层内容会比别处窄一截、左右不对称。
+  if (/scrollbar-gutter/.test(stripComments(block)))
+    issues.push("共享限高块不许再有 `scrollbar-gutter`（gutter 口径已退役：内容会被压窄 8px）");
   if (!/overscroll-behavior:\s*contain/.test(block))
     issues.push("共享限高块没有 `overscroll-behavior: contain`（滚到底会带动页面");
-  if (!/scrollbar-gutter:\s*stable/.test(block))
-    issues.push("共享限高块没有 `scrollbar-gutter: stable`（滚动条会盖字/横向跳）");
   const edge = css.match(POP_EDGE_RE);
   if (!edge || Number(edge[1]) < 8)
     issues.push("`--gosslan-pop-edge` 必须 ≥ 8px（浮层贴边至少留一个安全边距）");
@@ -9290,8 +9367,10 @@ test("SA-03 证据链与同类：viewport-fit=cover / enableEdgeToEdge / 四枚�
   // 两个分支都要在：关键盘跟手势条安全区、开键盘只留 8px。键盘状态必须走 utils/keyboardInsets（有单测）。
   assert.match(
     composer,
-    /paddingBottom:\s*app\.keyboardOpen\s*\?\s*'8px'\s*:\s*'calc\(var\(--gosslan-inset-bottom\) \+ 8px\)'/,
-    "输入区没跟手势条安全区（关闭时）/ 没在键盘弹起时去掉重复的安全区",
+    // 2026-11-20：非键盘态底距从 8px 改成 16px（= 左右 px-4）——
+    // 用户口径「输入卡相对父盒子的左/右/底三边距相等」；键盘态仍留 8px（IME 已占位）。
+    /paddingBottom:\s*app\.keyboardOpen\s*\?\s*'8px'\s*:\s*'calc\(var\(--gosslan-inset-bottom\) \+ 16px\)'/,
+    "输入区没跟手势条安全区（关闭时）/ 没在键盘弹起时去掉重复的安全区 / 底距不是 16px（三边距要相等）",
   );
   const appStore = code691(readFileSync(join(srcDir691, "stores/useAppStore.ts"), "utf8"));
   assert.match(appStore, /resolveKeyboardState\(/, "键盘判定没走 utils/keyboardInsets（Android resize 会被补两次）");

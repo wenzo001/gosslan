@@ -688,7 +688,8 @@ export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssu
         "它是全站上百处行分隔的唯一来源，改它必须同步更新本锚点并重跑对比度，不许各组件另写一条分隔线。",
     });
   }
-  const colLeft = [...src.searchDialog.matchAll(/<div[^>]*\sclass="([^"]*)"/g)].find((m) =>
+  // 2026-11-20：左栏已迁到统一滚动容器 <OverlayScroll>（两处都要认）。
+  const colLeft = [...src.searchDialog.matchAll(/<(?:div|OverlayScroll)[^>]*\sclass="([^"]*)"/g)].find((m) =>
     classesOf(m).includes("desktop:md:border-r"),
   );
   if (!colLeft) {

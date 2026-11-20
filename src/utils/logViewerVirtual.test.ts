@@ -73,9 +73,9 @@ test("LogViewer：virtualizer 依赖的 mergedRows 必须先于 useVirtualizer �
   // 独立窗与移动页两条外壳各有一个滚动容器；少挂一个，virtualizer 就拿不到滚动元素，
   // 工具栏显示 N 条而列表区永远空白（2026-10-19 实测）。
   assert.equal(
-    (SHELL.match(/ref="logScroll"/g) ?? []).length,
+    (SHELL.match(/ref="logOs"/g) ?? []).length,
     2,
-    "独立窗与移动页都必须挂 logScroll，否则虚拟列表没有滚动元素",
+    "独立窗与移动页都必须挂 logOs（统一滚动容器），否则虚拟列表没有滚动元素",
   );
   const rowsAt = SHELL.indexOf("const rows = computed(");
   const mergedAt = SHELL.indexOf("const mergedRows = computed(");

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { useRouter } from "vue-router";
 import BaseModal from "@/components/BaseModal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
@@ -513,7 +514,7 @@ async function openConversation(row: OperationRow) {
           </span>
         </button>
       </div>
-      <ul class="gosslan-scroll max-h-[55vh] space-y-2 overflow-y-auto">
+      <OverlayScroll size="thin" class="gosslan-scroll max-h-[55vh]"><ul class="space-y-2">
       <li
         v-for="row in rows"
         :key="row.id"
@@ -589,7 +590,7 @@ async function openConversation(row: OperationRow) {
           </button>
         </div>
       </li>
-      </ul>
+      </ul></OverlayScroll>
     </template>
     <p v-if="rows.length > 0" class="mt-3 text-xs leading-relaxed text-[var(--gosslan-text-2)]">
       {{ t("task.note") }}
