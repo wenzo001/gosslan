@@ -2,6 +2,8 @@
 import { computed } from "vue";
 import { t } from "@/i18n";
 import { LOG_LEVEL_TEXT, stripTags } from "@/utils/logFilter";
+import Icon from "@/components/ui/Icon.vue";
+import { useCopyToast } from "@/composables/useCopyToast";
 
 /**
  * 选中日志行的详情（画板 `DesktopLogs` 的 detail 区）。
@@ -23,11 +25,25 @@ const pillClass = computed(() => (props.row.level === "error"
   : props.row.level === "warn"
     ? "bg-[var(--gosslan-warning-soft)] text-[var(--gosslan-warning-text-ink)]"
     : "bg-[var(--gosslan-list)] text-[var(--gosslan-text-2)]"));
+
+/**
+ * 单条日志的可粘贴文本（用户 2026-11-20：有时只想要这一条去贴）。
+ *
+ * 顺序与左侧行一致：`时间 等级 [target] 正文`。详情里的 target/message 已剥掉
+ * 高亮标签（`stripTags`），复制出去就是纯文本，不会带 `<mark>` 之类的残留。
+ */
+const asText = computed(() =>
+  `${props.row.time} ${levelText.value} [${target.value}] ${message.value}`,
+);
+const copyWithToast = useCopyToast();
+function copyRow() {
+  void copyWithToast(asText.value);
+}
 </script>
 
 <template>
   <aside
-    class="shrink-0 overflow-y-auto bg-[var(--gosslan-app-bg)]"
+    class="gosslan-selectable shrink-0 overflow-y-auto bg-[var(--gosslan-app-bg)]"
     :class="placement === 'side'
       ? 'w-[300px] border-l border-[var(--gosslan-divider)] px-3.5 py-3'
       : 'max-h-[40%] border-t border-[var(--gosslan-divider)] px-3.5 py-2.5'"
@@ -48,6 +64,16 @@ const pillClass = computed(() => (props.row.level === "error"
         class="shrink-0 text-caption text-[var(--gosslan-text-2)]"
         :title="t('logs.mergedCount', { n: row.count })"
       >×{{ row.count }}</span>
+      <button
+        type="button"
+        class="tap-safe flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+        :title="t('logs.copy')"
+        :aria-label="t('logs.copy')"
+        data-log-detail-copy
+        @click="copyRow"
+      >
+        <Icon name="copy" class="h-3.5 w-3.5" />
+      </button>
     </div>
     <div
       class="mt-2 whitespace-pre-wrap break-all font-mono text-caption leading-relaxed text-[var(--gosslan-text)]"

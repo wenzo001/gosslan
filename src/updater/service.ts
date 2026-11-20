@@ -117,6 +117,14 @@ export function createUpdaterService(
     /** 测试可把「慢速窗口」压到毫秒级；线上用 20s / 512KB 这一档。 */
     slowWindowMs?: number;
     slowMinBytes?: number;
+    /**
+     * 「明确离线」判据（默认读 `navigator.onLine === false`）。
+     *
+     * 为什么做成可注入：`node --test` 里没有真的 navigator，靠改写全局去测"断网"
+     * 会得到一个假绿（与 `safeStorage` 同一条理由）。注入后这条前置才能被真测。
+     * 只在**明确离线**时截停：`onLine === true` 可能是假阳性，照旧走真实请求。
+     */
+    isOffline?: () => boolean;
   } = {},
 ) {
   const state = reactive<UpdaterState>({
@@ -219,7 +227,19 @@ export function createUpdaterService(
     return checkInFlight;
   }
 
+  const offline = options.isOffline ?? (() => typeof navigator !== "undefined" && navigator.onLine === false);
+
   function check(manual = true): Promise<void> {
+    // 前置：**明确离线**时不发请求（用户 2026-11-20 的通用原则：注定失败的加载直接截停）。
+    // 与 runCheck 的失败分支同一口径：手动 ⇒ error(network) 让人看见；自动 ⇒ 静默回 idle。
+    // 顺带作废在途结果（attempt++），避免一个早就发出去的请求回来把状态改花。
+    if (offline()) {
+      attempt += 1;
+      state.phase = manual ? "error" : "idle";
+      state.error = manual ? "network" : null;
+      state.checkedAt = Date.now();
+      return Promise.resolve();
+    }
     return runCheck(manual);
   }
 

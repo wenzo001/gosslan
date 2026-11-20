@@ -92,7 +92,7 @@ function fake(overrides: Partial<UpdaterAdapter> = {}) {
 function service(
   adapter: UpdaterAdapter,
   checkTimeoutMs = 100,
-  extra: { slowWindowMs?: number; slowMinBytes?: number } = {},
+  extra: { slowWindowMs?: number; slowMinBytes?: number; isOffline?: () => boolean } = {},
 ) {
   return createUpdaterService(adapter, { currentVersion: "5.4.1", checkTimeoutMs, ...extra });
 }
@@ -131,6 +131,25 @@ test("离线/网络失败：手动给可读错误，自动检查静默（不弹�
   const auto = service(adapter);
   await auto.check(false);
   assert.equal(auto.state.phase, "idle");
+  assert.equal(auto.state.error, null);
+});
+
+test("明确离线：一次请求都不发（手动给 network、自动静默），且留 checkedAt", async () => {
+  // 2026-11-20 用户的前置原则：注定失败的加载直接截停。判据注入，不靠改写全局 navigator。
+  const offline = () => true;
+  const manualCase = fake({ check: async () => INFO });
+  const s = service(manualCase.adapter, 100, { isOffline: offline });
+  await s.check(true);
+  assert.equal(manualCase.calls.check, 0, "断网时仍发了请求 ⇒ 前置没截停");
+  assert.equal(s.state.phase, "error");
+  assert.equal(s.state.error, "network");
+  assert.ok(s.state.checkedAt, "截停也要留 checkedAt，否则界面显示成「从未检查」");
+
+  const autoCase = fake({ check: async () => INFO });
+  const auto = service(autoCase.adapter, 100, { isOffline: offline });
+  await auto.check(false);
+  assert.equal(autoCase.calls.check, 0);
+  assert.equal(auto.state.phase, "idle", "自动检查断网要静默回 idle（与真实失败同一口径）");
   assert.equal(auto.state.error, null);
 });
 
