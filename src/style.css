@@ -1,4 +1,15 @@
 @import "./styles/hljs-theme.css";
+/**
+ * OverlayScrollbars v2 的**必需**样式（2026-11-20 引入）。
+ *
+ * 为什么用它：用户要"轨道完全不可见、hover 才显、idle 隐藏、且不占布局宽度"。
+ * 最后一条是关键 —— 现在的 `scrollbar-gutter: stable` 给滚动条留了 8px 布局宽度，
+ * 输入卡与消息列表的右边距因此对不上。true overlay 不占位，边距才可能三边相等。
+ *
+ * ⚠️ 这一行必须在 `@tailwind` 之前：后面还有本仓自己的 `::-webkit-scrollbar` 规则，
+ * 两者同时生效时以更靠后的为准（迁移完成前，原生滚动条仍是兜底）。
+ */
+@import "overlayscrollbars/styles/overlayscrollbars.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
