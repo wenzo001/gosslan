@@ -212,7 +212,7 @@ function onGridKey(e: KeyboardEvent) {
                 c.iso === modelValue
                   ? 'bg-[var(--gosslan-primary-active)] font-medium text-[var(--gosslan-on-primary)]'
                   : c.iso === today
-                    ? 'font-medium text-[var(--gosslan-primary)] hover:bg-[var(--gosslan-hover)]'
+                    ? 'font-medium text-[var(--gosslan-accent-ink)] hover:bg-[var(--gosslan-hover)]'
                     : c.inMonth
                       ? 'text-[var(--gosslan-text)] hover:bg-[var(--gosslan-hover)]'
                       : 'text-[var(--gosslan-text-2)] opacity-50 hover:bg-[var(--gosslan-hover)]'

@@ -99,7 +99,6 @@ const emit = defineEmits<{
 const assignees = computed(() =>
   (props.item.assignees ?? []).map((id) => props.nameOf(id)).join(t("common.sep.list")),
 );
-const creator = computed(() => (props.item.creator ? props.nameOf(props.item.creator) : ""));
 
 function statusText(s: TodoStatus): string {
   return t(TODO_STATUS_LABEL_KEY[s]);
@@ -381,16 +380,14 @@ function submitReply() {
       :disabled="!canChangeStatus"
       @update:model-value="(v: string) => emit('status', v as TodoStatus)"
     />
-    <!-- 元信息：创建时间 / 创建人 / 指派 / 完成时间（用户 2026-09-17：时间要回显） -->
+    <!-- 元信息：**只留创建时间 + 关联人**两行（用户 2026-11-20）。
+         创建人 / 完成时间在这里与下方「群操作记录」重复（那块本来就记了"谁在什么时候做了什么"），
+         同一件事两处写会让读者对不上；要查过程就去操作记录看。 -->
     <div class="gosslan-selectable space-y-1 text-meta text-[var(--gosslan-text-2)]">
       <div v-if="item.createdAt">{{ t("todo.createdAt", { time: fmtTodoTime(item.createdAt) }) }}</div>
-      <div v-if="creator">{{ t("todo.creator", { name: creator }) }}</div>
       <div v-if="assignees" :title="assignees">{{ t("todo.assigneesInline", { names: assignees }) }}</div>
       <!-- 关联时间不在这里回显：它已经是上方可编辑属性（`TodoAttrDateField`），
            再抄一行只读文本会出现"同一条信息两个家"。 -->
-      <!-- 终态时间：完成显示「完成时间」，做不了显示「标记时间」（同一个后端权威时间戳 done_at）。 -->
-      <div v-if="item.doneAt && item.status === 'done'">{{ t("todo.doneAt", { time: fmtTodoTime(item.doneAt) }) }}</div>
-      <div v-else-if="item.doneAt && item.status === 'impossible'">{{ t("todo.impossibleAt", { time: fmtTodoTime(item.doneAt) }) }}</div>
     </div>
 
     <!-- 关联任务（用户 2026-11-13）：来源 + 被关联任务各自独立管理，这里只做溯源与导航。 -->
@@ -432,6 +429,21 @@ function submitReply() {
       </p>
     </div>
 
+    <!-- 图片：点缩略图看大图（交给全局那一份预览实例，见 script 里的说明）。
+         用户 2026-11-20：图要摆在描述**上方** —— 先看图再读字，与聊天里的顺序一致。 -->
+    <div v-if="item.images.length">
+      <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.imagesLabel") }}</div>
+      <div class="flex flex-wrap gap-1.5">
+        <TodoImageThumb
+          v-for="(img, i) in item.images"
+          :key="img.sha256"
+          :image="img"
+          clickable
+          @open="openAt(i)"
+        />
+      </div>
+    </div>
+
     <!-- 描述（全文，不截断） -->
     <div>
       <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.description") }}</div>
@@ -457,20 +469,6 @@ function submitReply() {
       >
         {{ item.title }}
       </p>
-    </div>
-
-    <!-- 图片：点缩略图看大图（交给全局那一份预览实例，见 script 里的说明） -->
-    <div v-if="item.images.length">
-      <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.imagesLabel") }}</div>
-      <div class="flex flex-wrap gap-1.5">
-        <TodoImageThumb
-          v-for="(img, i) in item.images"
-          :key="img.sha256"
-          :image="img"
-          clickable
-          @open="openAt(i)"
-        />
-      </div>
     </div>
 
     <!-- 任务回复（用户 2026-11-13）：平铺楼层（旧→新），"谁回复谁"只引用一层，不嵌套渲染。 -->

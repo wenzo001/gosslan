@@ -162,7 +162,7 @@ async function submit() {
       <div>
         <div class="mb-1 flex items-center justify-between text-caption text-[var(--gosslan-text-2)]">
           <span>{{ t("bot.secret") }}</span>
-          <button type="button" class="text-[var(--gosslan-primary)]" @click="showToken = !showToken">
+          <button type="button" class="text-[var(--gosslan-accent-ink)]" @click="showToken = !showToken">
             {{ showToken ? t("bot.hideToken") : t("bot.showToken") }}
           </button>
         </div>
@@ -186,7 +186,7 @@ async function submit() {
     <!-- 创建表单 -->
     <div v-else class="space-y-3">
       <p class="text-meta leading-relaxed text-[var(--gosslan-text-2)]">{{ t("bot.wizard.intro") }}</p>
-      <p class="text-caption text-[var(--gosslan-primary)]">{{ t("bot.wizard.urlOnlyHint") }}</p>
+      <p class="text-caption text-[var(--gosslan-accent-ink)]">{{ t("bot.wizard.urlOnlyHint") }}</p>
       <div>
         <label class="mb-1 block text-caption text-[var(--gosslan-text-2)]" for="bot-name">{{ t("bot.field.name") }}</label>
         <input

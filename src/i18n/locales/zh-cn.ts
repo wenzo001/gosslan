@@ -1245,7 +1245,6 @@ export const zhCN: MessageDict = {
   "todo.botAssigneeTag": "机器人",
   "todo.viewAll": "查看全部",
   "todo.statusLabel": "状态",
-  "todo.creator": "由 {name} 发起",
   "todo.rowCreator": "发起",
   "todo.rowAssignee": "指派",
   "todo.relatedOnLabel": "关联时间（可选）",
@@ -1422,8 +1421,6 @@ export const zhCN: MessageDict = {
   "shareToChat.linkPlaceholder": "gosslan://share?url=… 或 https://<站点>/share?url=…",
   "shareToChat.linkSubmit": "打开分享面板",
   "todo.statusChange": "更改状态",
-  "todo.doneAt": "完成于 {time}",
-  "todo.impossibleAt": "标记为做不了于 {time}",
   "todo.createdAt": "创建于 {time}",
   // 全员操作流水（详情弹窗）：一条事件里可能含多项，用「·」连接。
   "todo.history.sectionTitle": "操作记录",

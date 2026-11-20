@@ -38,7 +38,7 @@ const BOT_DOC_URL =
         {{ t("settings.integrations.integrationDocHint") }}
       </div>
       <a
-        class="mt-1 inline-flex items-center gap-1 break-all text-meta text-[var(--gosslan-primary)] hover:underline"
+        class="mt-1 inline-flex items-center gap-1 break-all text-meta text-[var(--gosslan-accent-ink)] hover:underline"
         :href="INTEGRATION_DOC_URL"
         target="_blank"
         rel="noopener noreferrer"
@@ -53,7 +53,7 @@ const BOT_DOC_URL =
         {{ t("settings.integrations.botDocHint") }}
       </div>
       <a
-        class="mt-1 inline-flex items-center gap-1 break-all text-meta text-[var(--gosslan-primary)] hover:underline"
+        class="mt-1 inline-flex items-center gap-1 break-all text-meta text-[var(--gosslan-accent-ink)] hover:underline"
         :href="BOT_DOC_URL"
         target="_blank"
         rel="noopener noreferrer"

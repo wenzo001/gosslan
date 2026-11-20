@@ -313,7 +313,7 @@ function ageText(ms: number | null): string {
                   <span class="rounded-full bg-[var(--gosslan-hover)] px-1.5 py-0.5 text-micro text-[var(--gosslan-text-2)]">
                     {{ c.kind === "bluetooth" ? t("diag.kindBt") : t("diag.kindLan") }}
                   </span>
-                  <span v-if="c.selected" class="text-micro font-medium text-[var(--gosslan-primary)]">
+                  <span v-if="c.selected" class="text-micro font-medium text-[var(--gosslan-accent-ink)]">
                     {{ t("diag.chosen") }}
                   </span>
                 </div>

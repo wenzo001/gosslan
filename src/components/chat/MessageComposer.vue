@@ -1421,7 +1421,7 @@ async function onPaste(e: ClipboardEvent) {
           <!-- 「所有人」不是真人，用图标而非首字头像：避免与真成员的名字首字混淆 -->
           <span
             v-if="m.id === MENTION_ALL_ID"
-            class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--gosslan-primary-light)] text-[var(--gosslan-primary)]"
+            class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--gosslan-primary-light)] text-[var(--gosslan-accent-ink)]"
           >
             <Icon name="users" class="h-3.5 w-3.5" aria-hidden="true" />
           </span>
@@ -1559,7 +1559,7 @@ async function onPaste(e: ClipboardEvent) {
           <PopoverTrigger as-child>
             <button
               class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-composer-control-radius)] transition"
-              :class="emojiOpen ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+              :class="emojiOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
               :title="t('chat.composer.emoji')" :aria-label="t('chat.composer.emoji')"
             >
               <Icon name="smile" class="h-5 w-5" :stroke-width="1.75" />
@@ -1599,7 +1599,7 @@ async function onPaste(e: ClipboardEvent) {
              紧接着按 Enter 会激活按钮（把 codeMode 再切回去）而非走编辑器 keydown 发送。 -->
         <button
           class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-composer-control-radius)] transition"
-          :class="codeMode ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          :class="codeMode ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           :title="t('chat.composer.code')" :aria-label="t('chat.composer.code')"
           @mousedown.prevent
           @click="toggleCodeMode"

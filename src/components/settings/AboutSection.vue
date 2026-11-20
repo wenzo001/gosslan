@@ -92,7 +92,7 @@ async function onFingerprintTap() {
         >
           {{ fullId }}
         </div>
-        <span v-if="copied" class="shrink-0 text-caption text-[var(--gosslan-primary)]">
+        <span v-if="copied" class="shrink-0 text-caption text-[var(--gosslan-accent-ink)]">
           {{ t("common.copied") }}
         </span>
       </div>

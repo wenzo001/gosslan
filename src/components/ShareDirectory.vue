@@ -313,7 +313,7 @@ async function download(e: ShareEntry) {
           <button
             v-if="hasChild(e.path)"
             type="button"
-            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
             :disabled="dirTasks.has(e.path) || !peerOnline"
             :title="t('share.downloadDir')" :aria-label="t('share.downloadDir')"
             @click.stop="downloadDir(e)"
@@ -328,7 +328,7 @@ async function download(e: ShareEntry) {
           <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ formatBytes(e.size) }}</span>
           <button
             type="button"
-            class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+            class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
             :disabled="!peerOnline"
             :title="t('common.download')" :aria-label="t('common.download')"
             @click="download(e)"

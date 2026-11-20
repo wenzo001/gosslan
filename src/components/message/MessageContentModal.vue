@@ -84,7 +84,7 @@ async function openLink(href: string) {
         <template v-for="(seg, i) in segments" :key="i">
           <MessageLinkText
             v-if="seg.kind === 'link'"
-            class="text-[var(--gosslan-primary)]"
+            class="text-[var(--gosslan-accent-ink)]"
             :href="seg.href"
             :label="seg.value"
             @open="openLink"
@@ -110,7 +110,7 @@ async function openLink(href: string) {
     <div class="mt-3 flex justify-end">
       <button
         class="tap-safe preview-action"
-        :class="copied ? 'text-[var(--gosslan-primary)]' : ''"
+        :class="copied ? 'text-[var(--gosslan-accent-ink)]' : ''"
         @click="emit('copy', content)"
       >
         <Icon name="check" v-if="copied" class="h-3 w-3" />

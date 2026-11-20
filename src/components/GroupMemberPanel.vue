@@ -492,7 +492,7 @@ async function confirmAction() {
                 {{ row.name }}
               </button>
               <Icon name="crown" v-if="group.creator === row.id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" :title="t('group.owner')" />
-              <Icon name="shield" v-else-if="group.admins.includes(row.id)" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-primary)]" :title="t('group.admin')" />
+              <Icon name="shield" v-else-if="group.admins.includes(row.id)" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-accent-ink)]" :title="t('group.admin')" />
               <span v-if="row.id === myId" class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("group.me") }}</span>
             </div>
             <div class="text-xs text-[var(--gosslan-text-2)]">
@@ -519,7 +519,7 @@ async function confirmAction() {
           </button>
           <button
             v-else-if="!row.isBot && canAppointAdmin && row.id !== myId && row.id !== group.creator"
-            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-primary)]"
+            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-accent-ink)]"
             :title="t('group.appointAdmin', { name: row.name })" :aria-label="t('group.appointAdmin', { name: row.name })"
             @click="appointAdmin(row.id)"
           >
@@ -556,7 +556,7 @@ async function confirmAction() {
             </span>
           </div>
           <button
-            class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2 py-1 text-meta text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+            class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2 py-1 text-meta text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
             :aria-busy="tasksOpening || undefined"
             @click="emit('open-tasks')"
           >

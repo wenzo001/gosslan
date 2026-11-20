@@ -652,7 +652,7 @@ function showSender(group: ChatSearchGroup): boolean {
           <button
             v-if="activeGroup"
             data-search-enter-chat
-            class="tap-safe flex shrink-0 items-center gap-1 text-body text-[var(--gosslan-primary)] transition hover:opacity-80"
+            class="tap-safe flex shrink-0 items-center gap-1 text-body text-[var(--gosslan-accent-ink)] transition hover:opacity-80"
             :title="t('search.enterChatHint')"
             :aria-label="t('search.enterChatHint')"
             @click="enterChat"

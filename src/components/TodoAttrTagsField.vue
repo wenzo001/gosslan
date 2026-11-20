@@ -155,7 +155,7 @@ function addCustom() {
         :key="row.tag"
         type="button"
         class="gosslan-menu-item"
-        :class="isSelected(row.tag) ? 'font-medium text-[var(--gosslan-primary)]' : ''"
+        :class="isSelected(row.tag) ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
         :aria-pressed="isSelected(row.tag)"
         @click="toggle(row.tag)"
       >
