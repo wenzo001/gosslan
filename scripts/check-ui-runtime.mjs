@@ -19777,6 +19777,17 @@ async function runOscillate(cdp, url, botMode = 0) {
   fs.mkdirSync(path.dirname(outFile), { recursive: true });
   const out = {};
   const label = botMode ? "机器人消息" : "普通文本";
+  /**
+   * 会议邀请正文（JS 侧一份，页面侧夹具另有一份 —— 两处内容必须一致）。
+   * 这里用 JSON.stringify 传进页面 ⇒ 转义由 JSON 负责，不会出现「模板字符串里 \n 被吃掉」的坑。
+   */
+  const INVITE_TEXT = [
+    "fuwendong 邀请你加入「123123」",
+    "会议号：255533534",
+    "复制会议号或点击链接即可加入会议",
+    "123123",
+    "https://meet.lhcz.local/#/m/255533534/preview",
+  ].join("\n");
 
   try {
     await cdp.send("Emulation.setDeviceMetricsOverride",
@@ -19866,6 +19877,90 @@ async function runOscillate(cdp, url, botMode = 0) {
     }
     out.samples = samples;
 
+    // ---- 整列振荡采样 ------------------------------------------------------
+    // 为什么必须单列一组：气泡高度恒定 ≠ 界面不抖。用户报的「疯狂抖动」有两种根因：
+    //   A. 那条消息**自己**的高度在跳（上一版只采样气泡高度，排除了 A）；
+    //   B. **整列**在上下跳（scrollTop 来回摆，气泡高度始终不变 ⇒ 上一版看不见）。
+    // B 才是「整屏乱窜」该有的样子，所以这里量**滚动位置**在连续帧里的极差。
+    //
+    // 量哪个滚动元素：页面上有多个 OS viewport（会话列表 / 消息流 / 其它面板），
+    // `querySelector` 取第一个会量错对象 ⇒ 用「含 data-vlist-key 的行」反查它的祖先 viewport。
+    const sampleOsc = async (frames) => {
+      const r = await cdp.eval("(async () => {"
+        + " const row = document.querySelector('[data-vlist-key]');"
+        + " let sc = row;"
+        + " while (sc && !sc.hasAttribute('data-overlayscrollbars-viewport')) sc = sc.parentElement;"
+        + " if (!sc) return { err: 'no message viewport' };"
+        + " const tops = []; const shs = []; const chs = [];"
+        + " await new Promise((resolve) => {"
+        + "   let n = 0;"
+        + "   const step = () => {"
+        + "     tops.push(Math.round(sc.scrollTop * 100) / 100);"
+        + "     shs.push(Math.round(sc.scrollHeight * 100) / 100);"
+        + "     chs.push(Math.round(sc.clientHeight * 100) / 100);"
+        + "     n += 1;"
+        + "     if (n < " + frames + ") requestAnimationFrame(step); else resolve();"
+        + "   };"
+        + "   requestAnimationFrame(step);"
+        + " });"
+        + " const uniq = (a) => [...new Set(a)];"
+        + " return { n: tops.length, nTops: uniq(tops).length, tops: uniq(tops).slice(0, 16),"
+        + "   shs: uniq(shs).slice(0, 16), chs: uniq(chs).slice(0, 16),"
+        + "   min: Math.min.apply(null, tops), max: Math.max.apply(null, tops) };"
+        + "})()");
+      return r;
+    };
+
+    // 场景 A：会议消息在**列表中间**（静态口径）。
+    const oscMid = await sampleOsc(90);
+    out.oscMid = oscMid;
+
+    // 场景 B：会议消息作为**新消息追加到末尾**（真实场景：第三方应用刚转发进来）。
+    // 这一步会走 ChatWindow 的 append 分支（贴底 + 进入动画 + 虚拟列表测量校正）——
+    // 「撤回那条就不抖了」说明抖动与那条消息**在列表里**有关，追加是触发它的最短路径。
+    const appendTail = await cdp.eval("(async () => {"
+      + " const S = await import('/src/stores/useChatStore.ts');"
+      + " const chat = S.useChatStore();"
+      + " const CONV = " + (botMode ? "'bot:probe'" : "'c0'") + ";"
+      + " const arr = chat.messages[CONV] || [];"
+      + " const last = arr[arr.length - 1] || {};"
+      + " const INVITE = " + JSON.stringify(INVITE_TEXT) + ";"
+      + " arr.push(Object.assign({}, last, { id: 9999, msg_id: 'tail-9999', local_id: 'tail-9999',"
+      + "   seq: (last.seq || 0) + 1000, ts: (last.ts || 0) + 60000, content: INVITE }));"
+      + " await new Promise((r) => setTimeout(r, 1200));"
+      + " return { len: arr.length };"
+      + "})()");
+    out.appendTail = appendTail;
+    const oscTail = await sampleOsc(120);
+    out.oscTail = oscTail;
+
+    // 反例自证：人为把 scrollTop 摆 ±6px，同一套采样必须抓到 ⇒ 判据不是空转。
+    // 必须排在上面两次采样**之后**，否则注入会污染主判据（那就是假红）。
+    // ⚠️ 摆动方向要**远离边界**：采样时列表常常正好贴底（scrollTop == scrollHeight - clientHeight），
+    //   往下摆会被浏览器夹回原值 ⇒ 上一版自证就是这么"假失败"的（写入 1387、读回 1381）。
+    const oscInjected = await cdp.eval("(async () => {"
+      + " const row = document.querySelector('[data-vlist-key]');"
+      + " let sc = row;"
+      + " while (sc && !sc.hasAttribute('data-overlayscrollbars-viewport')) sc = sc.parentElement;"
+      + " if (!sc) return { err: 'no message viewport' };"
+      + " const base = sc.scrollTop;"
+      + " const delta = base > 50 ? -6 : 6;"
+      + " const tops = [];"
+      + " await new Promise((resolve) => {"
+      + "   let n = 0;"
+      + "   const step = () => {"
+      + "     sc.scrollTop = base + (n % 2 === 0 ? 0 : delta);"
+      + "     tops.push(Math.round(sc.scrollTop * 100) / 100);"
+      + "     n += 1;"
+      + "     if (n < 30) requestAnimationFrame(step); else resolve();"
+      + "   };"
+      + "   requestAnimationFrame(step);"
+      + " });"
+      + " sc.scrollTop = base;"
+      + " return { base, delta, min: Math.min.apply(null, tops), max: Math.max.apply(null, tops) };"
+      + "})()");
+    out.oscInjected = oscInjected;
+
     const ok = samples.filter((s) => s && s.ok);
     const heights = ok.map((s) => s.h);
     out.heights = [...new Set(heights)];
@@ -19885,6 +19980,24 @@ async function runOscillate(cdp, url, botMode = 0) {
       heights.length > 0 && out.heights.length === 1,
       "40 次采样只允许一个高度值（多个 ⇒ 宽度↔内容自反馈环在振荡）",
       JSON.stringify(out.heights));
+
+    const rangeOf = (o) => (o && !o.err && typeof o.max === "number" ? o.max - o.min : null);
+    const midRange = rangeOf(oscMid);
+    const tailRange = rangeOf(oscTail);
+    check("长文本" + label + "：会议消息在列表中间时整列不振荡（90 帧 scrollTop 极差 ≤ 2px）",
+      midRange !== null && midRange <= 2,
+      "scrollTop 极差 ≤ 2px（>2 ⇒ 整列上下跳，就是用户报的『疯狂抖动』）",
+      JSON.stringify(oscMid));
+
+    check("长文本" + label + "：会议消息追加到末尾时整列不振荡（120 帧 scrollTop 极差 ≤ 2px）",
+      tailRange !== null && tailRange <= 2,
+      "scrollTop 极差 ≤ 2px（真实场景：第三方应用刚转发进来 ⇒ append ⇒ 贴底+测量校正）",
+      JSON.stringify(oscTail));
+
+    check("振荡判据自证：人为摆动 scrollTop 会被同一套采样抓住（判据不许空转）",
+      rangeOf(oscInjected) !== null && rangeOf(oscInjected) > 2,
+      "人为摆 ±6px 时极差必须 > 2px（否则说明量的是错元素或采样没跑）",
+      JSON.stringify(oscInjected));
   } catch (e) {
     check("振荡段：探针自己跑完了（没在半路抛错）", false, "正常结束", String(e));
   } finally {
