@@ -7278,25 +7278,28 @@ async function runScrollSwitch(cdp, url) {
     !!ready && ready.ok === true && ready.base && ready.base.rows >= 3 && ready.base.blank <= 1,
     "rows≥3 且 blank≤1", JSON.stringify(ready));
 
-  // 【临时诊断】聊天区：宿主 / 视口 / 滑块 三者的矩形（滑块是否超出滚动区域）
-  const barGeo = await cdp.eval(`(() => {
-    const host = document.querySelector('.vlist-no-anchor');
-    if (!host) return { why: 'no host' };
-    const vp = host.querySelector('[data-overlayscrollbars-viewport]');
-    const bar = host.querySelector('.os-scrollbar-vertical');
-    const R = (el) => { if (!el) return null; const b = el.getBoundingClientRect();
-      return { t: +b.top.toFixed(1), b: +b.bottom.toFixed(1), l: +b.left.toFixed(1), r: +b.right.toFixed(1), h: +b.height.toFixed(1) }; };
-    const hcs = getComputedStyle(host), vcs = vp ? getComputedStyle(vp) : null;
-    return {
-      host: R(host), vp: R(vp), bar: R(bar),
-      hostPad: [hcs.paddingTop, hcs.paddingRight, hcs.paddingBottom, hcs.paddingLeft],
-      vpPad: vcs ? [vcs.paddingTop, vcs.paddingRight, vcs.paddingBottom, vcs.paddingLeft] : null,
-      barParentIsVp: bar ? bar.parentElement.hasAttribute('data-overlayscrollbars-viewport') : null,
-      barOverHostBottom: bar && host ? +(bar.getBoundingClientRect().bottom - host.getBoundingClientRect().bottom).toFixed(1) : null,
-      barOverVpBottom: bar && vp ? +(bar.getBoundingClientRect().bottom - vp.getBoundingClientRect().bottom).toFixed(1) : null,
-    };
+
+  // 抓两张图给用户看：① 静止（滑块不可见）② 指针在聊天区（滑块出现）
+  const shotDir = path.join(ROOT, "test-results", "ui-shots", "scrollbar");
+  fs.mkdirSync(shotDir, { recursive: true });
+  const shotArea = async (name) => {
+    const r = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(shotDir, name + ".png"), Buffer.from(r.data, "base64"));
+  };
+  await cdp.eval(`(() => { const el = window.__probe.scroller(); if (el) el.scrollTop = 0; return true; })()`);
+  await sleep(400);
+  await shotArea("chat-idle");
+  const hp = await cdp.eval(`(() => {
+    const el = window.__probe.scroller();
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width - 30), y: Math.round(r.top + 120) };
   })()`);
-  console.log("  · 【临时诊断】滑块几何：" + JSON.stringify(barGeo));
+  if (hp) {
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: hp.x, y: hp.y });
+    await sleep(350);
+  }
+  await shotArea("chat-hover");
 
   const cached = await cdp.eval("window.__sw.run('group:swb', 1600)");
   console.log("  · 已缓存会话切换逐帧（h=隐藏 r=行数 s=骨架 b=空白px）：" + JSON.stringify(cached));
