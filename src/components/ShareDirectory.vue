@@ -23,6 +23,24 @@ const chat = useChatStore();
 const friendId = computed(() => chat.activeConv ?? "");
 const friendName = () => chat.activeConversation?.name ?? "";
 
+/**
+ * 对端是否在线（用户 2026-11-20）。
+ *
+ * 共享目录是**点对点直连**：没有中转可退，对方不在线时请求注定失败 —— 旧行为仍然先发一次，
+ * 于是弹窗停在「正在读取共享目录…」等一轮超时，最后给一句笼统的失败。
+ * 前置条件既然已知不成立，就**不发起请求**，直接把原因说清（这是本条需求的全部）。
+ *
+ * 判据与会话列表同一份数据源（好友表里的 online），不另算一套"在线"。
+ */
+const peerOnline = computed(() => {
+  const id = friendId.value;
+  if (!id) return false;
+  // 「和自己聊天」：自己永远"在线"（同一个进程读自己那份共享目录），
+  // 不能因为好友表里没有自己就判离线 —— 那是把一个可用功能误关掉。
+  if (id === app.device?.device_id) return true;
+  return chat.friends.find((f) => f.device_id === id)?.online ?? false;
+});
+
 function depth(p: string) {
   return p.split("/").length - 1;
 }
@@ -93,7 +111,9 @@ const treeQuery = useQuery(
     const fid = friendId.value;
     return {
       ...shareTreeQueryOptions(fid, api.requestShareTree),
-      enabled: props.open && !!fid,
+      // 离线时**连读都不读**（见 peerOnline 的注释）：不发这次注定失败的 IPC，
+      // 也就不会有"先转圈再失败"的那一串状态。
+      enabled: props.open && !!fid && peerOnline.value,
     };
   }),
 );
@@ -109,13 +129,17 @@ const entries = computed<ShareEntry[]>(() => snapshot.value?.entries ?? []);
 /** 共享方有条数上限：截断时必须提示，否则用户会把"前 N 条"读成"对方就这些文件"。 */
 const truncated = computed(() => snapshot.value?.truncated ?? false);
 const loading = computed(
-  () => !!friendId.value && (treeQuery.isPending.value || treeQuery.isFetching.value),
+  // ⚠️ 必须带上 peerOnline：query 被 disable 时 TanStack 的 `isPending` 仍为 true，
+  // 不门住就会在"离线不读"的分支上永远转圈 —— 比原来的超时更糟。
+  () => peerOnline.value && !!friendId.value && (treeQuery.isPending.value || treeQuery.isFetching.value),
 );
 const error = computed(() =>
   treeQuery.error.value ? detailText(treeQuery.error.value, { log: true }) : null,
 );
 
 function load() {
+  // 离线时刷新是空动作（query 被 disable）—— 明确不装样子。
+  if (!peerOnline.value) return;
   void treeQuery.refetch();
 }
 
@@ -127,6 +151,8 @@ function load() {
 async function downloadDir(e: ShareEntry) {
   const owner = snapshot.value?.friendId;
   if (!owner) return;
+  // 兜底：按钮已禁用，键盘/程序化路径仍可能到这里 —— 别发注定失败的 IPC。
+  if (!peerOnline.value) return;
   if (dirTasks.value.has(e.path)) return; // 正在下载，防重入
   const files = filesUnder(e.path);
   if (files.length === 0) {
@@ -174,6 +200,8 @@ async function download(e: ShareEntry) {
   // 结果是莫名"下载失败"，或更糟：拿到 B 上同名的另一个文件。
   const owner = snapshot.value?.friendId;
   if (!owner) return;
+  // 同 downloadDir：离线不发起（点了也只会失败）。
+  if (!peerOnline.value) return;
   try {
     await api.downloadSharedFile(owner, e.path);
     app.toast(t("share.toast.downloading", { name: e.name }), "success");
@@ -190,7 +218,8 @@ async function download(e: ShareEntry) {
     <div class="mb-2 flex items-center justify-between">
       <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("share.desc") }}</span>
       <button
-        class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+        :disabled="!peerOnline"
         :title="t('share.refresh')"
         :aria-label="t('share.refreshAria')"
         @click="load"
@@ -204,11 +233,28 @@ async function download(e: ShareEntry) {
       {{ t("share.truncated", { count: entries.length }) }}
     </div>
 
+    <!-- 离线：说明白"为什么没有列表"（点对点直连，没有中转可退），而不是让用户等一个必然失败的读取。
+         有旧清单时保留它（那是上次在线读到的），只在上方提示一行并禁用下载。 -->
+    <div
+      v-if="!peerOnline"
+      class="mb-2 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-warning-soft)] px-2 py-1 text-caption text-[var(--gosslan-warning-text-ink)]"
+      role="status"
+    >
+      {{ entries.length > 0 ? t("share.offlineBanner") : t("share.offlineHint") }}
+    </div>
+
     <div class="scrollbar-both max-h-80 overflow-y-auto">
       <!-- 首次读取：此前这里**什么都不画**，弹窗里一片空白 ⇒ 用户分不清"在读"与"对方没有文件"。
            有旧清单时不换成整块状态（保留仍可用的数据，只在上面提示一行）。 -->
       <StateBlock
-        v-if="loading && entries.length === 0"
+        v-if="!peerOnline && entries.length === 0"
+        compact
+        kind="empty"
+        :title="t('share.offlineTitle')"
+        :detail="t('share.offlineHint')"
+      />
+      <StateBlock
+        v-else-if="loading && entries.length === 0"
         compact
         kind="loading"
         :title="t('share.loading')"
@@ -268,7 +314,7 @@ async function download(e: ShareEntry) {
             v-if="hasChild(e.path)"
             type="button"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
-            :disabled="dirTasks.has(e.path)"
+            :disabled="dirTasks.has(e.path) || !peerOnline"
             :title="t('share.downloadDir')" :aria-label="t('share.downloadDir')"
             @click.stop="downloadDir(e)"
           >
@@ -282,7 +328,8 @@ async function download(e: ShareEntry) {
           <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ formatBytes(e.size) }}</span>
           <button
             type="button"
-            class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+            class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+            :disabled="!peerOnline"
             :title="t('common.download')" :aria-label="t('common.download')"
             @click="download(e)"
           >
