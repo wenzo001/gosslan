@@ -10,10 +10,14 @@ import {
   DropdownMenuPortal,
   DropdownMenuRoot,
   DropdownMenuTrigger,
+  PopoverAnchor,
+  PopoverContent,
+  PopoverPortal,
+  PopoverRoot,
 } from "reka-ui";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { useSearchKeyword } from "@/composables/useSearchKeyword";
+import { clearSearchKeyword, useSearchKeyword } from "@/composables/useSearchKeyword";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import ConversationListItem from "@/components/conversation/ConversationListItem.vue";
@@ -215,12 +219,61 @@ function linkOf(id: string): string | null {
   return peerLinkById.value.get(id) ?? null;
 }
 
-const filteredFriends = computed(() => {
-  const all = selfFriend.value ? [selfFriend.value, ...chat.friends] : chat.friends;
+/** 通讯录里的「人」全集（自己 + 好友）：过滤与下拉共用这一份真源。 */
+const allFriends = computed(() =>
+  selfFriend.value ? [selfFriend.value, ...chat.friends] : chat.friends,
+);
+
+/**
+ * **通讯录搜索的下拉候选**（用户 2026-11-20）。
+ *
+ * 「通讯录界面的搜索…应该是优先只搜索通讯录里面的人名的过滤，
+ *   它应该就是一个下拉，不应该回车弹窗。」
+ * ⇒ 这一处搜索**只**在通讯录里找人（好友 + 群成员），结果以**下拉**呈现，
+ *   点一条直接进那个会话；**回车不弹任何窗**（弹窗是「消息」页搜索的语义）。
+ *
+ * 数据源与 `filteredFriends` 同源（好友 + 自己），另加群成员 —— 群里的人
+ * 也算"通讯录里的人"，而全库消息检索归搜索结果页管。
+ */
+interface ContactHit {
+  /** 点开的目标会话 id：好友/自己 = device_id，群成员 = group:<gid>。 */
+  convId: string;
+  /** 显示名（好友昵称 / 群成员昵称）。 */
+  name: string;
+  /** 副标题：群成员标出所属群，好友没有。 */
+  sub?: string;
+  kind: "friend" | "member";
+}
+
+const MAX_CONTACT_HITS = 20;
+/** 下拉是否展开：只在通讯录视图 + 有关键词时。 */
+const contactDropOpen = ref(false);
+/** 下拉当前高亮项（键盘 ↑↓ 走）。-1 = 没有高亮。 */
+const contactActiveIdx = ref(-1);
+
+const contactHits = computed<ContactHit[]>(() => {
   const kw = query.value.trim();
-  if (!kw) return all;
-  // 按人名搜：字面 / 全拼 / 首字母都能命中（如「张」「zhang」「zs」都找得到张三）。
-  return all.filter((f) => pinyinMatch(f.nickname, kw));
+  if (props.view !== "contacts" || !kw) return [];
+  const out: ContactHit[] = [];
+  // 1) 好友（含"自己"）
+  for (const f of allFriends.value) {
+    if (pinyinMatch(f.nickname, kw)) out.push({ convId: f.device_id, name: f.nickname, kind: "friend" });
+    if (out.length >= MAX_CONTACT_HITS) return out;
+  }
+  // 2) 群成员（群名本身由群聊会话承担，这里只列人）
+  const unknownPrefix = t("common.unknownMember");
+  for (const g of chat.groups) {
+    for (const mid of g.members) {
+      const name = chat.nicknameOf(mid);
+      // 跳过"未知成员 xxxx"兜底：那不是真人名（与搜索结果页同一口径）。
+      if (name.startsWith(unknownPrefix)) continue;
+      if (pinyinMatch(name, kw)) {
+        out.push({ convId: `group:${g.id}`, name, sub: g.name, kind: "member" });
+        if (out.length >= MAX_CONTACT_HITS) return out;
+      }
+    }
+  }
+  return out;
 });
 
 /**
@@ -232,8 +285,15 @@ const filteredFriends = computed(() => {
  * 首字母来源见 `utils/nameGroup`（内置生成表，跨端一致，不依赖平台 ICU）。
  * 搜索时不做分组：此时用户在找**某个人**，分组只会把结果切碎。
  */
+/**
+ * 通讯录的**分组浏览态**：始终按首字母分组。
+ *
+ * 2026-11-20 之前这里在搜索时返回 `[]`（整列被平铺的搜索结果替换）——
+ * 那不是「下拉过滤」，而是把用户的浏览上下文整个换掉。
+ * 现在搜索结果只出现在搜索框下方的**下拉**里，列表本体保持原样。
+ */
 const friendGroups = computed(() =>
-  query.value.trim() ? [] : groupByInitial(filteredFriends.value, (f) => f.nickname),
+  groupByInitial(allFriends.value, (f) => f.nickname),
 );
 
 /**
@@ -250,6 +310,8 @@ watch(plusPopup.isActive, (mine) => {
 watch(() => props.view, () => {
   plusOpen.value = false;
   plusPopup.release();
+  // 切视图时收起通讯录下拉（它属于通讯录视图的搜索）。
+  closeContactDrop();
 });
 
 /**
@@ -276,6 +338,17 @@ function onPlusOpen(open: boolean) {
   else plusPopup.release();
 }
 
+/**
+ * 清空搜索框（清除按钮的显式出口）。
+ * 一并收掉通讯录下拉：词没了，候选列表就没有意义了。
+ */
+function clearSearchInput() {
+  keyword.value = "";
+  closeContactDrop();
+  // 焦点回到输入框：用户多半是"改一个词重搜"，不是"清空就走"。
+  searchInput.value?.focus();
+}
+
 // 聚焦搜索框（⌘F / Ctrl+F 与 macOS 菜单「会话 → 搜索」共用同一动作）
 const searchInput = ref<HTMLInputElement | null>(null);
 function focusSearch() {
@@ -290,11 +363,66 @@ function onSearchEnter(e: KeyboardEvent) {
   // ⚠️ 先让输入法走：拼音/日文候选里按回车是"选字"，不是"搜索"
   // （macOS WKWebView 上 compositionend 先于 keydown，只看 isComposing 会误判）
   if (ime.isIme(e)) return;
-  // 只在「消息」页生效：通讯录页的搜索是为了找人，回车弹"聊天记录"结果页会让人困惑
-  if (props.view !== "chats") return;
+  // 通讯录页：回车是「进下拉里高亮的那一个」，**不弹搜索结果页**
+  // （用户 2026-11-20：「通讯录界面的搜索…应该就是一个下拉，不应该回车弹窗」）。
+  if (props.view === "contacts") {
+    openContactHit();
+    return;
+  }
   const kw = keyword.value.trim();
   if (kw) emit("search-history", kw);
 }
+
+/**
+ * 打开下拉里高亮的那一条（没有高亮就取第一条）。
+ * 命中 = 通讯录里的某个人 ⇒ 直接进**那个会话**，不等回车弹窗。
+ */
+function openContactHit() {
+  const hits = contactHits.value;
+  if (!hits.length) return;
+  const hit = hits[contactActiveIdx.value] ?? hits[0];
+  if (!hit) return;
+  closeContactDrop();
+  // 群成员点开是进那个群（对端 id = group:<gid>），好友点开是进单聊。
+  // 走与「联系人右键 → 发起聊天」同一条链（chat.openConversation + 路由）。
+  const opening = chat.openConversation(hit.convId);
+  void router.push({ name: "conversation", params: { convId: hit.convId } });
+  void opening;
+  if (app.isMobile) app.mobileView = "chat";
+}
+
+/** 下拉里的 ↑↓ 键盘走位。 */
+function stepContactHit(d: number) {
+  const n = contactHits.value.length;
+  if (!n) return;
+  contactActiveIdx.value = Math.max(0, Math.min(n - 1, contactActiveIdx.value + d));
+}
+
+/** 点下拉外面 / 切视图 / 清关键词 ⇒ 收起下拉。 */
+function closeContactDrop() {
+  contactDropOpen.value = false;
+  contactActiveIdx.value = -1;
+}
+
+/**
+ * 下拉的开关跟着**关键词**走，不跟着焦点走。
+ *
+ * ⚠️ 只在 @focus 里开是错的：用户点进搜索框时框里还空（query 为空 ⇒ 不开），
+ *   随后打字**没有别的入口**再把它打开 ⇒ 下拉永远不出现（2026-11-20 探针实测：
+ *   输入后下拉里 0 个候选）。
+ *   ⇒ 改成 watch 关键词：有词就开（通讯录视图），清空就收。
+ */
+watch(
+  () => query.value.trim(),
+  (kw) => {
+    if (props.view !== "contacts") return;
+    if (kw) {
+      contactDropOpen.value = true;
+    } else {
+      closeContactDrop();
+    }
+  },
+);
 
 // 本组件在桌面端切到「链接」视图时会被 `v-else` 拆掉重挂 ⇒ 订阅必须成对，交给 initScope
 const actionScope = createInitScope();
@@ -302,6 +430,10 @@ actionScope.onDispose(onAction(APP_ACTION.focusSearch, focusSearch));
 onUnmounted(() => {
   actionScope.dispose();
   dropScope.dispose();
+  // 搜索词是**模块级单例**（见 useSearchKeyword 注释：跳转后要能从别处清掉它），
+  // ⇒ 它跨挂载存活。本组件卸载（桌面端收藏页把左列整个收起）时必须复位，
+  // 否则再展开时输入框里留着上一次的词，看着像还在搜。
+  clearSearchKeyword();
 });
 
 /** 对端在线状态：群聊/机器人返回 null（无在线概念）；单聊查好友表。 */
@@ -662,38 +794,101 @@ useEventListener(document, "click", closeFriendMenu);
 
     <!-- 搜索行（桌面 42px：搜索壳 36px + 4px 下留白，画板 searchWrap `0 12px 4px`）。
          搜索壳高度按既有判据固定 h-9（36px），画板标注 34px —— 差 2px 是判据妥协，
-         不为这 2px 去动 composerInteraction.test.ts 的 36/40 白名单。 -->
+         不为这 2px 去动 composerInteraction.test.ts 的 36/40 白名单。
+
+         ⚠️ 通讯录视图下这里挂一个 **Popover 下拉**（用户 2026-11-20）：
+         「通讯录界面的搜索…应该是优先只搜索通讯录里面的人名的过滤，
+           它应该就是一个下拉，不应该回车弹窗。」
+         ⇒ 结果只出现在下拉里，**列表本体不被替换**（下方浏览态保持分组）。
+         「消息」视图下 Popover 不开（那边是回车 → 搜索结果页的语义）。 -->
     <div
       class="flex shrink-0 items-center px-3"
       :class="app.isMobile ? 'py-1.5' : 'h-10 pb-1'"
     >
-      <!-- 搜索框底色必须用 --gosslan-field 而不是 panel：
-           暗色下 panel(#1e293b) 与本栏 list(#1e293b) 是同一个值，输入框会"消失"；
-           field 在两套主题里都与所在栏拉开一档。 -->
-      <div
-        class="flex h-[var(--gosslan-search-h)] min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-2.5 transition"
+      <PopoverRoot
+        v-model:open="contactDropOpen"
+        :modal="false"
       >
-        <Icon name="search" class="h-[15px] w-[15px] shrink-0 text-[var(--gosslan-text-2)]" />
-        <input
-          ref="searchInput"
-          v-model="keyword"
-          :maxlength="MAX_SEARCH_KEYWORD_CHARS"
-          enterkeyhint="search"
-          autocomplete="off"
-          autocorrect="off"
-          autocapitalize="off"
-          spellcheck="false"
-          class="w-full bg-transparent text-small placeholder:text-[var(--gosslan-placeholder)] outline-none focus:border-transparent"
-          :placeholder="
-            view === 'chats'
-              ? app.isMobile ? t('conv.searchLong') : t('common.search')
-              : t('common.searchContacts')
-          "
-          @keydown.enter.prevent="onSearchEnter"
-          @compositionstart="ime.onStart"
-          @compositionend="ime.onEnd"
-        />
-      </div>
+        <!-- 搜索框底色必须用 --gosslan-field 而不是 panel：
+             暗色下 panel(#1e293b) 与本栏 list(#1e293b) 是同一个值，输入框会"消失"；
+             field 在两套主题里都与所在栏拉开一档。 -->
+        <PopoverAnchor as-child>
+          <div
+            class="flex h-[var(--gosslan-search-h)] min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-2.5 transition"
+          >
+            <Icon name="search" class="h-[15px] w-[15px] shrink-0 text-[var(--gosslan-text-2)]" />
+            <input
+              ref="searchInput"
+              v-model="keyword"
+              :maxlength="MAX_SEARCH_KEYWORD_CHARS"
+              enterkeyhint="search"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              class="w-full bg-transparent text-small placeholder:text-[var(--gosslan-placeholder)] outline-none focus:border-transparent"
+              :placeholder="
+                view === 'chats'
+                  ? app.isMobile ? t('conv.searchLong') : t('common.search')
+                  : t('common.searchContacts')
+              "
+              @keydown.enter.prevent="onSearchEnter"
+              @keydown.down.prevent="stepContactHit(1)"
+              @keydown.up.prevent="stepContactHit(-1)"
+              @keydown.esc.prevent="closeContactDrop"
+
+              @compositionstart="ime.onStart"
+              @compositionend="ime.onEnd"
+            />
+            <!-- 快速清除（用户 2026-11-20：「搜索框里面的内容应该可以快速清除」）。
+                 没有它就只能逐个退格；输入了字却看不见清空的按钮 ⇒ 很容易以为搜索框坏了。
+                 点击后焦点回到输入框：可以立刻改一个词重搜，不必重新点进来。 -->
+            <button
+              v-if="keyword"
+              type="button"
+              class="tap-safe flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--gosslan-border)] text-[var(--gosslan-panel)] transition hover:opacity-80"
+              :title="t('search.clear')"
+              :aria-label="t('search.clear')"
+              @click="clearSearchInput"
+            >
+              <Icon name="x" class="h-3 w-3" />
+            </button>
+          </div>
+        </PopoverAnchor>
+        <PopoverPortal>
+          <PopoverContent
+            data-contact-drop
+            side="bottom"
+            align="start"
+            :side-offset="4"
+            :collision-padding="POPOVER_EDGE"
+            class="gosslan-menu frost z-[70] w-[min(20rem,var(--reka-popper-available-width))] p-1"
+            @open-auto-focus.prevent
+          >
+            <button
+              v-for="(h, hi) in contactHits"
+              :key="`${h.kind}-${h.convId}-${hi}`"
+              type="button"
+              :data-contact-hit="hi"
+              class="flex w-full items-center gap-2.5 rounded-[var(--gosslan-radius-xs)] px-2 py-1.5 text-left transition"
+              :class="hi === contactActiveIdx
+                ? 'bg-[var(--gosslan-list-active)]'
+                : 'hover:bg-[var(--gosslan-list-hover)]'"
+              @click="openContactHit()"
+            >
+              <AvatarBox :id="h.convId" :src="null" class="h-7 w-7" />
+              <span class="min-w-0 flex-1">
+                <span class="block truncate text-body text-[var(--gosslan-text)]" :title="h.name">{{ h.name }}</span>
+                <span v-if="h.sub" class="block truncate text-caption text-[var(--gosslan-text-2)]" :title="h.sub">{{ h.sub }}</span>
+              </span>
+            </button>
+            <p
+              v-if="!contactHits.length"
+              class="px-2 py-2 text-center text-caption text-[var(--gosslan-text-2)]"
+            >{{ t("conv.noMatchContact") }}</p>
+          </PopoverContent>
+        </PopoverPortal>
+      </PopoverRoot>
     </div>
 
     <!-- 底部内边距：移动端底部导航是 `fixed bottom-0`，不给列表留位就会永久盖住最后一行，
@@ -894,23 +1089,10 @@ useEventListener(document, "click", closeFriendMenu);
         <!-- 自己（用户 2026-09-17）：不再做成钉在「新的朋友」下面的特殊行 ——
              它作为一条**伪好友**进 `filteredFriends` / `friendGroups`，与好友同一套
              渲染/排序/搜索/点击看资料的路径（见脚本里的 `selfFriend`）。 -->
-        <!-- 搜索：平铺（用户正在找某个人，分组会把结果切碎） -->
-        <template v-if="query.trim()">
-          <FriendListItem
-            v-for="f in filteredFriends"
-            :key="f.device_id"
-            v-memo="[f.nickname, f.avatar, f.online, linkOf(f.device_id), props.activeFriendId === f.device_id]"
-            :friend="f"
-            :link="linkOf(f.device_id)"
-            :is-self="isSelfRow(f.device_id)"
-            :active="props.activeFriendId === f.device_id"
-            compact
-            @open="openFriend"
-            @context="onFriendContext"
-          />
-        </template>
-        <!-- 浏览：按首字母分组，组头 + 小头像行 -->
-        <template v-else>
+        <!-- 浏览：按首字母分组，组头 + 小头像行。
+             2026-11-20：搜索**不再**替换这个列表 —— 结果在搜索框下方的下拉里，
+             列表本体保持浏览态（用户的滚动位置与分组上下文都不被换掉）。 -->
+        <template v-if="friendGroups.length">
           <template v-for="g in friendGroups" :key="g.letter">
             <div
               class="gosslan-sticky-veil sticky top-0 z-10 px-3 py-1 text-caption font-medium text-[var(--gosslan-text-2)]"
@@ -942,11 +1124,11 @@ useEventListener(document, "click", closeFriendMenu);
           @retry="chat.refreshFriends()"
         />
         <StateBlock
-          v-else-if="filteredFriends.length === 0"
+          v-else-if="allFriends.length === 0"
           kind="empty"
-          :title="query.trim() ? t('conv.noMatchContact') : t('conv.noFriends')"
+          :title="t('conv.noFriends')"
         >
-          <PrimaryBtn v-if="!query.trim()" size="xs" @click="emit('open-add-friend')">
+          <PrimaryBtn size="xs" @click="emit('open-add-friend')">
             {{ t("common.addFriend") }}
           </PrimaryBtn>
         </StateBlock>

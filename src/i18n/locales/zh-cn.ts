@@ -116,6 +116,13 @@ export const zhCN: MessageDict = {
   "search.peopleOpen": "打开与",
   "search.peopleTitle": "{name}（{sub}）",
   "search.peopleGroupChat": "群聊",
+  // 2026-11-20：搜「15」时用户名是 15、聊天里也有 15 —— 用户分不清哪条是「人」、
+  // 哪条是「消息」。⇒ 两类命中各给一个**带图标的分区标题** + 每行一个类型徽标。
+  "search.messagesSection": "聊天记录",
+  "search.kindFriend": "好友",
+  "search.kindMember": "群成员",
+  "search.kindGroup": "群聊",
+  "search.messagesCount": "{n} 条消息",
   "search.searching": "正在搜索…",
   "search.empty": "没有找到相关聊天记录",
   "search.fail": "搜索失败",

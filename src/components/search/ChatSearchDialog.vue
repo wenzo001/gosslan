@@ -32,6 +32,7 @@ import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
+import { clearSearchKeyword } from "@/composables/useSearchKeyword";
 import { currentLocale, t } from "@/i18n";
 import BaseModal from "@/components/BaseModal.vue";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
@@ -208,9 +209,27 @@ const peopleHits = computed<PeopleHit[]>(() => {
   return out.slice(0, MAX_PEOPLE_HITS);
 });
 
-/** 点人名结果：直接开对应会话（msgId 留空 = 只进会话，复用现成跳转链）。 */
+/**
+ * 人名命中的**类型徽标**（用户 2026-11-20：「我没法判断这条 15 是这个用户的窗口，
+ * 还是说那个消息的哪些消息窗口」）。
+ *
+ * 光靠头像分不出来（用户名和关键词长得一样），所以每行挂一枚**说清身份**的徽标：
+ * 好友 / 群成员 / 群聊。消息命中那一侧则由分区标题 + 「共 N 条」计数区分。
+ */
+function peopleKindLabel(kind: PeopleHit["kind"]): string {
+  if (kind === "friend") return t("search.kindFriend");
+  if (kind === "member") return t("search.kindMember");
+  return t("search.kindGroup");
+}
+
+/**
+ * 点人名结果：直接开对应会话（msgId 留空 = 只进会话，复用现成跳转链）。
+ */
 function openPerson(hit: PeopleHit) {
   emit("open-conversation", { convId: hit.convId, msgId: "" });
+  // 搜索"用完了"：左栏搜索框里的词要清掉（用户 2026-11-20：「搜索界面关掉之后，
+  // 聊天界面搜索框里的搜索词应该是清掉的」——留着会让人以为还在搜这个）。
+  clearSearchKeyword();
   if (!props.routeDriven) emit("close");
 }
 
@@ -318,6 +337,8 @@ function openHit(idx: number) {
   // 鼠标点的那一行也同步成键盘高亮，免得弹窗还没关时视觉焦点停在上一次的位置。
   activeIdx.value = Math.max(0, Math.min((activeGroup.value?.messages.length ?? 1) - 1, idx));
   emit("open-conversation", target);
+  // 同 openPerson：用完搜索就收工，左栏搜索框的词清掉。
+  clearSearchKeyword();
   // 路由驱动时，父级会把 /search 替换成 /chats/:id，关闭由那次导航完成。
   // 这里再 emit close 会并发触发一次 router.back()，与 replace 抢历史（可能退回来源页）。
   if (!props.routeDriven) emit("close");
@@ -448,6 +469,7 @@ function enterChat() {
   const g = activeGroup.value;
   if (!g) return;
   emit("open-conversation", { convId: g.conv_id, msgId: "" });
+  clearSearchKeyword();
   if (!props.routeDriven) emit("close");
 }
 
@@ -572,9 +594,11 @@ function showSender(group: ChatSearchGroup): boolean {
     <div class="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-divider)] desktop:md:h-[52vh] desktop:md:flex-none desktop:md:flex-row">
       <!-- 左栏 -->
       <OverlayScroll class="gosslan-scroll max-h-[38%] w-full shrink-0 border-b border-[var(--gosslan-divider-strong)] desktop:md:max-h-none desktop:md:w-[240px] desktop:md:border-b-0 desktop:md:border-r"><div class="flex flex-col">
-        <!-- 人名命中（好友 / 群成员 / 群名）：支持汉字全拼与首字母。点一下直接进聊天。 -->
+        <!-- 人名命中（好友 / 群成员 / 群名）：支持汉字全拼与首字母。点一下直接进聊天。
+             分区标题带**图标**（user-round），与下面「聊天记录」区（message-circle）一眼可分。 -->
         <template v-if="peopleHits.length">
-          <p class="shrink-0 px-3 pb-1 pt-2 text-caption text-[var(--gosslan-text-2)]">
+          <p class="flex shrink-0 items-center gap-1.5 px-3 pb-1 pt-2 text-caption font-medium text-[var(--gosslan-text-2)]">
+            <Icon name="user-round" class="h-3.5 w-3.5 shrink-0" />
             {{ t("search.peopleSection") }}
           </p>
           <button
@@ -589,7 +613,14 @@ function showSender(group: ChatSearchGroup): boolean {
           >
             <MessageAvatar :id="p.convId" :name="p.name" />
             <span class="min-w-0 flex-1">
-              <span class="block truncate text-body text-[var(--gosslan-text)]" :title="p.name" v-html="highlightText(p.name, keyword)"></span>
+              <span class="flex items-center gap-1.5">
+                <span class="min-w-0 flex-1 truncate text-body text-[var(--gosslan-text)]" :title="p.name" v-html="highlightText(p.name, keyword)"></span>
+                <!-- 类型徽标：这行是「一个人」而不是「一条消息」 -->
+                <span
+                  class="shrink-0 rounded-full bg-[var(--gosslan-hover)] px-1.5 py-px text-micro text-[var(--gosslan-text-2)]"
+                  :title="p.sub ? t('search.peopleTitle', { name: p.name, sub: p.sub }) : peopleKindLabel(p.kind)"
+                >{{ peopleKindLabel(p.kind) }}</span>
+              </span>
               <span v-if="p.sub" class="block truncate text-caption text-[var(--gosslan-text-2)]" :title="p.sub">{{ p.sub }}</span>
             </span>
           </button>
@@ -616,6 +647,16 @@ function showSender(group: ChatSearchGroup): boolean {
           compact
           :title="t('search.empty')"
         />
+        <!-- 消息命中区：**必须有分区标题**（用户 2026-11-20：分不清哪条是人、哪条是消息）。
+             图标用 message-circle，与上面人名区的 user-round 配成一对。 -->
+        <p
+          v-if="groups.length"
+          class="flex shrink-0 items-center gap-1.5 px-3 pb-1 pt-2 text-caption font-medium text-[var(--gosslan-text-2)]"
+        >
+          <Icon name="message-circle" class="h-3.5 w-3.5 shrink-0" />
+          {{ t("search.messagesSection") }}
+          <span class="text-[var(--gosslan-text-2)]">{{ t("search.messagesCount", { n: total }) }}</span>
+        </p>
         <button
           v-for="g in groups"
           :key="g.conv_id"
@@ -646,11 +687,19 @@ function showSender(group: ChatSearchGroup): boolean {
       <!-- 右栏 -->
       <div class="flex min-w-0 flex-1 flex-col">
         <div class="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-4">
+          <!-- 右栏是「**某个人/群的消息**」这一侧 ⇒ 头部自报身份：
+               ① 当前会话名（用户 2026-11-20：搜 15 时分不清这些消息是谁说的）；
+               ② 该会话的命中条数（不是全库总数 —— 全库总数在左栏分区标题上）。 -->
           <span
-            class="min-w-0 flex-1 truncate text-body text-[var(--gosslan-text)]"
-            :title="keyword.trim() ? t('search.header', { n: total, kw: keyword.trim() }) : t('search.hint')"
+            v-if="activeGroup"
+            class="min-w-0 shrink-0 max-w-[45%] truncate text-body font-medium text-[var(--gosslan-text)]"
+            :title="activeGroup.name"
+          >{{ activeGroup.name }}</span>
+          <span
+            class="min-w-0 flex-1 truncate text-caption text-[var(--gosslan-text-2)]"
+            :title="keyword.trim() ? t('search.header', { n: activeGroup?.total ?? 0, kw: keyword.trim() }) : t('search.hint')"
           >
-            {{ keyword.trim() ? t("search.header", { n: total, kw: keyword.trim() }) : t("search.hint") }}
+            {{ keyword.trim() ? t("search.header", { n: activeGroup?.total ?? 0, kw: keyword.trim() }) : t("search.hint") }}
           </span>
           <button
             v-if="activeGroup"
