@@ -189,7 +189,7 @@ function formatDate(seconds: number | null | undefined): string {
         type="button"
         class="tap-safe rounded-[var(--gosslan-radius-md)] border px-2 py-0.5 text-meta transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
         :class="state.source === src
-          ? 'border-[var(--gosslan-primary)] text-[var(--gosslan-primary)]'
+          ? 'border-[var(--gosslan-primary)] text-[var(--gosslan-accent-ink)]'
           : 'border-[var(--gosslan-border)] text-[var(--gosslan-text-2)]'"
         :disabled="state.phase === 'installing'"
         :aria-label="t('settings.updates.switchTo', { source: t(SOURCE_LABELS[src]) })"

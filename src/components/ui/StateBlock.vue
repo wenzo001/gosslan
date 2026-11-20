@@ -104,7 +104,7 @@ const iconClass = computed(() =>
     <button
       v-if="kind === 'error' && retryLabel && inline"
       type="button"
-      class="tap-safe shrink-0 text-[var(--gosslan-primary)] underline-offset-2 hover:underline"
+      class="tap-safe shrink-0 text-[var(--gosslan-accent-ink)] underline-offset-2 hover:underline"
       @click="$emit('retry')"
     >
       {{ retryLabel }}

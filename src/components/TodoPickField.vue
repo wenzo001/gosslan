@@ -91,7 +91,7 @@ function pick(value: string) {
               v-for="o in options"
               :key="o.value"
               class="gosslan-menu-item"
-              :class="o.value === modelValue ? 'font-medium text-[var(--gosslan-primary)]' : ''"
+              :class="o.value === modelValue ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
               :disabled="o.value === modelValue"
               :aria-current="o.value === modelValue ? 'true' : undefined"
               @select="pick(o.value)"

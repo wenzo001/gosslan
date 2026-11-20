@@ -762,7 +762,7 @@ useEventListener(document, "click", closeFriendMenu);
             </PrimaryBtn>
             <button
               type="button"
-              class="mt-1 h-9 w-full text-small font-medium text-[var(--gosslan-primary)]"
+              class="mt-1 h-9 w-full text-small font-medium text-[var(--gosslan-accent-ink)]"
               @click="emit('open-group')"
             >
               {{ t("common.createGroup") }}

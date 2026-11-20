@@ -254,7 +254,7 @@ function pick(value: string) {
           :key="o.value"
           class="gosslan-menu-item"
           :data-lang="o.value || 'auto'"
-          :class="normalizeCodeLanguage(modelValue) === (o.value || null) ? 'font-medium text-[var(--gosslan-primary)]' : ''"
+          :class="normalizeCodeLanguage(modelValue) === (o.value || null) ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
           :aria-current="normalizeCodeLanguage(modelValue) === (o.value || null) ? 'true' : undefined"
           @select="pick(o.value)"
         >

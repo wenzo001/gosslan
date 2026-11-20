@@ -106,7 +106,7 @@ function applyCustom(close: () => void) {
         :key="o.value"
         type="button"
         class="gosslan-menu-item"
-        :class="o.value === modelValue ? 'font-medium text-[var(--gosslan-primary)]' : ''"
+        :class="o.value === modelValue ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
         :aria-current="o.value === modelValue ? 'true' : undefined"
         @click="pick(o.value, close)"
       >

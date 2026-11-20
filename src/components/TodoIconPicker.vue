@@ -43,7 +43,7 @@ function pick(key: TodoCustomIcon) {
     <template v-if="props.disabled">
       <Icon
         :name="TODO_CUSTOM_ICON_NAMES[props.modelValue]"
-        class="h-4 w-4 text-[var(--gosslan-primary)]"
+        class="h-4 w-4 text-[var(--gosslan-accent-ink)]"
         :aria-label="translate(TODO_CUSTOM_ICON_LABEL_KEY[props.modelValue])"
         :title="translate(TODO_CUSTOM_ICON_LABEL_KEY[props.modelValue])"
       />

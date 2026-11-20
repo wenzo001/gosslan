@@ -215,7 +215,7 @@ async function onClose() {
         :href="store.pending.payload.url"
         target="_blank"
         rel="noreferrer noopener"
-        class="block truncate rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] px-2.5 py-2 text-xs text-[var(--gosslan-primary)] underline decoration-dotted"
+        class="block truncate rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] px-2.5 py-2 text-xs text-[var(--gosslan-accent-ink)] underline decoration-dotted"
         :title="store.pending.payload.url"
       >
         {{ store.pending.payload.url }}
@@ -282,7 +282,7 @@ async function onClose() {
           <Icon
             v-if="selected.includes(c.id)"
             name="check"
-            class="h-4 w-4 shrink-0 text-[var(--gosslan-primary)]"
+            class="h-4 w-4 shrink-0 text-[var(--gosslan-accent-ink)]"
             aria-hidden="true"
           />
         </button>

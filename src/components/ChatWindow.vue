@@ -1941,7 +1941,7 @@ function retryHistory() {
       aria-live="polite"
     >
       <Spinner
-        class="text-[var(--gosslan-primary)]"
+        class="text-[var(--gosslan-accent-ink)]"
         size-class="h-3.5 w-3.5"
         decorative
       />
@@ -2246,7 +2246,7 @@ function retryHistory() {
           role="status"
         >
           <span class="truncate" :title="t('chat.history.loadFail')">{{ t("chat.history.loadFail") }}</span>
-          <button class="font-medium text-[var(--gosslan-primary)]" @click="retryHistory">
+          <button class="font-medium text-[var(--gosslan-accent-ink)]" @click="retryHistory">
             {{ t("common.retry") }}
           </button>
           <button

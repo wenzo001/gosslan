@@ -803,7 +803,7 @@ const selectedRole = computed(() => {
             type="button"
             class="tap-safe rounded-[var(--gosslan-radius-md)] border px-2 py-1 text-caption transition"
             :class="listFilter === f
-              ? 'border-[var(--gosslan-primary)] text-[var(--gosslan-primary)]'
+              ? 'border-[var(--gosslan-primary)] text-[var(--gosslan-accent-ink)]'
               : 'border-[var(--gosslan-border)] text-[var(--gosslan-text-2)]'"
             :aria-pressed="listFilter === f"
             @click="listFilter = f"
@@ -924,7 +924,7 @@ const selectedRole = computed(() => {
       >
         <div class="max-w-[280px] text-center text-caption leading-relaxed text-[var(--gosslan-text-2)]">
           {{ t("topology.empty") }}
-          <button class="pointer-events-auto mt-2 block w-full text-[var(--gosslan-primary)]" @click="refreshAll">{{ t("topology.refresh") }}</button>
+          <button class="pointer-events-auto mt-2 block w-full text-[var(--gosslan-accent-ink)]" @click="refreshAll">{{ t("topology.refresh") }}</button>
         </div>
       </div>
 

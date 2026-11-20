@@ -59,7 +59,7 @@ function pick(value: unknown) {
             :key="String(o.value)"
             :value="o.value"
             class="gosslan-menu-item"
-            :class="o.value === modelValue ? 'font-medium text-[var(--gosslan-primary)]' : ''"
+            :class="o.value === modelValue ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
           >
             <SelectItemText class="truncate" :title="o.label">{{ o.label }}</SelectItemText>
             <SelectItemIndicator class="ml-auto">

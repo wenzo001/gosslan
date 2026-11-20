@@ -377,7 +377,7 @@ async function add(peerId: string) {
       class="mb-3 flex w-full items-center gap-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-soft)] px-3 py-2.5 text-left transition hover:opacity-90"
       @click="botWizardOpen = true"
     >
-      <Icon name="sparkles" class="h-5 w-5 shrink-0 text-[var(--gosslan-primary)]" />
+      <Icon name="sparkles" class="h-5 w-5 shrink-0 text-[var(--gosslan-accent-ink)]" />
       <span class="min-w-0 flex-1">
         <span class="block text-body font-medium">{{ t("bot.wizard.addPersonal") }}</span>
         <span class="block truncate text-caption text-[var(--gosslan-text-2)]" :title="t('bot.wizard.addPersonalHint')">{{ t("bot.wizard.addPersonalHint") }}</span>

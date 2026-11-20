@@ -397,7 +397,7 @@ function readerAvatar(id: string): string | null {
         class="receipt-layer" :data-active="state === 'read'"
         data-receipt-state="read" aria-hidden="true"
       >
-        <Icon name="check-check" class="h-4 w-4 text-[var(--gosslan-primary)]" />
+        <Icon name="check-check" class="h-4 w-4 text-[var(--gosslan-accent-ink)]" />
       </span>
     </span>
     <!-- 发送中的取消键。⚠️ 必须是上面那个 `role="img"` 图标的**兄弟节点**，不能塞进它内部：
