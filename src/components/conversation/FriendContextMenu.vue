@@ -17,6 +17,8 @@ const emit = defineEmits<{
   (e: "close"): void;
   /** 发起聊天：打开与该好友的会话（父组件负责切换视图）。 */
   (e: "chat"): void;
+  /** 查看资料（J1-5：通讯录点击改直达会话后，资料页的入口收拢到右键/长按菜单）。 */
+  (e: "profile"): void;
   /** 删除好友（危险操作，父组件走二次确认）。 */
   (e: "confirm"): void;
 }>();
@@ -27,6 +29,10 @@ const emit = defineEmits<{
     <DropdownMenuItem class="gosslan-menu-item" @select="emit('chat')">
       <Icon name="message-square" />
       {{ t("conv.startChat") }}
+    </DropdownMenuItem>
+    <DropdownMenuItem class="gosslan-menu-item" @select="emit('profile')">
+      <Icon name="user-round" />
+      {{ t("friend.viewProfile") }}
     </DropdownMenuItem>
     <DropdownMenuSeparator class="gosslan-menu-sep" />
     <DropdownMenuItem

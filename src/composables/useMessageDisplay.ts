@@ -1,6 +1,7 @@
 import { currentLocale, t } from "@/i18n";
 import { computed, toValue, type CSSProperties, type MaybeRefOrGetter } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
+import { useChatStore } from "@/stores/useChatStore";
 import { findPreset, parsePeerStyle, readableToneOn, resolveChatColors, UI_TONE_INKS } from "@/utils/chatStyle";
 import { fmtDateTime, fmtTimeDivider } from "@/utils/time";
 import { shouldShowTimeDivider } from "@/utils/previewMetrics";
@@ -177,15 +178,18 @@ export function useMessageDisplay(opts: {
   const sendState = computed(() => normalizeSendState(message.value.status));
   /**
    * 停在这一格太久 ⇒ 它其实是在等对端上线（离线队列最长留 7 天），不是在发。
-   * 判据在 `utils/sendWaiting`（纯函数、有边界用例）；这里只把"现在几点"喂给它。
+   * 判据在 `utils/sendWaiting`（纯函数、有边界用例）；这里把"现在几点"与
+   * "对端在线状态"喂给它 —— J2-5：明确离线时排队态不再等满 2 分钟才可分。
    */
   const nowMs = useNowMs();
+  const chat = useChatStore();
   const sendWaiting = computed(() =>
     isWaitingForPeer(
       {
         status: message.value.status,
         ts: message.value.ts,
         msgId: message.value.msg_id,
+        peerOnline: chat.peerOnlineOf(message.value.conv_id),
       },
       nowMs.value,
     ),

@@ -705,6 +705,7 @@ export const enUS: MessageDict = {
 
   // ---- Composer ----
   "chat.composer.inputAria": "Message input",
+  "chat.composer.peerOffline": "The other side is offline: the message will be kept locally (up to 7 days) and delivered automatically once they come back online",
   "chat.composer.emoji": "Emoji",
   "emoji.frequent": "Frequent",
   "emoji.all": "All emoji",
@@ -1689,6 +1690,11 @@ export const enUS: MessageDict = {
   "friend.request.withdrawnUnconfirmed": "Withdrawn (unconfirmed) — they may still see it",
   "friend.request.cancel": "Cancel",
   "friend.request.withdrawnByPeer": "They withdrew the friend request",
+  "friend.request.acceptedByPeer": "{name} accepted your friend request - say hello",
+  "friend.request.rejectedByPeer": "Your friend request was declined",
+  "friend.viewProfile": "View profile",
+  "msg.fileVerified": "Verified",
+  "msg.fileVerifiedHint": "Passed the SHA-256 integrity check after download - identical to what the sender sent",
   "friend.request.withdrawnToast": "Friend request withdrawn",
   "friend.request.wantsToAdd": "wants to add you as a friend",
   "friend.request.empty": "No friend requests yet",

@@ -5,6 +5,7 @@ import { t } from "@/i18n";
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { useAppStore } from "@/stores/useAppStore";
+import { useChatStore } from "@/stores/useChatStore";
 import { MAX_PASTED_IMAGE_BYTES, PASTED_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import EmojiPicker from "@/components/EmojiPicker.vue";
 import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
@@ -64,6 +65,11 @@ const emit = defineEmits<{
 }>();
 
 const app = useAppStore();
+const chat = useChatStore();
+/** 对端明确离线（J2-2）：群/机器人/自聊是 null（无在线概念），不显示提示。 */
+const peerOffline = computed(
+  () => !!props.convId && chat.peerOnlineOf(props.convId) === false,
+);
 
 /**
  * 当前会话是不是「和自己聊天」。自聊只支持文本（用户 2026-09-16），
@@ -1430,6 +1436,18 @@ async function onPaste(e: ClipboardEvent) {
           <span class="min-w-0 flex-1 truncate" :title="m.name">{{ m.name }}</span>
         </button>
       </OverlayScroll>
+      <!-- J2-2（旅程走查 2026-11-20）：对端离线时输入框上方给一行说明 —— 原来输入框
+           不禁用也不提示，用户不知道消息发出去会发生什么（共享目录页有横幅，聊天窗没有对应物）。
+           口径：不禁用（离线消息本来就该能发，入队等补发是系统既有行为），只说明白后果。
+           与共享目录横幅同一套 warning 令牌；群聊/机器人/自聊（peerOnlineOf=null）不显示。 -->
+      <div
+        v-if="peerOffline"
+        class="mb-1.5 flex items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-warning-soft)] px-2 py-1 text-caption text-[var(--gosslan-warning-text-ink)]"
+        role="status"
+      >
+        <Icon name="clock3" class="h-3 w-3 shrink-0" />
+        <span>{{ t("chat.composer.peerOffline") }}</span>
+      </div>
       <!-- 引用预览条：右键"引用"后出现在输入框上方，可取消 -->
       <div
         v-if="quote"

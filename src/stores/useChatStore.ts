@@ -15,6 +15,8 @@ import { type TodoRowsByConv } from "@/utils/todos";
 import { t } from "@/i18n";
 import { detailText } from "@/composables/useErrorText";
 import { mergePeerList } from "@/utils/peerMerge";
+import { fileFailReasonText } from "@/utils/fileFailReason";
+import { isSelfConversation } from "@/utils/selfChat";
 import { markFriendsOnlineFrom } from "@/utils/friendOnline";
 import { onAction, registerActionTypes } from "@tauri-apps/plugin-notification";
 import type { Conversation, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, MessageRecord, Peer, PendingMessageOp, PendingRequest, OutgoingFriendRequest, UpdaterStatus, ContentTransfer, TransferInfo } from "@/types";
@@ -307,6 +309,21 @@ export const useChatStore = defineStore("chat", () => {
 
   const myDeviceId = computed(() => app.device?.device_id ?? "");
 
+  /**
+   * 某个会话的**对端**在线状态（J2-2/J2-5，旅程走查 2026-11-20）：
+   *   `null` = 没有"在线/离线"概念（群聊 / 机器人 / 和自己聊天）；单聊查好友表。
+   * 与 `ConversationList.vue` 的 `isOnline` 同一套判定（三种 null 场景逐字一致）——
+   * 那边是列表行的状态点，这里是聊天窗的离线提示与排队判据，语义必须同源。
+   * 返回 `false`（明确离线）是唯一会触发 UI 提示的值。
+   */
+  function peerOnlineOf(convId: string): boolean | null {
+    if (!convId) return null;
+    if (convId.startsWith("group:") || convId.startsWith("bot:")) return null;
+    if (isSelfConversation({ id: convId }, app.device?.device_id)) return null;
+    return friendById.value.get(convId)?.online ?? false;
+  }
+
+
 
 
   const refreshGuard = new StaleGuard();
@@ -473,13 +490,23 @@ export const useChatStore = defineStore("chat", () => {
           ...rawPendingRequests.value.filter((r) => r.from !== req.from),
         ];
       },
-      onFriendAccepted: async () => {
+      onFriendAccepted: async (peerId) => {
         await refreshFriends();
         await refreshConversations();
         await refreshOutgoingRequests();
+        // J1-1（旅程走查 2026-11-20）：接受后原来只刷数据 —— 无 toast、不进会话，
+        // 新用户要多走 2~3 步才发现"可以聊了"。给一次明确反馈并指路（不自动跳会话：
+        // 用户可能正在别的事里，打断比少走两步更伤）。
+        // 事件载荷带 peer_id，但 api 层过去直接丢弃（handler 无参）⇒ 这里补收。
+        const name = nicknameOf(peerId);
+        app.toast(t("friend.request.acceptedByPeer", { name }), "success");
       },
-      onFriendRejected: () => {
+      onFriendRejected: (peerId) => {
         void refreshOutgoingRequests();
+        // J1-2：拒绝是终态，原来只能看到"等待"那一行悄悄消失。peerId 目前没有
+        // 可用的展示名（不是好友、出站申请行不含昵称），文案用通用口径。
+        void peerId;
+        app.toast(t("friend.request.rejectedByPeer"), "info");
       },
       onFriendRequestWithdrawn: async (e) => {
         if (e.direction === "inbound") {
@@ -618,6 +645,14 @@ export const useChatStore = defineStore("chat", () => {
         // 5.16.91：载荷多了 `fail_code` ⇒ 连原因一起盖。只盖 status 也能"看起来对"，
         // 但气泡会退回"发送失败"这句没有信息量的话，直到重启后回库读 —— 而码明明就在事件里。
         markFailureInCache(messages.value, p.msg_id, p.fail_code);
+        // J2-4（旅程走查 2026-11-20）：cancelled 一直有 toast，失败终态却只能靠
+        // 气泡上的红叹号被动发现 —— 用户离开屏幕就什么都不知道。原因与气泡 tooltip
+        // 走同一个家（`fileFailReasonText`），没码回落通用文案，绝不念裸码。
+        const reason = p.fail_code ? fileFailReasonText(p.fail_code, t) : "";
+        app.toast(
+          reason ? t("msg.sendFailedWith", { reason }) : t("msg.sendFailed"),
+          "error",
+        );
       },
       onMessageStatusChanged: (msgId, status) => {
         // 后端 emit 的状态变更事件（取消 / 补发 / 删好友 / 群文件终态）。
@@ -840,6 +875,7 @@ export const useChatStore = defineStore("chat", () => {
   return {
     peers,
     friends,
+    peerOnlineOf,
     initialized,
     eventBridgeOk,
     groupFileDiag,

@@ -21,11 +21,25 @@ export function isTransferBacked(msgId: string | null | undefined): boolean {
 }
 
 export function isWaitingForPeer(
-  input: { status: string; ts: number; msgId?: string | null },
+  input: {
+    status: string;
+    ts: number;
+    msgId?: string | null;
+    /**
+     * 会话对端的在线状态（J2-5，旅程走查 2026-11-20）：`null` = 无在线概念
+     * （群 / 机器人 / 自己 / 查不到）；`false` = **明确**离线。
+     * 原判据只看时间（2 分钟）⇒ 前 2 分钟"对方离线"与"正在发"视觉不可分；
+     * 发送那一刻就知道对端离线的话，排队态不必等满 2 分钟 —— 立即可分。
+     */
+    peerOnline?: boolean | null;
+  },
   now: number,
 ): boolean {
   if (input.status !== "sending") return false;
   if (isTransferBacked(input.msgId)) return false;
   if (!(input.ts > 0)) return false;
+  // 明确离线 ⇒ 立即按"等对端"渲染（时钟 + 等待文案）；true/null 不参与判定，
+  // 保持原时间口径（在线时 2 分钟内的转圈仍然说得通：可能真的正在发）。
+  if (input.peerOnline === false) return true;
   return now - input.ts >= WAITING_FOR_PEER_AFTER_MS;
 }

@@ -136,6 +136,20 @@ function onCardClick(e: MouseEvent) {
             <span>·</span>
             <span class="truncate" :title="note">{{ note }}</span>
           </template>
+          <!-- J3-3（旅程走查 2026-11-20）：SHA-256 全量校验通过才落 ready ⇒ ready 即"已验证"，
+               但界面上从来没有这个正向信号，"完整"只能靠没报错来推断。给接收方一个明确的
+               已验证标识；发送方的文件来自本机磁盘、没经过校验，不显示（不冒领）。
+               颜色用 accent-ink 而不是绿 —— 与已读双勾同一口径（绿色易与"在线"混淆）。 -->
+          <template v-if="ready && !mine">
+            <span>·</span>
+            <span
+              class="flex items-center gap-0.5 text-[var(--gosslan-accent-ink)]"
+              :title="t('msg.fileVerifiedHint')"
+            >
+              <Icon name="check-circle2" class="h-3 w-3" />
+              {{ t("msg.fileVerified") }}
+            </span>
+          </template>
         </div>
       </div>
       <!-- 微信式按钮逻辑：未就绪才显示——接收中＝转圈+百分比；等待传输＝下载按钮。

@@ -718,6 +718,7 @@ export const zhCN: MessageDict = {
 
   // ---- 聊天输入区 ----
   "chat.composer.inputAria": "消息输入框",
+  "chat.composer.peerOffline": "对方当前离线：消息会先保留在本地（最长 7 天），对方上线后自动送达",
   "chat.composer.emoji": "表情",
   "emoji.frequent": "常用",
   "emoji.all": "全部表情",
@@ -1722,6 +1723,11 @@ export const zhCN: MessageDict = {
   "friend.request.withdrawnUnconfirmed": "已撤回（未确认），对方可能仍会看到",
   "friend.request.cancel": "取消",
   "friend.request.withdrawnByPeer": "对方撤回了好友申请",
+  "friend.request.acceptedByPeer": "{name} 已同意你的好友申请，点开就能聊了",
+  "friend.request.rejectedByPeer": "对方拒绝了你的好友申请",
+  "friend.viewProfile": "查看资料",
+  "msg.fileVerified": "已验证完整",
+  "msg.fileVerifiedHint": "接收完成后已通过 SHA-256 完整性校验，内容与发送方一致",
   "friend.request.withdrawnToast": "已撤回好友申请",
   "friend.request.wantsToAdd": "请求添加你为好友",
   "friend.request.empty": "还没有好友申请",
