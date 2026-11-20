@@ -63,9 +63,6 @@ mod macos_bookmark;
 /// 见 macos_window.rs 注释（与自绘标题栏的取舍）。
 #[cfg(target_os = "macos")]
 mod macos_window;
-/// 窗口外壳的系统级对齐：Windows 用 DWM 圆角（Win10 自动降级成直角）。
-/// 与 `macos_window` 对称 —— 那一边补的是 AppKit 的圆角/阴影，这一边补 DWM 的。
-mod window_chrome;
 /// 进程内存 / 系统提交量 / GDI·USER 句柄 / 帧读聚合的**现场读数**。
 /// 接线三处：`state.rs` 的 `RUNTIME_SNAPSHOT`、`watchdog.rs` 的 HANG 现场、下面那个分配失败钩子。
 mod mem_diag;
@@ -112,6 +109,9 @@ mod watchdog;
 /// 纯解析/判据在 macOS 上也跑单测；真正碰桌面目录的入口只在 Windows 编译。
 #[cfg(any(target_os = "windows", test))]
 mod win_shortcut;
+/// 窗口外壳的系统级对齐：Windows 用 DWM 圆角（Win10 自动降级成直角）。
+/// 与 `macos_window` 对称 —— 那一边补的是 AppKit 的圆角/阴影，这一边补 DWM 的。
+mod window_chrome;
 mod worker_supervisor;
 
 use tauri::Manager;

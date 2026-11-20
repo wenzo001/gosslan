@@ -965,19 +965,17 @@ CASES: list[Case] = [
         tags=["frontend", "new-guards", "todo"],
     ),
     Case(
-        name="滚动条留白从「两侧」拆成「单边」必须被抓住（用户那句「左小右大」）",
-        why="卡片 p-5 左右各 20px。滚动区给正文留出滚动条落脚的 8px，就必须同时把同样宽度从左侧"
-        "     补回来，否则右侧净留白比左侧多出一截 —— 这正是用户 2026-10-12 报的那条。"
-        "     2026-11-07 用户补正后，这一对从「`pr-[…] -mr-[…]` 补偿 hack」统一换成规范类"
-        "     `.scrollbar-both`（`scrollbar-gutter: stable both-edges`）。"
-        "     真「算出来对称」的判据在运行时探针（--only=scrollstable，并带一条撤掉预留必变红的反向"
-        "     对照），而那层 CI 不跑 => 这里先钉住「两侧没被拆成单边」。"
-        "     注入 = 把 `.scrollbar-both` 的 `stable both-edges` 拆成 `stable`（只剩滚动条那一侧）。"
-        "     ⚠️ 必须锚在 `.scrollbar-both` 整块上：裸写 `scrollbar-gutter: stable both-edges;` 会先"
-        "     命中 `.gosslan-scroll`，判据报的是 SC-02 的文案、这条 Case 的期望串对不上（2026-11-07 真红过）。",
+        name="`.scrollbar-both` 复活（两侧 gutter 口径加回来）必须被抓住",
+        why="2026-11-20 滚动条统一改成 true overlay（OverlayScrollbars，**不占布局宽度**），"
+        "     两侧留白由 overlay 自然保证，`.scrollbar-both`（`scrollbar-gutter: stable both-edges`）"
+        "     随 gutter 口径一起退役 —— designGuards SC-01 现在**反向**钉住「style.css 不该再有"
+        "     这个类」（留 gutter 会让内容凭空窄 8px，两侧口径又变成第二套数字）。"
+        "     注入 = 把 `.scrollbar-both` 整块写回 style.css，必须由 SC-01 判据点名并红。"
+        "     ⚠️ 锚在文件顶部的 `html {` 块上（全局滚动口径块另有专属用例，别混注入）。",
         file=ROOT / "src" / "style.css",
         injections=[
-            (".scrollbar-both {\n  scrollbar-gutter: stable both-edges;", ".scrollbar-both {\n  scrollbar-gutter: stable;"),
+            ("html {\n  -webkit-tap-highlight-color: transparent;",
+             ".scrollbar-both {\n  scrollbar-gutter: stable both-edges;\n}\nhtml {\n  -webkit-tap-highlight-color: transparent;"),
         ],
         cmd=node_test(
             "src/utils/designGuards.test.ts",
@@ -985,7 +983,7 @@ CASES: list[Case] = [
             "src/utils/titleBarIcons.test.ts",
         ),
         cwd=ROOT,
-        expect_fail_hint="否则内容偏左",
+        expect_fail_hint="`.scrollbar-both` 已退役",
         tags=["frontend", "new-guards", "modal"],
     ),
     Case(
@@ -1135,7 +1133,7 @@ CASES: list[Case] = [
           :selected-key="selectedKey"
           @select="onSelect"
         />
-      </div>
+      </OverlayScroll>
       <LogDetailPanel v-if="selectedRow && wide\"""",
             """        <LogRows
           v-else
@@ -1146,7 +1144,7 @@ CASES: list[Case] = [
           @select="onSelect"
           v-html="raw"
         />
-      </div>
+      </OverlayScroll>
       <LogDetailPanel v-if="selectedRow && wide\"""",
         )],
         cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
@@ -1311,33 +1309,34 @@ CASES: list[Case] = [
         tags=["frontend", "readability", "new-guards"],
     ),
     Case(
-        name="滚动容器去掉 scrollbar-gutter 预留（有/无滚动条宽度又变两套）",
-        why="2026-11-07 用户补正：设置里「关于」比别的分区窄，根因是滚动条占位 ——"
-        "「有滚动条 / 没有滚动条应该是一样的宽度」。修法是把全局滚动口径钉成"
-        "`scrollbar-gutter: stable`（两侧版 `.scrollbar-both` 用 `stable both-edges`）。"
-        "本条把全局口径里的那行删掉（等价于回退到默认 auto），必须由 SC-01 判据点名并红 ——"
-        "否则「通用」和「关于」的内容盒宽会差 8px，用户看到的偏窄问题回来。",
+        name="滚动容器把 scrollbar-gutter 加回来（overlay 口径下内容凭空窄 8px）必须被抓住",
+        why="2026-11-20 滚动条统一改成 true overlay（OverlayScrollbars）：轨道透明、hover 才显、"
+        "**不占布局宽度** ⇒ `scrollbar-gutter` 一族随之退役 —— 留 gutter 会让内容凭空窄 8px，"
+        "与标题/头部错开同一条竖线。designGuards SC-01 现在**反向**钉住：全局滚动口径块"
+        "（`.overflow-y-auto/.overflow-auto/.overflow-y-scroll`）里不许再有 scrollbar-gutter，"
+        "`.scrollbar-both` 同批退役。本条把 `scrollbar-gutter: stable` 写回全局口径块，"
+        "必须由 SC-01 判据点名并红 —— 防 gutter 口径被无意加回来。",
         file=ROOT / "src" / "style.css",
         injections=[(
-            ".overflow-y-auto,\n.overflow-auto,\n.overflow-y-scroll {\n  overscroll-behavior: contain;\n  scrollbar-gutter: stable;\n}",
-            ".overflow-y-auto,\n.overflow-auto,\n.overflow-y-scroll {\n  overscroll-behavior: contain;\n}",
+            ".overflow-y-auto,\n.overflow-auto,\n.overflow-y-scroll {\n",
+            ".overflow-y-auto,\n.overflow-auto,\n.overflow-y-scroll {\n  scrollbar-gutter: stable;\n",
         )],
         cmd=node_test("src/utils/designGuards.test.ts"),
         cwd=ROOT,
-        expect_fail_hint="全局滚动口径缺",
+        expect_fail_hint="全局滚动口径里不许再有 scrollbar-gutter",
         tags=["frontend", "scroll", "new-guards"],
     ),
     Case(
         name="滚动容器重新用 padding 补偿滚动条宽度",
-        why="上一轮临时把 BaseModal 的内容区做成 `pr-[var(--gosslan-scroll-gutter)] -mr-[…]`，"
+        why="旧口径曾把弹窗内容区做成 `pr-[var(--gosslan-scroll-gutter)] -mr-[…]`，"
         "那是「靠内距 + 负边距把滚动条位置抵掉」的宽度补偿 hack：一旦滚动条出现/消失，"
-        "内容盒宽仍然变，且内容不居中。2026-11-07 统一改成 `.gosslan-scroll` 的"
-        "「两侧恒定 gutter + 固定 8px 空隙」。"
-        "本条把补偿 hack 加回去，必须由 SC-01 判据点名并红（判据明令禁止这类 hack）。",
+        "内容盒宽仍然变，且内容不居中。2026-11-20 起滚动区统一是 overlay（不占位），"
+        "BaseModal 的滚动宿主 `<OverlayScroll class=\"gosslan-scroll min-h-0 flex-1\">`；"
+        "任何写 `--gosslan-scroll-gutter` 的行都会由 SC-01 判据点名并红（判据明令禁止这类 hack）。",
         file=ROOT / "src" / "components" / "BaseModal.vue",
         injections=[(
-            'class="gosslan-scroll min-h-0 flex-1 overflow-y-auto"',
-            'class="gosslan-scroll min-h-0 flex-1 overflow-y-auto pr-[var(--gosslan-scroll-gutter)]"',
+            '<OverlayScroll class="gosslan-scroll min-h-0 flex-1">',
+            '<OverlayScroll class="gosslan-scroll min-h-0 flex-1 pr-[var(--gosslan-scroll-gutter)]">',
         )],
         cmd=node_test("src/utils/designGuards.test.ts"),
         cwd=ROOT,
