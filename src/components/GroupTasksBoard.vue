@@ -30,6 +30,15 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { isAndroid, isMac } from "@/utils/platform";
 import { decideDefaultFilter, type TodoFilter } from "@/utils/todoFilter";
+import {
+  advanceSeen,
+  countUnseen,
+  loadSeen,
+  pruneSeen,
+  saveSeen,
+  seenScopeKey,
+  type SeenMap,
+} from "@/utils/todoReplySeen";
 import { dropPointToCss } from "@/utils/dropPoint";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -54,7 +63,7 @@ import CharCounter from "@/components/ui/CharCounter.vue";
 import type { BotView, TodoFocusRequest } from "@/types";
 import type { TodoTagCandidate } from "@/api";
 import {
-  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, autoArchiveDaysLeft, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, foldTodoReplies, isBotOwnedTodo, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
+  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, autoArchiveDaysLeft, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, foldTodoReplies, foldTodoRepliesByTodo, isBotOwnedTodo, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import {
   isTodoRowsLoaded,
   todoRowsLoadState,
@@ -687,6 +696,32 @@ const detailReplies = computed(() =>
     ? foldTodoReplies(chat.groupTodoRows[convId.value] ?? [], detailItem.value.todoId)
     : [],
 );
+
+// ---------------- 回复未读（用户 2026-11-20） ----------------
+/**
+ * 卡片上的「N 条新回复」+ 打开后把那几条画得明显一点。
+ *
+ * 已读游标**只在本机**（见 `utils/todoReplySeen` 头部：跨设备要加表，属评审档）；
+ * 这里持有的是响应式副本，改动后立刻落盘，两个窗口（主窗 / 群任务窗）共用同一份
+ * localStorage ⇒ 在一个窗口看过，另一个窗口的角标也会消失。
+ */
+const replySeen = ref<SeenMap>(loadSeen());
+/** 一次遍历折出全表回复（逐行调用 foldTodoReplies 是 O(行数 × 记录数)，见 todos.ts）。 */
+const repliesByTodo = computed(() => foldTodoRepliesByTodo(chat.groupTodoRows[convId.value] ?? []));
+/** 每行的未读数：只在 >0 时进表（模板里 `get` 判空，不给每行留一个 0）。 */
+const unseenReplyCounts = computed(() => {
+  const out = new Map<string, number>();
+  for (const x of todos.value) {
+    const list = repliesByTodo.value.get(x.todoId);
+    if (!list?.length) continue;
+    const key = seenScopeKey(convId.value, x.todoId);
+    const n = countUnseen(list, replySeen.value[key] ?? 0, myId.value || undefined);
+    if (n > 0) out.set(x.todoId, n);
+  }
+  return out;
+});
+/** 本次打开的任务里"上次没看过"的回复 id（进详情的当下算一次，切换任务时重算）。 */
+const highlightReplyIds = ref<string[]>([]);
 /** 来源任务（linked_from 指向的那条）；查不到（被删/未加载）⇒ null。 */
 const detailLinkedFrom = computed(() => {
   const src = detailItem.value?.linkedFrom;
@@ -730,12 +765,29 @@ function openDetail(x: TodoItem) {
   // 两栏形态里右栏常驻：换选另一条时，把上一条按来源打开的相册收掉，
   // 否则右栏已经换了任务、大图还停在旧任务那几张。
   if (detailId.value && detailId.value !== x.todoId) preview.closeIfFrom(`task:${detailId.value}`);
+  // 未读：进详情这一刻先按**旧游标**算出"哪几条是新的"（高亮用），再把游标推到最新。
+  // 顺序不能反 —— 先推游标再算，就永远算不出新的了。
+  const key = seenScopeKey(convId.value, x.todoId);
+  const list = repliesByTodo.value.get(x.todoId) ?? [];
+  const prev = replySeen.value[key] ?? 0;
+  highlightReplyIds.value = list
+    .filter((r) => r.ts > prev && r.author !== myId.value)
+    .map((r) => r.replyId);
+  if (list.length) {
+    const next = advanceSeen(prev, list);
+    if (next !== prev) {
+      replySeen.value = pruneSeen({ ...replySeen.value, [key]: next });
+      saveSeen(replySeen.value);
+    }
+  }
   detailId.value = x.todoId;
   // 详情里的标签候选要反映"别端刚用过"的最新计数，打开时重读一次（失败不影响编辑）。
   void loadTagCandidates();
 }
 function closeDetail() {
   detailId.value = null;
+  // 关掉详情就不再高亮：下次打开要按那时的游标重新算，别把上一次的结论带过去。
+  highlightReplyIds.value = [];
 }
 
 /**
@@ -1951,11 +2003,20 @@ watch(
               <!-- 完成态**不再划删除线**（用户 2026-09-24 #37：「完成的不要加横线，像删除一样」）：
                    完成是这条任务的结论，划掉会让它读成"作废"。状态由左缘色条 + 右侧胶囊 +
                    分组头三处一起说清楚，不靠划线。 -->
-              <div
-                class="truncate text-body font-medium text-[var(--gosslan-text)]"
-                :title="x.title"
-              >
-                {{ x.title }}
+              <!-- 回复未读（2026-11-20）：有"我还没看过的别人的回复"时，标题右侧挂一枚计数。
+                   点开详情即清（游标推到最新），详情里那几条会带浅底高亮。 -->
+              <div class="flex min-w-0 items-center gap-1.5">
+                <div
+                  class="truncate text-body font-medium text-[var(--gosslan-text)]"
+                  :title="x.title"
+                >
+                  {{ x.title }}
+                </div>
+                <span
+                  v-if="unseenReplyCounts.get(x.todoId)"
+                  class="shrink-0 rounded-full bg-[var(--gosslan-primary-active)] px-1.5 text-caption font-medium leading-4 text-[var(--gosslan-on-primary)]"
+                  :title="t('todo.unreadReplies', { n: unseenReplyCounts.get(x.todoId) ?? 0 })"
+                >{{ unseenReplyCounts.get(x.todoId) }}</span>
               </div>
               <!-- 一行里的层级（用户 2026-09-29 需求汇总七：「重点信息不清晰，要突出发起人和指派人，
                    其他文字弱化」）：**名字**用主文本色 + 中等字重，**标签**留在次级色。
@@ -2106,6 +2167,7 @@ watch(
             :history="detailHistory"
             :source-key="`task:${detailItem.todoId}`"
             :replies="detailReplies"
+            :highlight-reply-ids="highlightReplyIds"
             :can-reply="canReplyDetail"
             :self-id="myId"
             :linked-from-todo="detailLinkedFrom"
@@ -2161,6 +2223,7 @@ watch(
     :mention-names="mentionNames"
     :self-mention="selfMention"
     :replies="detailReplies"
+    :highlight-reply-ids="highlightReplyIds"
     :can-reply="canReplyDetail"
     :self-id="myId"
     :linked-from-todo="detailLinkedFrom"

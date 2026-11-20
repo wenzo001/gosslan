@@ -1112,20 +1112,44 @@ export function parseTodoReply(rec: MessageRecord): TodoReply | null {
 }
 
 /**
+ * 一次遍历折出**所有任务**的回复（`todoId → 回复[]`）。
+ *
+ * 为什么要批量版：看板每一行都要显示"几条新回复"，逐行调用 `foldTodoReplies` 是
+ * O(行数 × 记录数) —— 群里几十条任务、上千条事件时会在每次渲染里扫全表。
+ * 单个任务的取数（详情）仍走 `foldTodoReplies`，它现在**委托**给这里 ⇒
+ * "去重 / 平铺 / 正序"只有一份实现，不会两处排序口径漂移。
+ */
+export function foldTodoRepliesByTodo(records: MessageRecord[]): Map<string, TodoReply[]> {
+  const byTodo = new Map<string, Map<string, TodoReply>>();
+  for (const rec of records) {
+    const r = parseTodoReply(rec);
+    if (!r) continue;
+    let bucket = byTodo.get(r.todoId);
+    if (!bucket) {
+      bucket = new Map();
+      byTodo.set(r.todoId, bucket);
+    }
+    if (!bucket.has(r.replyId)) bucket.set(r.replyId, r);
+  }
+  const out = new Map<string, TodoReply[]>();
+  for (const [todoId, bucket] of byTodo) {
+    out.set(
+      todoId,
+      [...bucket.values()].sort((a, b) =>
+        a.seq !== b.seq ? a.seq - b.seq : a.msgId < b.msgId ? -1 : 1,
+      ),
+    );
+  }
+  return out;
+}
+
+/**
  * 折叠某条任务的全部回复，按 (seq, msg_id) **正序**（旧→新，平铺楼层）。
  * 按 reply_id 去重：同一条回复经多投递路径重复 emit 时只留一份（msg_id 幂等之外的双保险）。
  * 不做嵌套：parentReplyId 只是引用，渲染层画"A 回复 B"，不递归展开。
  */
 export function foldTodoReplies(records: MessageRecord[], todoId: string): TodoReply[] {
-  const seen = new Map<string, TodoReply>();
-  for (const rec of records) {
-    const r = parseTodoReply(rec);
-    if (!r || r.todoId !== todoId) continue;
-    if (!seen.has(r.replyId)) seen.set(r.replyId, r);
-  }
-  return [...seen.values()].sort((a, b) =>
-    a.seq !== b.seq ? a.seq - b.seq : a.msgId < b.msgId ? -1 : 1,
-  );
+  return foldTodoRepliesByTodo(records).get(todoId) ?? [];
 }
 
 /**
