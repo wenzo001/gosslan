@@ -64,6 +64,11 @@ const props = defineProps<{
   sourceKey: string | null;
   /** 本任务的回复（平铺、旧→新，用户 2026-11-13）；由宿主从 groupTodoRows 折叠注入。 */
   replies?: TodoReply[];
+  /**
+   * 本次打开时"上次没看过"的那几条回复 id（用户 2026-11-20：点开之后回复要稍微明显一点）。
+   * 只影响观感：宿主在打开详情的那一刻按已读游标算一次，随后清空，不参与任何判定。
+   */
+  highlightReplyIds?: string[];
   /** 能否回复（任意群成员）；由宿主按成员资格判定。 */
   canReply?: boolean;
   /** 本机 device_id（标记"我"的回复）。 */
@@ -219,6 +224,18 @@ watch(
   },
 );
 const repliesList = computed(() => props.replies ?? []);
+
+/**
+ * 本次打开时"上次没看过"的回复（用户 2026-11-20：点开之后那几条要稍微明显一点）。
+ *
+ * 只给浅底，不做红点/闪烁 —— 这是"我看到有新内容了"的提示，不是错误。
+ * 用 `--gosslan-primary-light` 而不是软色：两种外观下它都与所在面板拉开一档，
+ * 且不会和"失败/警告"的语义色混淆。
+ */
+const newReplyIds = computed(() => new Set(props.highlightReplyIds ?? []));
+function isNewReply(replyId: string): boolean {
+  return newReplyIds.value.has(replyId);
+}
 function replyAuthor(id: string): string {
   return props.nameOf(id);
 }
@@ -462,7 +479,12 @@ function submitReply() {
         {{ t("todo.repliesTitle") }}<span v-if="repliesList.length">{{ t("todo.repliesCount", { n: repliesList.length }) }}</span>
       </div>
       <ul v-if="repliesList.length" class="gosslan-selectable space-y-2.5">
-        <li v-for="r in repliesList" :key="r.replyId" class="text-meta leading-relaxed">
+        <li
+          v-for="r in repliesList"
+          :key="r.replyId"
+          class="text-meta leading-relaxed"
+          :class="isNewReply(r.replyId) ? '-mx-2 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-primary-light)] px-2 py-1' : ''"
+        >
           <div class="flex items-baseline gap-2">
             <span class="shrink-0 font-medium text-[var(--gosslan-text)]">{{ replyAuthor(r.author) }}</span>
             <span v-if="parentAuthorOf(r)" class="shrink-0 text-[var(--gosslan-text-2)]">

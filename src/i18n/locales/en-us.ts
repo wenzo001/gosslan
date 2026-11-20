@@ -1156,6 +1156,7 @@ export const enUS: MessageDict = {
   "todo.attrNoTags": "No tags",
   "todo.copyTask": "Copy task",
   "todo.copyTaskHint": "Copy the title and description (title only when there is none), ready to paste into an AI",
+  "todo.unreadReplies": "{n} new replies",
   "todo.category.task": "Task",
   "todo.category.requirement": "Requirement",
   "todo.category.bug": "Bug",

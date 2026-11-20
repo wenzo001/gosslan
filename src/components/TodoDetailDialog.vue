@@ -79,6 +79,8 @@ const props = defineProps<{
   history?: TodoHistoryEntry[];
   /** 任务回复 / 关联任务（用户 2026-11-13）：由看板注入，透传给共用字段区。 */
   replies?: TodoReply[];
+  /** 本次打开要画得明显一点的回复（上次没看过的那些），由看板按已读游标算出。 */
+  highlightReplyIds?: string[];
   canReply?: boolean;
   selfId?: string;
   linkedFromTodo?: TodoItem | null;
@@ -172,6 +174,7 @@ const fullCode = computed(() =>
       :history="history"
       :source-key="sourceKey"
       :replies="replies"
+      :highlight-reply-ids="highlightReplyIds"
       :can-reply="canReply"
       :self-id="selfId"
       :linked-from-todo="linkedFromTodo"
