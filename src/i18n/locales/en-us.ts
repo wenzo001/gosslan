@@ -1150,6 +1150,12 @@ export const enUS: MessageDict = {
 "todo.priority.high": "Urgent",  "todo.priority.normal": "Normal",  "todo.priority.low": "Low",
   "todo.categoryLabel": "Type",
   "todo.categoryHint": "Task / Requirement / Bug; defaults to Task. All three share one list, told apart by a tag.",
+  // Collapsed attribute row (2026-11-20): summary + empty values + one-click copy
+  "todo.attrsToggle": "Show/hide attributes (date, type, tags)",
+  "todo.attrUnset": "No date",
+  "todo.attrNoTags": "No tags",
+  "todo.copyTask": "Copy task",
+  "todo.copyTaskHint": "Copy the title and description (title only when there is none), ready to paste into an AI",
   "todo.category.task": "Task",
   "todo.category.requirement": "Requirement",
   "todo.category.bug": "Bug",
