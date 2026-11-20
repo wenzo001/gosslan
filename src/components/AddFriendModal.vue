@@ -254,9 +254,11 @@ async function toggleChannel(ch: ChannelStatus, next: boolean) {
     // 取反会与用户意图相反（同一个开关在设置页被改过时尤其明显）。
     await app.setChannelEnabled(ch.channel, next);
   } catch (e) {
-    // 打开失败：先申请权限（Android「附近的设备」）再重试一次
+    // 打开失败：先申请权限（Android「附近的设备」）再重试一次。
+    // ⚠️ 硬件层面不可用（没有适配器 / 本构建没编进去）时**绝不申请权限**：
+    //    那个系统弹框解决不了"没有硬件"，只会让用户以为授权后就能用（用户 2026-11-20）。
     let ok = false;
-    if (next) {
+    if (next && ch.available !== false) {
       try {
         await api.requestBlePermissions();
         await app.setChannelEnabled(ch.channel, true);

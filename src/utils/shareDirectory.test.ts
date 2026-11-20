@@ -38,3 +38,30 @@ test("群文件面板：可定位到聊天，并给出聊天记录里的时间",
   // 父组件必须接住：关面板 + 复用既有定位（含逐页回溯）
   assert.ok(win.includes('@locate="(id) => { filesOpen = false; void locateMessage(id); }"'), "ChatWindow 没接住定位");
 });
+
+/**
+ * 用户 2026-11-20 实报：对方离线时弹窗卡在「正在读取共享目录…」等超时，最后给一句笼统失败。
+ * 共享目录是点对点直连 —— 前置条件（对端在线）不成立时**不该发起读取**。
+ */
+test("共享目录：对方离线就不发起读取（连 loading 都不许转）", () => {
+  const src = read("src/components/ShareDirectory.vue");
+  assert.ok(src.includes("const peerOnline = computed("), "没有对端在线判定 ⇒ 离线仍会去读");
+  assert.match(
+    src,
+    /enabled: props\.open && !!fid && peerOnline\.value/,
+    "query 没被 peerOnline 门住 ⇒ 离线时仍发一次注定失败的 IPC",
+  );
+  // TanStack 的 disabled query `isPending` 恒为 true：loading 不门住会永远转圈（比超时更糟）
+  assert.match(
+    src,
+    /peerOnline\.value && !!friendId\.value && \(treeQuery\.isPending/,
+    "loading 没门住 ⇒ 离线分支上会一直转圈",
+  );
+  assert.ok(src.includes("if (!peerOnline.value) return;"), "下载路径没有离线兜底");
+  // 反例自证：把 enabled 里的门控去掉，同一条正则必须不再命中
+  const broken = src.replace(
+    "enabled: props.open && !!fid && peerOnline.value",
+    "enabled: props.open && !!fid",
+  );
+  assert.doesNotMatch(broken, /enabled: props\.open && !!fid && peerOnline\.value/, "反例自证：正则在读注释");
+});

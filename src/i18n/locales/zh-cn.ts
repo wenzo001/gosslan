@@ -1788,6 +1788,10 @@ export const zhCN: MessageDict = {
   "share.refresh": "刷新目录",
   "share.refreshAria": "刷新共享目录",
   "share.loading": "正在读取共享目录…",
+  // 离线前置（2026-11-20）：对方不在线时点对点必然失败 ⇒ 不发起读取，直接说明原因
+  "share.offlineTitle": "对方不在线",
+  "share.offlineHint": "共享目录是点对点直连，对方上线后才能读取（不会走服务器中转）。",
+  "share.offlineBanner": "对方已离线：下面是上次读到的清单，暂时无法下载。",
   "share.loadFail": "共享目录读取失败",
   "share.empty": "对方未设置共享目录或目录为空",
   "share.truncated": "对方目录条目过多，仅显示前 {count} 项",

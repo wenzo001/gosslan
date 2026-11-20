@@ -270,6 +270,13 @@ async function toggleBluetooth() {
     }
     // 打开失败**最常见的**原因是 Android 缺「附近的设备」运行时权限：
     // 先申请（系统弹框）再自动重试一次，而不是让用户自己去设置里翻。
+    // ⚠️ 但硬件层面不可用（没有适配器 / 本构建没编进去）时**绝不申请权限** ——
+    //    那个弹框解决不了"没有硬件"，只会让用户以为授权后就能用（用户 2026-11-20）。
+    if (btStatus.value?.available === false) {
+      app.toastError(e, t("settings.network.toast.btFail"));
+      await loadChannels();
+      return;
+    }
     let retried = false;
     try {
       await api.requestBlePermissions();
