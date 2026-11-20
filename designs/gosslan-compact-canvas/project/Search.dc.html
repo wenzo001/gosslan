@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>聊天记录搜索</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#0f1012;-webkit-font-smoothing:antialiased}
+svg{display:block}
+button{font-family:inherit}
+.tr{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style>
+</helmet>
+<div style="width:1000px;height:680px;position:relative;background:#f1f2f6;overflow:hidden"><div style="position:absolute;inset:0;background:rgba(15,16,18,0.32);display:flex;align-items:center;justify-content:center;z-index:10">
+      <div style="width:620px;background:#fff;border-radius:14px;border:1px solid #e5e6e9;box-shadow:0 16px 48px rgba(15,16,18,0.18);overflow:hidden">
+        <div style="height:48px;display:flex;align-items:center;padding:0 18px;border-bottom:1px solid #eef0f3;font-size:14px;font-weight:600">搜索聊天记录</div>
+        <div style="padding:18px">
+      <div style="height:40px;border-radius:8px;background:#edeef2;border:1px solid #356ae8;display:flex;align-items:center;gap:8px;padding:0 12px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><input value="紧凑规范" style="border:0;background:transparent;outline:0;font-size:13px;width:100%;color:#0f1012"></div>
+      <div style="display:flex;gap:8px;margin:12px 0"><span style="font-size:11px;padding:4px 10px;border-radius:6px;background:#e5eeff;color:#1b44aa">全部发送人</span><span style="font-size:11px;padding:4px 10px;border-radius:6px;background:#f6f8fb;color:#4d4f51">今天 ▾</span><span style="margin-left:auto;font-size:11px;color:#4d4f51">共 4 条与"紧凑规范"的聊天记录</span></div>
+      <div style="max-height:360px;overflow:hidden;border:1px solid #eef0f3;border-radius:8px"><div style="padding:12px 16px;border-bottom:1px solid #eef0f3">
+      <div style="display:flex;align-items:center;gap:8px"><div style="width:24px;height:24px;border-radius:999px;background:#888fdd;color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px">张</div><span style="font-size:13px;font-weight:600">张伟</span><span style="font-size:11px;color:#68696c;margin-left:auto">今天 09:18</span></div>
+      <div style="font-size:12px;color:#4d4f51;margin-top:6px;line-height:18px">收到，我这边<b style="color:#1b44aa">看一下紧凑规范</b>再确认</div>
+    </div><div style="padding:12px 16px;border-bottom:1px solid #eef0f3">
+      <div style="display:flex;align-items:center;gap:8px"><div style="width:24px;height:24px;border-radius:999px;background:#888fdd;color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px">张</div><span style="font-size:13px;font-weight:600">张伟</span><span style="font-size:11px;color:#68696c;margin-left:auto">今天 09:18</span></div>
+      <div style="font-size:12px;color:#4d4f51;margin-top:6px;line-height:18px">收到，我这边<b style="color:#1b44aa">看一下紧凑规范</b>再确认</div>
+    </div><div style="padding:12px 16px;border-bottom:1px solid #eef0f3">
+      <div style="display:flex;align-items:center;gap:8px"><div style="width:24px;height:24px;border-radius:999px;background:#888fdd;color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px">张</div><span style="font-size:13px;font-weight:600">张伟</span><span style="font-size:11px;color:#68696c;margin-left:auto">今天 09:18</span></div>
+      <div style="font-size:12px;color:#4d4f51;margin-top:6px;line-height:18px">收到，我这边<b style="color:#1b44aa">看一下紧凑规范</b>再确认</div>
+    </div><div style="padding:12px 16px;border-bottom:1px solid #eef0f3">
+      <div style="display:flex;align-items:center;gap:8px"><div style="width:24px;height:24px;border-radius:999px;background:#888fdd;color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px">张</div><span style="font-size:13px;font-weight:600">张伟</span><span style="font-size:11px;color:#68696c;margin-left:auto">今天 09:18</span></div>
+      <div style="font-size:12px;color:#4d4f51;margin-top:6px;line-height:18px">收到，我这边<b style="color:#1b44aa">看一下紧凑规范</b>再确认</div>
+    </div></div>
+    </div>
+      </div>
+    </div></div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview": {"width": 1000, "height": 680}}'>
+class Component extends DCLogic {
+  renderVals() { return {  }; }
+}
+</script>
+</body>
+</html>

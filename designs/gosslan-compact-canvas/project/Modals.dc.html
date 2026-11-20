@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>确认弹窗</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#0f1012;-webkit-font-smoothing:antialiased}
+svg{display:block}
+</style>
+</helmet>
+<div style="width:1000px;height:680px;position:relative;background:#f1f2f6;overflow:hidden">
+  <div style="height:40px;background:#e8e9ed;border-bottom:1px solid #e5e6e9;display:flex;align-items:center;padding:0 14px;position:relative">
+    <div style="display:flex;gap:8px"><span style="width:11px;height:11px;border-radius:999px;background:#ff5f57"></span><span style="width:11px;height:11px;border-radius:999px;background:#febc2e"></span><span style="width:11px;height:11px;border-radius:999px;background:#28c840"></span></div>
+    <div style="position:absolute;left:0;right:0;text-align:center;font-size:12px;font-weight:600;color:#4d4f51">小院儿</div>
+  </div>
+
+  <div style="position:absolute;inset:40px 0 0 0;background:rgba(15,16,18,0.32);display:flex;align-items:center;justify-content:center">
+    <div style="width:400px;background:#ffffff;border-radius:14px;border:1px solid #e5e6e9;box-shadow:0 16px 48px rgba(15,16,18,0.18);overflow:hidden">
+      <div style="padding:20px 20px 0">
+        <div style="font-size:15px;font-weight:600">删除好友</div>
+        <div style="font-size:13px;line-height:20px;color:#4d4f51;margin-top:10px">确定删除好友「张伟」？</div>
+        <div style="margin-top:10px;display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;gap:8px;font-size:12px;line-height:18px;color:#4d4f51"><span style="color:#00aa6f;flex:0 0 auto">✓</span>聊天记录保留在本地，可通过「添加好友」重新添加</div>
+          <div style="display:flex;gap:8px;font-size:12px;line-height:18px;color:#4d4f51"><span style="color:#00aa6f;flex:0 0 auto">✓</span>对方不受影响，仅解除本机好友关系</div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:18px 20px 20px">
+        <button style="height:32px;padding:0 14px;border:1px solid #d6d7da;border-radius:8px;background:#fff;font-size:12px;color:#0f1012">取消</button>
+        <button style="height:32px;padding:0 14px;border:0;border-radius:8px;background:#cf3546;color:#fff;font-size:12px;font-weight:600">删除好友</button>
+      </div>
+    </div>
+  </div>
+
+  <div style="position:absolute;left:26px;bottom:20px;font-size:11px;color:#4d4f51;max-width:620px;line-height:17px">删除好友是可逆的：记录留在本机、对方不受影响。文案如实说明，不用「无法撤销」这类恐吓措辞。</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1000,"height":680}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

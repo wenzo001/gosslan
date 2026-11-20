@@ -32,16 +32,22 @@
 
 ### 1.2 圆角梯度（唯一来源：`src/style.css`）
 
+> **2026-11-20 更正**：下表数值此前停留在 Pulse 改版前的旧梯度（4/6/8/12/16），与
+> 唯一事实源 `src/style.css` 的实际 token（6/8/10/14/20）不符，已据实同步。
+> 完整梯度现为 **6 / 8 / 10 / 14 / 20**，另有输入外壳专用 `--gosslan-radius-2xl`=22px。
+> 统一标准见 [`docs/COMPACT-STANDARD.md`](COMPACT-STANDARD.md)。
+
 | Token                   | 值      | 用途                             |
 | ----------------------- | ------ | ------------------------------ |
-| `--gosslan-radius-xs`   | 4px    | 内联小色块：@提及、行内代码、搜索高亮            |
-| `--gosslan-radius-sm`   | 6px    | 紧凑控件：下拉项、工具条按钮、气泡、头像           |
-| `--gosslan-radius-md`   | 8px    | 标准控件：列表行、导航项、菜单容器、输入框、设置行、代码卡片 |
-| `--gosslan-radius-lg`   | 12px   | 浮层与卡片：弹层、设置分组、大卡片              |
-| `--gosslan-radius-xl`   | 16px   | 大面板：模态、资料卡                     |
+| `--gosslan-radius-xs`   | 6px    | 内联小色块：@提及、行内代码、搜索高亮            |
+| `--gosslan-radius-sm`   | 8px    | 紧凑控件：下拉项、工具条按钮、小徽标            |
+| `--gosslan-radius-md`   | 10px   | 标准控件：列表行、导航项、菜单容器、输入框、设置行   |
+| `--gosslan-radius-lg`   | 14px   | 浮层与卡片：弹层、设置分组、代码卡片            |
+| `--gosslan-radius-xl`   | 20px   | 大面板：模态、资料卡、品牌底盘              |
+| `--gosslan-radius-2xl`  | 22px   | 输入外壳专用（与内部 8px 内距保持同心）        |
 | `--gosslan-radius-pill` | 9999px | 胶囊（等同 `rounded-full`）          |
 
-语义别名（保留旧名，值统一来自上表）：`--gosslan-avatar-radius`=sm、`--gosslan-item-radius`=md、`--gosslan-bubble-radius`=sm。
+语义别名（保留旧名，值统一来自上表）：`--gosslan-avatar-radius`=pill、`--gosslan-item-radius`=md、`--gosslan-bubble-radius`=20px（= xl）。
 
 **用法**：一律写 `rounded-[var(--gosslan-radius-md)]`，不要写 `rounded-lg` 这类 Tailwind 字面值——  
 字面值无法全局调，也看不出"这一档是给谁用的"。方向变体同理：`rounded-t-[var(--gosslan-radius-md)]`。
@@ -52,11 +58,13 @@
 内圆角 = 外圆角 − 内外间距          （结果 < 0 时取 0）
 ```
 
-| 场景        | 外                 | 间距        | 内（正确）                           |
-| --------- | ----------------- | --------- | ------------------------------- |
-| 右键菜单项在菜单里 | `rounded-lg` 8px  | `p-1` 4px | **4px（xs）**                     |
-| 表情格子在面板里  | `rounded-xl` 12px | `p-2` 8px | **4px（xs）**                     |
-| 代码卡片在气泡里  | 气泡 6px（sm）        | 0（卡片贴边）   | **6px（sm）**，即 `rounded-t-[…sm]` |
+> 举例一律用 token + 公式表达，不写会漂移的字面 px（数值以 §1.2 表为准）。
+
+| 场景        | 外                | 间距        | 内（正确）                              |
+| --------- | ---------------- | --------- | ------------------------------------ |
+| 右键菜单项在菜单里 | 菜单容器 `radius-lg` | `p-1` 4px | `calc(radius-lg − 4px)`              |
+| 表情格子在面板里  | 面板 `radius-xl`   | `p-2` 8px | `calc(radius-xl − 8px)`              |
+| 代码卡片在气泡里  | 气泡 `bubble-radius` | 0（卡片贴边） | 与气泡同档，仅上方成角 `rounded-t-[…]`       |
 
 > 若容器设了 `overflow-hidden`，子元素不画圆角也可以（容器会裁）；但只要子元素自己画了圆角，  
 > 就必须按公式取值——否则会出现 Apple 明确禁止的"**内角外翻**"（内比外还圆）。

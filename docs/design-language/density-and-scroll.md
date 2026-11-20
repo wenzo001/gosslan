@@ -19,7 +19,7 @@
 | 滚动指示器可配置为「始终显示 / 自动 / 滚动时显示」，系统设置会改变是否预留空间 | [Apple HIG — Scroll views](https://developer.apple.com/design/human-interface-guidelines/scroll-views) | A |
 | 4dp 间距栅格；触控目标最小 48dp | [Material 3 — Layout](https://m3.material.io/foundations/layout/understanding-layout/spacing)、[Accessibility](https://m3.material.io/foundations/accessible-design/accessibility-basics)（2024） | A |
 | 控件高度 24 / 32 / 40 三档（small / medium / large） | [Fluent 2 — Design tokens](https://fluent2.microsoft.design/)（Microsoft，2023+） | B |
-| `window.density.layout = compact`：更短的标题栏、去掉 workbench 部件之间的空隙、收紧面板内部间距 | [VS Code 1.136](https://code.visualstudio.com/updates/v1_136/)、[1.141](https://code.visualstudio.com/updates/v1_141)、[Custom Layout](https://code.visualstudio.com/docs/configure/custom-layout) | A |
+| `window.density.layout = compact`：去掉 workbench 各面板之间的空隙、收紧面板内部间距（两条；「更短标题栏」另属 `window.titleBarStyle`，不属 compact。2026-11-20 据官方原文更正） | [VS Code 1.136](https://code.visualstudio.com/updates/v1_136/)、[1.147](https://code.visualstudio.com/updates/v1_147/)、[Custom Layout](https://code.visualstudio.com/docs/configure/custom-layout) | A |
 | VS Code 资源管理器列表行高约 22px、树缩进约 8px | **参照量级（估算，非官方文档数值）** | E |
 | 聊天类产品会话列表行高：Telegram 桌面约 72pt、微信桌面约 64pt | **参照量级（估算）** | E |
 | 非文本内容（含滚动条等指示器）对比度 ≥ 3:1 | [WCAG 2.2 SC 1.4.11](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html)（沿用 `sources.md` S22） | A |

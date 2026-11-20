@@ -71,13 +71,15 @@ const text = computed(() =>
   gap: 2px;
   min-width: 0;
 }
+/* 字号/圆角一律读令牌：这几条横幅属于「窗口级兜底 UI」，
+   最容易在改版时被漏掉，所以不留字面量（12px = footnote 档，8px = sm 档）。 */
 .hang-title {
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   font-weight: 600;
-  color: var(--gosslan-danger, #d64545);
+  color: var(--gosslan-danger);
 }
 .hang-body {
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   color: var(--gosslan-text-2);
   overflow-wrap: anywhere;
 }
@@ -90,13 +92,13 @@ const text = computed(() =>
   border: 1px solid var(--gosslan-border);
   background: var(--gosslan-hover);
   color: var(--gosslan-text);
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   padding: 5px 10px;
-  border-radius: 8px;
+  border-radius: var(--gosslan-radius-sm);
   cursor: pointer;
 }
 .hang-btn--primary {
   border-color: var(--gosslan-primary);
-  color: var(--gosslan-on-primary, #fff);
+  color: var(--gosslan-on-primary);
 }
 </style>

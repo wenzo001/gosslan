@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>运行日志</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#0f1012;-webkit-font-smoothing:antialiased}
+svg{display:block}
+</style>
+</helmet>
+<div style="width:1000px;height:680px;display:flex;flex-direction:column;background:#fff;overflow:hidden">
+  <div style="height:40px;background:#e8e9ed;border-bottom:1px solid #e5e6e9;display:flex;align-items:center;padding:0 14px;position:relative;flex:0 0 auto">
+    <div style="display:flex;gap:8px"><span style="width:11px;height:11px;border-radius:999px;background:#ff5f57"></span><span style="width:11px;height:11px;border-radius:999px;background:#febc2e"></span><span style="width:11px;height:11px;border-radius:999px;background:#28c840"></span></div>
+    <div style="position:absolute;left:0;right:0;text-align:center;font-size:12px;font-weight:600;color:#4d4f51">运行日志</div>
+  </div>
+
+  <!-- 工具条 46px：实时/条数 + 自动刷新 + 刷新/复制/打开目录/清空/导出诊断包 -->
+  <div style="height:46px;flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid #e5e6e9;background:#f6f8fb">
+    <span style="font-size:12px;font-weight:600;color:#005938;display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:999px;background:#00aa6f"></span>实时</span>
+    <span style="font-size:11px;color:#4d4f51">128 条</span>
+    <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:#4d4f51"><span style="width:26px;height:15px;border-radius:999px;background:#356ae8;display:flex;align-items:center;padding:2px;justify-content:flex-end"><span style="width:11px;height:11px;border-radius:999px;background:#fff"></span></span>自动刷新</label>
+    <div style="margin-left:auto;display:flex;gap:6px">
+      <button style="height:28px;padding:0 10px;border:1px solid #d6d7da;border-radius:8px;background:#fff;font-size:11px">刷新</button>
+      <button style="height:28px;padding:0 10px;border:1px solid #d6d7da;border-radius:8px;background:#fff;font-size:11px">复制</button>
+      <button style="height:28px;padding:0 10px;border:1px solid #d6d7da;border-radius:8px;background:#fff;font-size:11px">打开目录</button>
+      <button style="height:28px;padding:0 10px;border:1px solid #d6d7da;border-radius:8px;background:#fff;font-size:11px">清空</button>
+      <button style="height:28px;padding:0 10px;border:0;border-radius:8px;background:#356ae8;color:#fff;font-size:11px;font-weight:600">导出诊断包</button>
+    </div>
+  </div>
+
+  <!-- 过滤行：级别 + 时间窗 + 文本过滤 -->
+  <div style="height:34px;display:flex;align-items:center;gap:6px;padding:0 16px;border-bottom:1px solid #eef0f3;flex:0 0 auto">
+    <span style="font-size:11px;padding:4px 9px;border-radius:6px;background:#e5eeff;color:#1b44aa">全部</span>
+    <span style="font-size:11px;padding:4px 9px;border-radius:6px;background:#f6f8fb;color:#4d4f51">INFO</span>
+    <span style="font-size:11px;padding:4px 9px;border-radius:6px;background:#f6f8fb;color:#4d4f51">WARN</span>
+    <span style="font-size:11px;padding:4px 9px;border-radius:6px;background:#f6f8fb;color:#4d4f51">ERROR</span>
+    <span style="margin-left:8px;font-size:11px;padding:4px 9px;border-radius:6px;background:#f6f8fb;border:1px solid #e5e6e9;color:#4d4f51">全部时间 ▾</span>
+    <span style="margin-left:auto;width:180px;height:26px;border-radius:6px;border:1px solid #d6d7da;display:flex;align-items:center;padding:0 8px;font-size:11px;color:#68696c">过滤关键字</span>
+  </div>
+
+  <!-- 日志行：HH:MM:SS + 大写级别 + 模块路径 -->
+  <div style="flex:1;overflow:hidden">
+    <div style="display:flex;gap:10px;padding:6px 16px;border-bottom:1px solid #eef0f3;font-family:ui-monospace,monospace;font-size:11px"><span style="color:#68696c;width:64px;flex:0 0 auto">10:42:05</span><span style="width:46px;height:18px;border-radius:6px;background:#e5eeff;color:#1b44aa;text-align:center;line-height:18px;flex:0 0 auto">INFO</span><span style="color:#4d4f51;width:140px;flex:0 0 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">gosslan::transport</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">LAN 直连建立 · 192.168.1.23:53001</span></div>
+    <div style="display:flex;gap:10px;padding:6px 16px;border-bottom:1px solid #eef0f3;font-family:ui-monospace,monospace;font-size:11px"><span style="color:#68696c;width:64px;flex:0 0 auto">10:42:03</span><span style="width:46px;height:18px;border-radius:6px;background:#e5eeff;color:#1b44aa;text-align:center;line-height:18px;flex:0 0 auto">INFO</span><span style="color:#4d4f51;width:140px;flex:0 0 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">gosslan::outbox</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">消息确认 ACK 收到 · seq=4821</span></div>
+    <div style="display:flex;gap:10px;padding:6px 16px;border-bottom:1px solid #eef0f3;font-family:ui-monospace,monospace;font-size:11px"><span style="color:#68696c;width:64px;flex:0 0 auto">10:41:58</span><span style="width:46px;height:18px;border-radius:6px;background:#ffe9d4;color:#724200;text-align:center;line-height:18px;flex:0 0 auto">WARN</span><span style="color:#4d4f51;width:140px;flex:0 0 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">gosslan::relay</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">跨网段节点响应超时，切换备用路径</span></div>
+    <div style="display:flex;gap:10px;padding:6px 16px;border-bottom:1px solid #eef0f3;font-family:ui-monospace,monospace;font-size:11px"><span style="color:#68696c;width:64px;flex:0 0 auto">10:41:52</span><span style="width:46px;height:18px;border-radius:6px;background:#e5eeff;color:#1b44aa;text-align:center;line-height:18px;flex:0 0 auto">INFO</span><span style="color:#4d4f51;width:140px;flex:0 0 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">gosslan::e2ee</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">会话密钥轮换完成</span></div>
+    <div style="display:flex;gap:10px;padding:6px 16px;border-bottom:1px solid #eef0f3;font-family:ui-monospace,monospace;font-size:11px"><span style="color:#68696c;width:64px;flex:0 0 auto">10:41:47</span><span style="width:46px;height:18px;border-radius:6px;background:#ffe6e6;color:#950023;text-align:center;line-height:18px;flex:0 0 auto">ERROR</span><span style="color:#4d4f51;width:140px;flex:0 0 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">gosslan::storage</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">缩略图读取失败，已回退原图</span></div>
+  </div>
+
+  <!-- 页脚：复制日志路径 + 导出诊断包 -->
+  <div style="height:36px;flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:0 16px;border-top:1px solid #e5e6e9;background:#f6f8fb;font-size:11px;color:#4d4f51">
+    <span style="font-family:ui-monospace,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">~/Library/Application Support/gosslan/logs</span>
+    <button style="margin-left:auto;height:24px;padding:0 10px;border:1px solid #d6d7da;border-radius:6px;background:#fff;font-size:11px">复制日志路径</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1000,"height":680}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

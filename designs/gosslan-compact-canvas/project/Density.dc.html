@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>紧凑密度规范</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#0f1012;-webkit-font-smoothing:antialiased}
+</style>
+</helmet>
+<div style="width:1120px;height:760px;box-sizing:border-box;padding:32px 40px;display:flex;flex-direction:column;gap:18px;background:#f1f2f6">
+  <div>
+    <div style="font-size:11px;line-height:16px;color:#4d4f51;font-weight:600;letter-spacing:.08em">GOSSLAN · COMPACT STANDARD</div>
+    <div style="font-size:22px;line-height:28px;font-weight:600;margin-top:4px">紧凑密度规范 <span style="font-size:13px;color:#4d4f51;font-weight:400">Density &amp; Spacing</span></div>
+  </div>
+
+  <div style="background:#e5eeff;border:1px solid #e5e6e9;border-radius:14px;padding:16px 20px;display:flex;align-items:center;gap:14px">
+    <div style="width:32px;height:32px;border-radius:10px;background:#356ae8;color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;flex:0 0 auto">i</div>
+    <div style="font-size:13px;line-height:20px">单一标准，<b>不提供切换开关</b>。对标 VS Code 1.147 <span style="font-family:ui-monospace,monospace">window.density.layout=compact</span>，只取 compact 一档作为全应用默认。紧凑但井然有序——只收紧内距与分组间距，不压缩字号、不压缩可点区域。</div>
+  </div>
+
+  <div style="display:flex;gap:16px;flex:1;min-height:0">
+    <!-- 左：紧凑处理示意 -->
+    <div style="flex:1;background:#ffffff;border-radius:14px;padding:20px;border:1px solid #e5e6e9;display:flex;flex-direction:column">
+      <div style="font-size:13px;font-weight:600;margin-bottom:4px">收紧的三处（面板内部）</div>
+      <div style="font-size:11px;color:#4d4f51;margin-bottom:16px">卡片内距 · 内嵌块 · 分区间距</div>
+      <div style="background:#f6f8fb;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:12px;flex:1">
+        <div style="background:#fff;border-radius:10px;padding:12px;border:1px solid #e5e6e9;position:relative">
+          <div style="position:absolute;top:-8px;left:12px;background:#356ae8;color:#fff;font-size:10px;padding:2px 8px;border-radius:999px">card-pad 12</div>
+          <div style="font-size:13px;font-weight:500">设置项标题</div>
+          <div style="font-size:12px;color:#4d4f51;margin-top:4px;line-height:18px">这是一段设置说明文字，展示卡片内部的紧凑内距。</div>
+          <div style="background:#f1f2f6;border-radius:8px;padding:8px;margin-top:10px;font-size:11px;color:#4d4f51;position:relative">内嵌块 · inset 8</div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:8px;color:#356ae8;font-size:11px">
+          <span style="height:1px;width:60px;background:#356ae8"></span>section-gap 16<span style="height:1px;width:60px;background:#356ae8"></span>
+        </div>
+        <div style="background:#fff;border-radius:10px;padding:12px;border:1px solid #e5e6e9">
+          <div style="font-size:13px;font-weight:500">下一个设置项</div>
+          <div style="font-size:12px;color:#4d4f51;margin-top:4px">同类行保持同一高度与间距。</div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:#4d4f51;margin-top:12px;line-height:17px">面板之间保持 gapless；收紧只发生在面板内部。</div>
+    </div>
+
+    <!-- 右：不压缩的三处 -->
+    <div style="flex:1;background:#ffffff;border-radius:14px;padding:20px;border:1px solid #e5e6e9;display:flex;flex-direction:column">
+      <div style="font-size:13px;font-weight:600;margin-bottom:4px">不压缩的三处（可读性与触控）</div>
+      <div style="font-size:11px;color:#4d4f51;margin-bottom:16px">字号五档 · 可点行 · 会话行高</div>
+      <div style="display:flex;flex-direction:column;gap:12px;flex:1">
+        <div style="display:flex;align-items:center;gap:14px;background:#f6f8fb;border-radius:10px;padding:14px">
+          <div style="width:44px;height:44px;border-radius:10px;background:#e5eeff;color:#356ae8;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex:0 0 auto">Aa</div>
+          <div style="font-size:12px;line-height:18px"><b>字号 ≥11px</b><br><span style="color:#4d4f51">五档标尺，11px 是下限，不随密度缩放</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:14px;background:#f6f8fb;border-radius:10px;padding:14px">
+          <div style="width:44px;height:44px;border-radius:10px;background:#e5eeff;color:#356ae8;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;flex:0 0 auto">44</div>
+          <div style="font-size:12px;line-height:18px"><b>触控命中区 ≥44px</b><br><span style="color:#4d4f51">视觉可紧，移动端命中区用 tap-safe 补足</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:14px;background:#f6f8fb;border-radius:10px;padding:14px">
+          <div style="width:44px;height:44px;border-radius:10px;background:#e5eeff;color:#356ae8;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;flex:0 0 auto">62</div>
+          <div style="font-size:12px;line-height:18px"><b>会话行 62 / 64px</b><br><span style="color:#4d4f51">画板定尺寸，也是触控目标，不消费密度刻度</span></div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:#4d4f51;margin-top:12px;line-height:17px">滚动条独占 8px 带 + 8px 空隙，thumb 静止可见，不压内容。</div>
+    </div>
+  </div>
+
+  <div style="background:#ffffff;border-radius:14px;padding:14px 20px;border:1px solid #e5e6e9;display:flex;gap:24px;font-size:11px;color:#4d4f51;align-items:center;flex-wrap:wrap">
+    <span style="font-weight:600;color:#0f1012;font-size:12px">移植自 VS Code 的原则</span>
+    <span>① 信息密度是硬指标</span>
+    <span>② 共享命名令牌</span>
+    <span>③ 选中态与内容连贯</span>
+    <span>④ 跨端一致</span>
+    <span>⑤ 不牺牲肌肉记忆</span>
+    <span>⑥ 性能是约束</span>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1120,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Gosslan 设计令牌总览</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#0f1012;-webkit-font-smoothing:antialiased}
+.bg{background:#f1f2f6}
+</style>
+</helmet>
+<div style="width:1120px;height:760px;box-sizing:border-box;padding:32px 40px;display:flex;flex-direction:column;gap:20px;background:#f1f2f6">
+  <div style="display:flex;align-items:flex-end;justify-content:space-between">
+    <div>
+      <div style="font-size:11px;line-height:16px;color:#4d4f51;font-weight:600;letter-spacing:.08em">GOSSLAN · COMPACT STANDARD</div>
+      <div style="font-size:22px;line-height:28px;font-weight:600;margin-top:4px">设计令牌总览 <span style="font-size:13px;color:#4d4f51;font-weight:400">Foundations</span></div>
+    </div>
+    <div style="font-size:11px;line-height:16px;color:#4d4f51;text-align:right">唯一事实源 <span style="font-family:ui-monospace,monospace">src/style.css</span><br>单一标准 · 不切换 · 全局统一</div>
+  </div>
+
+  <div style="display:flex;gap:16px;flex:1;min-height:0">
+    <!-- 左列：颜色 -->
+    <div style="width:352px;display:flex;flex-direction:column;gap:14px">
+      <div style="background:#ffffff;border-radius:14px;padding:18px;border:1px solid #e5e6e9">
+        <div style="font-size:13px;font-weight:600;margin-bottom:12px">品牌色 · Primary</div>
+        <div style="display:flex;gap:8px">
+          <div style="flex:1"><div style="height:56px;border-radius:10px;background:#356ae8"></div><div style="font-size:11px;color:#4d4f51;margin-top:6px">primary<br><span style="font-family:ui-monospace,monospace">#356ae8</span></div></div>
+          <div style="flex:1"><div style="height:56px;border-radius:10px;background:#2b5fdc"></div><div style="font-size:11px;color:#4d4f51;margin-top:6px">hover<br><span style="font-family:ui-monospace,monospace">#2b5fdc</span></div></div>
+          <div style="flex:1"><div style="height:56px;border-radius:10px;background:#e5eeff;border:1px solid #e5eeff"></div><div style="font-size:11px;color:#4d4f51;margin-top:6px">light<br><span style="font-family:ui-monospace,monospace">#e5eeff</span></div></div>
+        </div>
+      </div>
+      <div style="background:#ffffff;border-radius:14px;padding:18px;border:1px solid #e5e6e9;flex:1">
+        <div style="font-size:13px;font-weight:600;margin-bottom:12px">语义色 · Semantic</div>
+        <div style="display:flex;flex-direction:column;gap:9px">
+          <div style="display:flex;align-items:center;gap:10px"><span style="width:20px;height:20px;border-radius:6px;background:#00aa6f;display:block"></span><span style="font-size:12px">success</span><span style="margin-left:auto;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">#00aa6f</span></div>
+          <div style="display:flex;align-items:center;gap:10px"><span style="width:20px;height:20px;border-radius:6px;background:#cf3546;display:block"></span><span style="font-size:12px">danger</span><span style="margin-left:auto;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">#cf3546</span></div>
+          <div style="display:flex;align-items:center;gap:10px"><span style="width:20px;height:20px;border-radius:6px;background:#d58000;display:block"></span><span style="font-size:12px">warning</span><span style="margin-left:auto;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">#d58000</span></div>
+          <div style="display:flex;align-items:center;gap:10px"><span style="width:20px;height:20px;border-radius:6px;background:#356ae8;display:block"></span><span style="font-size:12px">info / accent</span><span style="margin-left:auto;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">#356ae8</span></div>
+        </div>
+        <div style="font-size:11px;line-height:16px;color:#4d4f51;margin-top:14px;padding-top:12px;border-top:1px solid #eef0f3">蓝色 / 橙色区分状态，不单靠红绿（色觉友好）</div>
+      </div>
+      <div style="background:#ffffff;border-radius:14px;padding:18px;border:1px solid #e5e6e9">
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px">表面层级 · Surfaces</div>
+        <div style="display:flex;flex-direction:column;gap:6px;font-size:11px">
+          <div style="display:flex;justify-content:space-between"><span>app-bg</span><span style="font-family:ui-monospace,monospace;color:#4d4f51">#f1f2f6</span></div>
+          <div style="display:flex;justify-content:space-between"><span>list</span><span style="font-family:ui-monospace,monospace;color:#4d4f51">#f6f8fb</span></div>
+          <div style="display:flex;justify-content:space-between"><span>chat / panel</span><span style="font-family:ui-monospace,monospace;color:#4d4f51">#ffffff</span></div>
+          <div style="display:flex;justify-content:space-between"><span>list-active</span><span style="font-family:ui-monospace,monospace;color:#4d4f51">#ebedf0</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 中列：字号 -->
+    <div style="width:352px;display:flex;flex-direction:column;gap:14px">
+      <div style="background:#ffffff;border-radius:14px;padding:18px;border:1px solid #e5e6e9;flex:1">
+        <div style="font-size:13px;font-weight:600;margin-bottom:6px">排版标尺 · Type scale</div>
+        <div style="font-size:11px;color:#4d4f51;margin-bottom:14px">五档 · 11px 下限 · 字重 400/500/600</div>
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #eef0f3;padding-bottom:10px"><span style="font-size:11px;color:#4d4f51;width:64px">title</span><span style="font-size:15px;line-height:24px;font-weight:500">会话标题 · 群名</span><span style="margin-left:auto;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">15/24</span></div>
+          <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #eef0f3;padding-bottom:10px"><span style="font-size:11px;color:#4d4f51;width:64px">body</span><span style="font-size:14px;line-height:22px">消息正文 · 主要文字</span><span style="margin-left:auto;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">14/22</span></div>
+          <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #eef0f3;padding-bottom:10px"><span style="font-size:11px;color:#4d4f51;width:64px">callout</span><span style="font-size:13px;line-height:20px">列表行标题 · 输入框</span><span style="margin-left:auto;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">13/20</span></div>
+          <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #eef0f3;padding-bottom:10px"><span style="font-size:11px;color:#4d4f51;width:64px">footnote</span><span style="font-size:12px;line-height:20px">摘要 · 引用 · 辅助</span><span style="margin-left:auto;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">12/20</span></div>
+          <div style="display:flex;align-items:baseline;gap:12px"><span style="font-size:11px;color:#4d4f51;width:64px">caption</span><span style="font-size:11px;line-height:16px">昵称 · 时间 · 徽标</span><span style="margin-left:auto;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">11/16</span></div>
+        </div>
+      </div>
+      <div style="background:#ffffff;border-radius:14px;padding:18px;border:1px solid #e5e6e9">
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px">图标 · Icon</div>
+        <div style="font-size:11px;line-height:18px;color:#4d4f51">lucide 线性图标 · 24 网格 · 2px 圆头描边<br>尺寸 16 / 20 / 24（导航 21·23）· 不混填充<br>图标按钮必须有 aria-label</div>
+      </div>
+    </div>
+
+    <!-- 右列：圆角与密度 -->
+    <div style="flex:1;display:flex;flex-direction:column;gap:14px;min-width:0">
+      <div style="background:#ffffff;border-radius:14px;padding:18px;border:1px solid #e5e6e9">
+        <div style="font-size:13px;font-weight:600;margin-bottom:12px">圆角梯度 · Radius</div>
+        <div style="display:flex;gap:8px;align-items:flex-end">
+          <div style="text-align:center"><div style="width:52px;height:44px;background:#e5eeff;border-radius:6px;border:1px solid #356ae8"></div><div style="font-size:10px;color:#4d4f51;margin-top:5px">xs 6</div></div>
+          <div style="text-align:center"><div style="width:52px;height:44px;background:#e5eeff;border-radius:8px;border:1px solid #356ae8"></div><div style="font-size:10px;color:#4d4f51;margin-top:5px">sm 8</div></div>
+          <div style="text-align:center"><div style="width:52px;height:44px;background:#e5eeff;border-radius:10px;border:1px solid #356ae8"></div><div style="font-size:10px;color:#4d4f51;margin-top:5px">md 10</div></div>
+          <div style="text-align:center"><div style="width:52px;height:44px;background:#e5eeff;border-radius:14px;border:1px solid #356ae8"></div><div style="font-size:10px;color:#4d4f51;margin-top:5px">lg 14</div></div>
+          <div style="text-align:center"><div style="width:52px;height:44px;background:#e5eeff;border-radius:20px;border:1px solid #356ae8"></div><div style="font-size:10px;color:#4d4f51;margin-top:5px">xl 20</div></div>
+        </div>
+        <div style="font-size:11px;color:#4d4f51;margin-top:12px;padding-top:10px;border-top:1px solid #eef0f3">同心公式：内圆角 = 外圆角 − 间距 · 输入外壳 2xl = 22px</div>
+      </div>
+      <div style="background:#ffffff;border-radius:14px;padding:18px;border:1px solid #e5e6e9;flex:1">
+        <div style="font-size:13px;font-weight:600;margin-bottom:12px">紧凑密度 · Density</div>
+        <div style="display:flex;flex-direction:column;gap:10px;font-size:12px">
+          <div style="display:flex;align-items:center;gap:10px"><span style="width:120px;color:#4d4f51;font-family:ui-monospace,monospace">card-pad</span><div style="flex:1;height:22px;background:#f1f2f6;border-radius:6px;position:relative"><div style="position:absolute;left:12px;right:12px;top:4px;bottom:4px;background:#e5eeff;border-radius:6px"></div></div><span style="width:28px;text-align:right;font-family:ui-monospace,monospace">12px</span></div>
+          <div style="display:flex;align-items:center;gap:10px"><span style="width:120px;color:#4d4f51;font-family:ui-monospace,monospace">card-pad-inset</span><div style="flex:1;height:22px;background:#f1f2f6;border-radius:6px;position:relative"><div style="position:absolute;left:8px;right:8px;top:4px;bottom:4px;background:#e5eeff;border-radius:6px"></div></div><span style="width:28px;text-align:right;font-family:ui-monospace,monospace">8px</span></div>
+          <div style="display:flex;align-items:center;gap:10px"><span style="width:120px;color:#4d4f51;font-family:ui-monospace,monospace">section-gap</span><div style="flex:1;height:22px;background:#f1f2f6;border-radius:6px;position:relative"><div style="position:absolute;left:16px;right:16px;top:4px;bottom:4px;background:#e5eeff;border-radius:6px"></div></div><span style="width:28px;text-align:right;font-family:ui-monospace,monospace">16px</span></div>
+          <div style="display:flex;align-items:center;gap:10px"><span style="width:120px;color:#4d4f51;font-family:ui-monospace,monospace">row-min-h</span><div style="flex:1;height:22px;background:#f1f2f6;border-radius:6px;position:relative"><div style="position:absolute;left:20px;right:20px;top:4px;bottom:4px;background:#e5eeff;border-radius:6px"></div></div><span style="width:28px;text-align:right;font-family:ui-monospace,monospace">40px</span></div>
+          <div style="display:flex;align-items:center;gap:10px"><span style="width:120px;color:#4d4f51;font-family:ui-monospace,monospace">gutter</span><div style="flex:1;height:22px;background:#f1f2f6;border-radius:6px;position:relative"><div style="position:absolute;left:8px;right:8px;top:4px;bottom:4px;background:#e5eeff;border-radius:6px"></div></div><span style="width:28px;text-align:right;font-family:ui-monospace,monospace">8px</span></div>
+        </div>
+        <div style="font-size:11px;line-height:17px;color:#4d4f51;margin-top:14px;padding-top:12px;border-top:1px solid #eef0f3">对标 VS Code 1.147 compact：去面板间距 + 收面板内距。会话行 62/64 与触控目标不受密度刻度影响。</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1120,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

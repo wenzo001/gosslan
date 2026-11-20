@@ -1,0 +1,8 @@
+# Open Artifact: this machine's state, not the artifact.
+_agent/
+history/
+.artifact*
+.sharing.json
+*.log
+*.tmp
+.DS_Store

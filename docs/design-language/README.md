@@ -26,6 +26,7 @@
 
 | 文件 | 回答什么问题 |
 | --- | --- |
+| [COMPACT-STANDARD.md](../COMPACT-STANDARD.md) | **强制**：对标 VS Code 1.147 紧凑模式的全局唯一密度/紧凑标准（单一档、不切换）；与其它文档冲突时的密度维度裁决口径 |
 | [liquid-glass.md](./liquid-glass.md) | 玻璃怎么分层、每层什么职责、模糊/透明度具体数值、什么情况禁止、性能红线 |
 | [controls.md](./controls.md) | 按钮与输入框的尺寸、状态、颜色、圆角、间距、错误态，以及语义 token 命名 |
 | [ambient-motion.md](./ambient-motion.md) | 背景怎么动：候选方案对比、色雾/颗粒/涟漪的数值规格、性能红线、降级与开关、可机器验收的判据 |
