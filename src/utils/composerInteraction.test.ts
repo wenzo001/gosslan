@@ -199,3 +199,34 @@ test("输入框高度收敛为三档（单行 36/40、多行 44；出现 h-7/h-8
   assert.notEqual(noRow44, composerSrc, "锚点没命中：输入行容器的类名绑定变了");
   assert.ok(!hasTouch44(noRow44), "把 44px 触控档从行容器摘掉必须判红");
 });
+
+/**
+ * 2026-11-20 用户实报：「Shift+Enter 换行后只有光标下去了，整个显示区没滚，新行看不见」。
+ * 浏览器对 `insertLineBreak` 不保证把 caret 滚进可视区 ⇒ 必须在换行后自己量、自己滚。
+ * 这条是"只在输入框内容超过可视高度时才出现"的静默缺陷，静态判据盯接线、纯函数判增量。
+ */
+test("Shift+Enter 换行后把 caret 滚进可视区（删掉这句会红）", () => {
+  const body = tsFnBody(composerSrc, "function onKeydown(");
+  assert.ok(body.length > 200, "锚点缺失 ⇒ 这条判据没有分母");
+  const at = body.indexOf('document.execCommand("insertLineBreak")');
+  assert.ok(at >= 0, "换行仍必须走 insertLineBreak（统一 <br>；改回 insertParagraph 会造嵌套 div）");
+  assert.match(
+    body.slice(at),
+    /requestAnimationFrame\(ensureCaretVisible\)/,
+    "换行之后必须把 caret 滚进可视区（删掉 ⇒ 用户又只能盲打）",
+  );
+  // 正面：helper 必须真的量 caret 并交给纯函数判（不是只把 scrollTop 拉到底）
+  assert.match(composerSrc, /function ensureCaretVisible\(\)/, "helper 不存在 ⇒ 接线断了");
+  assert.match(
+    composerSrc,
+    /caretScrollDelta\(caret, el\.getBoundingClientRect\(\)\)/,
+    "必须按 caret 矩形判，不能直接 scrollTop = scrollHeight（长文本中间换行会整块跳走）",
+  );
+  // 反例自证：删掉调用后，切片里不应再出现这个调用（证明上面不是命中注释）
+  const broken = body.replace("requestAnimationFrame(ensureCaretVisible);", "");
+  assert.doesNotMatch(
+    broken.slice(broken.indexOf('document.execCommand("insertLineBreak")')),
+    /requestAnimationFrame\(ensureCaretVisible\)/,
+    "反例自证：删掉后仍匹配 ⇒ 判据在读注释",
+  );
+});

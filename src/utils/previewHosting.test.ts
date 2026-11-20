@@ -400,3 +400,48 @@ test("关窗回收状态后，第一次点遮罩关的是弹窗", () => {
     "预览不再是「这份草稿」时没有落到 draft.value = null ⇒ 第一次点遮罩仍然关不掉表单",
   );
 });
+
+/**
+ * 2026-11-20 用户实报两条窗口内交互缺陷，这里各钉一条：
+ * ① 独立窗口里的图**不该再播开场动画**（窗都开好了，图再缩一次像"蹦出来"）；
+ * ② 图片**放大之后**左右切换按钮点不动 —— 手势容器 `setPointerCapture` 把 click 抢走了。
+ * 两条都是"只在某个状态下才坏"的静默缺陷，人眼回归很容易漏。
+ */
+test("独立预览窗口不播开场/收场动画（图与窗口一起呈现）", () => {
+  const win = read("components/window/PreviewWindow.vue");
+  assert.match(win, /no-enter-animation/, "PreviewWindow 必须显式关掉开场动画，否则窗口里会再缩一次");
+  assert.match(
+    LIGHTBOX,
+    /pendingFlip\.value = !props\.noEnterAnimation &&/,
+    "开场 FLIP 必须被 noEnterAnimation 门住（反例：删掉门控 ⇒ 窗口里又开始放大）",
+  );
+  assert.match(
+    LIGHTBOX,
+    /pendingCenter\.value = !props\.noEnterAnimation &&/,
+    "居中放大同样要门住（窗口没有 origin，走的正是这一支）",
+  );
+  assert.match(
+    LIGHTBOX,
+    /if \(props\.noEnterAnimation \|\| reducedMotion\.value \|\| !base\)/,
+    "收场也要直接关；否则关窗时图先缩一下，和窗口销毁打架",
+  );
+  // 反例自证：把门控去掉，上面两条正面判据必须不再成立（证明它们不是在读注释）
+  const broken = LIGHTBOX.replace(/!props\.noEnterAnimation && /g, "");
+  assert.doesNotMatch(broken, /pendingFlip\.value = !props\.noEnterAnimation &&/, "反例自证：门控去掉后仍匹配 ⇒ 判据空转");
+});
+
+test("放大态下左右切换仍可点：控件上的 pointerdown 必须让路给按钮自己", () => {
+  const body = /function onPointerDown\(e: PointerEvent\) \{([\s\S]*?)\n\}/.exec(LIGHTBOX)?.[1] ?? "";
+  assert.ok(body.length > 200, "找不到 onPointerDown 函数体 ⇒ 这条判据没有分母");
+  const guardAt = body.indexOf('closest("button, a, input, textarea, select, [role=\'button\']")');
+  // 按**调用写法**定位：注释里也出现了这个 API 名，只搜裸词会命中注释（这一条踩过）。
+  const captureAt = body.indexOf(".setPointerCapture(e.pointerId);");
+  assert.ok(guardAt > 0, "缺「起点落在控件上就不接管」的让路判据");
+  assert.ok(captureAt > guardAt, "让路必须排在 setPointerCapture 之前，否则捕获已经把 click 抢走了");
+  // 反例自证：删掉让路那行，位置判据必须失败
+  const broken = body.replace(/^\s*if \(\(e\.target[\s\S]*?\) return;\n/m, "");
+  assert.ok(
+    broken.indexOf('closest("button, a, input, textarea, select, [role=\'button\']")') < 0,
+    "反例自证：删掉后仍能找到让路 ⇒ 正则没取到那一行",
+  );
+});

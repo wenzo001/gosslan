@@ -33,6 +33,7 @@ import CodeLangMenu from "@/components/CodeLangMenu.vue";
 import { api } from "@/api";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 import { composerMaxHeight, clampComposerHeight } from "@/utils/composerLayout";
+import { caretScrollDelta } from "@/utils/caretScroll";
 import { pastedImageRejection, type PastedImageRejection } from "@/utils/composerAttachments";
 import { emojiUrl } from "@/utils/emoji";
 import { MENTION_POP_MAX_H, POPOVER_EDGE } from "@/utils/popoverBounds";
@@ -613,6 +614,26 @@ function imeKey(e: KeyboardEvent): boolean {
   return isImeKey(e, composing.value, compositionEndedAt, Date.now());
 }
 
+/**
+ * 把 caret 滚进输入框自己的可视区（Shift+Enter 换行后调用）。
+ *
+ * 为什么不用 `scrollIntoView`：它会把**外层聊天流**一起滚（整页跳一下），
+ * 而这里只需要动输入框的 `scrollTop`。判定本身在 `utils/caretScroll.ts`（带单测）。
+ */
+function ensureCaretVisible() {
+  const el = editorRef.value;
+  if (!el) return;
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  const range = sel.getRangeAt(0).cloneRange();
+  range.collapse(false);
+  const caret = range.getBoundingClientRect();
+  // 隐藏 / 未布局时 rect 全 0：这时任何比较都会判成"在上沿外"，会误滚一次。
+  if (caret.width === 0 && caret.height === 0) return;
+  const delta = caretScrollDelta(caret, el.getBoundingClientRect());
+  if (delta !== 0) el.scrollTop += delta;
+}
+
 function onKeydown(e: KeyboardEvent) {
   // 输入法组合中的按键**一律不拦截**：
   //   · Enter 交给 IME 提交字母（用户要的"把拼音字母落下来"）；
@@ -673,6 +694,9 @@ function onKeydown(e: KeyboardEvent) {
     // 统一换行为 <br>：浏览器默认 insertParagraph 会造嵌套 div，序列化不可控
     e.preventDefault();
     document.execCommand("insertLineBreak");
+    // execCommand 之后浏览器**不保证**把新光标滚进可视区（用户 2026-11-20 实测：
+    // 光标下去了、显示区没跟，新起的那一行看不见）。等这一帧的布局落定再量 caret 矩形。
+    requestAnimationFrame(ensureCaretVisible);
     return;
   }
   if (e.key === "Enter" && !e.shiftKey) {
