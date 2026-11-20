@@ -22498,26 +22498,6 @@ async function runSettingsMobile(cdp, url) {
     const mounted = await cdp.eval("window.__probe.install('/src/components/SettingsPanel.vue', '', "
       + JSON.stringify(JSON.stringify({ open: true, isolated: true })) + ")");
     await sleep(600);
-    // 【临时诊断】设置页左缘对齐：把每一层的左缘都量出来
-    const indent = await cdp.eval(`(() => {
-      const L = (el) => el ? Math.round(el.getBoundingClientRect().left * 100) / 100 : null;
-      const sc = document.querySelector('[data-settings-scroll]');
-      const cs = sc ? getComputedStyle(sc) : null;
-      const caption = document.querySelector('.settings-group-caption');
-      const row = document.querySelector('.settings-card-row');
-      const card = document.querySelector('[data-settings-rows]');
-      const header = document.querySelector('header');
-      const titles = [...document.querySelectorAll('h1,h2,h3')].map((h) => ({ t: (h.innerText||'').slice(0,10), l: L(h) }));
-      return {
-        scroller: { left: L(sc), padL: cs ? cs.paddingLeft : null, gutter: cs ? cs.scrollbarGutter : null },
-        caption: { left: L(caption), padL: caption ? getComputedStyle(caption).paddingLeft : null, text: caption ? (caption.innerText||'').slice(0,8) : null },
-        card: { left: L(card) },
-        row: { left: L(row), padL: row ? getComputedStyle(row).paddingLeft : null, text: row ? (row.innerText||'').slice(0,10) : null },
-        header: { left: L(header), padL: header ? getComputedStyle(header).paddingLeft : null },
-        titles,
-      };
-    })()`);
-    console.log("  · 【临时诊断】设置页左缘：" + JSON.stringify(indent));
     const read = () => cdp.eval(`(() => {
       const buttons = [...document.querySelectorAll('button')].filter((b) => b.getClientRects().length > 0);
       const outside = buttons.filter((b) => {
