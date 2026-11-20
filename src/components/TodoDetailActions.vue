@@ -9,6 +9,7 @@ import Icon from "@/components/ui/Icon.vue";
 import { computed } from "vue";
 import { isTodoTerminalStatus, type TodoItem } from "@/utils/todos";
 import { t } from "@/i18n";
+import { useCopyToast } from "@/composables/useCopyToast";
 
 const props = defineProps<{
   item: TodoItem;
@@ -29,6 +30,22 @@ const emit = defineEmits<{
 }>();
 
 const canShowEdit = computed(() => props.canEditStructure || props.canEditAssignees);
+
+const copyWithToast = useCopyToast();
+
+/**
+ * 一键复制（用户 2026-11-20）：任务越来越多是交给 AI 去做的，需要一段能直接粘贴的文本。
+ *
+ * 规则只有两条，别加字段名/前缀（那些是给人看的标签，粘进 AI 反而成了噪声）：
+ *   · 有描述 ⇒ 标题 + 空行 + 描述；
+ *   · 没描述 ⇒ 只有标题。
+ * 详情里"没描述时回填标题"是**展示层**的事（见 `TodoDetailFields`），这里读的仍是真值，
+ * 否则标题会被复制两遍。
+ */
+function copyTask() {
+  const desc = (props.item.description ?? "").trim();
+  void copyWithToast(desc ? `${props.item.title}\n\n${desc}` : props.item.title);
+}
 </script>
 
 <template>
@@ -64,6 +81,15 @@ const canShowEdit = computed(() => props.canEditStructure || props.canEditAssign
 
     <span class="flex-1"></span>
 
+    <button
+      type="button"
+      class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+      :title="t('todo.copyTaskHint')"
+      :aria-label="t('todo.copyTask')"
+      @click="copyTask"
+    >
+      <Icon name="copy" class="h-4 w-4" />
+    </button>
     <button
       v-if="canShowEdit"
       type="button"

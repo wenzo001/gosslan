@@ -1189,6 +1189,12 @@ export const zhCN: MessageDict = {
 "todo.priority.high": "紧急",  "todo.priority.normal": "常规",  "todo.priority.low": "不急",
   "todo.categoryLabel": "类型",
   "todo.categoryHint": "任务 / 需求 / 缺陷；默认「任务」。三者同列，用角标区分。",
+  // 属性区收起态（2026-11-20）：摘要行 + 空值文案 + 一键复制
+  "todo.attrsToggle": "展开 / 收起属性（关联时间 · 类型 · 标签）",
+  "todo.attrUnset": "未设时间",
+  "todo.attrNoTags": "无标签",
+  "todo.copyTask": "复制任务",
+  "todo.copyTaskHint": "复制标题与描述（没有描述时只复制标题），可直接粘贴给 AI",
   "todo.category.task": "任务",
   "todo.category.requirement": "需求",
   "todo.category.bug": "缺陷",

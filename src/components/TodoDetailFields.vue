@@ -127,6 +127,25 @@ const categoryCurrent = computed(() => {
   return t(TODO_CATEGORY_LABEL_KEY[x.category]);
 });
 
+/**
+ * 属性区（关联时间 / 类型 / 标签）默认**收起成一行摘要**（用户 2026-11-20：
+ * 「关联时间类型和标签太占据高度，最关心的是标题、描述、回复、图片」）。
+ *
+ * 摘要不是"藏起来"：当前值全部摆在这一行里（不展开也能扫一眼），
+ * 展开才出现三个编辑器。空值显式写「未设置」而不是留白 —— 留白会被读成"还没加载"。
+ */
+const attrsOpen = ref(false);
+const attrsSummary = computed(() => {
+  // ⚠️ 每个 `t("…")` 各自一行：i18n 的死文案扫描器按"引号成对"抠字面量，
+  // 同一行里若先出现 `join(" ")` 这种单字符字面量（它低于扫描器的 2 字符下限），
+  // 收尾引号会与 key 的开引号配成一对，把在用的 key 误判成死文案（2026-11-20 实测红过）。
+  const tagsText = props.item.tags.length
+    ? props.item.tags.map((x) => `#${x}`).join(" ")
+    : t("todo.attrNoTags");
+  const dateText = props.item.relatedOn || t("todo.attrUnset");
+  return [categoryCurrent.value, dateText, tagsText].join(" · ");
+});
+
 // ---------------- 操作记录（纯展示；diff 在 utils/todos.ts 的 buildTodoHistory） ----------------
 const historyEntries = computed<TodoHistoryEntry[]>(() => props.history ?? []);
 /** 一条改动的人类文案（i18n 现算，切语言后弹窗里直接跟着变）。 */
@@ -258,43 +277,64 @@ function submitReply() {
       :disabled="!canChangeStatus"
       @update:model-value="(v: string) => emit('priority', v as TodoPriority)"
     />
-    <!-- 关联时间 / 类型 / 标签：三者共用 `TodoAttrField` 外壳（同标签排布、同高度、同圆角、
-         同一块 280px 弹出面板）。⚠️ 判权是 `canEditAttributes`（群成员皆可），
-         **不再要求进编辑态** —— 用户 2026-11-05 明确纠正过这一条。 -->
-    <TodoAttrDateField
-      :label="t('todo.relatedOnLabel')"
-      :hint="t('todo.relatedOnHint')"
-      :model-value="item.relatedOn ?? ''"
-      :disabled="!canEditAttributes"
-      @update:model-value="(v: string) => emit('relatedOn', v)"
-    />
-    <TodoAttrTypeField
-      :label="t('todo.categoryLabel')"
-      :hint="t('todo.categoryHint')"
-      :model-value="item.category ?? 'task'"
-      :current="categoryCurrent"
-      :current-class="TODO_CATEGORY_PILL[item.category ?? 'task']"
-      :options="categoryOptions"
-      :custom-value="item.customCategory ?? ''"
-      :disabled="!canEditAttributes"
-      @update:model-value="(v: string, name?: string) => emit('category', v as TodoCategory, name)"
-    />
-    <!-- 图标那一格与自定义名同档展开。这一份与看板草稿共用 `TodoIconPicker`：
-         两个编辑器各写一排按钮就会开始不一致（同一判据两个家）。 -->
-    <div v-if="canEditAttributes && item.category === 'custom'" class="-mt-2">
-      <TodoIconPicker
-        :model-value="item.customIcon ?? TODO_CUSTOM_ICON_DEFAULT"
-        @update:model-value="(v: TodoCustomIcon) => emit('icon', v)"
-      />
+    <!-- 关联时间 / 类型 / 标签：**默认收成一行摘要**（见 script 里 attrsSummary 的说明）。
+         展开后三者共用 `TodoAttrField` 外壳（同标签排布、同高度、同圆角、同一块 280px 面板）。
+         ⚠️ 判权是 `canEditAttributes`（群成员皆可），**不再要求进编辑态** —— 用户 2026-11-05 纠正过。 -->
+    <div class="overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-divider)]">
+      <button
+        type="button"
+        class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--gosslan-hover)]"
+        :aria-expanded="attrsOpen"
+        :title="t('todo.attrsToggle')"
+        @click="attrsOpen = !attrsOpen"
+      >
+        <Icon name="sliders-horizontal" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
+        <span class="min-w-0 flex-1 truncate text-caption text-[var(--gosslan-text-2)]" :title="attrsSummary">
+          {{ attrsSummary }}
+        </span>
+        <Icon
+          name="chevron-down"
+          class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)] transition-transform"
+          :class="attrsOpen ? 'rotate-180' : ''"
+        />
+      </button>
+      <div v-if="attrsOpen" class="space-y-3 border-t border-[var(--gosslan-divider)] px-2.5 py-2.5">
+        <TodoAttrDateField
+          :label="t('todo.relatedOnLabel')"
+          :hint="t('todo.relatedOnHint')"
+          :model-value="item.relatedOn ?? ''"
+          :disabled="!canEditAttributes"
+          @update:model-value="(v: string) => emit('relatedOn', v)"
+        />
+        <TodoAttrTypeField
+          :label="t('todo.categoryLabel')"
+          :hint="t('todo.categoryHint')"
+          :model-value="item.category ?? 'task'"
+          :current="categoryCurrent"
+          :current-class="TODO_CATEGORY_PILL[item.category ?? 'task']"
+          :options="categoryOptions"
+          :custom-value="item.customCategory ?? ''"
+          :disabled="!canEditAttributes"
+          @update:model-value="(v: string, name?: string) => emit('category', v as TodoCategory, name)"
+        />
+        <!-- 图标那一格与自定义名同档展开。这一份与看板草稿共用 `TodoIconPicker`：
+             两个编辑器各写一排按钮就会开始不一致（同一判据两个家）。 -->
+        <div v-if="canEditAttributes && item.category === 'custom'" class="-mt-2">
+          <TodoIconPicker
+            :model-value="item.customIcon ?? TODO_CUSTOM_ICON_DEFAULT"
+            @update:model-value="(v: TodoCustomIcon) => emit('icon', v)"
+          />
+        </div>
+        <TodoAttrTagsField
+          :label="t('todo.tagsLabel')"
+          :hint="t('todo.tagsHintInline')"
+          :model-value="item.tags"
+          :candidates="tagCandidates ?? []"
+          :disabled="!canEditAttributes"
+          @update:model-value="(v: string[]) => emit('tags', v)"
+        />
+      </div>
     </div>
-    <TodoAttrTagsField
-      :label="t('todo.tagsLabel')"
-      :hint="t('todo.tagsHintInline')"
-      :model-value="item.tags"
-      :candidates="tagCandidates ?? []"
-      :disabled="!canEditAttributes"
-      @update:model-value="(v: string[]) => emit('tags', v)"
-    />
     <!-- 认领：只在这一格出现 —— 需求 + 自己还不在名单里（+ 本群成员，由 canClaim 判）。
          按下之后走的是"改指派人"那条既有命令，不新增接口，也不新增一次同步。 -->
     <div v-if="canClaim" class="flex items-center justify-between gap-2">
@@ -390,7 +430,16 @@ function submitReply() {
           :self-mention="selfMention"
         />
       </p>
-      <p v-else class="text-meta text-[var(--gosslan-text-2)]">{{ t("todo.noDescription") }}</p>
+      <!-- 没填描述时**回填标题**（用户 2026-11-20）：详情里不该出现一段空白。
+           ⚠️ 回填只发生在展示层 —— 编辑态的 `draft.description` 仍然是空的，
+           否则「没描述」会被悄悄写成一条与标题重复的描述，下次一键复制就重复了两遍。 -->
+      <p
+        v-else
+        class="gosslan-selectable whitespace-pre-wrap break-words text-meta leading-relaxed text-[var(--gosslan-text)]"
+        :title="t('todo.noDescription')"
+      >
+        {{ item.title }}
+      </p>
     </div>
 
     <!-- 图片：点缩略图看大图（交给全局那一份预览实例，见 script 里的说明） -->
