@@ -14,6 +14,17 @@
 
 ## [Unreleased]
 
+## [7.1.50] - 2026-11-20
+
+### 产品三旅程验收基线与只读走查（文档）
+- 新增 `docs/notes/product-journeys-2026-11-20.md`：三条旅程（首次添加 / 离线投递 /
+  文件完整性）的分步现状（用户动作数 + `file:line` 快照）、19 条缺口按 A/B/C 分档
+  （A 档=主路径低成本：接受后引导、拒绝反馈、失败终态 toast、完整性「已验证」信号）；
+  扩展功能未发现旅程阻塞项，README 功能分层按走查结论另行决策；静态走查，UI 实测
+  `NOT RUN`。
+- `docs/AI_ENGINEERING_INDEX.md`：新增该文档条目；修正 `platform-keychain-free-path`
+  条目的过期状态描述（「决策稿，未实现」→ Windows/Android 已实现、macOS 暂缓）。
+
 ## [7.1.49] - 2026-11-20
 
 ### README：数据边界与导出口径按真实实现改写
