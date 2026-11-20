@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>启动错误</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#0f1012;-webkit-font-smoothing:antialiased}
+svg{display:block}
+button{font-family:inherit}
+.tr{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style>
+</helmet>
+<div style="width:1000px;height:680px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#f1f2f6">
+      <div style="width:520px;background:#fff;border-radius:14px;border:1px solid #e5e6e9;padding:32px;text-align:center">
+        <div style="width:64px;height:64px;border-radius:20px;background:#fff8ea;border:1px solid #f0e5c9;display:flex;align-items:center;justify-content:center;margin:0 auto 20px"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg></div>
+        <div style="font-size:18px;font-weight:600">数据打不开，应用无法启动</div>
+        <div style="font-size:12px;color:#4d4f51;line-height:19px;margin-top:10px">本机数据库文件可能无法读取或被占用。你可以先重试，或打开数据目录检查。</div>
+        <div style="font-size:11px;color:#1b44aa;line-height:18px;margin-top:14px;padding:12px;background:#e5eeff;border-radius:10px;text-align:left">「重试」只会重新尝试打开现有的数据：不会删除、覆盖或重建任何文件。</div>
+        <div style="display:flex;gap:8px;justify-content:center;margin-top:22px"><button style="height:36px;padding:0 16px;border:0;border-radius:8px;background:#356ae8;color:#fff;font-size:12px;font-weight:600">重试</button><button style="height:36px;padding:0 16px;border:1px solid #d6d7da;border-radius:8px;background:#fff;font-size:12px">打开数据目录</button><button style="height:36px;padding:0 16px;border:1px solid #d6d7da;border-radius:8px;background:#fff;font-size:12px">退出</button></div>
+        <details style="margin-top:18px;font-size:11px;color:#4d4f51;text-align:left"><summary style="cursor:pointer">错误详情</summary><div style="margin-top:8px;font-family:ui-monospace,monospace;background:#f6f8fb;padding:10px;border-radius:8px">SQLITE_CANTOPEN · unable to open database file</div></details>
+      </div>
+    </div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview": {"width": 1000, "height": 680}}'>
+class Component extends DCLogic {
+  renderVals() { return {  }; }
+}
+</script>
+</body>
+</html>

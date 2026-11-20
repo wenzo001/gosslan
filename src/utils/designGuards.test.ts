@@ -4496,14 +4496,13 @@ test("㊺ 真实树：每个 var(--gosslan-*) 消费点都找得到定义（分�
   assert.ok(defined.size >= 40, `只认出 ${defined.size} 个令牌定义（下限 40）⇒ 定义面的形状变了，上面那句不作数`);
 
   // 反向那一半：从"数量上限"改成**逐格点名 + 写理由**（这是收紧，不是放宽：以前第 5、6 个没人读的名字能混过去，
-  // 现在不在名单里就红）。这 3 格都是**还没接线的排版阶梯**（265 处内联 `text-[NNpx]` 的目标档）
+  // 现在不在名单里就红）。剩下这一格是**还没接线的排版阶梯**（265 处内联 `text-[NNpx]` 的目标档）
   // ⇒ 删了就等于把迁移目的地一起删掉。谁接上了就把那格从名单里删掉
   // （2026-10-25：`--gosslan-item-radius` 被 CrashNotice / HangNotice 接上后已按此删掉）。
+  // （2026-11-20：callout / footnote / caption 三档被四个窗口级兜底横幅
+  //   （Crash / Hang / Recovery / VersionMismatch）与 CodeLangMenu 接上后按此删掉。）
   const TOKEN_UNCONSUMED: Array<{ name: string; why: string }> = [
     { name: "--gosslan-text-title", why: "字号阶梯 style.css:63，等 265 处内联 text-[NNpx] 接线" },
-    { name: "--gosslan-text-callout", why: "字号阶梯 style.css:65，同上" },
-    { name: "--gosslan-text-footnote", why: "字号阶梯 style.css:66，同上" },
-    { name: "--gosslan-text-caption", why: "字号阶梯（style.css 排版标尺段）；2026-11-06 之前它的消费点全在 StateBlock（`text-[var(--gosslan-text-caption)]` 三处），那是把字号令牌当颜色用的静默失效，已改掉 ⇒ 现在等 265 处内联 text-[NNpx] 迁移时一起接线" },
   ];
   const unused = [...defined].filter((t) => !used.has(t) && !DYNAMIC_WRITERS.some((d) => d.name === t)).sort();
   const unlisted = unused.filter((t) => !TOKEN_UNCONSUMED.some((w) => w.name === t));

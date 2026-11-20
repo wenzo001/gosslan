@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>群任务</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#0f1012;-webkit-font-smoothing:antialiased}
+svg{display:block}
+</style>
+</helmet>
+<div style="width:1000px;height:680px;display:flex;flex-direction:column;background:#f1f2f6;overflow:hidden">
+  <div style="height:40px;background:#e8e9ed;border-bottom:1px solid #e5e6e9;display:flex;align-items:center;padding:0 14px;position:relative;flex:0 0 auto">
+    <div style="display:flex;gap:8px"><span style="width:11px;height:11px;border-radius:999px;background:#ff5f57"></span><span style="width:11px;height:11px;border-radius:999px;background:#febc2e"></span><span style="width:11px;height:11px;border-radius:999px;background:#28c840"></span></div>
+    <div style="position:absolute;left:0;right:0;text-align:center;font-size:12px;font-weight:600;color:#4d4f51">产品设计群 · 群任务</div>
+  </div>
+
+  <div style="flex:1;display:flex;min-height:0">
+    <!-- 左：列表列 -->
+    <div style="width:460px;display:flex;flex-direction:column;border-right:1px solid #e5e6e9;min-height:0;background:#fff">
+      <!-- 统计行 + 新建 -->
+      <div style="height:48px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid #eef0f3;flex:0 0 auto">
+        <span style="font-size:11px;color:#4d4f51">3/7 已完成</span>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+          <button style="height:28px;padding:0 6px;border:0;background:transparent;color:#356ae8;font-size:12px;font-weight:600;display:flex;align-items:center;gap:4px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>新建任务</button>
+        </div>
+      </div>
+      <!-- 筛选页签 -->
+      <div style="height:38px;display:flex;align-items:center;gap:4px;padding:0 12px;border-bottom:1px solid #eef0f3;flex:0 0 auto">
+        <span style="font-size:11px;padding:4px 10px;border-radius:6px;background:#f6f8fb;color:#4d4f51">全部 7</span>
+        <span style="font-size:11px;padding:4px 10px;border-radius:6px;background:#e5eeff;color:#1b44aa;font-weight:600">我的 4</span>
+        <span style="font-size:11px;padding:4px 10px;border-radius:6px;background:#f6f8fb;color:#4d4f51">我创建 2</span>
+        <span style="font-size:11px;padding:4px 10px;border-radius:6px;background:#f6f8fb;color:#4d4f51">已归档</span>
+      </div>
+      <!-- 分组列表 -->
+      <div style="flex:1;overflow:hidden">
+        <!-- 分组：进行中 -->
+        <div style="position:relative;display:flex;align-items:center;gap:6px;background:#f1f2f6;padding:6px 12px"><span style="position:absolute;left:0;top:0;bottom:0;width:2px;background:#d58000"></span><span style="width:14px;height:14px;border-radius:999px;border:2px solid #d58000"></span><span style="font-size:12px;font-weight:500">进行中</span><span style="font-size:11px;color:#68696c">共 2 条</span></div>
+        <div style="position:relative;display:flex;align-items:center;gap:10px;border-bottom:1px solid #eef0f3;padding:9px 12px;background:#fff"><span style="position:absolute;left:0;top:0;bottom:0;width:2px;background:#d58000"></span><span style="width:14px;height:14px;border-radius:999px;border:2px solid #cf3546" title="优先级"></span><span style="width:14px;height:14px;border-radius:4px;border:1.5px solid #4d4f51" title="类型"></span><span style="width:34px;font-family:ui-monospace,monospace;font-size:11px;color:#4d4f51">#0042</span><div style="min-width:0;flex:1"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">整理紧凑令牌清单</div><div style="font-size:11px;color:#4d4f51;margin-top:2px;display:flex;gap:6px;flex-wrap:wrap"><span>张伟 发起</span><span>·</span><span>李工</span><span>·</span><span>关联 11-22</span></div></div><span style="font-size:10px;padding:2px 7px;border-radius:999px;background:#fff3e0;color:#724200;flex:0 0 auto">进行中</span></div>
+        <div style="position:relative;display:flex;align-items:center;gap:10px;border-bottom:1px solid #eef0f3;padding:9px 12px;background:#fff"><span style="position:absolute;left:0;top:0;bottom:0;width:2px;background:#d58000"></span><span style="width:14px;height:14px;border-radius:999px;border:2px solid #d58000" title="优先级"></span><span style="width:14px;height:14px;border-radius:4px;border:1.5px solid #4d4f51" title="类型"></span><span style="width:34px;font-family:ui-monospace,monospace;font-size:11px;color:#4d4f51">#0047</span><div style="min-width:0;flex:1"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">移动端交互还原</div><div style="font-size:11px;color:#4d4f51;margin-top:2px;display:flex;gap:6px;flex-wrap:wrap"><span>我 发起</span><span>·</span><span>我</span><span>·</span><span>关联 11-24</span></div></div><span style="font-size:10px;padding:2px 7px;border-radius:999px;background:#fff3e0;color:#724200;flex:0 0 auto">进行中</span></div>
+        <!-- 分组：待办 -->
+        <div style="position:relative;display:flex;align-items:center;gap:6px;background:#f1f2f6;padding:6px 12px"><span style="position:absolute;left:0;top:0;bottom:0;width:2px;background:#356ae8"></span><span style="width:14px;height:14px;border-radius:999px;border:2px solid #356ae8"></span><span style="font-size:12px;font-weight:500">待办</span><span style="font-size:11px;color:#68696c">共 2 条</span></div>
+        <div style="position:relative;display:flex;align-items:center;gap:10px;border-bottom:1px solid #eef0f3;padding:9px 12px;background:#fff"><span style="position:absolute;left:0;top:0;bottom:0;width:2px;background:#356ae8"></span><span style="width:14px;height:14px;border-radius:999px;border:2px solid #d58000"></span><span style="width:14px;height:14px;border-radius:4px;border:1.5px solid #4d4f51"></span><span style="width:34px;font-family:ui-monospace,monospace;font-size:11px;color:#4d4f51">#0051</span><div style="min-width:0;flex:1"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">补齐首次启动骨架图</div><div style="font-size:11px;color:#4d4f51;margin-top:2px">李工 发起 · 我</div></div><span style="font-size:10px;padding:2px 7px;border-radius:999px;background:#e5eeff;color:#1b44aa;flex:0 0 auto">待办</span></div>
+        <div style="position:relative;display:flex;align-items:center;gap:10px;border-bottom:1px solid #eef0f3;padding:9px 12px;background:#fff"><span style="position:absolute;left:0;top:0;bottom:0;width:2px;background:#356ae8"></span><span style="width:14px;height:14px;border-radius:999px;border:2px solid #929498"></span><span style="width:14px;height:14px;border-radius:4px;border:1.5px solid #4d4f51"></span><span style="width:34px;font-family:ui-monospace,monospace;font-size:11px;color:#4d4f51">#0053</span><div style="min-width:0;flex:1"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">核对暗色对比度读数</div><div style="font-size:11px;color:#4d4f51;margin-top:2px">张伟 发起 · 我</div></div><span style="font-size:10px;padding:2px 7px;border-radius:999px;background:#e5eeff;color:#1b44aa;flex:0 0 auto">待办</span></div>
+        <!-- 分组：完成 -->
+        <div style="position:relative;display:flex;align-items:center;gap:6px;background:#f1f2f6;padding:6px 12px"><span style="position:absolute;left:0;top:0;bottom:0;width:2px;background:#00aa6f"></span><span style="width:14px;height:14px;border-radius:999px;background:#00aa6f"></span><span style="font-size:12px;font-weight:500">完成</span><span style="font-size:11px;color:#68696c">共 3 条</span></div>
+        <div style="position:relative;display:flex;align-items:center;gap:10px;padding:9px 12px;background:#fff"><span style="position:absolute;left:0;top:0;bottom:0;width:2px;background:#00aa6f"></span><span style="width:14px;height:14px;border-radius:999px;background:#00aa6f;opacity:.5"></span><span style="width:14px;height:14px;border-radius:4px;border:1.5px solid #929498"></span><span style="width:34px;font-family:ui-monospace,monospace;font-size:11px;color:#929498">#0031</span><div style="min-width:0;flex:1"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#68696c">桌面三栏布局</div><div style="font-size:11px;color:#929498;margin-top:2px">张伟 发起 · 李工</div></div><span style="font-size:10px;padding:2px 7px;border-radius:999px;background:#daf5e5;color:#005938;flex:0 0 auto">完成</span></div>
+      </div>
+    </div>
+
+    <!-- 右：详情（两栏详情） -->
+    <div style="flex:1;display:flex;flex-direction:column;background:#fff;min-width:0">
+      <div style="height:48px;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid #eef0f3;flex:0 0 auto">
+        <span style="font-family:ui-monospace,monospace;font-size:11px;color:#4d4f51">#0042</span>
+        <span style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">整理紧凑令牌清单</span>
+        <span style="margin-left:auto;font-size:10px;padding:2px 8px;border-radius:999px;background:#fff3e0;color:#724200">进行中</span>
+      </div>
+      <div style="flex:1;overflow:hidden;padding:16px 18px">
+        <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:11px;color:#4d4f51;margin-bottom:14px">
+          <span>优先级 <b style="color:#cf3546">紧急</b></span>
+          <span>类型 <b style="color:#0f1012">开发</b></span>
+          <span>发起人 <b style="color:#0f1012">张伟</b></span>
+          <span>指派 <b style="color:#0f1012">李工</b></span>
+          <span>关联 <b style="color:#0f1012">11-22</b></span>
+        </div>
+        <div style="font-size:12px;font-weight:600;margin-bottom:6px">描述</div>
+        <div style="font-size:12px;line-height:19px;color:#4d4f51;padding:10px 12px;background:#f6f8fb;border-radius:10px">统一 6/8/10/14/20 圆角梯度与五档字号，桌面与移动共用一套令牌，并同步首屏骨架。</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:16px"><span style="font-size:12px;font-weight:600">回复</span><span style="font-size:11px;color:#68696c">2</span></div>
+        <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;gap:8px"><div style="width:24px;height:24px;border-radius:999px;background:#888fdd;color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;flex:0 0 auto">李工</div><div style="flex:1"><div style="font-size:11px;color:#4d4f51">李工 · 昨天 09:18</div><div style="font-size:12px;margin-top:2px">令牌表我更新好了，你看下间距那档</div></div></div>
+          <div style="display:flex;gap:8px"><div style="width:24px;height:24px;border-radius:999px;background:#a0c0e3;color:#0f1012;display:flex;align-items:center;justify-content:center;font-size:10px;flex:0 0 auto">张</div><div style="flex:1"><div style="font-size:11px;color:#4d4f51">张伟 · 今天 10:02</div><div style="font-size:12px;margin-top:2px">收到，我按这个改</div></div></div>
+        </div>
+        <div style="margin-top:14px;padding:8px 12px;border:1px solid #d6d7da;border-radius:10px;font-size:11px;color:#68696c">输入回复…</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1000,"height":680}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -92,13 +92,14 @@ const suggestRestart = computed(() => props.kind === "suggest_restart");
   gap: 2px;
   min-width: 0;
 }
+/* 同 HangNotice：窗口级兜底横幅不留字号/圆角字面量（12px = footnote，8px = sm）。 */
 .recovery-title {
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   font-weight: 600;
-  color: var(--gosslan-success, #2f9e5f);
+  color: var(--gosslan-success);
 }
 .recovery-body {
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   color: var(--gosslan-text-2);
   overflow-wrap: anywhere;
 }
@@ -115,13 +116,13 @@ const suggestRestart = computed(() => props.kind === "suggest_restart");
   border: 1px solid var(--gosslan-border);
   background: var(--gosslan-hover);
   color: var(--gosslan-text);
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   padding: 5px 10px;
-  border-radius: 8px;
+  border-radius: var(--gosslan-radius-sm);
   cursor: pointer;
 }
 .recovery-btn--primary {
   border-color: var(--gosslan-primary);
-  color: var(--gosslan-on-primary, #fff);
+  color: var(--gosslan-on-primary);
 }
 </style>

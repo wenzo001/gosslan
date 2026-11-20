@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>状态与反馈</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#0f1012;-webkit-font-smoothing:antialiased}
+svg{display:block}
+button{font-family:inherit}
+.tr{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style>
+</helmet>
+<div style="width:1120px;height:760px;box-sizing:border-box;padding:28px 36px;display:flex;flex-direction:column;gap:16px;background:#f1f2f6">
+      <div><div style="font-size:11px;color:#4d4f51;font-weight:600;letter-spacing:.08em">GOSSLAN · COMPACT STANDARD</div><div style="font-size:20px;font-weight:600;margin-top:4px">状态与反馈 <span style="font-size:12px;color:#4d4f51;font-weight:400">States &amp; Feedback</span></div></div>
+      <div style="display:flex;gap:16px;flex:1;min-height:0">
+        <div style="flex:1;background:#fff;border-radius:14px;padding:18px;border:1px solid #e5e6e9"><div style="font-size:13px;font-weight:600;margin-bottom:14px">Toast · 同屏 ≤2、同文案合并 ×N</div><div style="background:#fff;border-radius:10px;border:1px solid #e5e6e9;box-shadow:0 8px 24px rgba(15,16,18,0.12);padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px"><span style="width:8px;height:8px;border-radius:999px;background:#00aa6f"></span><span style="font-size:12px">设置已保存 · 即时生效</span></div>
+      <div style="background:#fff;border-radius:10px;border:1px solid #e5e6e9;box-shadow:0 8px 24px rgba(15,16,18,0.12);padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px"><span style="width:8px;height:8px;border-radius:999px;background:#356ae8"></span><span style="font-size:12px">正在同步历史消息…</span></div>
+      <div style="background:#fff;border-radius:10px;border:1px solid #e5e6e9;box-shadow:0 8px 24px rgba(15,16,18,0.12);padding:10px 14px;display:flex;align-items:center;gap:10px"><span style="width:8px;height:8px;border-radius:999px;background:#cf3546"></span><span style="font-size:12px">发送失败 · 对方不是好友</span></div><div style="font-size:11px;color:#4d4f51;margin-top:14px">结论 + 一句人话原因；技术串只进 console</div></div>
+        <div style="flex:1;background:#fff;border-radius:14px;padding:18px;border:1px solid #e5e6e9"><div style="font-size:13px;font-weight:600;margin-bottom:14px">骨架屏 · 首帧同源 SK-04</div><div style="background:#f6f8fb;border-radius:10px;padding:10px"><div style="display:flex;gap:10px;align-items:center;margin-bottom:10px"><div style="width:40px;height:40px;border-radius:999px;background:#e5e6e9"></div><div style="flex:1"><div style="height:11px;background:#e5e6e9;border-radius:6px;width:55%;margin-bottom:6px"></div><div style="height:9px;background:#eef0f3;border-radius:6px;width:80%"></div></div></div><div style="display:flex;gap:10px;align-items:center;margin-bottom:10px"><div style="width:40px;height:40px;border-radius:999px;background:#e5e6e9"></div><div style="flex:1"><div style="height:11px;background:#e5e6e9;border-radius:6px;width:55%;margin-bottom:6px"></div><div style="height:9px;background:#eef0f3;border-radius:6px;width:80%"></div></div></div><div style="display:flex;gap:10px;align-items:center;margin-bottom:10px"><div style="width:40px;height:40px;border-radius:999px;background:#e5e6e9"></div><div style="flex:1"><div style="height:11px;background:#e5e6e9;border-radius:6px;width:55%;margin-bottom:6px"></div><div style="height:9px;background:#eef0f3;border-radius:6px;width:80%"></div></div></div><div style="display:flex;gap:10px;align-items:center;margin-bottom:10px"><div style="width:40px;height:40px;border-radius:999px;background:#e5e6e9"></div><div style="flex:1"><div style="height:11px;background:#e5e6e9;border-radius:6px;width:55%;margin-bottom:6px"></div><div style="height:9px;background:#eef0f3;border-radius:6px;width:80%"></div></div></div></div><div style="font-size:11px;color:#4d4f51;margin-top:14px">骨架几何与真实布局同源，切换零跳位</div></div>
+        <div style="flex:1;background:#fff;border-radius:14px;padding:18px;border:1px solid #e5e6e9"><div style="font-size:13px;font-weight:600;margin-bottom:14px">空态与错误态</div><div style="background:#fff;border:1px solid #e5e6e9;border-radius:10px;padding:20px;text-align:center"><div style="font-size:13px;font-weight:600">没有匹配的联系人</div><div style="font-size:11px;color:#4d4f51;margin-top:6px">换个关键词试试</div></div><div style="font-size:11px;color:#4d4f51;margin-top:14px;line-height:17px">空态只有文字 + 至多一个动作<br>错误态给具体原因，不只报失败</div></div>
+      </div>
+    </div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview": {"width": 1120, "height": 760}}'>
+class Component extends DCLogic {
+  renderVals() { return {  }; }
+}
+</script>
+</body>
+</html>

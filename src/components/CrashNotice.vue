@@ -161,35 +161,37 @@ const extra = computed(() => {
 }
 .crash-title {
   font-weight: 600;
-  color: var(--gosslan-danger, #d64545);
+  color: var(--gosslan-danger);
 }
 .crash-close {
   border: 0;
   background: transparent;
   color: var(--gosslan-text-2);
+  /* 18px 是「×」字形本身的绘制尺寸（不是文字档位）：它要够大到能点中，
+     又不占正文行高，所以刻意不走 --gosslan-text-* 标尺。 */
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
   padding: 2px 6px;
-  border-radius: 6px;
+  border-radius: var(--gosslan-radius-xs);
 }
 .crash-close:hover {
   background: var(--gosslan-hover);
 }
 .crash-body {
   margin: 6px 0 0;
-  font-size: 13px;
+  font-size: var(--gosslan-text-callout);
   line-height: 1.55;
 }
 .crash-extra {
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   line-height: 1.5;
   color: var(--gosslan-text-2);
 }
 .crash-lastseen {
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   line-height: 1.5;
   color: var(--gosslan-text-2);
 }
@@ -203,9 +205,9 @@ const extra = computed(() => {
   border: 1px solid var(--gosslan-border);
   background: var(--gosslan-hover);
   color: var(--gosslan-text);
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   padding: 5px 10px;
-  border-radius: 8px;
+  border-radius: var(--gosslan-radius-sm);
   cursor: pointer;
 }
 .crash-btn:hover {
@@ -213,14 +215,14 @@ const extra = computed(() => {
 }
 .crash-btn--primary {
   border-color: var(--gosslan-primary);
-  color: var(--gosslan-on-primary, #fff);
+  color: var(--gosslan-on-primary);
 }
 .crash-btn--ghost {
   background: transparent;
 }
 .crash-code {
   margin: 8px 0 0;
-  font-size: 11px;
+  font-size: var(--gosslan-text-caption);
   color: var(--gosslan-text-2);
   user-select: text;
 }

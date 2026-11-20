@@ -71,13 +71,14 @@ const body = computed(() =>
   gap: 2px;
   min-width: 0;
 }
+/* 同 HangNotice：窗口级兜底横幅不留字号/圆角字面量（12px = footnote，8px = sm）。 */
 .version-title {
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   font-weight: 600;
-  color: var(--gosslan-danger, #d64545);
+  color: var(--gosslan-danger);
 }
 .version-body {
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   color: var(--gosslan-text-2);
   overflow-wrap: anywhere;
 }
@@ -86,9 +87,9 @@ const body = computed(() =>
   border: 1px solid var(--gosslan-border);
   background: var(--gosslan-hover);
   color: var(--gosslan-text);
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   padding: 5px 10px;
-  border-radius: 8px;
+  border-radius: var(--gosslan-radius-sm);
   cursor: pointer;
 }
 </style>

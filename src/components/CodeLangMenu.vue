@@ -275,7 +275,7 @@ function pick(value: string) {
   gap: 3px;
   padding: 0 6px;
   border-radius: var(--gosslan-radius-sm);
-  font-size: 12px;
+  font-size: var(--gosslan-text-footnote);
   line-height: 1;
   color: var(--gosslan-text-2);
   transition: background-color 120ms ease, opacity 120ms ease;

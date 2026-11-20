@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>控件规格</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#0f1012;-webkit-font-smoothing:antialiased}
+</style>
+</helmet>
+<div style="width:1120px;height:760px;box-sizing:border-box;padding:32px 40px;display:flex;flex-direction:column;gap:18px;background:#f1f2f6">
+  <div>
+    <div style="font-size:11px;line-height:16px;color:#4d4f51;font-weight:600;letter-spacing:.08em">GOSSLAN · COMPACT STANDARD</div>
+    <div style="font-size:22px;line-height:28px;font-weight:600;margin-top:4px">控件规格 <span style="font-size:13px;color:#4d4f51;font-weight:400">Components · 3 语义 × 4 尺寸</span></div>
+  </div>
+
+  <div style="background:#ffffff;border-radius:14px;padding:20px;border:1px solid #e5e6e9">
+    <div style="font-size:13px;font-weight:600;margin-bottom:16px">按钮 · Button</div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <span style="width:52px;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">xs 24</span>
+        <button style="height:24px;padding:0 8px;border:0;border-radius:6px;background:#356ae8;color:#fff;font-size:11px;font-weight:500">主要</button>
+        <button style="height:24px;padding:0 8px;border:1px solid #d6d7da;border-radius:6px;background:#fff;color:#0f1012;font-size:11px;font-weight:500">次要</button>
+        <button style="height:24px;padding:0 8px;border:0;border-radius:6px;background:#ffe6e6;color:#cf3546;font-size:11px;font-weight:500">危险</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span style="width:52px;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">sm 28</span>
+        <button style="height:28px;padding:0 10px;border:0;border-radius:6px;background:#356ae8;color:#fff;font-size:12px;font-weight:500">主要</button>
+        <button style="height:28px;padding:0 10px;border:1px solid #d6d7da;border-radius:6px;background:#fff;color:#0f1012;font-size:12px;font-weight:500">次要</button>
+        <button style="height:28px;padding:0 10px;border:0;border-radius:6px;background:#ffe6e6;color:#cf3546;font-size:12px;font-weight:500">危险</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span style="width:52px;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">md 32</span>
+        <button style="height:32px;padding:0 12px;border:0;border-radius:8px;background:#356ae8;color:#fff;font-size:13px;font-weight:500">主要按钮</button>
+        <button style="height:32px;padding:0 12px;border:1px solid #d6d7da;border-radius:8px;background:#fff;color:#0f1012;font-size:13px;font-weight:500">次要按钮</button>
+        <button style="height:32px;padding:0 12px;border:0;border-radius:8px;background:#ffe6e6;color:#cf3546;font-size:13px;font-weight:500">危险按钮</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span style="width:52px;font-size:11px;color:#4d4f51;font-family:ui-monospace,monospace">lg 40</span>
+        <button style="height:40px;padding:0 16px;border:0;border-radius:8px;background:#356ae8;color:#fff;font-size:14px;font-weight:600">主要按钮</button>
+        <button style="height:40px;padding:0 16px;border:1px solid #d6d7da;border-radius:8px;background:#fff;color:#0f1012;font-size:14px;font-weight:600">次要按钮</button>
+        <button style="height:40px;padding:0 16px;border:0;border-radius:8px;background:#ffe6e6;color:#cf3546;font-size:14px;font-weight:600">危险按钮</button>
+      </div>
+    </div>
+    <div style="font-size:11px;color:#4d4f51;margin-top:14px;padding-top:12px;border-top:1px solid #eef0f3">图标按钮为正方形（24/28/32/40）；hover 只轻微加深，不位移不缩放；每个交互元素都有 press 态。</div>
+  </div>
+
+  <div style="display:flex;gap:16px;flex:1;min-height:0">
+    <div style="flex:1;background:#ffffff;border-radius:14px;padding:20px;border:1px solid #e5e6e9">
+      <div style="font-size:13px;font-weight:600;margin-bottom:16px">输入框 · Input</div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div>
+          <div style="font-size:11px;color:#4d4f51;margin-bottom:6px">默认 · md 36px</div>
+          <div style="height:36px;border-radius:8px;background:#edeef2;border:1px solid #87888b;display:flex;align-items:center;padding:0 12px;font-size:13px;color:#68696c">搜索会话、联系人或消息</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:#4d4f51;margin-bottom:6px">聚焦 · 1px 内描边变色，不加外框</div>
+          <div style="height:36px;border-radius:8px;background:#edeef2;border:1px solid #356ae8;display:flex;align-items:center;padding:0 12px;font-size:13px;color:#0f1012">输入内容</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:#4d4f51;margin-bottom:6px">错误 · 边框 + helper 文案</div>
+          <div style="height:36px;border-radius:8px;background:#edeef2;border:1px solid #cf3546;display:flex;align-items:center;padding:0 12px;font-size:13px;color:#0f1012">https://…</div>
+          <div style="font-size:11px;color:#cf3546;margin-top:4px">请输入有效的链接地址</div>
+        </div>
+      </div>
+    </div>
+    <div style="flex:1;background:#ffffff;border-radius:14px;padding:20px;border:1px solid #e5e6e9">
+      <div style="font-size:13px;font-weight:600;margin-bottom:16px">开关与标签 · Toggle &amp; Badge</div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px">桌面通知</span>
+          <span style="width:36px;height:20px;border-radius:999px;background:#356ae8;display:flex;align-items:center;padding:2px;justify-content:flex-end"><span style="width:16px;height:16px;border-radius:999px;background:#fff"></span></span>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px">通知显示内容</span>
+          <span style="width:36px;height:20px;border-radius:999px;background:#d6d7da;display:flex;align-items:center;padding:2px;justify-content:flex-start"><span style="width:16px;height:16px;border-radius:999px;background:#fff"></span></span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+          <span style="font-size:11px;line-height:16px;padding:2px 8px;border-radius:6px;background:#e5eeff;color:#1b44aa">信息</span>
+          <span style="font-size:11px;line-height:16px;padding:2px 8px;border-radius:6px;background:#daf5e5;color:#005938">成功</span>
+          <span style="font-size:11px;line-height:16px;padding:2px 8px;border-radius:6px;background:#ffe6e6;color:#950023">未读 3</span>
+          <span style="font-size:11px;line-height:16px;padding:2px 8px;border-radius:6px;background:#ffe9d4;color:#724200">提醒</span>
+        </div>
+        <div style="font-size:11px;color:#4d4f51;line-height:17px;margin-top:4px">状态不仅靠颜色区分，也靠文字与亮度区分；焦点环走 --gosslan-focus-ring。</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1120,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

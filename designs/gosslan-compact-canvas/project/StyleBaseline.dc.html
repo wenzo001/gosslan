@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>样式统一基准</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#0f1012;-webkit-font-smoothing:antialiased}
+</style>
+</helmet>
+<div style="width:1280px;height:900px;box-sizing:border-box;padding:30px 36px;display:flex;flex-direction:column;gap:14px;background:#f1f2f6">
+  <div>
+    <div style="font-size:11px;line-height:16px;color:#4d4f51;font-weight:600;letter-spacing:.08em">GOSSLAN · 全局统一基准</div>
+    <div style="font-size:22px;line-height:28px;font-weight:600;margin-top:4px">样式与交互统一基准 <span style="font-size:13px;color:#4d4f51;font-weight:400">Style &amp; Interaction Baseline</span></div>
+    <div style="font-size:12px;color:#4d4f51;margin-top:6px">唯一事实源：<span style="font-family:ui-monospace,monospace">src/style.css</span> · 头像色板：<span style="font-family:ui-monospace,monospace">src/utils/avatarSeed.ts</span>。所有画板、组件、新功能一律对齐本表，不另造数值。</div>
+  </div>
+
+  <div style="display:flex;gap:14px;flex:1;min-height:0">
+    <!-- 左：颜色令牌 -->
+    <div style="flex:1.05;background:#fff;border-radius:14px;border:1px solid #e5e6e9;padding:16px;display:flex;flex-direction:column">
+      <div style="font-size:13px;font-weight:600;margin-bottom:12px">颜色令牌 · 亮 / 暗</div>
+      <div style="font-size:11px;color:#68696c;margin-bottom:8px">每行：亮色值 / 暗色值</div>
+      <div style="display:flex;flex-direction:column;gap:0;font-size:11px;flex:1">
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eef0f3"><span style="width:96px;color:#4d4f51">text</span><span style="width:14px;height:14px;border-radius:6px;background:#0f1012"></span><span style="font-family:ui-monospace,monospace">#0f1012</span><span style="color:#68696c">/</span><span style="width:14px;height:14px;border-radius:6px;background:#e8eaed"></span><span style="font-family:ui-monospace,monospace">#e8eaed</span></div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eef0f3"><span style="width:96px;color:#4d4f51">text-2</span><span style="width:14px;height:14px;border-radius:6px;background:#4d4f51"></span><span style="font-family:ui-monospace,monospace">#4d4f51</span><span style="color:#68696c">/</span><span style="width:14px;height:14px;border-radius:6px;background:#cdced1"></span><span style="font-family:ui-monospace,monospace">#cdced1</span></div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eef0f3"><span style="width:96px;color:#4d4f51">app-bg</span><span style="width:14px;height:14px;border-radius:6px;background:#f1f2f6;border:1px solid #d6d7da"></span><span style="font-family:ui-monospace,monospace">#f1f2f6</span><span style="color:#68696c">/</span><span style="width:14px;height:14px;border-radius:6px;background:#141517"></span><span style="font-family:ui-monospace,monospace">#141517</span></div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eef0f3"><span style="width:96px;color:#4d4f51">list</span><span style="width:14px;height:14px;border-radius:6px;background:#f6f8fb;border:1px solid #d6d7da"></span><span style="font-family:ui-monospace,monospace">#f6f8fb</span><span style="color:#68696c">/</span><span style="width:14px;height:14px;border-radius:6px;background:#1f2022"></span><span style="font-family:ui-monospace,monospace">#1f2022</span></div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eef0f3"><span style="width:96px;color:#4d4f51">chat/panel</span><span style="width:14px;height:14px;border-radius:6px;background:#ffffff;border:1px solid #d6d7da"></span><span style="font-family:ui-monospace,monospace">#ffffff</span><span style="color:#68696c">/</span><span style="width:14px;height:14px;border-radius:6px;background:#252628"></span><span style="font-family:ui-monospace,monospace">#252628</span></div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eef0f3"><span style="width:96px;color:#4d4f51">primary</span><span style="width:14px;height:14px;border-radius:6px;background:#356ae8"></span><span style="font-family:ui-monospace,monospace">#356ae8</span><span style="color:#68696c">/</span><span style="width:14px;height:14px;border-radius:6px;background:#bad1ff"></span><span style="font-family:ui-monospace,monospace">#bad1ff</span></div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eef0f3"><span style="width:96px;color:#4d4f51">primary-light</span><span style="width:14px;height:14px;border-radius:6px;background:#e5eeff"></span><span style="font-family:ui-monospace,monospace">#e5eeff</span><span style="color:#68696c">/</span><span style="width:14px;height:14px;border-radius:6px;background:#27334a"></span><span style="font-family:ui-monospace,monospace">#27334a</span></div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eef0f3"><span style="width:96px;color:#4d4f51">success(-soft)</span><span style="width:14px;height:14px;border-radius:6px;background:#daf5e5"></span><span style="font-family:ui-monospace,monospace">#daf5e5</span><span style="color:#68696c">/</span><span style="width:14px;height:14px;border-radius:6px;background:#243d30"></span><span style="font-family:ui-monospace,monospace">#243d30</span></div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eef0f3"><span style="width:96px;color:#4d4f51">danger(-soft)</span><span style="width:14px;height:14px;border-radius:6px;background:#ffe6e6"></span><span style="font-family:ui-monospace,monospace">#ffe6e6</span><span style="color:#68696c">/</span><span style="width:14px;height:14px;border-radius:6px;background:#4c2c2c"></span><span style="font-family:ui-monospace,monospace">#4c2c2c</span></div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0"><span style="width:96px;color:#4d4f51">warning(-soft)</span><span style="width:14px;height:14px;border-radius:6px;background:#ffe9d4"></span><span style="font-family:ui-monospace,monospace">#ffe9d4</span><span style="color:#68696c">/</span><span style="width:14px;height:14px;border-radius:6px;background:#46321f"></span><span style="font-family:ui-monospace,monospace">#46321f</span></div>
+      </div>
+    </div>
+
+    <!-- 中：字体圆角间距 -->
+    <div style="flex:1;background:#fff;border-radius:14px;border:1px solid #e5e6e9;padding:16px;display:flex;flex-direction:column">
+      <div style="font-size:13px;font-weight:600;margin-bottom:12px">字号 · 圆角 · 密度</div>
+      <div style="font-size:11px;color:#68696c;margin-bottom:8px">只用这些档，不写中间值</div>
+      <div style="display:flex;flex-direction:column;gap:12px;flex:1">
+        <div>
+          <div style="font-size:11px;font-weight:600;color:#1b44aa;margin-bottom:6px">字号五档 · 字重 400/500/600</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:11px">
+            <span style="padding:4px 9px;border-radius:6px;background:#e5eeff;color:#1b44aa">title 15</span>
+            <span style="padding:4px 9px;border-radius:6px;background:#e5eeff;color:#1b44aa">body 14</span>
+            <span style="padding:4px 9px;border-radius:6px;background:#e5eeff;color:#1b44aa">callout 13</span>
+            <span style="padding:4px 9px;border-radius:6px;background:#e5eeff;color:#1b44aa">footnote 12</span>
+            <span style="padding:4px 9px;border-radius:6px;background:#e5eeff;color:#1b44aa">caption 11（下限）</span>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:600;color:#1b44aa;margin-bottom:6px">圆角梯度 · 同心 = 外 − 间距</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:11px">
+            <span style="padding:4px 9px;border-radius:6px;background:#f6f8fb;color:#4d4f51">xs 6</span>
+            <span style="padding:4px 9px;border-radius:8px;background:#f6f8fb;color:#4d4f51">sm 8</span>
+            <span style="padding:4px 9px;border-radius:10px;background:#f6f8fb;color:#4d4f51">md 10</span>
+            <span style="padding:4px 9px;border-radius:14px;background:#f6f8fb;color:#4d4f51">lg 14</span>
+            <span style="padding:4px 9px;border-radius:20px;background:#f6f8fb;color:#4d4f51">xl 20</span>
+            <span style="padding:4px 9px;border-radius:22px;background:#f6f8fb;color:#4d4f51">2xl 22</span>
+            <span style="padding:4px 9px;border-radius:999px;background:#f6f8fb;color:#4d4f51">pill</span>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:600;color:#1b44aa;margin-bottom:6px">密度五档 · 单一标准</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:11px">
+            <span style="padding:4px 9px;border-radius:6px;background:#f6f8fb;color:#4d4f51">card-pad 12</span>
+            <span style="padding:4px 9px;border-radius:6px;background:#f6f8fb;color:#4d4f51">inset 8</span>
+            <span style="padding:4px 9px;border-radius:6px;background:#f6f8fb;color:#4d4f51">section-gap 16</span>
+            <span style="padding:4px 9px;border-radius:6px;background:#f6f8fb;color:#4d4f51">row-min-h 40</span>
+            <span style="padding:4px 9px;border-radius:6px;background:#f6f8fb;color:#4d4f51">gutter 8</span>
+          </div>
+        </div>
+        <div style="font-size:11px;color:#4d4f51;line-height:17px;padding-top:8px;border-top:1px solid #eef0f3">头像色只从 <span style="font-family:ui-monospace,monospace">AVATAR_BACKGROUNDS</span>（靛蓝 #888fdd、蓝 #a0c0e3、青 #a0e3e1…）取，不自造浅蓝。</div>
+      </div>
+    </div>
+
+    <!-- 右：交互统一 -->
+    <div style="flex:1;background:#fff;border-radius:14px;border:1px solid #e5e6e9;padding:16px;display:flex;flex-direction:column">
+      <div style="font-size:13px;font-weight:600;margin-bottom:12px">交互模式统一</div>
+      <div style="display:flex;flex-direction:column;gap:10px;font-size:11px;line-height:16px;flex:1">
+        <div><b style="color:#1b44aa">按钮</b> · 3 语义（主/次/危险）× 4 尺寸；圆角 sm/md；主色实心、次色描边。</div>
+        <div><b style="color:#1b44aa">hover</b> · 只轻微加深/提亮，不位移不缩放；<b style="color:#1b44aa">press</b> 态必备。</div>
+        <div><b style="color:#1b44aa">焦点</b> · 走 --gosslan-focus-ring；文本输入 1px 内描边变色，不加外框。</div>
+        <div><b style="color:#1b44aa">图标</b> · lucide 线性 2px；16/20/24（导航 21/23）；图标按钮必须 aria-label。</div>
+        <div><b style="color:#1b44aa">选中态</b> · 列表行用 list-active；导航药丸 transform 滑动；选中项与内容连贯。</div>
+        <div><b style="color:#1b44aa">Toast</b> · 成功/信息/错误三态；同文案合并 ×N；同屏 ≤2；结论 + 一句人话原因。</div>
+        <div><b style="color:#1b44aa">浮层</b> · 圆角 lg=14；菜单元信息收敛；同心公式内圆角 = 外 − 间距。</div>
+        <div><b style="color:#1b44aa">动效</b> · 一条 ease；只动 color/bg/border/opacity/transform；reduced-motion 降级。</div>
+      </div>
+      <div style="margin-top:10px;padding:10px;background:#e5eeff;border-radius:8px;font-size:11px;color:#1b44aa;line-height:16px">本轮统一：把 30 张画板里的浅蓝头像、soft 色、蓝边框、非标圆角全部对齐到上表；布局与文案不变。</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

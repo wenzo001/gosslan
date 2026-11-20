@@ -1,0 +1,64 @@
+{
+  "v": 3,
+  "createdOnFiles": { "v": 1, "at": "2026-11-20T04:07:27Z" },
+  "title": "Gosslan 紧凑模式统一设计 · Compact Standard",
+  "launch": { "view": "canvas" },
+  "pages": [
+    { "id": "standards", "name": "01 标准与令牌" },
+    { "id": "core", "name": "02 桌面核心界面" },
+    { "id": "layers", "name": "03 浮层与面板" },
+    { "id": "aux", "name": "04 辅助窗口" },
+    { "id": "mobile", "name": "05 移动端与状态" }
+  ],
+  "boards": {
+    "StyleBaseline.dc.html": { "x": 0, "y": 0, "w": 1280, "h": 900, "title": "样式与交互统一基准", "page": "standards" },
+    "Foundations.dc.html": { "x": 1360, "y": 0, "w": 1120, "h": 760, "title": "设计令牌总览", "page": "standards" },
+    "Density.dc.html": { "x": 2560, "y": 0, "w": 1120, "h": 760, "title": "紧凑密度规范", "page": "standards" },
+    "Components.dc.html": { "x": 3760, "y": 0, "w": 1120, "h": 760, "title": "控件规格", "page": "standards" },
+
+    "Chats.dc.html": { "x": 0, "y": 880, "w": 1000, "h": 680, "title": "会话列表（空态）", "page": "core", "is_interactive": true },
+    "Conversation.dc.html": { "x": 1080, "y": 880, "w": 1000, "h": 680, "title": "单聊会话", "page": "core", "is_interactive": true },
+    "GroupChat.dc.html": { "x": 2160, "y": 880, "w": 1000, "h": 680, "title": "群聊会话", "page": "core", "is_interactive": true },
+    "Contacts.dc.html": { "x": 0, "y": 1680, "w": 1000, "h": 680, "title": "通讯录", "page": "core", "is_interactive": true },
+    "Links.dc.html": { "x": 1080, "y": 1680, "w": 1000, "h": 680, "title": "链接管理", "page": "core", "is_interactive": true },
+    "Favorites.dc.html": { "x": 2160, "y": 1680, "w": 1000, "h": 680, "title": "收藏", "page": "core", "is_interactive": true },
+    "FriendProfile.dc.html": { "x": 1080, "y": 2480, "w": 1000, "h": 680, "title": "好友资料", "page": "core", "is_interactive": true },
+
+    "ContextMenu.dc.html": { "x": 2160, "y": 2480, "w": 1000, "h": 680, "title": "消息右键菜单", "page": "layers" },
+    "Search.dc.html": { "x": 0, "y": 3280, "w": 1000, "h": 680, "title": "聊天记录搜索", "page": "layers" },
+    "Forward.dc.html": { "x": 1080, "y": 3280, "w": 1000, "h": 680, "title": "转发弹窗", "page": "layers" },
+    "GroupPanels.dc.html": { "x": 2160, "y": 3280, "w": 1000, "h": 680, "title": "群管理面板", "page": "layers" },
+    "Network.dc.html": { "x": 0, "y": 4080, "w": 1000, "h": 680, "title": "网络拓扑", "page": "layers" },
+    "Modals.dc.html": { "x": 1080, "y": 4080, "w": 1000, "h": 680, "title": "弹窗与确认", "page": "layers" },
+    "Composer.dc.html": { "x": 2160, "y": 4080, "w": 1000, "h": 680, "title": "输入区与浮层", "page": "layers" },
+
+    "Settings.dc.html": { "x": 0, "y": 4880, "w": 1000, "h": 680, "title": "设置 · 外观", "page": "aux", "is_interactive": true },
+    "SettingsNetwork.dc.html": { "x": 1080, "y": 4880, "w": 1000, "h": 680, "title": "设置 · 网络", "page": "aux" },
+    "Logs.dc.html": { "x": 2160, "y": 4880, "w": 1000, "h": 680, "title": "运行日志", "page": "aux" },
+    "StartupError.dc.html": { "x": 0, "y": 5680, "w": 1000, "h": 680, "title": "启动错误", "page": "aux" },
+    "Tasks.dc.html": { "x": 1080, "y": 5680, "w": 1000, "h": 680, "title": "群任务看板", "page": "aux" },
+
+    "MobileChats.dc.html": { "x": 2160, "y": 5680, "w": 390, "h": 844, "title": "移动端 · 会话列表", "page": "mobile" },
+    "MobileConversation.dc.html": { "x": 2600, "y": 5680, "w": 390, "h": 844, "title": "移动端 · 聊天", "page": "mobile" },
+    "MobileMe.dc.html": { "x": 3040, "y": 5680, "w": 390, "h": 844, "title": "移动端 · 我的", "page": "mobile" },
+    "MobileEmpty.dc.html": { "x": 3480, "y": 5680, "w": 390, "h": 844, "title": "移动端 · 空态", "page": "mobile" },
+    "DarkMode.dc.html": { "x": 0, "y": 6680, "w": 1000, "h": 680, "title": "暗色主题", "page": "mobile", "is_interactive": true },
+    "States.dc.html": { "x": 1080, "y": 6680, "w": 1120, "h": 760, "title": "状态与反馈", "page": "mobile" }
+  },
+  "order": [
+    "StyleBaseline.dc.html", "Foundations.dc.html", "Density.dc.html", "Components.dc.html",
+    "Chats.dc.html", "Conversation.dc.html", "GroupChat.dc.html", "Contacts.dc.html", "Links.dc.html", "Favorites.dc.html", "FriendProfile.dc.html",
+    "ContextMenu.dc.html", "Search.dc.html", "Forward.dc.html", "GroupPanels.dc.html", "Network.dc.html", "Modals.dc.html", "Composer.dc.html",
+    "Settings.dc.html", "SettingsNetwork.dc.html", "Logs.dc.html", "StartupError.dc.html", "Tasks.dc.html",
+    "MobileChats.dc.html", "MobileConversation.dc.html", "MobileMe.dc.html", "MobileEmpty.dc.html", "DarkMode.dc.html", "States.dc.html"
+  ],
+  "notes": {
+    "n-title1": { "x": 0, "y": -260, "text": "Gosslan 紧凑模式统一设计 · Compact Standard", "kind": "title1", "maxW": 3520, "size": "xxl" },
+    "n-desc": { "x": 0, "y": -140, "text": "单一标准 · 不切换 · 全局统一。对标 VS Code 1.147 紧凑模式；所有令牌取自 src/style.css。点击带 Play 的画板可体验交互。", "w": 3520, "size": "l" },
+    "n-core": { "x": 0, "y": 800, "text": "桌面核心界面 — 三栏布局 64px rail + 320px 列表 + 聊天区；行高 62、头部 52、标题栏 40。", "w": 3040, "size": "m" },
+    "n-layers": { "x": 0, "y": 3200, "text": "浮层与面板 — 右键菜单两段式、搜索、转发、群管理；圆角 lg=14、浮层层级一致。", "w": 3040, "size": "m" },
+    "n-aux": { "x": 0, "y": 4800, "text": "辅助窗口 — Tauri 独立单例窗；左栏 200px 设置导航，工具条 46px。", "w": 3040, "size": "m" },
+    "n-mobile": { "x": 2160, "y": 5600, "text": "移动端 390×844 — 单栏 + 底部 TabBar 四项(56px)，触控命中区 44px。", "w": 1800, "size": "m" }
+  },
+  "designSystems": []
+}
