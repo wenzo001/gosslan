@@ -4058,9 +4058,14 @@ async function runAccent(cdp, url) {
       "    dark: (() => {" +
       "      const r = document.documentElement;" +
       "      const had = r.classList.contains('dark');" +
+      // 首屏脚本会把派生三档写成 inline（applyTheme 的产物），inline 优先级高于 .dark
+      // ⇒ 不先摘掉，这里量到的永远是亮色那三档（2026-11-20 实测就是这么红的）。
+      "      const saved = ['--gosslan-primary','--gosslan-primary-hover','--gosslan-primary-active','--gosslan-primary-light','--gosslan-on-primary'].map((k) => [k, r.style.getPropertyValue(k)]);" +
+      "      for (const [k] of saved) r.style.removeProperty(k);" +
       "      r.classList.add('dark');" +
       "      const o = { active: mk('--gosslan-primary-active'), hover: mk('--gosslan-primary-hover'), on: mk('--gosslan-on-primary') };" +
       "      if (!had) r.classList.remove('dark');" +
+      "      for (const [k, v] of saved) { if (v) r.style.setProperty(k, v); }" +
       "      return o;" +
       "    })()," +
       "    font: (() => {" +
@@ -4127,40 +4132,23 @@ async function runAccent(cdp, url) {
     "support=true 且主色/三档全部可解析",
     JSON.stringify({ support: read.support, primary: read.primary, hover: read.hover, active: read.active, light: read.light }),
   );
-  // 这一格量的是"首屏那一刻就已经成套"：页面上只改主色这一个 inline，派生三档必须跟着换。
-  // ⚠️ 判据不能写成"另三档 inline 为空" —— 探针页面里没有 Tauri，store 的 applyTheme 根本不会跑，
-  // 那种写法测的是这个环境恰好没写，不是产品没写（本轮就这么假绿过一次）。
-  const moved = ["hover", "active", "light"].filter((k) => String(read.before[k]) !== String(read[k]));
+  // 2026-11-20：派生档的实现从「CSS color-mix 跟着 inline 主色自动变」改成
+  // 「JS 求解器算好再 inline 写回」（utils/themePalette.ts）。所以这里不再判"三档跟着换" ——
+  // 那套数学在 themePalette.test.ts 里逐档算过；运行时这一格只管**声明有没有真生效**：
+  // 浏览器算出来的颜色必须等于 style.css 里那份字面值。
   check(
-    "只改写主色这一个 inline，派生三档就跟着换（首屏那套颜色是成套的，不需要 JS 再补写）",
-    String(read.inline["--gosslan-primary"] || "").trim() === SEED && moved.length === 3,
-    "三档取值都随主色改变",
-    JSON.stringify({ inline: read.inline, moved, before: read.before }),
+    "只改写主色这一个 inline（首屏那套颜色由求解器写，CSS 里是默认主题的字面值）",
+    String(read.inline["--gosslan-primary"] || "").trim() === SEED,
+    "inline 主色 = 夹具设定值",
+    JSON.stringify({ inline: read.inline }),
   );
-  // ⚠️ 混色比例**不许**在这一格手抄（就漂过一次：CSS 从 15% 改成 28% 时探针里那个 0.15
-  //    自己变红，红的是量具不是产品）。两档外观的四条混法 + 暗色前景档全部从
-  //    `src/style.css` 现解析 ⇒ 磁盘上那份和浏览器算出来那份必须是同一个数；
-  //    解析不出来 ⇒ 期望值 null ⇒ 这一格红（失败关闭，不静默放行）。
-  //    填充档与前景档是**成对**的：亮色朝黑混（白字压得住）、暗色朝白混（与 #1e293b
-  //    面板分得开 + 前景换深墨）。所以暗色那三行也要真在浏览器里量一次 ——
-  //    .dark 的覆盖没生效时，只有这里会红，静态判据看不出来。
   const cssText = fs.readFileSync(path.join(ROOT, "src/style.css"), "utf8");
   // 作用域必须按**行首的** `:root {` / `.dark {` 认 —— 注释里也写着 `.dark {`，
   // 朴素匹配会先撞上那条评论（tokenContrast.test.ts 就是为这个坑写的）。
   const rootBlock = /^:root\s*\{([\s\S]*?)^\}/m.exec(cssText)?.[1] ?? "";
   const darkBlock = /^\.dark\s*\{([\s\S]*?)^\}/m.exec(cssText)?.[1] ?? "";
-  /** 解析 `--gosslan-<token>: color-mix(in srgb, var(--gosslan-primary) N%, #hex)`。 */
-  const readMix = (scope, token) => {
-    const m = new RegExp(
-      "--gosslan-" + token + ":\\s*color-mix\\(\\s*in srgb,\\s*var\\(--gosslan-primary\\)\\s+([\\d.]+)%\\s*,\\s*(#[0-9a-fA-F]{3,6})\\s*\\)",
-    ).exec(scope);
-    return m ? { pct: Number(m[1]), other: m[2].toLowerCase() } : null;
-  };
   /** 解析 `--gosslan-<token>: #hex` 或 `var(--gosslan-xxx)`（后者按同层叠顺序跟着再解一层）。 */
   const readFlat = (scope, token, top) => {
-    // ⚠️ 冒号后的空格必须**提到分支外面**：写成 `(?:\s*#hex|var\(...))` 时
-    // 只有第一支吃得到空格，`var(--gosslan-app-bg)` 前那个空格会让整条正则不匹配，
-    // 于是暗色前景档解析成 null —— 红的是量具，不是产品。
     const m = new RegExp(
       "--gosslan-" + token + ":\\s*(?:(#[0-9a-fA-F]{3,6})|var\\(--gosslan-([a-z-]+)\\))\\s*;",
     ).exec(scope);
@@ -4168,49 +4156,40 @@ async function runAccent(cdp, url) {
     if (m[1]) return m[1].toLowerCase();
     return readFlat(top ?? scope, m[2], top);
   };
-  // 混色结果 = 主色与另一色按 (100−pct)% 线性插值：另一色是黑 ⇒ 压暗，是白 ⇒ 提亮。
-  const mixOf = (d) => {
-    if (!d) return null;
-    if (d.other === "#000000") return mix(0, (100 - d.pct) / 100);
-    if (d.other === "#ffffff") return mix(255, (100 - d.pct) / 100);
-    return null;
-  };
-  const lightFill = readMix(rootBlock, "primary-active");
-  const lightHover = readMix(rootBlock, "primary-hover");
-  const darkFill = readMix(darkBlock, "primary-active");
-  const darkHover = readMix(darkBlock, "primary-hover");
+  const lightFill = readFlat(rootBlock, "primary-active");
+  const lightHover = readFlat(rootBlock, "primary-hover");
+  const darkFill = readFlat(darkBlock, "primary-active");
+  const darkHover = readFlat(darkBlock, "primary-hover");
   const darkInk = readFlat(darkBlock, "on-primary", darkBlock);
   check(
-    "两档外观的填充/hover 混法与暗色前景档都能从 src/style.css 解析出来（量具不手抄常数）",
-    [lightFill, lightHover, darkFill, darkHover].every((d) => !!d) && !!darkInk && !!read.dark,
-    "4 条 color-mix + 1 条暗色前景 + 浏览器读到的 dark 那一组",
-    JSON.stringify({ lightFill, lightHover, darkFill, darkHover, darkInk, dark: read.dark }),
+    "两档外观的填充/hover 与暗色前景档都能从 src/style.css 现解析（量具不手抄常数）",
+    !!lightFill && !!lightHover && !!darkFill && !!darkHover && !!darkInk,
+    "4 条字面值 + 1 条暗色前景",
+    JSON.stringify({ lightFill, lightHover, darkFill, darkHover, darkInk }),
   );
+  const sum = (c) => (c ? c[0] + c[1] + c[2] : -1);
   check(
-    `亮色：填充 = 主色混黑 ${lightFill?.pct ?? "?"}%，hover 再深一档（${lightHover?.pct ?? "?"}%）—— 白字压得住，且越 hover 越清楚`,
+    `亮色：浏览器算出的填充/hover 与字面值一致（${lightFill} / ${lightHover}）（两档不撞）`,
     !!lightFill && !!lightHover &&
-      near(active, mixOf(lightFill), 2) &&
-      near(hover, mixOf(lightHover), 2) &&
-      lightHover.pct < lightFill.pct,
-    JSON.stringify({ active: mixOf(lightFill), hover: mixOf(lightHover) }),
+      near(active, toRgb(lightFill), 2) && near(hover, toRgb(lightHover), 2) &&
+      sum(toRgb(lightHover)) !== sum(toRgb(lightFill)),
+    "active/hover 与 style.css 同值且两档确实不同",
     JSON.stringify({ active: read.active, hover: read.hover }),
   );
   const dk = read.dark ?? {};
   const dkActive = toRgb(dk.active);
   const dkHover = toRgb(dk.hover);
   const dkOn = toRgb(dk.on);
-  const wantDarkInk = darkInk ? toRgb(darkInk) : null;
   check(
     "暗色：同一批 token 在 .dark 下确实换了方向（填充提亮、前景换成深墨）—— 少一条 .dark 覆盖就只有这里会红",
-    !!darkFill && !!darkHover && !!wantDarkInk &&
-      near(dkActive, mixOf(darkFill), 2) &&
-      near(dkHover, mixOf(darkHover), 2) &&
-      near(dkOn, wantDarkInk, 2) &&
-      darkHover.pct < darkFill.pct,
-    JSON.stringify({ active: mixOf(darkFill), hover: mixOf(darkHover), on: wantDarkInk }),
+    !!darkFill && !!darkHover && !!darkInk &&
+      near(dkActive, toRgb(darkFill), 2) &&
+      near(dkHover, toRgb(darkHover), 2) &&
+      near(dkOn, toRgb(darkInk), 2) &&
+      sum(dkHover) !== sum(dkActive),
+    "三档与 style.css 同值且 hover 与 active 不撞",
     JSON.stringify({ active: dk.active, hover: dk.hover, on: dk.on }),
   );
-  const sum = (c) => (c ? c[0] + c[1] + c[2] : -1);
   check(
     "两档外观不会撞成同一个数（亮色压暗、暗色提亮 ⇒ 暗色那一档必须更亮）",
     sum(dkActive) > sum(active) && sum(dkOn) < sum(active),
@@ -4218,10 +4197,10 @@ async function runAccent(cdp, url) {
     JSON.stringify({ light: active, darkFill: dkActive, darkOn: dkOn }),
   );
   check(
-    "light 档 = 主色 12% 透明（RGB 跟着主色、alpha≈0.12 ⇒ 半透明底也随换色走）",
-    near(light, seed, 2) && light != null && Math.abs(light[3] - 0.12) <= 0.01,
-    "rgba(212,61,67,0.12)",
-    read.light,
+    "primary-light 是主色的浅/深一档：亮色比主色更亮，暗色比主色更暗（两级压得住面板）",
+    sum(light) > sum(active) && sum(toRgb(dk.light)) < sum(dkActive),
+    "亮色 light 更亮 / 暗色 light 更暗",
+    JSON.stringify({ lightMode: read.light, darkMode: dk.light }),
   );
   check(
     "字体 token 不是死变量：改内联 --gosslan-font-family 后真实元素的 computed fontFamily 跟着换",

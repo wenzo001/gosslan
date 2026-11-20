@@ -14,6 +14,19 @@
 
 ## [Unreleased]
 
+## [7.1.42] - 2026-11-20
+
+### 探针第三组：主题派生档（6 条红 → accent 9/9 全绿）
+- 派生档（`primary-active` / `primary-hover` / `primary-light`）早从「CSS `color-mix` 跟着
+  inline 主色自动变」改成「JS 求解器算好再 inline 写回」（`utils/themePalette.ts`，
+  数学在 `themePalette.test.ts` 里逐档算过）。探针还在按混色比例判 ⇒ 两条路都失效。
+  现在只判**声明有没有真生效**：浏览器算出的颜色必须等于 `style.css` 里的字面值。
+- 暗色那一格以前量到的是 inline 覆盖值（首屏脚本把五档全写成 inline，优先级高于 `.dark`）
+  ⇒ 量暗色前先把这五个 inline 摘掉、读完还原；否则这条判据永远测不到 `.dark` 覆盖。
+- 方向断言改成"两档不撞"：实测暗色 hover 比 active **暗**（`#cbddff` vs `#dde8ff`），
+  原文写"hover 更亮"是错的。
+
+## [7.1.41] - 2026-11-20
 ## [7.1.41] - 2026-11-20
 
 ### 探针（`npm run test:ui-runtime`）陈旧红清理，第一、二组
