@@ -6274,6 +6274,36 @@ test("55 :: 只写填充 / 写死 white / 裸主色配白字 —— 三种缺陷
   assert.match(dotWarn[0].message, /--gosslan-warning\)/, "橙那一档要点名橙");
 });
 
+test("55 :: 别名同判：bg-primary / bg-primary-active 与 bg-[var(...)] 是同一族", () => {
+  // 2026-11-20 实测：这两处漏网全是因为换了写法（Tailwind 色别名），编译后与
+  // bg-[var(--gosslan-primary*)] 完全同一个值 ⇒ 判据必须同判，否则等于留后门。
+  const aliasRaw = findPrimaryFillWithoutOnPrimary(
+    `<template><button class="bg-primary text-white">发消息</button></template>`,
+  );
+  assert.equal(aliasRaw.length, 1, "Tailwind 别名 bg-primary + text-white 必须报红");
+  assert.match(aliasRaw[0].message, /--gosslan-primary/, "别名也要点名到 token，别只说“不合格”");
+
+  const aliasActive = findPrimaryFillWithoutOnPrimary(
+    `<template><button class="bg-primary-active text-white">保存</button></template>`,
+  );
+  assert.equal(aliasActive.length, 1, "别名实底缺配对前景必须报红");
+  assert.match(aliasActive[0].message, /on-primary/, "实底档要走“必须配对”那一句");
+
+  // 反向两格：判据不许把正常写法判成缺陷（否则人会去关掉它）
+  assert.deepEqual(
+    findPrimaryFillWithoutOnPrimary(
+      `<template><button class="bg-primary text-[var(--gosslan-on-primary)]">发消息</button></template>`,
+    ),
+    [],
+    "别名 + 配对前景 = 合法",
+  );
+  assert.deepEqual(
+    findPrimaryFillWithoutOnPrimary(`<template><div class="h-1 w-full bg-primary"></div></template>`),
+    [],
+    "裸主色当进度条 / 色条（无文字）不报 —— 这一档只禁止配白字",
+  );
+});
+
 test("55 :: 状态点当状态点用（不配白字）必须静默 —— 否则会把 6 处在线点全判成缺陷", () => {
   const dot =
     `<template><span class="h-2 w-2 rounded-full" :class="online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span></template>`;

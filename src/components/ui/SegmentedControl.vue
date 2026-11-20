@@ -75,7 +75,7 @@ const sizeClasses: Record<string, string> = {
         class="rounded-full px-1.5 text-caption leading-4 tabular-nums"
         :class="
           modelValue === opt.value
-            ? 'bg-white/25 text-white'
+            ? 'bg-[color-mix(in_srgb,var(--gosslan-on-primary)_14%,transparent)] text-[var(--gosslan-on-primary)]'
             : 'text-[var(--gosslan-text-2)] opacity-70'
         "
       >

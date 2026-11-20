@@ -56,6 +56,7 @@ export {
 } from "../boot/skeletonTokens.ts";
 
 import { CLASS_ATTR_RE, findImgTags, lineAt, stripComments, type GuardIssue } from "./designGuards/shared.ts";
+import { escapeRe } from "./escapeRe.ts";
 export * from "./designGuards/shared.ts";
 export * from "./designGuards/surface.ts";
 
@@ -2524,17 +2525,59 @@ const FILL_ACTIVE = "bg-[var(--gosslan-primary-active)]";
 const FILL_HOVER = "bg-[var(--gosslan-primary-hover)]";
 const FILL_RAW = "bg-[var(--gosslan-primary)]";
 const ON_PRIMARY = "text-[var(--gosslan-on-primary)]";
+
 /**
- * 语义色那两族（2026-10-24 补，与主色族同一条判据、同一个家）：
- *  - `FILL_SEMANTIC_SOLID`：**实底档**（`--gosslan-warning-solid` / `--gosslan-success-solid`），
+ * 同一族 fill 的**别名写法**（2026-11-20 补）。
+ *
+ * `tailwind.config.js` 把 `primary` 映射成 `var(--gosslan-primary*)` ⇒ 它与
+ * `bg-[var(--gosslan-primary)]` 编译成**同一个值**，只盯后一种写法等于留了一个后门。
+ * 实测就是这么漏的：
+ *   · `FriendProfile.vue` 的「发消息」：`bg-primary text-white` —— 暗色白字压 `#bad1ff` ≈1.5；
+ *   · `ConversationList.vue` 的「新的朋友」头像：走的是 `.brand-surface`（= `var(--gosslan-primary)`），
+ *     白图标糊在浅蓝块上。该类已退役，改走 `--gosslan-primary-active` + on-primary。
+ * 两处亮色都正常、暗色才坏 ⇒ 典型静默失败，必须由静态判据盯，不能靠换主题时人眼碰运气。
+ */
+const literal = (s: string) => new RegExp(escapeRe(s));
+/** `bg-primary` 不许吃掉 `bg-primary-active/hover/light`（同前缀，右界必须挡住）。 */
+const aliasOf = (name: string) => new RegExp(`\\b${name}(?![-/\\w])`);
+
+interface FillRule {
+  /** 报红时点名的**规范写法**（含 token 名，测试按它断言）。 */
+  token: string;
+  patterns: RegExp[];
+}
+
+const SOLID_FILLS: FillRule[] = [
+  { token: FILL_ACTIVE, patterns: [literal(FILL_ACTIVE), aliasOf("bg-primary-active")] },
+  { token: FILL_HOVER, patterns: [literal(FILL_HOVER), aliasOf("bg-primary-hover")] },
+  { token: "bg-[var(--gosslan-warning-solid)]", patterns: [literal("bg-[var(--gosslan-warning-solid)]")] },
+  { token: "bg-[var(--gosslan-success-solid)]", patterns: [literal("bg-[var(--gosslan-success-solid)]")] },
+];
+const DOT_FILLS: FillRule[] = [
+  {
+    token: FILL_RAW,
+    patterns: [literal(FILL_RAW), aliasOf("bg-primary")],
+  },
+  { token: "bg-[var(--gosslan-warning)]", patterns: [literal("bg-[var(--gosslan-warning)]")] },
+  { token: "bg-[var(--gosslan-success)]", patterns: [literal("bg-[var(--gosslan-success)]")] },
+];
+
+function matchFill(tag: string, rules: FillRule[]): FillRule | null {
+  for (const rule of rules) {
+    if (rule.patterns.some((p) => p.test(tag))) return rule;
+  }
+  return null;
+}
+/**
+ * 语义色那两族（2026-10-24 补，与主色族同一条判据、同一个家；2026-11-20 并入上面的
+ * `SOLID_FILLS` / `DOT_FILLS`，Tailwind 别名（`bg-primary*`）一起加进 pattern）：
+ *  - **实底档**（`--gosslan-warning-solid` / `--gosslan-success-solid`），
  *    压的是配对前景 ⇒ 只写填充 = 文字继承父级颜色，同一形状。
- *  - `FILL_SEMANTIC_DOT`：**状态点档**（`--gosslan-warning` / `--gosslan-success`），
+ *  - **状态点档**（`--gosslan-warning` / `--gosslan-success`），
  *    它只被"图形档 3.0"约束（在线点、色条），从没为"上面有字"设计过 ——
  *    白字压它实测 2.20 / 2.54（暗色 2.06 / 2.02），这一族的缺陷正是"拿状态点当按钮底"。
  * 只禁止它配 `text-white`：同一 token 当状态点（无文字）是正确用法，不报。
  */
-const FILL_SEMANTIC_SOLID = ["bg-[var(--gosslan-warning-solid)]", "bg-[var(--gosslan-success-solid)]"];
-const FILL_SEMANTIC_DOT = ["bg-[var(--gosslan-warning)]", "bg-[var(--gosslan-success)]"];
 
 /** 无闭合标签的元素：取"子树"时按自闭合处理。 */
 const VOID_ELEMENTS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
@@ -2587,26 +2630,26 @@ export function findPrimaryFillWithoutOnPrimary(src: string): GuardIssue[] {
     // 只认开标签那一行会把这两处判成缺陷。
     const block = elementBlock(tpl, m.index ?? 0);
     const hasOnPair = block.includes(ON_PRIMARY);
-    const solidFill = [FILL_ACTIVE, FILL_HOVER, ...FILL_SEMANTIC_SOLID].find((f) => openTag.includes(f)) ?? "";
+    const solidFill = matchFill(openTag, SOLID_FILLS);
     if (solidFill && !hasOnPair) {
       out.push({
         line: lineAt(src, at),
         message:
           "实底（" +
-          solidFill +
+          solidFill.token +
           "）必须在这个元素或其子树里带上 " +
           ON_PRIMARY +
           "。只写填充 ⇒ 文字继承父级颜色；写 text-white ⇒ 暗色那档是提亮填充，白字只剩 1.6~2.0。" +
           "这一对由 tokenContrast 的契约判比值，不由人眼判。",
       });
     } else {
-      const dotFill = [FILL_RAW, ...FILL_SEMANTIC_DOT].find((f) => openTag.includes(f)) ?? "";
+      const dotFill = matchFill(openTag, DOT_FILLS);
       if (dotFill && openTag.includes("text-white")) {
         out.push({
           line: lineAt(src, at),
           message:
             "禁止 `" +
-            dotFill +
+            dotFill.token +
             " text-white`：这一档是给**状态点 / 色条**的（只受图形档 3.0 约束），白字压它实测 2.20（橙）/ 2.54（绿）/ ≈3.5（主色），" +
             "两种外观下都不合格。承载文字的实底要用 " +
             FILL_ACTIVE +
