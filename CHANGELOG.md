@@ -14,6 +14,26 @@
 
 ## [Unreleased]
 
+## [7.1.48] - 2026-11-20
+
+### 外部应用设备认证：清理 remembered_scopes 死代码
+- 「按 RP 记忆预勾」2026-11-17 被「请求 scope 默认全勾、一键允许」取代后，后端仍传输/存储
+  `remembered_scopes`、前端只剩单测引用（11-20 审计更正确认死代码）。本次整链移除：
+  DB 记忆键族（`device_auth_grant:`，settings 表键、**非 schema 变更**）、确认页 payload
+  字段、前端 `rememberedScopes` 纯函数与相关测试。**昵称记忆（nickname_default）不受影响**；
+  撤销/移除路径的记忆清理由昵称记忆的清零表达。
+- 文档同步：外部接入审计与索引条目按清理后的现状对齐（原描述仍称预勾已落地，已更正）。
+
+## [7.1.47] - 2026-11-20
+
+### 门禁清欠（此前未推提交留在 HEAD 上的三处存量红）
+- 滚动条注入用例 4 条迁移到 overlay 口径：日志行模板锚点随外壳换 `</OverlayScroll>`；
+  「去掉 gutter 预留」与「.scrollbar-both 拆单边」两条按 designGuards 反转后的口径
+  改成「gutter 口径加回来必须红」；BaseModal 宽度补偿 hack 守卫换锚点到 OverlayScroll 宿主。
+- `window_chrome.rs` 非 Windows 桩补 `#[allow(dead_code)]`：两个调用点都在桌面 cfg 里，
+  移动端该桩故意不接线，过 Android 0-warning 铁律。
+- `lib.rs` 的 mod 声明顺序按 rustfmt `reorder_modules` 对齐（纯顺序调整）。
+
 ## [7.1.46] - 2026-11-20
 
 ### 开发期探针：把「界面抖动」拆成两类来量

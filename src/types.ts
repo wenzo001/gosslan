@@ -1090,13 +1090,6 @@ export interface DeviceAuthPrompt {
    * 2026-11-17 起请求 scope **默认全勾**（一键允许，用户仍可逐项取消）；旧注释"默认全关"已过时。
    */
   requested_scopes: string[];
-  /**
-   * **同一个 RP 上次**被用户点头允许过的 scope（记忆，2026-11-16）。
-   *
-   * 确认页据此**预勾**（省掉同一应用重复表态）；只影响勾选的默认状态，
-   * 不改变「不勾就不给」。新 RP / 首次授权仍然是全关。
-   */
-  remembered_scopes: string[];
   expires_at_ms: number;
   nickname_default: boolean;
 }

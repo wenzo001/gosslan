@@ -144,22 +144,3 @@ export function guardConsume(g: PendingGuard, captured: number): boolean {
   g.pending = null;
   return true;
 }
-
-/**
- * 确认页**预勾**哪些 scope：同一个 RP 上次点头允许过的 ∩ 本次请求的。
- *
- * 为什么要有这个（用户 2026-11-16：「快捷登录要简单，不要让用户在界面上操作很多」）：
- * 同一个应用反复登录时，不该每次都要求用户重新表态。
- *
- * 三条边界：
- * - **只影响默认勾选状态** —— 用户随时能取消；不勾就不给；
- * - **只认同一个 RP**（后端按 rp_origin 记）⇒ 换个应用不会继承；
- * - **首次仍是全关** —— 记忆里没有的就是没有。
- */
-export function rememberedScopes(
-  remembered: string[] | null | undefined,
-  requested: string[] | null | undefined,
-): string[] {
-  const req = new Set(requested ?? []);
-  return (remembered ?? []).filter((sc) => req.has(sc));
-}

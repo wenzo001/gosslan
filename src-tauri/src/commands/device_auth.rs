@@ -530,15 +530,11 @@ pub async fn handle_device_auth_link(app: &tauri::AppHandle, url: String) -> Res
 
     let generation = s.device_auth_generation.fetch_add(1, Ordering::Relaxed) + 1;
     let key = da::pending_key(&link.rp_origin, &meta.client_id, &req.request_id);
-    // 同一个 RP 上次被允许过什么（记忆）：确认页**预勾**用 ⇒ 第二次登录只点一次「批准」。
-    // ⚠️ 读失败**上抛**（不折叠成「没允许过」）—— 读不到就不能保证预勾的是用户真的点头过的。
-    let (remembered_scopes, remembered_nickname) = {
+    // 同一个 RP 上次是否允许共享昵称（记忆）：确认页开关默认值用。
+    // 读失败折叠成 false（= 首次语义「不共享昵称」，用户可改）。
+    let remembered_nickname = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let scopes = crate::db::load_grant_memory(&dbc, &link.rp_origin)
-            .map_err(|e| format!("code=DEVICE_AUTH_GRANT_MEMORY_READ_FAILED：{e}"))?;
-        let nickname = crate::db::load_nickname_memory(&dbc, &link.rp_origin)
-            .unwrap_or(false);
-        (scopes, nickname)
+        crate::db::load_nickname_memory(&dbc, &link.rp_origin).unwrap_or(false)
     };
     // 幂等键（jti）：**跨重启复用**（D1「jti 持久化重试复用」）。
     // 为什么必须落库：应用在用户点「同意」之前被关掉/重启过的话，用户重新点同一个链接时
@@ -575,7 +571,6 @@ pub async fn handle_device_auth_link(app: &tauri::AppHandle, url: String) -> Res
         rp_origin: link.rp_origin,
         expires_at_ms,
         generation,
-        remembered_scopes,
         remembered_nickname,
         // 每个事务生成一次（重启后复用同一个值）：prepare 的 jti 与 post 的 Idempotency-Key
         // 都读它 —— 见上面那段说明。
@@ -835,8 +830,6 @@ pub async fn device_auth_approve(
     let s = state.inner().clone();
     let my_device_id = s.device_id.clone();
     let granted_scopes = allowed_scopes.unwrap_or_default();
-    // 闭包要用它（回写体里的交付范围）⇒ 这里留一份副本给「记住上次允许了什么」。
-    let granted_scopes_for_memory = granted_scopes.clone();
     let key = da::pending_key(&rp_origin, &client_id, &request_id);
     let queue_key = da::rp_queue_key(&rp_origin, &client_id);
     // 先读一次（不消费，顺带清理过期）：拿代际 / meta / 幂等键。真正的消费在 RP 2xx 之后。
@@ -905,15 +898,11 @@ pub async fn device_auth_approve(
     }
     approval?;
 
-    // 记住「这个 RP 这次允许了什么」⇒ 下次同一 RP 预勾、只需点一次「批准」。
+    // 记住「这个 RP 上次是否共享了昵称」⇒ 下次确认页按上次的选择预置开关。
     // ⚠️ 必须在 **post 成功之后**才记（失败那笔不算数，用户可能还会改主意）。
-    // 记的是**勾选的默认状态**，不改变「不勾就不给」。
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = crate::db::save_grant_memory(&dbc, &rp_origin, &granted_scopes_for_memory) {
-            eprintln!("[device-auth] code=DEVICE_AUTH_GRANT_MEMORY_SAVE_FAILED：{e}");
-        }
-        // 昵称选择同样按 RP 记住（用户 2026-11-17）：下次确认页按上次的选择预置。
+        // 昵称选择按 RP 记住（用户 2026-11-17）：下次确认页按上次的选择预置。
         if let Err(e) = crate::db::save_nickname_memory(&dbc, &rp_origin, allow_nickname) {
             eprintln!("[device-auth] code=DEVICE_AUTH_NICKNAME_MEMORY_SAVE_FAILED：{e}");
         }
@@ -1054,13 +1043,9 @@ pub async fn device_auth_revoke(
     //    `revoke_binding` 只改 `active` 的行 ⇒ 已经撤销过的行会返回 false。
     //    但那种情况**仍然要通知 RP**：那正是「第一次通知失败、用户来重试」的场景。
     //    所以撤销态 = 「这次改动了」或「本来就是撤销态」。
-    // 撤销授权 ⇒ 这个 RP 的「上次允许了什么」记忆一起清掉（不然撤销后还预勾着）。
+    // 撤销授权 ⇒ 这个 RP 的「上次共享了昵称」记忆一并清掉（不该再按上次预置开关）。
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = crate::db::clear_grant_memory(&dbc, &rp_origin) {
-            eprintln!("[device-auth] code=DEVICE_AUTH_GRANT_MEMORY_CLEAR_FAILED：{e}");
-        }
-        // 昵称记忆同样要清：撤销后不该再预勾「上次共享了昵称」。
         if let Err(e) = crate::db::save_nickname_memory(&dbc, &rp_origin, false) {
             eprintln!("[device-auth] code=DEVICE_AUTH_NICKNAME_MEMORY_CLEAR_FAILED：{e}");
         }
@@ -1114,12 +1099,9 @@ pub async fn device_auth_remove_binding(
 ) -> Result<bool, String> {
     let s = state.inner().clone();
     let (origin, cid) = (rp_origin.clone(), client_id.clone());
-    // 该 RP 的「上次允许了什么 / 昵称」记忆一并清掉，避免移除后残留偏好。
+    // 该 RP 的「上次共享了昵称」记忆一并清掉，避免移除后残留偏好。
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = crate::db::clear_grant_memory(&dbc, &rp_origin) {
-            eprintln!("[device-auth] code=DEVICE_AUTH_GRANT_MEMORY_CLEAR_FAILED：{e}");
-        }
         if let Err(e) = crate::db::save_nickname_memory(&dbc, &rp_origin, false) {
             eprintln!("[device-auth] code=DEVICE_AUTH_NICKNAME_MEMORY_CLEAR_FAILED：{e}");
         }
@@ -1263,7 +1245,6 @@ mod device_auth_cmd_tests {
             meta, request, rp_origin: ORIGIN.into(),
             expires_at_ms: 4_000_000_000_000, generation: 1,
             idempotency_key: "idempotency-key-for-test".into(),
-            remembered_scopes: Vec::new(),
             remembered_nickname: false,
         }
     }
@@ -1613,33 +1594,9 @@ mod device_auth_cmd_tests {
         );
     }
 
-    /// 「同一个 RP 上次允许了什么」的记忆：存 → 读 → 清。
-    ///
-    /// 它记的是**勾选的默认状态**（省掉同一应用重复表态），**不是授权本身**：
-    /// 每一笔事务的授权仍然要用户点头。
+    /// 确认页要带上「同一个 RP 上次对昵称的选择」⇒ 开关按记忆预置。
     #[test]
-    fn grant_memory_round_trips_per_rp_and_is_cleared_on_revoke() {
-        let conn = test_db();
-        let rp = "https://rp.example";
-        let other = "https://other.example";
-        assert!(crate::db::load_grant_memory(&conn, rp).unwrap().is_empty());
-
-        crate::db::save_grant_memory(&conn, rp, &["friends.read".to_string()]).unwrap();
-        assert_eq!(
-            crate::db::load_grant_memory(&conn, rp).unwrap(),
-            vec!["friends.read".to_string()]
-        );
-        // 另一个 RP 看不到（不跨应用继承）
-        assert!(crate::db::load_grant_memory(&conn, other).unwrap().is_empty());
-
-        // 撤销 ⇒ 记忆一起清掉
-        crate::db::clear_grant_memory(&conn, rp).unwrap();
-        assert!(crate::db::load_grant_memory(&conn, rp).unwrap().is_empty());
-    }
-
-    /// 确认页要带上「上次允许过什么」⇒ 第二次登录能预勾、只需点一次「批准」。
-    #[test]
-    fn the_prompt_carries_the_remembered_scopes_of_the_same_rp() {
+    fn the_prompt_carries_the_nickname_memory_of_the_same_rp() {
         let meta = da::RpMetadata {
             protocol_version: "1".into(),
             client_id: "cid".into(),
@@ -1672,27 +1629,25 @@ mod device_auth_cmd_tests {
             rp_origin: "https://rp.example".into(),
             expires_at_ms: 1_800_000_000_000,
             generation: 1,
-            remembered_scopes: vec!["friends.read".into()],
-            remembered_nickname: false,
+            remembered_nickname: true,
             idempotency_key: "idem".into(),
         };
         let prompt = pending.prompt();
-        assert_eq!(prompt.remembered_scopes, vec!["friends.read".to_string()]);
-        assert_eq!(prompt.requested_scopes, vec!["friends.read".to_string()]);
+        assert!(prompt.nickname_default, "确认页要带上上次对昵称的选择");
     }
 
-    /// 记忆**只在 post 成功之后**写（失败那笔不算数：用户可能还会改主意）。
+    /// 昵称记忆**只在 post 成功之后**写（失败那笔不算数：用户可能还会改主意）。
     #[test]
-    fn the_grant_memory_is_written_only_after_the_post_succeeded() {
+    fn the_nickname_memory_is_written_only_after_the_post_succeeded() {
         let src = include_str!("device_auth.rs");
         let prod = &src[..src.find("mod device_auth_cmd_tests").unwrap_or(src.len())];
         let save_at = prod
-            .find("save_grant_memory(")
-            .expect("批准路径没有写记忆");
+            .find("save_nickname_memory(")
+            .expect("批准路径没有写昵称记忆");
         let post_ok = prod.find("approval?").expect("批准路径没有 approval?");
         assert!(
             post_ok < save_at,
-            "记忆必须写在 `approval?` 之后（post 失败时不能记）"
+            "昵称记忆必须写在 `approval?` 之后（post 失败时不能记）"
         );
     }
 

@@ -46,6 +46,12 @@
 > `DeviceAuthConfirmModal.vue` 直接用 `requested_scopes` 全勾，不再消费 `remembered_scopes`；
 > `rememberedScopes` 纯函数现在只剩单测在引用，后端仍传输/存储该字段但前端不用。
 > 上述"审计结论/三条边界/实现位置"保留为当时的设计依据，**不代表当前行为**。
+>
+> **2026-11-20 清理**：上述死代码已全部移除（后端 prompt 字段与传输/存储、
+> `db/device_auth.rs` 的 `grant_memory` 三函数、前端 `rememberedScopes` 纯函数与相关测试；
+> `device_auth_grant:` 键族不再读写，历史残留键无读者、无害）。
+> 本节「实现位置」与 §6 判据随之失效，仅作历史设计依据保留。
+> 昵称记忆（`nickname_default` ← `remembered_nickname`）**不受影响**，确认页仍在消费。
 
 ## 3. 分享路径
 

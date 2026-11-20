@@ -123,13 +123,9 @@ pub struct DeviceAuthPrompt {
     pub action: String,
     pub account_hint: String,
     pub requested_claims: Vec<String>,
-    /// 本次事务请求的交付范围（**默认全关**：前端要逐项让用户勾，不预勾）。
+    /// 本次事务请求的交付范围（scope）。2026-11-17 起确认页**默认全勾**
+    /// （一键允许，页面明列内容、可逐项取消）；旧注释「默认全关」已过时。
     pub requested_scopes: Vec<String>,
-    /// **同一个 RP 上次**被用户点头允许过的 scope（记忆，2026-11-16）。
-    ///
-    /// 只用来给确认页**预勾**（省掉重复表态），不改变「不勾就不给」；
-    /// 新 RP / 首次授权仍然是「默认全关、逐项点头」。
-    pub remembered_scopes: Vec<String>,
     /// 过期时间（Unix ms）。
     pub expires_at_ms: i64,
     /// 昵称开关默认值：**同一 RP 上次的选择**（2026-11-17 起缓存）；
@@ -180,8 +176,6 @@ pub struct PendingDeviceAuth {
     pub rp_origin: String,
     pub expires_at_ms: i64,
     pub generation: u64,
-    /// **同一个 RP 上次**被允许过的 scope（记忆）：确认页预勾用（见 `DeviceAuthPrompt`）。
-    pub remembered_scopes: Vec<String>,
     /// **同一个 RP 上次**是否允许共享昵称（用户 2026-11-17）：确认页开关默认值。
     pub remembered_nickname: bool,
     /// 本事务的**幂等键**（插入时生成一次，随事务持久化在内存态，重试全程复用）。
@@ -221,7 +215,6 @@ impl PendingDeviceAuth {
             account_hint: self.request.account_hint.clone(),
             requested_claims: self.request.requested_claims.clone(),
             requested_scopes: self.request.requested_scopes.clone(),
-            remembered_scopes: self.remembered_scopes.clone(),
             expires_at_ms: self.expires_at_ms,
             nickname_default: self.remembered_nickname,
         }
