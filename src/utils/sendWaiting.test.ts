@@ -39,3 +39,34 @@ test("没有可信时间戳时不翻（宁可不显示，也不要说错）", ()
   // 时钟回拨（ts 在未来）同样不许翻
   assert.equal(isWaitingForPeer({ status: "sending", ts: T0 + 60_000 }, T0), false);
 });
+
+// J2-5（旅程走查 2026-11-20）：发送那一刻就知道对端离线 ⇒ 排队态立即翻面，
+// 不再等满 2 分钟（前 2 分钟"对方离线"与"正在发"此前视觉不可分）。
+test("对端明确离线 ⇒ 立即翻，不等 2 分钟", () => {
+  const at = (ago: number, peerOnline: boolean | null | undefined) =>
+    isWaitingForPeer({ status: "sending", ts: T0 - ago, peerOnline }, T0);
+  // 刚发出 1 秒、对端明确离线 ⇒ 立即是排队态（时钟 + 等待文案）
+  assert.equal(at(1_000, false), true, "明确离线 ⇒ 立即翻");
+  // 在线 / 未知（null）/ 未传（undefined）⇒ 保持原时间口径，1 秒仍是正在发
+  assert.equal(at(1_000, true), false, "在线 ⇒ 仍按时间");
+  assert.equal(at(1_000, null), false, "无在线概念（群/机器人/自己）⇒ 仍按时间");
+  assert.equal(at(1_000, undefined), false, "没传 ⇒ 仍按时间（旧调用点行为不变）");
+  // 离线但过了 2 分钟 ⇒ 照样翻（结果一致，只是路径不同）
+  assert.equal(at(WAITING_FOR_PEER_AFTER_MS, false), true);
+  // 离线判据不许越过其它守门：文件类 / 非 sending / 坏时间戳仍不翻
+  assert.equal(
+    isWaitingForPeer({ status: "sending", ts: T0 - 1_000, msgId: "file-abc", peerOnline: false }, T0),
+    false,
+    "文件类传输不翻",
+  );
+  assert.equal(
+    isWaitingForPeer({ status: "sent", ts: T0 - 1_000, peerOnline: false }, T0),
+    false,
+    "非 sending 不翻",
+  );
+  assert.equal(
+    isWaitingForPeer({ status: "sending", ts: 0, peerOnline: false }, T0),
+    false,
+    "坏时间戳不翻",
+  );
+});

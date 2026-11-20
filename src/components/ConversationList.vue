@@ -550,8 +550,24 @@ async function openConv(conv: Conversation) {
   void router.push({ name: "conversation", params: { convId: conv.id } });
   void opening;
 }
-/** 通讯录点击好友 → 打开资料页（发消息由资料页按钮触发，不再直接开会话） */
+/**
+ * 通讯录点击好友 → **直达会话**（J1-5，用户 2026-11-20 拍板）：
+ * 原来点行只开资料页，发消息要多一跳。会话 id = 对端 device_id
+ * （不要求先有历史会话，`openConversation` 会新建）。
+ * 资料页入口收拢到右键/长按菜单的「查看资料」（`openFriendProfileFromMenu`）。
+ */
 function openFriend(f: Friend) {
+  const opening = chat.openConversation(f.device_id);
+  void router.push({ name: "conversation", params: { convId: f.device_id } });
+  void opening;
+  if (app.isMobile) app.mobileView = "chat";
+}
+
+/** 右键/长按菜单的「查看资料」：资料页打开链路不变（仍走父级的 open-friend）。 */
+function openFriendProfileFromMenu() {
+  const f = friendMenu.value?.friend;
+  closeFriendMenu();
+  if (!f) return;
   emit("open-friend", f);
   if (app.isMobile) app.mobileView = "chat";
 }
@@ -565,10 +581,8 @@ function startChatWithFriend() {
   const f = friendMenu.value?.friend;
   closeFriendMenu();
   if (!f) return;
-  const opening = chat.openConversation(f.device_id);
-  void router.push({ name: "conversation", params: { convId: f.device_id } });
-  void opening;
-  if (app.isMobile) app.mobileView = "chat";
+  // 与通讯录点击（openFriend，J1-5）同一条链 —— 打开会话只有这一份实现。
+  openFriend(f);
 }
 
 // ---------------- 右键菜单：删除好友 ----------------
@@ -1244,6 +1258,7 @@ useEventListener(document, "click", closeFriendMenu);
       :x="friendMenu.x"
       :y="friendMenu.y"
       @chat="startChatWithFriend"
+      @profile="openFriendProfileFromMenu"
       @close="closeFriendMenu"
       @confirm="onAskDeleteFriend"
     />
