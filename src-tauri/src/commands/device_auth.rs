@@ -233,7 +233,10 @@ async fn notify_rp_revoke(rp_origin: &str, client_id: &str, kid: &str) -> bool {
         }
     };
     let idem = da::revoke_idempotency_key(rp_origin, client_id, kid);
-    let body = revoke_notify_body(&meta.client_id, kid);
+    // 撤销通知必须报**本地绑定的 client_id**（本函数参数），不是 metadata 里的——RP 改了
+    // metadata.client_id 时两者会不同，用错会让 RP 作废不到正确凭证、却回 rp_notified=true
+    // （2026-11-20 审计修）。metadata 只用来取撤销端点（并校验同源）。
+    let body = revoke_notify_body(client_id, kid);
     let req = match revoke_request(&client, &endpoint, &body, &idem) {
         Ok(r) => r,
         Err(e) => {
@@ -308,7 +311,10 @@ fn prepare_assertion(
         // 私钥的生成/编码/落库都在 crypto 能力封装 + 持久化路径内（#3）：
         // 命令层只拿公钥面（public_b64/kid/subject）与能力 `key`，绝不触碰 secret 字节。
         let (key, public_b64, kid, subject) = da::generate_rp_key();
-        let scopes = serde_json::to_string(&req.requested_claims).unwrap_or_else(|_| "[]".into());
+        // 这个字段对外是 RpBindingInfo.scopes（授权范围），必须存 requested_scopes。
+        // 过去误存 requested_claims（device_subject 等），前端清单里显示的"scopes"名实不符
+        // （2026-11-20 审计修）。allowlist 的 claims 从 metadata 现取，不依赖这里。
+        let scopes = serde_json::to_string(&req.requested_scopes).unwrap_or_else(|_| "[]".into());
         crate::db::insert_rp_binding(
             conn, origin, &meta.client_id, &meta.display_name,
             &key, public_b64, kid, subject, scopes, now_ms,
@@ -330,11 +336,12 @@ fn prepare_assertion(
                 .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("更新绑定失败：{e}")))?;
             b
         }
-        // 待登记 / 登记失败的绑定**不是 active**：绝不能拿它直接签名发断言（就绪度审计 §3.3
-        // 要求 get_binding 的中间态分支正确处理）。给出明确「未完成登记」错误，复用既有码。
-        ("authenticate", Some(b))
-            if b.status == "pending_registration" || b.status == "registration_failed" =>
-        {
+        // 登记失败（RP 回写网络失败）后可复用密钥重试（2026-11-20 审计修）：首绑回写失败落
+        // registration_failed 后，用户点重试必须能重新签名回写，否则被 NO_BINDING 永久锁死。
+        // 但 pending_registration（RP 还没回写激活）仍拒绝 —— 未登记的绑定不能拿来登录，
+        // 否则撤销/登记语义被绕过（保留原安全边界，见 authenticate_rejects_pending_registration_binding）。
+        ("authenticate", Some(b)) if b.status == "registration_failed" => b,
+        ("authenticate", Some(b)) if b.status == "pending_registration" => {
             return Err(error_codes::coded(error_codes::DEVICE_AUTH_NO_BINDING, "绑定尚未完成 RP 登记，请重新绑定或重试"));
         }
         ("authenticate", Some(_)) => {
@@ -350,9 +357,9 @@ fn prepare_assertion(
                 .map_err(|e| error_codes::coded(error_codes::DEVICE_AUTH_NETWORK, format!("更新绑定失败：{e}")))?;
             b
         }
-        ("sync", Some(b))
-            if b.status == "pending_registration" || b.status == "registration_failed" =>
-        {
+        // 同上：只有 registration_failed 可复用重试；pending_registration 仍拒绝。
+        ("sync", Some(b)) if b.status == "registration_failed" => b,
+        ("sync", Some(b)) if b.status == "pending_registration" => {
             return Err(error_codes::coded(error_codes::DEVICE_AUTH_NO_BINDING, "绑定尚未完成 RP 登记，请重新绑定或重试"));
         }
         ("sync", Some(_)) => {
@@ -489,12 +496,16 @@ pub fn spawn_device_auth_link(app: tauri::AppHandle, url: String) {
     });
 }
 
-/// 从启动参数里挑出授权深链（冷启动唤起）；只认 gosslan:// 与 https app link 形态。
+/// 从启动参数里挑出授权深链（冷启动唤起）；认 gosslan:// 与 http(s) app link 形态。
 /// 解析合法性留给 `handle_device_auth_link`（这里只做粗筛，避免把普通启动参数当深链）。
+/// 2026-11-20 审计修：解析层已支持 http（用户要的内网 IP:端口 / localhost 接入），但粗筛
+/// 过去只认 https ⇒ 应用没运行时点 http 授权链接冷启动会漏掉。http 同样用 `/authorize/`
+/// 路径限定，不会把普通 http 参数误当深链。
 #[cfg_attr(not(desktop), allow(dead_code))]
 pub fn authorize_link_from_args(args: &[String]) -> Option<String> {
     args.iter().skip(1).find(|a| {
-        a.starts_with("gosslan://authorize/") || (a.starts_with("https://") && a.contains("/authorize/"))
+        a.starts_with("gosslan://authorize/")
+            || ((a.starts_with("https://") || a.starts_with("http://")) && a.contains("/authorize/"))
     }).cloned()
 }
 
@@ -1368,6 +1379,41 @@ mod device_auth_cmd_tests {
         assert!(crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap());
         assert_eq!(crate::db::get_binding(&conn, ORIGIN, CLIENT).unwrap().unwrap().status, "active");
         assert_eq!(crate::db::list_bindings(&conn).unwrap().len(), 1, "重试不重复 insert");
+    }
+
+    /// 冷启动粗筛必须认 http 授权深链（内网 IP:端口 / localhost，2026-11-20 审计修）。
+    #[test]
+    fn authorize_link_from_args_accepts_http_and_rejects_plain_urls() {
+        let https = super::authorize_link_from_args(&[
+            "gosslan".into(), "https://app.example.com/authorize/req-1?origin=x".into()]);
+        assert!(https.is_some(), "https app link 应识别");
+        let http = super::authorize_link_from_args(&[
+            "gosslan".into(), "http://127.0.0.1:59995/authorize/req-2?origin=x".into()]);
+        assert!(http.is_some(), "http 内网授权深链应识别（冷启动）");
+        let scheme = super::authorize_link_from_args(&[
+            "gosslan".into(), "gosslan://authorize/req-3?origin=x".into()]);
+        assert!(scheme.is_some(), "gosslan:// 自定义协议应识别");
+        let plain = super::authorize_link_from_args(&[
+            "gosslan".into(), "http://127.0.0.1:59994/publish/token".into()]);
+        assert!(plain.is_none(), "普通 http 参数（非 /authorize/）不能被误当深链");
+    }
+
+    /// 先登录后绑定（authenticate/sync）首绑回写失败后，原事务重试不得被 NO_BINDING 锁死
+    /// （2026-11-20 审计修：这两个 action 的中间态分支过去直接报错，只有 link 会复用密钥）。
+    #[test]
+    fn authenticate_sync_registration_failed_retry_reuses_key() {
+        for action in ["authenticate", "sync"] {
+            let conn = test_db();
+            let p = pending(action, vec!["device_subject".into()]);
+            let (_, first, _, _) = prepare_assertion(&conn, &p, false, 1_000, "my-device", &[]).unwrap();
+            assert_eq!(first.status, "pending_registration", "{action} 首绑落待登记");
+            assert!(crate::db::mark_registration_failed(&conn, ORIGIN, CLIENT).unwrap());
+            // 重试：中间态复用同一密钥签名，不报 NO_BINDING、不重复 insert。
+            let (_, retry, _, _) = prepare_assertion(&conn, &p, false, 2_000, "my-device", &[]).unwrap();
+            assert_eq!(retry.kid, first.kid, "{action} 重试复用同一密钥");
+            assert_eq!(crate::db::list_bindings(&conn).unwrap().len(), 1, "{action} 重试不重复 insert");
+            assert!(crate::db::activate_binding(&conn, ORIGIN, CLIENT).unwrap());
+        }
     }
 
     /// 只有中间态能推进到 active；已 active 幂等、已撤销不许被复活。

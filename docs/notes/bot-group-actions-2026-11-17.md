@@ -7,6 +7,12 @@
 > 不可取消，前后端都强制），真人发的任务全体群成员可编辑/认领。绑定键/校验见
 > `src-tauri/src/commands/group_files.rs` 的 `BOT_ASSIGNEE_PREFIX` / `check_bot_assignee`
 > / `bot_assignee_locked_violation`，前端判据在 `src/utils/todos.ts`。
+> ③ **下文 §1 公告示例与 §2 `announcement` 行从未接线**：实现只支持 `create_todo`
+> （权威口径见 `docs/notify-bot-guide.md`），其它 type 一律当普通通知。发公告不会成功，
+> 别按本文示例构造 `announcement`。
+> ④ 下文 curl 示例的 `"assignees": []` 已失效：机器人建任务的指派人由前端固定为
+> `[bot:<botId>]`，Webhook 里的 `assignees` 被忽略。2026-11-20 起 Webhook action 与群消息
+> 投递共用幂等标记，重投不会重复建任务。
 >
 > 用户诉求：群机器人有权限在群里添加任务等群管理操作 ——
 > 「除了危险操作，其他管理员能操作的他都能操作」；第三方通过 Webhook 正文指令触发；

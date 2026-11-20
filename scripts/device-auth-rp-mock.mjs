@@ -288,15 +288,16 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
       try {
         let publicKey = body.public_key;
         let known = null;
-        // `sync`（数据交付）与 `authenticate` 同理：**必须已有绑定**，
-        // 否则交付就成了「没登记过的应用也能读你的数据」。
+        // 先登录后绑定（2026-11-19 产品决策）：authenticate/sync 无绑定时不再 401，
+        // 而是用断言带来的 public_key 当场建绑（与 link 同一口径）——第三方拿稳定 subject
+        // 登录 / 快速注册。2026-11-20 审计修：过去这里强制「必须已有绑定」，与后端契约冲突，
+        // 导致接入指南承诺的新用户在唯一联调 mock 上必然失败。
+        // 注意：撤销过的旧 key 仍立即拒绝（撤销不能靠首绑悄悄绕过）。
         if (tx.action === "authenticate" || tx.action === "sync") {
           known = [...bindings.values()].find((b) => b.kid === body.key_id);
-          // 撤销后旧 key 立即不能登录：区分「绑定已撤销」与「从未绑定」两种拒绝，
-          // 让撤销语义在响应里可观察，而不是笼统的未授权。
           if (known?.revoked) return send(res, 401, { code: "DEVICE_AUTH_BINDING_REVOKED" });
-          if (!known) return send(res, 401, { code: "DEVICE_AUTH_UNAUTHORIZED" });
-          publicKey = known.publicKey;
+          if (known) publicKey = known.publicKey; // 已有绑定用登记的 key 验签，不信任传来的
+          // 无绑定 ⇒ 用传来的 public_key 验签 + 后续建绑（首绑）。
         }
         const payload = verifyAssertion(body.assertion, tx, publicKey);
         // jti 全局去重放在事务状态判断之前：同一个旧断言重放时给出明确的重放冲突，
@@ -304,14 +305,16 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
         // 未验签的断言不能污染去重集合。
         if (consumedJtis.has(payload.jti)) return send(res, 409, { code: "DEVICE_AUTH_JTI_REPLAY" });
         if (tx.state !== "pending") return send(res, 409, { code: "DEVICE_AUTH_ALREADY_CONSUMED" });
-        if (tx.action === "link") {
-          const existing = bindings.get(payload.iss);
+        if (tx.action === "link" || !known) {
+          // link，或 authenticate/sync 首绑（known=null）：用断言里的 subject + public_key 建绑。
           // 撤销过的绑定允许重新登记，否则撤销后这个 subject 在这个 mock 里
           // 永远无法再绑；未撤销的重复绑定仍按原契约判冲突。
+          const existing = bindings.get(payload.iss);
           if (existing && !existing.revoked) return send(res, 409, { code: "DEVICE_AUTH_ALREADY_CONSUMED" });
           bindings.set(payload.iss, { kid: body.key_id, publicKey: body.public_key, subject: payload.iss, revoked: false });
           tx.subject = payload.iss; tx.kid = body.key_id; tx.publicKey = body.public_key;
         } else {
+          // 已有绑定（authenticate/sync）：用登记的 subject，不认断言里可能变的字段。
           tx.subject = known.subject;
         }
         consumedJtis.add(payload.jti);

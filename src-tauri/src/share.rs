@@ -314,6 +314,11 @@ fn payload_from_query(parsed: &Url, origin_hint: Option<String>) -> Result<Share
     payload.to_kind = to_kind;
 
     // 回执地址：用户 2026-11-17 放开 http（同协议同源即可，便于 http IP:端口 接入）。
+    // 2026-11-20 审计加固（SSRF）：回执是客户端要主动 POST 的地址，必须
+    //   ① 只接受 http/https（挡掉 file:/ftp:/自定义 scheme）；
+    //   ② **必须有来源**才能校验同协议同源 —— 无 origin 时过去直接放行任意 URL，
+    //      可被 `gosslan://share?url=…&receipt=http://192.168.x.x/...` 诱导向内网发请求。
+    //      没有来源就无从判断回执归属，一律拒（系统分享落地区不产生 receipt，不受影响）。
     payload.receipt_endpoint = match clean(receipt) {
         Some(raw) => {
             let u = Url::parse(&raw).map_err(|_| {
@@ -322,21 +327,29 @@ fn payload_from_query(parsed: &Url, origin_hint: Option<String>) -> Result<Share
                     "回执地址格式不正确",
                 )
             })?;
-            // 给了来源就要求**同协议同源**（origin() 已含 scheme）：回执会把
-            // 「发了几条」送到这个地址，跨协议/跨域等于让别处知道你的分享行为。
-            if let Some(origin) = payload.claimed_origin.as_ref() {
-                let ou = Url::parse(origin).map_err(|_| {
-                    coded(
-                        error_codes::EXTERNAL_SHARE_BAD_CONTENT,
-                        "来源标识格式不正确",
-                    )
-                })?;
-                if ou.origin() != u.origin() {
-                    return Err(coded(
-                        error_codes::EXTERNAL_SHARE_BAD_CONTENT,
-                        "回执地址必须与来源同协议同源",
-                    ));
-                }
+            if u.scheme() != "http" && u.scheme() != "https" {
+                return Err(coded(
+                    error_codes::EXTERNAL_SHARE_BAD_CONTENT,
+                    "回执地址只支持 http/https",
+                ));
+            }
+            let origin = payload.claimed_origin.as_ref().ok_or_else(|| {
+                coded(
+                    error_codes::EXTERNAL_SHARE_BAD_CONTENT,
+                    "回执地址必须同时提供来源标识（origin）",
+                )
+            })?;
+            let ou = Url::parse(origin).map_err(|_| {
+                coded(
+                    error_codes::EXTERNAL_SHARE_BAD_CONTENT,
+                    "来源标识格式不正确",
+                )
+            })?;
+            if ou.origin() != u.origin() {
+                return Err(coded(
+                    error_codes::EXTERNAL_SHARE_BAD_CONTENT,
+                    "回执地址必须与来源同协议同源",
+                ));
             }
             Some(raw)
         }
@@ -522,14 +535,39 @@ mod share_tests {
         );
     }
 
-    /// 回执地址：http ⇒ 拒；跨源（与来源不同主机）⇒ 拒。
+    /// 回执地址：跨协议 / 跨源 ⇒ 拒；http 同源 ⇒ 放行（2026-11-17 放开 http）。
     #[test]
-    fn receipt_endpoint_must_be_https_and_same_origin() {
-        let http = "gosslan://share?url=https%3A%2F%2Fa.example.com&receipt=http%3A%2F%2Frp.example.com%2Fr&origin=https%3A%2F%2Frp.example.com";
-        assert!(parse_share_intent(http).is_err(), "http 回执地址必须拒");
+    fn receipt_endpoint_must_be_same_scheme_and_origin() {
+        let cross_scheme = "gosslan://share?url=https%3A%2F%2Fa.example.com&receipt=http%3A%2F%2Frp.example.com%2Fr&origin=https%3A%2F%2Frp.example.com";
+        assert!(
+            parse_share_intent(cross_scheme).is_err(),
+            "跨协议回执地址必须拒"
+        );
 
         let cross = "gosslan://share?url=https%3A%2F%2Fa.example.com&receipt=https%3A%2F%2Fevil.example.com%2Fr&origin=https%3A%2F%2Frp.example.com";
         assert!(parse_share_intent(cross).is_err(), "跨源回执地址必须拒");
+
+        // http 同源（用户 2026-11-17 要的 http IP:端口 接入）必须放行。
+        let http_same = "gosslan://share?url=http%3A%2F%2F127.0.0.1%3A8080%2Fa&receipt=http%3A%2F%2F127.0.0.1%3A8080%2Fr&origin=http%3A%2F%2F127.0.0.1%3A8080";
+        assert!(parse_share_intent(http_same).is_ok(), "http 同源回执应放行");
+    }
+
+    /// SSRF 加固（2026-11-20）：无来源的回执地址无从校验归属，必须整笔拒；非 http(s) scheme 也拒。
+    #[test]
+    fn receipt_without_origin_or_non_http_scheme_is_rejected() {
+        // 无 origin + 内网回执地址 ⇒ 拒（过去会放行，可对内网发 POST）
+        let no_origin = "gosslan://share?url=https%3A%2F%2Fa.example.com&receipt=http%3A%2F%2F192.168.1.1%2Fadmin";
+        assert!(
+            parse_share_intent(no_origin).is_err(),
+            "无来源的回执地址必须拒"
+        );
+
+        // 非 http(s) scheme（即便带 origin）⇒ 拒
+        let file_scheme = "gosslan://share?url=https%3A%2F%2Fa.example.com&receipt=file%3A%2F%2F%2Fetc%2Fpasswd&origin=https%3A%2F%2Frp.example.com";
+        assert!(
+            parse_share_intent(file_scheme).is_err(),
+            "非 http(s) 回执 scheme 必须拒"
+        );
     }
 
     /// 落地区（平台扩展写的文件）**没有**定向语义：内容层不产生 to/toKind。

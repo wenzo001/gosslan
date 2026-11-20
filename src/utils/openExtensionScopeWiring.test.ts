@@ -182,10 +182,21 @@ test("mock：支持 sync 动作与 scope，且不把 sync 降级成 link", () =>
     /\["link", "authenticate", "sync"\]\.includes\(body\.action\)/,
     "mock 不认 sync 动作（会被悄悄降级成 link，联调看到的现象与真实契约不符）",
   );
-  // sync 与 authenticate 同样要求已有绑定。
+  // 先登录后绑定（2026-11-19）：sync/authenticate 无绑定时当场建绑，不再 401
+  // （2026-11-20 审计修：旧 mock 强制已有绑定，与后端契约冲突且被本测试反向固化）。
   assert.match(
     mock,
     /tx\.action === "authenticate" \|\| tx\.action === "sync"/,
-    "mock 的 sync 没有校验已有绑定",
+    "mock 必须区分 authenticate/sync 与 link 的绑定处理",
+  );
+  assert.match(
+    mock,
+    /tx\.action === "link" \|\| !known/,
+    "mock 的 authenticate/sync 必须支持无绑定首绑（先登录后绑定）",
+  );
+  assert.doesNotMatch(
+    mock,
+    /if \(!known\) return send\(res, 401, \{ code: "DEVICE_AUTH_UNAUTHORIZED" \}\)/,
+    "mock 不许再对无绑定的 authenticate/sync 直接 401",
   );
 });

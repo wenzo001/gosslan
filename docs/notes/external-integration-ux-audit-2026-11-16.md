@@ -41,6 +41,12 @@
 （`settings` 表，**不动表结构**）；确认页数据多一个 `remembered_scopes` 字段；
 前端预勾计算是纯函数 `utils/deviceAuth.ts::rememberedScopes`（∩ 本次请求，不跨应用）。
 
+> ⚠️ **2026-11-20 更正（以此为准）**：上面这套「按 RP 记忆预勾」在前端**已成死代码**。
+> 用户 2026-11-17 改为「请求 scope 默认全勾、一键允许」后，确认页
+> `DeviceAuthConfirmModal.vue` 直接用 `requested_scopes` 全勾，不再消费 `remembered_scopes`；
+> `rememberedScopes` 纯函数现在只剩单测在引用，后端仍传输/存储该字段但前端不用。
+> 上述"审计结论/三条边界/实现位置"保留为当时的设计依据，**不代表当前行为**。
+
 ## 3. 分享路径
 
 | 步骤 | 次数 | 能不能省 | 结论 |

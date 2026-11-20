@@ -34,7 +34,12 @@ android {
     compileSdk = 36
     namespace = "com.gosslan.app"
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        // 机器人通知服务默认就是 http://内网IP:59994（见 bot.field.serverPlaceholder /
+        // docs/notify-bot-guide.md），桌面端已放行 http。Android release 过去这里是 false ⇒
+        // 用户按文档填 http 地址「创建成功但一条通知都收不到」（reqwest 被系统明文策略拦截），
+        // 与桌面端行为不一致（2026-11-20 审计修）。 debug 分支下面也是 true，这里统一打开。
+        // 说明：那只影响应用的明文出站；P2P 正文仍是 E2EE，机器人 token 只在用户自建服务上。
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
         applicationId = "com.gosslan.app"
         minSdk = 24
         targetSdk = 36
