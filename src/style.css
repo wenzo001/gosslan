@@ -2008,10 +2008,11 @@ html[data-ambient="drift"] .chrome-surface {
     var(--gosslan-glass-3-shadow);
 }
 
-/* 品牌面：头像兜底等强调面用主题色实底（白字），无渐变 */
-.brand-surface {
-  background-color: var(--gosslan-primary);
-}
+/* 品牌面（2026-11-20 退役）：原 `.brand-surface` = `var(--gosslan-primary)`，
+   全仓只有「新的朋友」头像这一个消费者。但主色**中间档**是给图形面用的：
+   白图标压它时，绿/天蓝/橙三套可选主色连 3:1 都不到（tokenContrast 实测）。
+   该处已改走 `--gosslan-primary-active` + `--gosslan-on-primary`（与所有主色实底控件同一对），
+   类因此没有消费者了 —— 需要"品牌色块"时请直接用那两个 token，别再复活这个类。 */
 
 /* 切换深浅色瞬间：临时禁用所有过渡，避免颜色变量整体翻转时的渐变闪烁 */
 .theme-switching,

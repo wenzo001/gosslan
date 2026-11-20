@@ -761,7 +761,7 @@ const selectedRole = computed(() => {
           role="tab"
           class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-1 text-caption transition"
           :class="view === v
-            ? 'bg-[var(--gosslan-primary-soft)] text-[var(--gosslan-primary)]'
+            ? 'bg-[var(--gosslan-primary-soft)] text-[var(--gosslan-accent-ink)]'
             : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           :aria-selected="view === v"
           @click="view = v"

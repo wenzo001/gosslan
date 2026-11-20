@@ -830,7 +830,7 @@ useEventListener(document, "click", closeFriendMenu);
           @click="emit('open-requests')"
         >
           <span class="relative shrink-0">
-            <span class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-avatar-radius)] brand-surface text-white">
+            <span class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)]">
               <Icon name="user-plus" class="h-5 w-5" />
             </span>
             <UnreadBadge

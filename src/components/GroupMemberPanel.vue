@@ -607,7 +607,7 @@ async function confirmAction() {
           </button>
           <!-- 添加群机器人（同样只有群主/管理员能操作） -->
           <button
-            class="flex w-full items-center justify-center gap-1.5 rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-soft)] py-2 text-sm text-[var(--gosslan-primary)] transition hover:opacity-90"
+            class="flex w-full items-center justify-center gap-1.5 rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-soft)] py-2 text-sm text-[var(--gosslan-accent-ink)] transition hover:opacity-90"
             @click="botWizardOpen = true"
           >
             <Icon name="sparkles" class="h-4 w-4" />

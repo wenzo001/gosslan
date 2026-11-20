@@ -289,6 +289,9 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     // 而按钮 hover 时白字反而更看不见（旧值实测 2.48~3.77，六档全部不过 4.5）。
     { fg: "--gosslan-on-primary", bg: "--gosslan-primary-active", min: 4.5, why: "主色按钮标签 / 信息徽标数字（压在实底上）" },
     { fg: "--gosslan-on-primary", bg: "--gosslan-primary-hover", min: 4.5, why: "上面那一族的 hover 态" },
+    // ⚠️ 中间档 `--gosslan-primary` **不进这张表**，也不许承载前景：它是图形面（色条 / 进度条），
+    // 白字压它六套主色全部不到 4.5，白图标压它绿/天蓝/橙连 3:1 都不到（2026-11-20 实测）。
+    // 要"实底 + 前景"就用上面的 -active / -hover 档，那一对才解得出比值。
     // 非文本那一维（WCAG 1.4.11，3:1 对相邻面）：按钮得先"看得出来是个控件"。
     // ★ 这一维正是暗色不许跟着压深的唯一原因 —— 只盯文字档会得出**反过来**的结论
     //（压深后白字 4.85 过 AA，但填充 vs 暗面板只剩 2.06~3.01）。
