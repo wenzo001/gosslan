@@ -152,6 +152,7 @@ function closeSelf() {
         v-model:index="index"
         :open="true"
         hide-close
+        no-enter-animation
         @close="closeSelf()"
       />
       <StateBlock

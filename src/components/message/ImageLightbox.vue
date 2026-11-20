@@ -53,6 +53,14 @@ const props = defineProps<{
    * 而窗口里的"关闭"必须走 `getCurrentWindow().close()`（销毁窗口），不是收起一份覆盖层。
    */
   hideClose?: boolean;
+  /**
+   * 不要开场/收场动画（独立预览窗口用，2026-11-20 用户：窗口里的图"还有一个动画，这个应该是没有的"）。
+   *
+   * 窗口与覆盖层的区别是**谁在动**：覆盖层要"从缩略图长出来/缩回去"，让用户不丢失位置感；
+   * 而独立窗口是与操作系统窗口一起出现的，图再自己缩放一次就成了"窗都开好了图才蹦出来"。
+   * 所以窗口里直接以终态呈现（也跳过 `imgReady` 的透明帧）。
+   */
+  noEnterAnimation?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -368,7 +376,7 @@ function requestClose() {
   menu.value = null;
   const o = props.origin;
   const base = flipBaseRect.value;
-  if (reducedMotion.value || !base) {
+  if (props.noEnterAnimation || reducedMotion.value || !base) {
     emit("close");
     return;
   }
@@ -530,6 +538,11 @@ let swipeStart: { x: number; y: number } | null = null;
 function onPointerDown(e: PointerEvent) {
   // 开场 FLIP / 收场回缩期间不接受手势：否则手势与动画同时写 transform，图会抖。
   if (closing.value || pendingFlip.value) return;
+  // 起点落在**控件**上时一律不接管（2026-11-20 用户：「图片放大之后，左右切换按钮点不了了」）。
+  // 真因：放大态会在这个容器上 `setPointerCapture`，捕获生效后 pointerup 派发到容器，
+  // 浏览器随之把 click 也重定向到容器 ⇒ 按钮自己的 @click 永远收不到。
+  // 控件（切换/顶栏/缩略图）本来也不需要"拖图"手势，直接让路最稳。
+  if ((e.target as Element | null)?.closest("button, a, input, textarea, select, [role='button']")) return;
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pointers.size === 2) {
     // 进入双指：记下起点，随后按距离比例缩放
@@ -688,9 +701,10 @@ watch(
     flipScaleX.set(1);
     flipScaleY.set(1);
     flipBaseRect.value = null;
-    pendingFlip.value = !!props.origin && !reducedMotion.value;
+    pendingFlip.value = !props.noEnterAnimation && !!props.origin && !reducedMotion.value;
     // 没有源矩形（键盘 / 右键菜单打开）⇒ 居中放大，而不是"什么都不播"。
-    pendingCenter.value = !props.origin && !reducedMotion.value;
+    // 窗口模式例外：它整个生命周期都不该有这段（见 noEnterAnimation 的注释）。
+    pendingCenter.value = !props.noEnterAnimation && !props.origin && !reducedMotion.value;
     imgReady.value = !(pendingFlip.value || pendingCenter.value);
   },
   { immediate: true },
