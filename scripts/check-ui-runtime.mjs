@@ -19833,10 +19833,18 @@ async function runOscillate(cdp, url, botMode = 0) {
       chat.activeConv = CONV;
       await new Promise((r) => setTimeout(r, 1500));
       // ⚠️ 必须把**那条消息滚进视口**：虚拟列表只渲染视口附近的行。
-      const sc = document.querySelector('[data-overlayscrollbars-viewport]');
+      // ⚠️ 选元素必须用「含 data-vlist-key 的行」反查祖先 viewport（与后面的量尺同一套）：
+      //   页面上有多个 OS viewport，querySelector 取第一个是**会话列表**的 ——
+      //   上一版这里就是量错元素（滚的是会话列表，消息流根本没动），
+      //   「场景 A：消息在列表中间」实际测的是贴底静止态（review #2）。
+      const row = document.querySelector('[data-vlist-key]');
+      let sc = row;
+      while (sc && !sc.hasAttribute('data-overlayscrollbars-viewport')) sc = sc.parentElement;
       if (sc) {
         sc.scrollTop = Math.max(0, sc.scrollHeight * 0.45);
         await new Promise((r) => setTimeout(r, 900));
+        // 量尺要复用同一个元素（后面 check 读它自证「场景 A 真的滚到了中间」）。
+        window.__probeMsgVp = sc;
       }
     })()`);
 
@@ -19984,6 +19992,22 @@ async function runOscillate(cdp, url, botMode = 0) {
     const rangeOf = (o) => (o && !o.err && typeof o.max === "number" ? o.max - o.min : null);
     const midRange = rangeOf(oscMid);
     const tailRange = rangeOf(oscTail);
+
+    // 场景 A 夹具自证：会议消息真的被滚到了列表中间（不许退化成贴底静止态）。
+    // 上一版量错元素（querySelector 取第一个 viewport = 会话列表），消息流从未离开贴底态，
+    // 「场景 A」实际测的就是「场景 B」的终态 —— 判据名不副实（review #2）。
+    const midSet = await cdp.eval("(() => {"
+      + " const sc = window.__probeMsgVp;"
+      + " if (!sc) return { err: 'no viewport' };"
+      + " const max = sc.scrollHeight - sc.clientHeight;"
+      + " return { top: sc.scrollTop, max, atBottom: Math.abs(sc.scrollTop - max) <= 2 };"
+      + "})()");
+    out.midSet = midSet;
+    check("场景A夹具自证：会议消息真的被滚到列表中间（不许停在贴底）",
+      !!(midSet && !midSet.err && midSet.atBottom === false && midSet.top > 0),
+      "scrollTop 必须离开底部（量错元素时消息流根本没被移动）",
+      JSON.stringify(midSet));
+
     check("长文本" + label + "：会议消息在列表中间时整列不振荡（90 帧 scrollTop 极差 ≤ 2px）",
       midRange !== null && midRange <= 2,
       "scrollTop 极差 ≤ 2px（>2 ⇒ 整列上下跳，就是用户报的『疯狂抖动』）",

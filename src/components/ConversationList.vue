@@ -374,13 +374,22 @@ function onSearchEnter(e: KeyboardEvent) {
 }
 
 /**
- * 打开下拉里高亮的那一条（没有高亮就取第一条）。
+ * 打开下拉里指定的那一条（缺省 = 键盘当前高亮，再缺省 = 第一条）。
  * 命中 = 通讯录里的某个人 ⇒ 直接进**那个会话**，不等回车弹窗。
+ *
+ * ⚠️ 行号必须由调用点显式传入：鼠标点击路径过去不传行号，`contactActiveIdx`
+ * 只有 ↑↓ 键盘走位才写 ⇒ 恒为 -1 ⇒ `hits[-1]` 回落第一条 —— 点第 3 行开的是第 1 行
+ * （2026-11-20 review #1，探针从没覆盖过点击路径所以一直没红）。
  */
-function openContactHit() {
+function openContactHit(idx?: number) {
   const hits = contactHits.value;
-  if (!hits.length) return;
-  const hit = hits[contactActiveIdx.value] ?? hits[0];
+  if (!hits.length) {
+    // 无命中按回车：给一次明确反馈，别让人分不清「功能坏了」和「确实没这个人」。
+    // （下拉空态里有同样的文案；回车路径看不到下拉打开态，所以补一处 toast。）
+    app.toast(t("conv.noMatchContact"));
+    return;
+  }
+  const hit = hits[idx ?? contactActiveIdx.value] ?? hits[0];
   if (!hit) return;
   closeContactDrop();
   // 群成员点开是进那个群（对端 id = group:<gid>），好友点开是进单聊。
@@ -874,7 +883,7 @@ useEventListener(document, "click", closeFriendMenu);
               :class="hi === contactActiveIdx
                 ? 'bg-[var(--gosslan-list-active)]'
                 : 'hover:bg-[var(--gosslan-list-hover)]'"
-              @click="openContactHit()"
+              @click="openContactHit(hi)"
             >
               <AvatarBox :id="h.convId" :src="null" class="h-7 w-7" />
               <span class="min-w-0 flex-1">
