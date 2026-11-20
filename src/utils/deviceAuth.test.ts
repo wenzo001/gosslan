@@ -10,7 +10,6 @@ import {
   deviceAuthStatusKey,
   disclosedClaims,
   guardClear,
-  rememberedScopes,
   guardConsume,
   guardRefresh,
   guardSetPending,
@@ -132,16 +131,8 @@ test("guard：新事务到达后旧批准结果不得清掉新确认页（#8 竞
 });
 
 // ---------------- 同一个 RP 的重复登录不该重复表态（2026-11-16） ----------------
-
-test("预勾只取「上次允许过 ∩ 本次请求」——不跨应用、不越过请求", () => {
-  assert.deepEqual(rememberedScopes(["friends.read"], ["friends.read"]), ["friends.read"]);
-  // 本次没请求的那一项不许预勾（否则会送出用户这次没要的数据）
-  assert.deepEqual(rememberedScopes(["friends.read"], ["events.metadata"]), []);
-  // 空/缺省 ⇒ 全关（首次授权仍然是「默认全关、逐项点头」）
-  assert.deepEqual(rememberedScopes([], ["friends.read"]), []);
-  assert.deepEqual(rememberedScopes(null, ["friends.read"]), []);
-  assert.deepEqual(rememberedScopes(undefined, undefined), []);
-});
+// 「按 RP 记忆预勾」已于 2026-11-17 被「请求 scope 默认全勾」取代、2026-11-20 清理死代码；
+// 现在的重复登录口径由 DeviceAuthConfirmModal.vue 直接全勾（openExtensionScopeWiring 钉住）。
 
 // ---------------- 重复深链不重置用户勾选（授权页重复展示修复） ----------------
 

@@ -250,7 +250,6 @@ fn prompt_carries_requested_scopes() {
         expires_at_ms: 4_000_000_000_000,
         generation: 1,
         idempotency_key: "idem-1".into(),
-        remembered_scopes: Vec::new(),
         remembered_nickname: false,
     };
     p.request.action = "sync".into();
