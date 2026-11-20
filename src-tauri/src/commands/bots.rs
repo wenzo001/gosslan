@@ -1059,17 +1059,17 @@ async fn deliver_event(
                         .map_err(|e| format!("记录群消息去重失败：{e}"))
                 })
                 .await;
-                let mark_ok = marked.is_ok();
                 if let Err(e) = marked {
                     // 已发出但去重没记上 ⇒ 重申风险可观测（不能假装 exactly-once）。
-                    s.logger.error("bot", format!("event={eid_for_log} {e}：服务端重投可能重复发一条"));
+                    s.logger.error("bot", format!("event={eid_for_log} {e}：去重记录失败"));
                 }
                 // ★ Webhook action（建任务）必须与投递幂等**同一单元**（2026-11-20 审计修）：
-                // 过去 emit 在发消息之前，若发消息失败 → 不记去重 → 服务端重投 → action 再 emit
-                // ⇒ 群里重复建任务；反之消息已发并 ACK、前端没接住事件则任务永久缺失。
-                // 现在只有「消息发出 + 去重记住」之后才执行 action：重投会被开头 was_delivered
-                // 提前拦下，不会再建一次；发送/去重失败则本轮不执行、留给重投完整重试。
-                if mark_ok {
+                // 过去 emit 在发消息之前，若发消息失败 → 返回 Err → 服务端重投 → action 再 emit
+                // ⇒ 群里重复建任务。现在整段在本 `if sent.is_ok()` 内（消息真发出才建任务）：
+                //   · 发消息失败 ⇒ 不进这里、返回 Err ⇒ 重投重试，不会重复建任务；
+                //   · 发消息成功 ⇒ emit 一次，随后函数返回 Ok(ACK)，服务端不再重投 ⇒ 不会重复。
+                // ⚠️ 条件必须是「消息发出」而非「去重也记上」：去重 mark 失败时本函数仍返回 Ok
+                // （已 ACK、不会重投），若把它当门槛就会让任务永久丢失（2026-11-20 自审修）。
                     if let Some(action) = entry.action.as_ref() {
                         let kind = action.get("type").and_then(|v| v.as_str()).unwrap_or("");
                         if kind == "create_todo" {
@@ -1108,7 +1108,6 @@ async fn deliver_event(
                             }
                         }
                     }
-                }
             }
             sent
         }
@@ -1604,4 +1603,21 @@ mod bot_cmd_tests {
         let status = prod.find("if next == \"revoked\"").expect("没有撤销分支");
         assert!(status < revoke, "清凭证必须挂在撤销分支里");
     }
+
+    /// Webhook action（建任务）的 emit 必须在「消息发出」之后、且不以去重记录成功为门槛
+    /// （2026-11-20 自审发现的回归：挂在 mark_ok 上会让去重失败时任务永久丢失）。
+    #[test]
+    fn webhook_action_emits_after_send_not_after_dedup_mark() {
+        let src = include_str!("bots.rs");
+        let prod = &src[..src.find("mod bot_cmd_tests").unwrap_or(src.len())];
+        let send_at = prod.find("if sent.is_ok()").expect("找不到消息发送成功分支");
+        let emit_at = prod.find("\"bot-group-action\"").expect("找不到 action emit");
+        assert!(emit_at > send_at, "建任务 emit 必须在消息发出成功分支内（否则发消息失败重投会重复建任务）");
+        // 不能以去重标记成功为门槛：mark 失败仍 ACK、不会重投，门槛会让任务丢失。
+        assert!(!prod.contains("mark_ok"), "不许用去重 mark 成功当 action emit 门槛");
+        // 但也不能在 mark 之前就 emit（那会回到老bug）——靠上面的 send_at < emit_at 保证在 sent 块内。
+        let delivered_at = prod.find("mark_delivered(&dbc").expect("找不到去重标记");
+        assert!(delivered_at > send_at, "去重标记必须在发送成功之后");
+    }
+
 }
