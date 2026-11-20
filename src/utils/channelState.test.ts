@@ -620,15 +620,23 @@ test("切会话的三处入口：翻页/收页必须排在读数据之前", () =
  * 「自己」是一条**伪好友行**，与好友共用同一条渲染/排序/搜索路径，所以标记必须
  * 挂在渲染层，而不是去改数据（改 nickname 会连带影响分组首字母、排序与搜索命中）。
  * 两处退化值得钉：
- * - 通讯录有**两个渲染分支**（搜索时平铺 / 浏览时按首字母分组），只给一个挂上
- *   就是"搜到了带（我）、平时不带"这种只在半个界面上成立的修复；
+ * - 通讯录的**每个渲染分支**都必须挂上标记，只给一个挂上
+ *   就是"搜到了带（我）、平时不带"这种只在半个界面上成立的修复。
+ *   ⚠️ 2026-11-20：通讯录搜索改成了**下拉**（结果在搜索框下方的浮层里，
+ *   列表本体不再被替换）⇒ 渲染分支从 2 个（平铺 / 分组）变成 1 个（分组），
+ *   标记只需挂这一处。判据从"恰好 2 处"改成"**至少 1 处，且每一处分支都挂**"。
  * - 判据必须是 `isSelfConversation`（`utils/selfChat` 明写了"各处各写一遍
  *   `=== device_id` 迟早漏一处"），文案必须走 i18n（英文界面不该出现「（我）」）。
  */
-test("通讯录「（我）」标记：两个渲染分支都要挂，判据与文案都走同一条路", () => {
+test("通讯录「（我）」标记：每个渲染分支都要挂，判据与文案都走同一条路", () => {
   const list = read("components/ConversationList.vue");
   const selfSites = (list.match(/:is-self="isSelfRow\(f\.device_id\)"/g) ?? []).length;
-  assert.equal(selfSites, 2, "平铺与分组两个 FriendListItem 分支都要传 is-self");
+  // 渲染分支数 = FriendListItem 的渲染点（每个都得挂标记）。
+  // 2026-11-20 通讯录搜索改下拉 ⇒ 分支从 2 个变 1 个（平铺分支已撤）。
+  const branchCount = (list.match(/<FriendListItem/g) ?? []).length;
+  assert.ok(branchCount >= 1, "通讯录里一个 FriendListItem 渲染点都没有（判据空转）");
+  assert.equal(selfSites, branchCount,
+    `每个 FriendListItem 渲染分支都要传 is-self（分支 ${branchCount} 个，标记 ${selfSites} 处）`);
   const judgeAt = list.indexOf("function isSelfRow");
   assert.ok(judgeAt > 0, "isSelfRow 应存在（判据收在一个函数里）");
   assert.match(

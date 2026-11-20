@@ -117,6 +117,13 @@ export const enUS: MessageDict = {
   "search.peopleOpen": "Open chat with ",
   "search.peopleTitle": "{name} ({sub})",
   "search.peopleGroupChat": "Group chat",
+  // 2026-11-20: a username may equal a keyword that also appears in many messages.
+  // => give both hit kinds an icon-bearing section title plus a per-row type badge.
+  "search.messagesSection": "Chat history",
+  "search.kindFriend": "Friend",
+  "search.kindMember": "Member",
+  "search.kindGroup": "Group",
+  "search.messagesCount": "{n} messages",
   "search.empty": "No matching messages",
   "search.searching": "Searching…",
   "search.fail": "Search failed",

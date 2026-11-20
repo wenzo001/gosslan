@@ -4765,6 +4765,8 @@ async function main() {
     const panefade = want("panefade");
     const listmetrics = want("listmetrics");
     const scrollbar = want("scrollbar");
+    const oscillate = want("oscillate");
+    const oscillatebot = want("oscillatebot");
     const favorites = want("favorites");
     const favthumb = want("favthumb");
     const links = want("links");
@@ -5026,6 +5028,8 @@ async function main() {
     await runSegment("panefade", panefade, () => runPaneFade(cdp, url));
     await runSegment("listmetrics", listmetrics, () => runListMetrics(cdp, url));
     await runSegment("scrollbar", scrollbar, () => runScrollbar(cdp, url));
+    await runSegment("oscillate", oscillate, () => runOscillate(cdp, url, 0));
+    await runSegment("oscillatebot", oscillatebot, () => runOscillate(cdp, url, 1));
     await runSegment("favorites", favorites, () => runFavorites(cdp, url));
     await runSegment("favthumb", favthumb, () => runFavThumb(cdp, url));
     await runSegment("namecap", namecap, () => runNameCap(cdp, url));
@@ -18168,18 +18172,96 @@ async function runForwardFilter(cdp, url) {
  * 所以这一段必须挂 `view: "contacts"` 才量得到派生。
  */
 async function runContactFilter(cdp, url) {
-  await mirrorLadder(cdp, url, {
-    label: "通讯录过滤",
-    path: "/src/components/ConversationList.vue",
-    props: JSON.stringify({ view: "contacts" }),
-    seedBody: "chat.friends = ["
-      + "{ device_id: 'probe-n1', nickname: '探针甲', avatar: null, device_type: 'pc', online: true },"
-      + "{ device_id: 'probe-n2', nickname: '探针乙', avatar: null, device_type: 'pc', online: true },"
-      + "{ device_id: 'probe-n3', nickname: '别的项', avatar: null, device_type: 'pc', online: false }];",
-    mode: "aria",
-    inputSel: "#probe-host",
-    boxSel: "#probe-host",
-  });
+  /*
+   * 通讯录搜索（2026-11-20 改成**下拉过滤**）。
+   *
+   * 口径变了：结果不再**替换列表**（那是"整列被换掉"，用户的浏览上下文全丢），
+   * 而是出现在搜索框下方的**下拉浮层**里；列表本体保持分组浏览态。
+   * ⇒ 这段不再复用 mirrorLadder（它量的是"列表行数变了"），改自己测下拉。
+   *
+   * 仍然要量的两件事（与改前同一条口径，延迟镜像不许退化成读原值）：
+   *   ① 输入 50ms 时**下拉还没出结果**（派生读的是延迟镜像）；
+   *   ② 过了延迟窗口，下拉里出现**正确那两条**；
+   *   ③ 清空关键词走同一档，窗口后下拉收掉。
+   */
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const mounted = await cdp.eval(
+    "window.__probe.install(" + JSON.stringify("/src/components/ConversationList.vue") + ", '', "
+    + JSON.stringify(JSON.stringify({ view: "contacts" })) + ")");
+  const seeded = await cdp.eval(mirrorSeed("chat.friends = ["
+    + "{ device_id: 'probe-n1', nickname: '探针甲', avatar: null, device_type: 'pc', online: true },"
+    + "{ device_id: 'probe-n2', nickname: '探针乙', avatar: null, device_type: 'pc', online: true },"
+    + "{ device_id: 'probe-n3', nickname: '别的项', avatar: null, device_type: 'pc', online: false }];"));
+  await sleep(400);
+
+  /**
+   * 读下拉里的候选 + 列表本体的行数。
+   *
+   * ⚠️ 下拉内容是 **portal 到 body** 的（Reka PopoverPortal）⇒ 必须在**整个文档**里找，
+   *   只在 #probe-host 里找会读成"下拉没开"（第一版栽在这里，白判一轮红）。
+   */
+  const read = () => cdp.eval(`(() => {
+    const host = document.getElementById('probe-host');
+    if (!host) return { found: false };
+    const i = host.querySelector('input[placeholder]');
+    const hits = [...document.querySelectorAll('[data-contact-hit]')];
+    const names = hits.map((el) => {
+      const t = el.querySelector('.text-body');
+      return t ? String(t.textContent || '').trim() : '';
+    });
+    // 列表本体（浏览态）：行数在搜索前后必须一致 —— 搜索**不许**替换它。
+    const listRows = [...host.querySelectorAll('[role="button"]')].filter((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 40 && r.height > 10 && !el.closest('[data-reka-popper-content-wrapper]');
+    });
+    return { found: true, input: i ? i.value : null, hits: hits.length, names: names.join('|'), listRows: listRows.length };
+  })()`);
+
+  const typeExpr = (v) => "(() => {"
+    + " const i = document.querySelector('#probe-host input[placeholder]');"
+    + " if (!i) return false;"
+    + " i.value = " + JSON.stringify(v) + ";"
+    + " i.dispatchEvent(new Event('input', { bubbles: true }));"
+    + " return true;"
+    + "})()";
+
+  const before = await read();
+  await cdp.eval(typeExpr("探针"));
+  await sleep(50);
+  const inside = await read();
+  await sleep(350);
+  const after = await read();
+  await cdp.eval(typeExpr(""));
+  await sleep(50);
+  const cleared = await read();
+  await sleep(350);
+  const back = await read();
+
+  check("通讯录搜索：过滤框挂出来了（未输入时下拉是空的）",
+    !!mounted && mounted.ok === true && !!seeded && seeded.ok === true
+      && before.found === true && before.hits === 0,
+    "初值：下拉里 0 个候选",
+    JSON.stringify({ mounted: mounted && mounted.ok, seeded, before }));
+  check("通讯录搜索：打字 50ms 后输入框已变、下拉还没出结果（派生读的是延迟镜像）",
+    inside.found === true && inside.input === "探针" && inside.hits === 0,
+    "读到 hits>0 就说明派生改读了原值 ⇒ 连发粘贴会卡回去（两档退化成一档）",
+    JSON.stringify({ inside }));
+  check("通讯录搜索：过了延迟窗口，下拉里出现正确那两条",
+    after.found === true && after.hits === 2 && after.names === "探针甲|探针乙",
+    "窗口后 hits=2、名字为 探针甲|探针乙",
+    JSON.stringify({ after }));
+  check("通讯录搜索：列表本体不被搜索结果替换（浏览态保持）",
+    after.found === true && before.listRows === after.listRows,
+    "列表行数在搜索前后必须一致（结果只进下拉）",
+    JSON.stringify({ before: before.listRows, after: after.listRows }));
+  check("通讯录搜索：清空关键词也走同一档，窗口后下拉收掉",
+    cleared.found === true && cleared.hits === 2 && back.found === true && back.hits === 0,
+    "清空后 50ms 仍读到 2 个候选、窗口后回到 0",
+    JSON.stringify({ cleared, back }));
 }
 
 /**
@@ -19668,6 +19750,148 @@ async function runPaneFade(cdp, url) {
  * 外加一条**反例自证**：把滑块强行改成"常显"之后，①② 必须读成"可见" ⇒
  * 这两条尺子不是恒真的空转（判据能被打红）。
  */
+/**
+ * 长文本 / 机器人消息的**估高 ↔ 实测对账**（用户 2026-11-20 报的「聊天界面疯狂抖动」）。
+ *
+ * 抖动 = 虚拟列表按 `estimateMessageHeight` 排布，而界面画出来的高度与它不一致
+ * ⇒ 列表每次测量都在修正 ⇒ 反复重排 ⇒ 用户看到界面抖。
+ *
+ * 两条渲染路径必须分别核对（这是本段的核心）：
+ *   · 普通文本：`kind === "text"` ⇒ 按 linkify 切段渲染，正文是**纯文本行**；
+ *   · **机器人消息**：`conv_id` 以 `bot:` 开头 ⇒ `MessageItem.isBotMessage` 成立
+ *     ⇒ 正文可能走 `renderBotMessage`（Markdown ⇒ 产出 p / br 等**块级元素**）。
+ *   而**估高端只按纯文本算**（`estimateMessageHeight` 不看 conv_id）⇒ 这两条路径
+ *   的高度天然可能对不上 ⇒ 虚拟列表会反复修正。
+ *
+ * 判据（两条都要有牙）：
+ *   ① 估高**不小于**实测（估小了会遮挡下一条；估大了只是留白 —— 已知偏差，见下）。
+ *   ② 40 次采样里气泡高度**恒定**（多个值 ⇒ 宽度↔内容自反馈环在振荡）。
+ *
+ * ⚠️ 已知偏差（2026-11-20 查抖动时一并查出来的）：估高端按「折叠态 = 固定 5 行 +
+ *   操作条 29px」算；渲染端则按**实测列数**切内容，列数够大时内容**根本不需要截断**
+ *   ⇒ 没有操作条、正文也不足 5 行 ⇒ 实测比估算少 40+px（长文本下方会多一条空白）。
+ *   改估算口径会牵动整条高度链，等能在真实环境里复现抖动之后再动。
+ */
+async function runOscillate(cdp, url, botMode = 0) {
+  const outFile = path.join(ROOT, "test-results", "oscillate.json");
+  fs.mkdirSync(path.dirname(outFile), { recursive: true });
+  const out = {};
+  const label = botMode ? "机器人消息" : "普通文本";
+
+  try {
+    await cdp.send("Emulation.setDeviceMetricsOverride",
+      { width: 900, height: 900, deviceScaleFactor: 1, mobile: false }).catch(() => {});
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(2_200);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval("window.__botMode = " + String(botMode));
+    await cdp.eval(`(async () => {
+      window.__TAURI_INTERNALS__ = window.__TAURI_INTERNALS__ || {
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+        invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = window.__TAURI_EVENT_PLUGIN_INTERNALS__ || { unregisterListener: () => {} };
+      await window.__probe.install('/src/layouts/ResponsiveLayout.vue', '', '{"router":true,"hostHeight":"900px"}');
+      const { useChatStore } = await import('/src/stores/useChatStore.ts');
+      const chat = useChatStore();
+      const INVITE = ['fuwendong 邀请你加入「123123」', '会议号：255533534', '复制会议号或点击链接即可加入会议', '123123', 'https://meet.lhcz.local/#/m/255533534/preview'].join('\\n');
+      const BOT = Number(window.__botMode) ? 1 : 0;
+      const CONV = BOT ? 'bot:probe' : 'c0';
+      chat.conversations = [{ id: CONV, kind: 'single', name: '会议邀请', avatar: null,
+        last_msg: '邀请', last_ts: 1700000000000, unread: 0, pinned: false }];
+      const many = [];
+      for (let i = 0; i < 40; i += 1) {
+        many.push({
+          // ⚠️ MessageRecord 的 id 是 **number**、seq 必填 —— 夹具给错类型会让
+          //   groupSide / 排序走出与真实数据不同的形状。
+          id: i + 1,
+          // bot 夹具用 botmsg-md- 前缀 ⇒ 走 renderBotMessage 的 **Markdown** 分支
+          //   （纯文本分支是 content 插值，高度与普通文本一样；Markdown 分支才产出
+          //   块级元素 ⇒ 与「按纯文本算」的估高完全对不上）。
+          //   ⚠️ 这几行注释在**模板字符串**里 ⇒ 不许出现反引号（会提前闭合模板串）。
+          msg_id: BOT ? ('botmsg-md-' + i) : ('m-' + i),
+          local_id: BOT ? ('botmsg-md-' + i) : ('m-' + i), conv_id: CONV,
+          sender_id: i % 3 ? 'peer' : 'self',
+          sender_name: i % 3 ? 'fuwendong' : '我', receiver_id: 'self', kind: 'text',
+          status: 'sent', seq: i + 1, ts: 1700000000000 + i * 1000,
+          content: i === 20 ? INVITE : ('第 ' + (i + 1) + ' 条普通消息。'),
+        });
+      }
+      chat.messages[CONV] = many;
+      chat.activeConv = CONV;
+      await new Promise((r) => setTimeout(r, 1500));
+      // ⚠️ 必须把**那条消息滚进视口**：虚拟列表只渲染视口附近的行。
+      const sc = document.querySelector('[data-overlayscrollbars-viewport]');
+      if (sc) {
+        sc.scrollTop = Math.max(0, sc.scrollHeight * 0.45);
+        await new Promise((r) => setTimeout(r, 900));
+      }
+    })()`);
+
+    // 估高（用应用自己那份 estimateMessageHeight，不重述任何高度常量）
+    const est = await cdp.eval("(async () => {"
+      + " const H = await import('/src/utils/messageHeight.ts');"
+      + " const A = await import('/src/stores/useAppStore.ts');"
+      + " const S = await import('/src/stores/useChatStore.ts');"
+      + " const chat = S.useChatStore();"
+      + " const app = A.useAppStore();"
+      + " const CONV = " + (botMode ? "'bot:probe'" : "'c0'") + ";"
+      + " const msgs = chat.messages[CONV] || [];"
+      + " const m = msgs[20];"
+      + " if (!m) return { err: 'no message', keys: Object.keys(chat.messages).slice(0, 6) };"
+      + " return { est: H.estimateMessageHeight(m, 20, { messages: msgs, isGroup: false,"
+      + "   selfId: 'self', fontSize: app.chatStyle.fontSize }), fontSize: app.chatStyle.fontSize };"
+      + "})()");
+    out.est = est;
+
+    // 实际渲染：那条消息（正文含「会议号」）的气泡高度
+    const samples = [];
+    for (let i = 0; i < 40; i += 1) {
+      const s = await cdp.eval(`(() => {
+        const bs = [...document.querySelectorAll('[data-msg-body]')];
+        const body = bs.find((el) => (el.innerText || '').includes('会议号')) || null;
+        if (!body) return { ok: false, why: 'not rendered' };
+        const bubble = body.closest('.gosslan-bubble-text') || body.parentElement;
+        const r = bubble.getBoundingClientRect();
+        return {
+          ok: true,
+          h: Math.round(r.height * 10) / 10,
+          w: Math.round(r.width * 10) / 10,
+          clamped: getComputedStyle(body).webkitLineClamp || 'none',
+        };
+      })()`);
+      samples.push(s);
+      await sleep(40);
+    }
+    out.samples = samples;
+
+    const ok = samples.filter((s) => s && s.ok);
+    const heights = ok.map((s) => s.h);
+    out.heights = [...new Set(heights)];
+    const real = heights.length ? heights[0] : null;
+    const diff = (typeof est?.est === "number" && typeof real === "number")
+      ? +(real - est.est).toFixed(1) : null;
+    out.diff = diff;
+    console.log("  · " + label + "：估高=" + (est && est.est) + " 实测=" + real
+      + " 差=" + diff + " 高度集合=" + JSON.stringify(out.heights));
+
+    check("长文本" + label + "：估高不小于实测（估小 ⇒ 下一条被遮挡）",
+      diff !== null && diff <= 2,
+      "实测 − 估高 ≤ 2px（估小了会遮挡下一条；估大了只是留白）",
+      JSON.stringify({ est: est && est.est, real, diff, clamped: ok[0] && ok[0].clamped }));
+
+    check("长文本" + label + "：气泡高度在 40 次采样里恒定（不许来回跳）",
+      heights.length > 0 && out.heights.length === 1,
+      "40 次采样只允许一个高度值（多个 ⇒ 宽度↔内容自反馈环在振荡）",
+      JSON.stringify(out.heights));
+  } catch (e) {
+    check("振荡段：探针自己跑完了（没在半路抛错）", false, "正常结束", String(e));
+  } finally {
+    fs.writeFileSync(outFile, JSON.stringify(out, null, 2));
+  }
+}
+
 async function runScrollbar(cdp, url) {
   const outFile = path.join(ROOT, "test-results", "scrollbar.json");
   fs.mkdirSync(path.dirname(outFile), { recursive: true });

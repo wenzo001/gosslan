@@ -6965,8 +6965,11 @@ test("A 档读失败的界面错误档必须接上（后端不许折回空 + 前
     ),
     "friendsLoadFailed 的三态口径被改了（成功过就不该是错误档；`todoRowsLoadState` 同一条口径）",
   );
+  // 2026-11-20：通讯录搜索改成**下拉**（结果在浮层里，列表本体不再被搜索替换）⇒
+  // 「没有好友」这个空态的判据从"过滤后为空"变成"**通讯录本身**为空"（allFriends）。
+  // 判据的**意图**（错误档与空态互斥可达）不变，只搬表达式锚点。
   assert.ok(
-    /v-if="friendsLoadFailed"[\s\S]{0,700}v-else-if="filteredFriends\.length === 0"/.test(list),
+    /v-if="friendsLoadFailed"[\s\S]{0,700}v-else-if="allFriends\.length === 0"/.test(list),
     "好友栏的错误档与空态不互斥：要么空态被吞掉，要么两条一起画",
   );
   assert.ok(
