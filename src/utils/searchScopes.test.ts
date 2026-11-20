@@ -131,6 +131,25 @@ test("通讯录的搜索是下拉过滤：回车不弹搜索结果页", () => {
     /data-contact-hit/,
     "下拉候选必须可点（每行一个 data-contact-hit）",
   );
+  // ⚠️ 点击必须把**行号**传进 openContactHit：contactActiveIdx 只有键盘 ↑↓ 才写，
+  //   鼠标点击路径不传行号的话恒为 -1 ⇒ 点第 N 行永远打开第 1 行
+  //   （2026-11-20 review #1 的真实 bug，探针当时只覆盖键盘/输入路径所以没红）。
+  assert.match(
+    listSrc,
+    /@click="openContactHit\(hi\)"/,
+    "鼠标点击必须把行号传进 openContactHit（不传 ⇒ 恒开第一条）",
+  );
+  assert.match(
+    listSrc,
+    /function openContactHit\(idx\?: number\)/,
+    "openContactHit 必须接受行号入参（缺省回落键盘高亮）",
+  );
+  // 无命中按回车要有反馈（不是静默 return）。
+  assert.match(
+    listSrc,
+    /if \(!hits\.length\) \{[\s\S]{0,200}app\.toast\(/,
+    "无命中按回车必须给反馈（静默 return 让人分不清坏了还是没这个人）",
+  );
 });
 
 test("通讯录：搜索结果只进下拉，列表本体不被替换（浏览态保持）", () => {

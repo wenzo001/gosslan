@@ -277,7 +277,7 @@ watch(
 
   <!-- 桌面端：卡片式弹窗（独立窗口见 `SettingsWindow.vue`；这里保留给「窗口不可用」的场景） -->
   <BaseModal v-else :open="open" :title="t('settings.title')" width="max-w-xl" @close="emit('close')">
-    <div class="gosslan-scroll -mb-5 max-h-[75vh] space-y-[var(--gosslan-section-gap)] overflow-y-auto overflow-x-hidden rounded-b-[var(--gosslan-radius-xl)] bg-[var(--gosslan-bg)] py-[var(--gosslan-section-gap)]">
+    <OverlayScroll class="gosslan-scroll -mb-5 max-h-[75vh] space-y-[var(--gosslan-section-gap)] rounded-b-[var(--gosslan-radius-xl)] bg-[var(--gosslan-bg)] py-[var(--gosslan-section-gap)]">
       <ProfileSection :active="open" :reload-token="reloadToken" />
       <GeneralSection />
       <NotificationSection />
@@ -291,7 +291,7 @@ watch(
       <SecuritySection />
       <IntegrationsSection />
       <AboutSection @dev-open="devDiagOpen = true" />
-    </div>
+    </OverlayScroll>
   </BaseModal>
 
   <!-- 开发者诊断面板（隐藏入口：连续点击设备指纹 7 次） -->

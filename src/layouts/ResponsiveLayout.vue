@@ -1418,9 +1418,9 @@ function onResizeEnd() {
              先按「资料卡走满宽」删掉 p-4，用户随后回报「个人资料周围没有边距」并拍板恢复
              —— 满宽那版是拿**卡片内部**的按钮排布说的，不是要卡片贴屏幕边。
              别再删这一层：卡片的圆角与描边需要页边距才看得出来。 -->
-        <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-4">
+        <OverlayScroll class="gosslan-scroll min-h-0 flex-1 py-4">
           <ProfileSection :active="profileOpen" :reload-token="profileReloadToken" />
-        </div>
+        </OverlayScroll>
       </MobilePageFrame>
     </Transition>
 
