@@ -379,9 +379,24 @@ CASES: list[Case] = [
         name="整屏浮层只让开顶部安全区、底部没人读（N16）",
         why="roadmap N16：`pt-[env(safe-area-inset-top)]` 让开了状态栏，底部那一层没读 `env(safe-area-inset-bottom)"
             " ⇒ 列表滚到最后一行正落在 iOS Home Indicator（≈34px）/ Android 手势条底下。"
-            "桌面肉眼看不出、不报错、不影响构建，只有扫类名的 `findTopInsetWithoutBottomInset` 拦得住",
+            "桌面肉眼看不出、不报错、不影响构建，只有扫类名的 `findTopInsetWithoutBottomInset` 拦得住。"
+            "⚠️ 内容区有**两个分支**（scroll=true 走统一滚动容器 / scroll=false 留给日志页），"
+            "两处都挂 `safe-bottom` —— 7.1.44 滚动条统一改造把单个内容层拆成两个分支后，"
+            "旧锚点在同文件里出现 2 次，只改一处时另一处仍兜住判据 ⇒ 注入必须逐处点名。",
         file=ROOT / "src" / "components" / "MobilePageFrame.vue",
-        injections=[("mode === 'overlay' ? 'safe-bottom' : ''", "mode === 'overlay' ? '' : ''")],
+        # 锚点逐处点名（注入器要求锚点在文件里恰好 1 次，裸短锚点现在出现 2 次）：
+        #   ① scroll=true 的统一滚动容器分支；② scroll=false 的原生列分支（日志页走它）。
+        injections=[(
+            'v-if="scroll"\n      class="min-h-0 flex-1"\n      :class="mode === \'overlay\' ? \'safe-bottom\' : \'\'"',
+            'v-if="scroll"\n      class="min-h-0 flex-1"\n      :class="mode === \'overlay\' ? \'\' : \'\'"',
+        )],
+        extra_injections=[
+            (
+                ROOT / "src" / "components" / "MobilePageFrame.vue",
+                'class="min-h-0 flex-1 flex flex-col"\n      :class="mode === \'overlay\' ? \'safe-bottom\' : \'\'"',
+                'class="min-h-0 flex-1 flex flex-col"\n      :class="mode === \'overlay\' ? \'\' : \'\'"',
+            )
+        ],
         cmd=node_test("src/utils/designGuards.test.ts"),
         cwd=ROOT,
         expect_fail_hint="顶部安全区",
@@ -1323,7 +1338,10 @@ CASES: list[Case] = [
         )],
         cmd=node_test("src/utils/designGuards.test.ts"),
         cwd=ROOT,
-        expect_fail_hint="全局滚动口径里不许再有 scrollbar-gutter",
+        # ⚠️ hint 必须与判据文案**逐字一致**（含反引号）：SC-01 的报红句子是
+        #   「全局滚动口径里不许再有 `scrollbar-gutter`…」，裸文本会被反引号切开 ⇒ 子串匹配失败，
+        #   注入明明红了却判成「不符合预期」（CI Verify 2026-11-20 三连红的真因之一）。
+        expect_fail_hint="全局滚动口径里不许再有 `scrollbar-gutter`",
         tags=["frontend", "scroll", "new-guards"],
     ),
     Case(
