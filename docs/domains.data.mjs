@@ -495,6 +495,7 @@ export default {
         "src-tauri/src/tray.rs",
         "src-tauri/src/restart.rs", // 一键重启入口（托盘/横幅共用；销毁单实例锁 + 有界收尾 + re-exec）
         "src-tauri/src/macos_window.rs", // macOS 专属（lib.rs:40）
+        "src-tauri/src/window_chrome.rs", // Windows 系统圆角（DWM）；非 Windows 上是 no-op，与 macos_window 对称
         "src-tauri/src/macos_bookmark.rs", // macOS 专属（lib.rs:46）
         "src-tauri/src/win_shortcut.rs", // Windows 专属入口（模块在 test 构建下也编译，跑 .lnk 解析单测）
         "src-tauri/src/open_path.rs",

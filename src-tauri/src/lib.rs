@@ -63,6 +63,9 @@ mod macos_bookmark;
 /// 见 macos_window.rs 注释（与自绘标题栏的取舍）。
 #[cfg(target_os = "macos")]
 mod macos_window;
+/// 窗口外壳的系统级对齐：Windows 用 DWM 圆角（Win10 自动降级成直角）。
+/// 与 `macos_window` 对称 —— 那一边补的是 AppKit 的圆角/阴影，这一边补 DWM 的。
+mod window_chrome;
 /// 进程内存 / 系统提交量 / GDI·USER 句柄 / 帧读聚合的**现场读数**。
 /// 接线三处：`state.rs` 的 `RUNTIME_SNAPSHOT`、`watchdog.rs` 的 HANG 现场、下面那个分配失败钩子。
 mod mem_diag;
@@ -469,6 +472,16 @@ fn finish_boot(app: &tauri::AppHandle, state: std::sync::Arc<state::AppState>) {
         state.logger.info("boot", "开始 tray::setup");
         tray::setup(app);
         state.logger.info("boot", "tray::setup 完成");
+    }
+    // 主窗的系统圆角（Windows 走 DWM；macOS 上是 no-op，那边的圆角由 AppKit 给）。
+    // 失败只记一条日志：Win10 / 组策略禁用时按直角降级，不影响启动与窗口可用性。
+    #[cfg(desktop)]
+    if let Some(win) = app.get_webview_window(tray::MAIN_WINDOW_LABEL) {
+        if let Err(e) = window_chrome::apply(&win) {
+            state
+                .logger
+                .warn("window", format!("系统圆角不可用（按直角降级）: {e}"));
+        }
     }
     // macOS 菜单栏：⌘Q / ⌘, / ⌘W / ⌘M 与标准「编辑」项。
     // 属"锦上添花"——初始化失败**不阻断启动**（与托盘不同：托盘失败会改行为，
