@@ -55,7 +55,12 @@ fn apply_rounding(hwnd: windows_sys::Win32::Foundation::HWND) -> Result<(), Stri
     Ok(())
 }
 
+/// 非 Windows 直接返回 `Ok`（调用方不必写 cfg）。
+/// ⚠️ 两个调用点都在桌面路径（`lib.rs` 主窗与 `commands/logs.rs` 辅窗都挂着 `#[cfg(desktop)]`
+/// 或 `#[cfg(target_os = "windows")]`）⇒ 移动目标（Android）上这个桩**故意不接线**，
+/// `allow(dead_code)` 消掉那一档 0-warning 铁律的红灯；桌面档上它是被使用的，注解无副作用。
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 pub fn apply(_win: &tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
