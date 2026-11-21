@@ -431,6 +431,17 @@ function onHostPointerUp(ev: PointerEvent) {
         [dragged.id]: { x: dragged.x ?? 0, y: dragged.y ?? 0 },
       };
       void persistLayout();
+    } else {
+      /**
+       * ⚠️ 按住没动 = **点击这个节点**（2026-11-22 修，探针抓到的真缺陷）。
+       *
+       * 这里以前是无条件 `return` —— 而 `pointerdown` 只要落在节点上就会把
+       * `draggingNode` 置上（为了支持"拖节点"），于是**每一次点节点都走进这一支、
+       * 直接返回** ⇒ `selectedId` 永远不被赋值 ⇒ 详情卡永远不弹。
+       * 探针的读数正是这个形状：`asideCount: 0`（整页一个 aside 都没渲染过），
+       * 而节点本体、命中测试、图例全都正常。
+       */
+      selectedId.value = dragged.id;
     }
     dragMoved = false;
     return;

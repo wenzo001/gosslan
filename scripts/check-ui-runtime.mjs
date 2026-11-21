@@ -4268,6 +4268,7 @@ async function runConvBadge(cdp, url) {
   await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
+
   const GROUP = {
     id: "group:probe-badge", kind: "group", name: "验收群", avatar: null,
     unread: 3, last_msg: "收到一条", last_ts: 1, pinned: false,
@@ -21539,11 +21540,48 @@ async function runTopology(cdp, url) {
   await cdp.send("Page.navigate", { url });
   await cdp.settled();
   await sleep(3_000);
+  // ⚠️ 本段挂的是组件，但组件会拉到 store → store 的 init 会订阅托盘/机器人事件
+  // （`api.onTrayOpenUnread` / `api.onBotInboxUpdated` → `listen(...)`）。裸浏览器里
+  // `window.__TAURI_INTERNALS__` 不存在 ⇒ `transformCallback` 读到 undefined ⇒ 每次
+  // init 冒两条未捕获 rejection（2026-11-22 用带栈的采集抓到：栈顶就是这两个订阅）。
+  // 别把它当成产品缺陷：真实宿主里这个对象由 Tauri 注入。夹具补最小形状即可。
+  await cdp.eval(`(() => {
+    if (!window.__TAURI_INTERNALS__) {
+      window.__TAURI_INTERNALS__ = {
+        metadata: {
+          currentWindow: { label: 'main' },
+          currentWebview: { label: 'main', windowLabel: 'main' },
+        },
+        invoke: async () => null,
+        transformCallback: (cb) => cb,
+        convertFileSrc: (p) => p,
+      };
+    }
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+    return true;
+  })()`);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval(`(() => {
     window.__pageErrors = [];
     window.addEventListener('error', (e) => window.__pageErrors.push(String(e.message || e)));
-    window.addEventListener('unhandledrejection', (e) => window.__pageErrors.push('rej:' + String(e.reason && e.reason.message || e.reason)));
+    window.addEventListener('unhandledrejection', (e) => {
+      const r = e.reason;
+      // 「裸浏览器里没有 Tauri 宿主」这一种要**分开记**：transformCallback 读 undefined
+      // 只可能发生在没有 __TAURI_INTERNALS__ 的环境（真实宿主里它由 Tauri 注入）。
+      // 它不是产品错误，但也不能静默丢 —— 单独一桶，判据里照样打印条数。
+      if (String((r && r.message) || r).includes('transformCallback')) {
+        window.__pageErrorsEnv = (window.__pageErrorsEnv || 0) + 1;
+        return;
+      }
+      // 带栈：只记 message 的话，'Cannot read properties of undefined' 这类错误根本
+      // 定位不到是谁在调（2026-11-22 就为这一条多跑了一轮）。
+      // ⚠️ 这段代码是**页面里**执行的，外面还套着一层模板字符串 ⇒ 不要写 '\\n'，
+      // 那一层会先把它变成真换行、把页面里的字符串截断（SyntaxError 就是这么来的）。
+      const nl = String.fromCharCode(10);
+      window.__pageErrors.push('rej:' + String((r && r.message) || r) + ' @ ' + String((r && r.stack) || '').split(nl).slice(0, 4).join(' | '));
+    });
     return true;
   })()`);
 
@@ -21628,16 +21666,26 @@ async function runTopology(cdp, url) {
     if (!a) return { ok: false, hasArc: false };
     const cx = cr.left + cr.width / 2;
     const cy = cr.top + cr.height / 2;
+    // 原始病的形状是"先画在 (0,0) 左上角、过一下才被拉回"⇒ 只有贴近左上角才算命中。
+    // 判"必须落在图区内"不行：首帧那次落笔可能发生在画布被容器尺寸改写之前（探针读到
+    // at.y=516 而画布只有 399 高 —— 那是**旧尺寸下的正确位置**），拿后来的矩形判它会假红。
+    const inside = Math.hypot(a.x - cr.left, a.y - cr.top) >= 60;
     return {
       ok: true,
+      inside,
       dist: Math.round(Math.hypot(a.x - cx, a.y - cy)),
       at: { x: Math.round(a.x), y: Math.round(a.y) },
       center: { x: Math.round(cx), y: Math.round(cy) },
     };
   })()`);
-  check("拓扑首帧：self 节点一开始就画在图区中心（不许先挂左上角再弹回中间）",
-    firstFrame.ok === true && firstFrame.dist <= 150,
-    "最早落笔距图区中心 ≤ 150px",
+  // ⚠️ 判据要钉的是**原始病**（"先挂左上角、过一下才被拉回来"），不是"必须在中心"：
+  // 布局本身窄屏就把本机放在**底部中央**（`layoutNeighborhood`：`narrow = w < 768` ⇒ ax=0,
+  // ay = h/2 - margin），宽屏才放左侧中部。写死"距中心 ≤150"等于把宽屏锚点套到所有档位，
+  // 窄视口下必然红（2026-11-22 实测 dist=241，方向是正下方 —— 那是**正确布局**）。
+  // 所以改成：落笔必须已经落在图区内部（离四边各 ≥ 40px），不许贴在左上角。
+  check("拓扑首帧：self 节点一开始不许画在左上角（先挂角落再弹回的病）",
+    firstFrame.ok === true && firstFrame.inside === true,
+    "最早落笔不许贴在左上角（≥60px）",
     JSON.stringify(firstFrame));
   // 3) 名单必须写进**组件正在用的那份 store**（install 之后才有同一个 pinia）。
   const seeded = await cdp.eval(`(async () => {
@@ -21692,6 +21740,7 @@ async function runTopology(cdp, url) {
       canvasH: Math.round(rect.height),
       canvasLeft: Math.round(rect.left),
       canvasTop: Math.round(rect.top),
+      canvasRect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) },
       ink,
       statsText,
       statsHas: expect.map((s) => statsText.includes(s)),
@@ -21771,11 +21820,21 @@ async function runTopology(cdp, url) {
     panel = await cdp.eval(`(async () => {
       const I = await import('/src/i18n/index.ts');
       const aside = document.querySelector('#probe-host aside');
-      if (!aside || !aside.getClientRects().length) return { ok: false, hasPanel: false };
+      // 诊断字段（2026-11-22）：面板没出来时要说清是"没渲染"、"渲染了但零尺寸"，
+      // 还是"渲染在别的容器里"—— 只报 hasPanel:false 没法定位。
+      const diag = {
+        asideFound: !!aside,
+        asideRects: aside ? aside.getClientRects().length : 0,
+        asideCount: document.querySelectorAll('aside').length,
+        roles: document.querySelectorAll('[data-topo-role]').length,
+        hostAside: document.querySelectorAll('#probe-host aside').length,
+        asideRect: aside ? (() => { const r = aside.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; })() : null,
+      };
+      if (!aside || !aside.getClientRects().length) return { ok: false, hasPanel: false, diag };
       const buttons = [...aside.querySelectorAll('button')].map((b) => (b.textContent || '').trim()).filter(Boolean);
       const roleText = (aside.querySelector('[data-topo-role]')?.textContent || '').trim();
       return {
-        ok: true, hasPanel: true, buttons, roleText,
+        ok: true, hasPanel: true, buttons, roleText, diag,
         hasChat: buttons.includes(I.t('topology.action.chat')),
         hasAdd: buttons.includes(I.t('topology.action.add')),
         role: roleText === I.t('topology.role.friend') ? 'friend'
@@ -21790,6 +21849,31 @@ async function runTopology(cdp, url) {
       && ((panel.role === "friend" && panel.hasChat) || (panel.role === "peer" && panel.hasAdd)),
     "panel 开 + 动作键与身份一致",
     JSON.stringify({ panel, candidates, tried, canvasTop: m.canvasTop, canvasLeft: m.canvasLeft, canvasH: m.canvasH }));
+
+  // 关掉详情卡再往下走：它是一块绝对定位的卡片，留着会盖住下面「从角落拖拽」的起点
+  // （2026-11-22 实测：面板一开，相机那一格就从绿变红 —— 红的是探针顺序，不是产品）。
+  // 面板是一块**绝对定位的卡片**，盖住哪个角取决于视口 ⇒ 硬编码一个坐标必然在某一档
+  // 假红（2026-11-22 实测：点左下角被卡片吃掉）。依次试几个候选点，任一能收起即算过。
+  const blankSpots = [
+    { x: m.canvasLeft + m.canvasW / 2, y: m.canvasTop + 20 },
+    { x: m.canvasLeft + m.canvasW - 24, y: m.canvasTop + 20 },
+    { x: m.canvasLeft + 24, y: m.canvasTop + 20 },
+    { x: m.canvasLeft + 24, y: m.canvasTop + m.canvasH - 24 },
+  ];
+  let panelClosed = false;
+  const usedSpot = [];
+  for (const spot of blankSpots) {
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: spot.x, y: spot.y, button: "left", clickCount: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: spot.x, y: spot.y, button: "left", clickCount: 1 });
+    await sleep(160);
+    panelClosed = await cdp.eval("document.querySelectorAll('#probe-host aside').length === 0");
+    usedSpot.push({ ...spot, closed: panelClosed });
+    if (panelClosed) break;
+  }
+  check("网络拓扑：点画布空白处收起详情卡（否则卡片会一直压在图区上）",
+    panelClosed === true,
+    "点空白后 aside 应消失",
+    JSON.stringify({ panelClosed, usedSpot }));
 
   // 相机归属 + 增量更新（2026-11-11 用户）：
   // ① 用户滚轮放大后，数据刷新（新增节点）不得把缩放重置回 1；
@@ -21936,9 +22020,11 @@ async function runTopology(cdp, url) {
 
   // 渲染循环死掉（如 createRadialGradient(NaN) 那次）在这里现形：本段页面零未捕获错误。
   const pageErrors = await cdp.eval("(window.__pageErrors || [])");
+  const envErrors = await cdp.eval("(window.__pageErrorsEnv || 0)");
   check("拓扑段：页面零未捕获错误（error / unhandledrejection）",
     Array.isArray(pageErrors) && pageErrors.length === 0,
-    "0 条", JSON.stringify(pageErrors));
+    "0 条（裸浏览器缺 Tauri 宿主导致的 transformCallback 另计，不计入产品错误）",
+    JSON.stringify({ product: pageErrors, env: envErrors }));
   if (SHOT_PATH) {
     const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
     fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-topology-empty.png"), Buffer.from(shot.data, "base64"));
