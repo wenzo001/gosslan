@@ -23,6 +23,45 @@ const MAX_COLUMNS = 400;
 const unitCache = new Map<string, number>();
 
 /**
+ * 正文能用的宽度 —— **取「列宽上限」而不是正文自己的实测宽**（2026-11-21 第六刀）。
+ *
+ * ## 为什么必须换源（Windows 上量到的闭环）
+ * 气泡是**收缩贴合**（shrink-to-fit）的：宽度 = min(内容宽, 68% / 560px)。于是
+ * "正文实测宽"这个读数里混着**截断结果**：
+ *
+ *     列数 ↓⇒ 截掉更多字 ⇒ 最宽的那行变短 ⇒ 气泡变窄 ⇒ 实测宽变小 ⇒ 列数 ↓
+ *
+ * 反过来同样成立（换行点被挪动时最宽行会变长），所以稳定态是**两个值来回翻**：
+ * 用户机器上量到 `spacer 高 831.23 ↔ 851.23`（正好差一行 20px）、`scrollTop 404 ↔ 424`、
+ * 正文文本每拍重写一次 —— 那就是肉眼看到的"抖"。锁死正文宽度后立刻停止 ⇒ 闭环确认。
+ *
+ * 列宽上限（`.msg-stack` 的 `max-width: min(68%, 560px)`）**只跟窗口宽度有关**，
+ * 与文字长短无关 ⇒ 拿它当宽度源，上面那条环从定义上就不存在。
+ *
+ * 上限是**盒宽**，正文能用的要扣掉中间各层的左右内边距/边框（气泡的 `px-3` 就在这里）。
+ * 找不到上限元素（不在消息气泡里）时返回 null，调用方退回实测宽 —— 保持这个
+ * composable 的通用性。
+ */
+export function allowedColumnWidth(el: HTMLElement): number | null {
+  const cap = el.closest(".msg-stack");
+  if (!cap) return null;
+  const max = parseFloat(getComputedStyle(cap).maxWidth);
+  if (!Number.isFinite(max) || max <= 0) return null;
+  let inset = 0;
+  for (let n: HTMLElement | null = el; n; n = n.parentElement) {
+    const cs = getComputedStyle(n);
+    inset +=
+      (parseFloat(cs.paddingLeft) || 0) +
+      (parseFloat(cs.paddingRight) || 0) +
+      (parseFloat(cs.borderLeftWidth) || 0) +
+      (parseFloat(cs.borderRightWidth) || 0);
+    if (n === cap) break;
+  }
+  const width = max - inset;
+  return width > 0 ? width : null;
+}
+
+/**
  * 一个半角字符在当前字体下的宽度（px）。用 `"0"` 量：数字/拉丁字母的宽度一致，
  * CJK 按两列算（与 `columnWidth` 同一口径）。量不出来（无 canvas）时返回 0，调用方跳过。
  */
@@ -58,34 +97,32 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
   let lastFont = "";
 
   /**
-   * ⚠️ 2026-11-21（Windows 振荡根因）：此函数过去有两个形状缺陷，合起来构成一个
-   * **无限重排循环** —— 用户在 Windows 7.1.52/7.1.54 实测「某条长文本一直在重新算
-   * 高度」（移动端宽度不抖、桌面宽度抖；Mac 从不复现）：
+   * ⚠️ 2026-11-21（Windows 振荡根因，第六刀定案）：宽度源必须是「列宽上限」。
    *
-   * ① 宽度取自 `clientWidth` —— 它是**取整整数**。WebView2 的亚像素布局下（DPI
-   *    缩放 + 中文长文本），同一列宽会在两个整数之间交替；columns = floor(inner/unit)
-   *    ⇒ columns ±1 翻转 ⇒ 截断切刀差一个字 ⇒ 行内容变 ⇒ 微小高度变化 ⇒
-   * ② RO 观察的是**全维度**（高度变化也触发回调）⇒ measure 再次执行 ⇒ 循环闭合，
-   *    每帧重排。宽度相关的"桌面宽度才抖"正是列数大时切刀落在字素边界附近；
-   *    窄宽度下列数小、切刀远离边界 ⇒ 不抖。
+   * 前五刀都在"怎么读宽度"上打补丁（`clientWidth` → `contentRect` 浮点宽 → 加容差 →
+   * 容差放宽到 1px），但**读哪个元素**一直没换：读的是正文自己。而正文所在的气泡是
+   * 收缩贴合的，正文宽 = 截断后的内容宽 ⇒ 列数与宽度互为因果（见 `allowedColumnWidth`
+   * 的注释）。用户 7.1.64 实测量到闭环的两个稳态：`spacer 831.23 ↔ 851.23`、
+   * `scrollTop 404 ↔ 424`、正文文本每拍重写 —— 锁死正文宽度后抖动立即停止。
    *
-   * 修复：① 优先取 RO 的 `contentRect.width` —— **content box 的浮点宽**（不含
-   *    padding、不取整），布局稳定时它恒定；② 只在宽度真的变化时才继续测量
-   *    （高度变化、同宽度 ⇒ 直接返回），切断高度环。手动路径（挂载/watch）没有
-   *    entry，保留 clientWidth 兜底。
+   * 所以宽度源改成 `.msg-stack` 的 `max-width`（只跟窗口宽度有关）。容器本身的实测宽
+   * 只在**找不到上限元素**时兜底（这个 composable 理论上也能被别处用）。
+   *
+   * 高度环的断点仍然保留：宽度与字体指纹都没变 ⇒ 直接返回（RO 的高度回调在这里止步）。
    */
   const measure = (entry?: ResizeObserverEntry) => {
     const el = getEl();
     if (!el || !el.isConnected) return;
     const inner =
-      entry != null
+      allowedColumnWidth(el) ??
+      (entry != null
         ? entry.contentRect.width // content box 浮点宽，已不含 padding
         : (() => {
             const cs = getComputedStyle(el);
             const padL = parseFloat(cs.paddingLeft) || 0;
             const padR = parseFloat(cs.paddingRight) || 0;
             return el.clientWidth - padL - padR;
-          })();
+          })());
     if (inner <= 0) return;
     // ⚠️ 高度变化触发的 RO 回调在这里止步：宽度没变 ⇒ 列数**通常**不可能变。
     // 缺了这道门，第一刀的"切断高度环"只存在于注释里（2026-11-21 补齐）。

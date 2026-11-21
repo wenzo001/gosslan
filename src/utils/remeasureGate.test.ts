@@ -114,3 +114,49 @@ test("接线：宽度没变时还要看字体 —— 只按宽度设门会挡掉
     "删掉字体条件后仍然命中 ⇒ 这条判据在空集上恒绿",
   );
 });
+
+/**
+ * 判据 8（2026-11-21 第六刀，**这条是 Windows 抖动的定案**）。
+ *
+ * 前五刀都在"怎么读宽度"上打补丁，没换**读哪个元素**。读正文自己的宽度是个循环依赖：
+ * 气泡收缩贴合 ⇒ 正文宽 = 截断后的内容宽 ⇒ 列数与宽度互为因果。用户 7.1.64 实测量到
+ * 闭环的两个稳态（spacer 831.23↔851.23、scrollTop 404↔424、正文文本每拍重写），
+ * 而锁死正文宽度后抖动立刻停止 ⇒ 宽度源必须换成与文字无关的「列宽上限」。
+ */
+test("接线：列数宽度取「列宽上限」而不是正文实测宽（否则截断会反过来决定列数）", () => {
+  const composable = readFileSync(
+    join(import.meta.dirname, "..", "composables", "usePreviewColumns.ts"),
+    "utf8",
+  );
+
+  // ① 上限的来源：`.msg-stack` 的 max-width（CSS 里是 min(68%, 560px)，只跟窗口宽有关）。
+  assert.ok(
+    /el\.closest\("\.msg-stack"\)/.test(composable),
+    "没有从 `.msg-stack` 取列宽上限 ⇒ 宽度源还是正文自己，闭环会复活",
+  );
+  assert.ok(
+    /parseFloat\(getComputedStyle\(cap\)\.maxWidth\)/.test(composable),
+    "上限必须读 max-width 的**计算值**（px）；读百分比或常量都会与 CSS 分叉",
+  );
+  // ② 上限是盒宽，正文能用的要扣掉中间各层的左右内边距/边框（气泡的 px-3 就在这里）。
+  assert.ok(
+    /paddingLeft[\s\S]{0,160}paddingRight[\s\S]{0,160}borderLeftWidth[\s\S]{0,160}borderRightWidth/.test(
+      composable,
+    ),
+    "没扣中间层的水平内边距/边框 ⇒ 列数会多算几个，截断后仍会换到第 6 行（被 CSS 裁掉、省略号看不见）",
+  );
+  // ③ 优先用它，容器实测宽只做兜底（这个 composable 理论上也能被别处用）。
+  assert.ok(
+    /const inner\s*=\s*allowedColumnWidth\(el\) \?\?/.test(composable),
+    "measure() 没有优先用上限 ⇒ 下面那段兜底代码仍在生效",
+  );
+
+  // 反例自证：把优先关系去掉，第三条必须不再命中。
+  const gutted = composable.replace("allowedColumnWidth(el) ??", "");
+  assert.notEqual(gutted, composable, "变异没落进去 ⇒ 锚点写法变了");
+  assert.doesNotMatch(
+    gutted,
+    /const inner\s*=\s*allowedColumnWidth\(el\) \?\?/,
+    "去掉优先关系后仍然命中 ⇒ 这条判据在空集上恒绿",
+  );
+});
