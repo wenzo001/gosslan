@@ -71,6 +71,11 @@ mod bridge {
     /// 由 Kotlin 的 `BackgroundService.bootstrap` 调用（`extern` ⇒ 宏直接导出 JNI 符号名）。
     ///
     /// ⚠️ **必须是 `static`**（理由见本文件头第 2 条）。
+    // ⚠️ jni-macros 0.22.4 的 `native_method!` 展开体里用了 `Atomic::fetch_update`，
+    // 它在 rustc 1.100 起被废弃（改名 `try_update`），而上游至今未适配
+    //（`cargo search jni` 最新仍是 0.22.4）⇒ 只能就地压住。判据在
+    // `scripts/check-mobile.sh`：每个 `= native_method!` 的上一行必须是这个属性。
+    #[allow(deprecated)]
     const NATIVE_ATTACH: NativeMethod = native_method! {
         java_type = "com.gosslan.app.BackgroundServiceKt",
         static extern fn native_attach_background() -> (),

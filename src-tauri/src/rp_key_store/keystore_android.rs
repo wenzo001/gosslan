@@ -37,6 +37,11 @@ static KEY_VAULT_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
 /// ⚠️ **必须是 `static`**：Kotlin 侧是**文件级（顶层）函数** ⇒ 编译成 `KeyVaultKt` 的
 /// **static** 方法（与 `OpenWithKt` 同一形状）。宏若按「实例方法」注册，ART 会当场判定
 /// 不一致并 **abort 整个进程**（真机实测的启动闪退）。
+// ⚠️ jni-macros 0.22.4 的 `native_method!` 展开体里用了 `Atomic::fetch_update`，
+// 它在 rustc 1.100 起被废弃（改名 `try_update`），而上游至今未适配
+//（`cargo search jni` 最新仍是 0.22.4）⇒ 只能就地压住。判据在
+// `scripts/check-mobile.sh`：每个 `= native_method!` 的上一行必须是这个属性。
+#[allow(deprecated)]
 const NATIVE_ATTACH: NativeMethod = native_method! {
     java_type = "com.gosslan.app.KeyVaultKt",
     static extern fn native_attach_key_vault() -> (),

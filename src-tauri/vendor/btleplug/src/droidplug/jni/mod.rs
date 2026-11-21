@@ -30,6 +30,11 @@ fn init_inner(env: &mut Env) -> crate::Result<()> {
     {
         let adapter_class =
             env.find_class(jni_str!("com/nonpolynomial/btleplug/android/impl/Adapter"))?;
+        // 本地补丁（Gosslan 2026-11-21）：下面 `native_method!`（jni-macros 0.22.4）的展开体里
+        // 用了 `Atomic::fetch_update`，它在 rustc 1.100 起被废弃（改名 `try_update`），
+        // 上游至今未适配。表达式上不能挂属性（`stmt_expr_attributes` 未稳定），
+        // 所以压在这条语句上；与本仓库其余 12 处同一口径（`grep -rn "allow(deprecated)" src-tauri/src`）。
+        #[allow(deprecated)]
         unsafe {
             env.register_native_methods(
                 &adapter_class,

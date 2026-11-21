@@ -38,24 +38,32 @@ static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
 /// native_attach 的 class 参数是 `ApkInstallerKt`，不是这个 object —— 必须额外 find_class。
 static APK_INSTALLER_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
 
+// ⚠️ jni-macros 0.22.4 的 `native_method!` 展开体里用了 `Atomic::fetch_update`，
+// 它在 rustc 1.100 起被废弃（改名 `try_update`），而上游至今未适配
+//（`cargo search jni` 最新仍是 0.22.4）⇒ 只能就地压住。判据在
+// `scripts/check-mobile.sh`：每个 `= native_method!` 的上一行必须是这个属性。
+#[allow(deprecated)]
 const NATIVE_ATTACH: NativeMethod = native_method! {
     java_type = "com.gosslan.app.ApkInstallerKt",
     static extern fn native_attach_apk_installer() -> (),
     fn = native_attach,
 };
 
+#[allow(deprecated)]
 const ON_INSTALL_RESULT: NativeMethod = native_method! {
     java_type = "com.gosslan.app.ApkInstallerKt",
     static extern fn native_on_install_result(result_code: jint, message: JString) -> (),
     fn = on_install_result,
 };
 
+#[allow(deprecated)]
 const ON_INSTALL_STAGE: NativeMethod = native_method! {
     java_type = "com.gosslan.app.ApkInstallerKt",
     static extern fn native_on_install_stage(stage: jint) -> (),
     fn = on_install_stage,
 };
 
+#[allow(deprecated)]
 const ON_PERMISSION_RESULT: NativeMethod = native_method! {
     java_type = "com.gosslan.app.ApkInstallerKt",
     static extern fn native_on_permission_result(granted: jboolean) -> (),
