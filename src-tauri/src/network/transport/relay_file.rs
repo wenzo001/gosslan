@@ -140,6 +140,7 @@ async fn handle_relay_file_offer(
             &FileFailedInfo {
                 transfer_id: transfer_id.clone(),
                 reason: crate::logging::FAIL_CODE_RECV_QUOTA_EXCEEDED.to_string(),
+                peer_id: from.clone(),
             },
         );
         send_relay_file_receipt(
@@ -181,6 +182,7 @@ async fn handle_relay_file_offer(
             &FileFailedInfo {
                 transfer_id: transfer_id.clone(),
                 reason: reject.code.to_string(),
+                peer_id: String::new(),
             },
         );
         state.logger.warn(
@@ -370,6 +372,7 @@ async fn handle_relay_chunk(
                     &FileFailedInfo {
                         transfer_id: transfer_id.clone(),
                         reason: crate::logging::FAIL_CODE_FILE_RELAY_BAD_CHUNK.to_string(),
+                        peer_id: from.clone(),
                     },
                 );
                 let (sha256, size) = session.unwrap_or_default();
@@ -420,6 +423,7 @@ async fn handle_relay_chunk(
                     &FileFailedInfo {
                         transfer_id: transfer_id.clone(),
                         reason: crate::logging::FAIL_CODE_FILE_RELAY_STATE_EXPIRED.to_string(),
+                        peer_id: String::new(),
                     },
                 );
                 // 会话已被回收 ⇒ 拿不到期望摘要；失败码本身仍是具名的。
@@ -464,6 +468,7 @@ async fn handle_relay_chunk(
                     &FileFailedInfo {
                         transfer_id: transfer_id.clone(),
                         reason: crate::logging::FAIL_CODE_FILE_RELAY_SIZE_MISMATCH.to_string(),
+                        peer_id: String::new(),
                     },
                 );
                 send_relay_file_receipt(
@@ -519,6 +524,7 @@ async fn handle_relay_chunk(
                         &FileFailedInfo {
                             transfer_id: transfer_id.clone(),
                             reason: reason.clone(),
+                            peer_id: String::new(),
                         },
                     );
                     send_relay_file_receipt(
@@ -568,6 +574,7 @@ async fn handle_relay_chunk(
                     &FileFailedInfo {
                         transfer_id: transfer_id.clone(),
                         reason: crate::error_codes::FILE_INTEGRITY_FAILED.to_string(),
+                        peer_id: String::new(),
                     },
                 );
                 send_relay_file_receipt(
@@ -629,6 +636,7 @@ async fn handle_relay_chunk(
                         &FileFailedInfo {
                             transfer_id: transfer_id.clone(),
                             reason: reason.clone(),
+                            peer_id: from.clone(),
                         },
                     );
                     send_relay_file_receipt(

@@ -1253,7 +1253,7 @@ pub fn fail_taken_receive(state: &AppState, transfer_id: &str, r: &FileReceiver,
     for note in fail_notes {
         state.logger.error("file", note);
     }
-    emit_failed(state, transfer_id, reason);
+    emit_failed(state, transfer_id, &r.peer_id, reason);
 }
 
 /// 对端断链时终止其所有未完成接收，避免下载目录长期堆积临时文件。
@@ -1343,7 +1343,10 @@ pub async fn finish_receive(
     let st = state.clone();
     let transfer_id = transfer_id.to_string();
     let tid_for_task = transfer_id.clone();
-    tokio::task::spawn_blocking(move || finish_receiver_into(&st.db, &st.logger, &tid_for_task, r))
+    let device_id = state.device_id.clone();
+    tokio::task::spawn_blocking(move || {
+        finish_receiver_into(&st.db, &st.logger, &device_id, &tid_for_task, r)
+    })
         .await
         // 阻塞任务只会在 panic / 运行时关闭时出错；两种都当"这次没收口"上抛，
         // 由调用方那一条失败分支照原样发 `file-failed` + 回一帧失败确认（不谎报成功）。
@@ -1481,6 +1484,7 @@ pub(crate) fn ack_writer_failure_note(
 fn finish_receiver_into(
     db_lock: &crate::db_hold::DbLock<rusqlite::Connection>,
     logger: &Logger,
+    receiver_id: &str,
     transfer_id: &str,
     mut r: FileReceiver,
 ) -> Result<(String, u64, PathBuf, String), String> {
@@ -1526,7 +1530,7 @@ fn finish_receiver_into(
             let _ = std::fs::remove_file(&r.tmp_path);
             let note = {
                 let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
-                db::upsert_transfer(
+                let note = db::upsert_transfer(
                     &dbc,
                     transfer_id,
                     &r.peer_id,
@@ -1538,7 +1542,69 @@ fn finish_receiver_into(
                     0.0,
                 )
                 .err()
-                .map(|e| terminal_ledger_failure_note(LEDGER_STAGE_SHA, transfer_id, &e, None))
+                .map(|e| terminal_ledger_failure_note(LEDGER_STAGE_SHA, transfer_id, &e, None));
+                // J3-2（旅程走查 2026-11-20，用户拍板）：SHA 失败是**终局** —— 给收件方
+                // 落一条本地失败行（传输先行、消息后到，收件方永远等不到对端那条消息）。
+                // sha256 进 content 是重取按钮的判据；插行失败不拦上抛（台账已 failed，
+                // 行缺失只损失"有处可重试"，宁可少一行也不谎报收尾失败）。
+                match db::insert_failed_receive_message(
+                    &dbc,
+                    transfer_id,
+                    &r.peer_id,
+                    receiver_id,
+                    &r.name,
+                    r.size,
+                    &r.expected_sha256,
+                    crate::error_codes::FILE_INTEGRITY_FAILED,
+                    crate::db::now_ms(),
+                ) {
+                    Ok(true) => {
+                        logger.info(
+                            "file",
+                            format!("已为收件方落本地失败行 msg_id=file-{transfer_id}"),
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        logger.warn(
+                            "file",
+                            format!("失败展示行落库失败（台账已 failed，不拦收尾）: {e}"),
+                        );
+                    }
+                }
+                // J3-4：SHA 失败把 content 台账记成 **Rejected（终态，不自动重取）**——
+                // 内容源头坏的话自动重取会对端每 30s 重拉一次、每次都失败（永动）。
+                // 用户在失败行的「重新获取」入口手动重取（前端 retryableContent 按
+                // cid=sha 匹配这一行）。直接 upsert 绕过状态机是刻意的：无论此前停在
+                // 什么状态（active/partial），SHA 不符都是终局裁决。
+                if let Err(e) = crate::content::store::upsert(
+                    &dbc,
+                    &crate::content::model::TransferRecord {
+                        cid: r.expected_sha256.clone(),
+                        transfer_id: Some(transfer_id.to_string()),
+                        peer_id: r.peer_id.clone(),
+                        group_id: None,
+                        name: r.name.clone(),
+                        size: r.size,
+                        direction: crate::content::model::Direction::Receive,
+                        status: crate::content::model::TransferStatus::Rejected,
+                        received: r.received,
+                        attempts: 0,
+                        next_attempt_at: 0,
+                        last_error: Some(crate::error_codes::FILE_INTEGRITY_FAILED.to_string()),
+                        path: None,
+                        created_at: crate::db::now_ms(),
+                        updated_at: crate::db::now_ms(),
+                    },
+                ) {
+                    logger.warn(
+                        "file",
+                        format!(
+                            "content 台账 Rejected 行写入失败（重取入口将不可用）: {e}"
+                        ),
+                    );
+                }
+                note
             };
             if let Some(note) = note {
                 logger.error("file", note);

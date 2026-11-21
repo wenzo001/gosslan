@@ -1929,7 +1929,7 @@ mod tests {
 
         let r = receiver_holding("b1-ok", &bytes, bytes.len() as u64, &cid);
         let (name, size, final_path, peer) =
-            finish_receiver_into(&db, throwaway_logger(), "xfer-b1", r)
+            finish_receiver_into(&db, throwaway_logger(), "self-dev", "xfer-b1", r)
                 .expect("字节齐、SHA 对、rename 成 ⇒ 生产收尾必须成功");
         assert_eq!(
             (name.as_str(), size, peer.as_str()),
@@ -1986,7 +1986,7 @@ mod tests {
 
         // 发送方声明的摘要与真实内容不符 ⇒ fail-closed
         let r = receiver_holding("b1-bad", &bytes, bytes.len() as u64, &"f".repeat(64));
-        let err = finish_receiver_into(&db, throwaway_logger(), "xfer-b1-bad", r)
+        let err = finish_receiver_into(&db, throwaway_logger(), "self-dev", "xfer-b1-bad", r)
             .expect_err("SHA 不符必须判失败，不许落盘");
         assert_eq!(err, crate::error_codes::FILE_INTEGRITY_FAILED, "实得：{err}");
 
@@ -2026,7 +2026,7 @@ mod tests {
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
 
         let r = receiver_holding("b1-dberr", &bytes, bytes.len() as u64, &cid);
-        let out = finish_receiver_into(&db, throwaway_logger(), "xfer-b1-dberr", r);
+        let out = finish_receiver_into(&db, throwaway_logger(), "self-dev", "xfer-b1-dberr", r);
         assert!(
             out.is_ok(),
             "台账写不进去不该把一次真实成功的接收判成失败，实得 {out:?}"
@@ -2106,11 +2106,11 @@ mod tests {
         b.name = a.name.clone();
 
         assert!(
-            finish_receiver_into(&db, throwaway_logger(), "xfer-a", a).is_ok(),
+            finish_receiver_into(&db, throwaway_logger(), "self-dev", "xfer-a", a).is_ok(),
             "第一份收尾应当成功"
         );
         assert!(
-            finish_receiver_into(&db, throwaway_logger(), "xfer-b", b).is_ok(),
+            finish_receiver_into(&db, throwaway_logger(), "self-dev", "xfer-b", b).is_ok(),
             "第二份也该收下（拍板＝改名共存，不是拒收）"
         );
 
@@ -2161,7 +2161,7 @@ mod tests {
         // ① 绿路：字节齐 + 哈希对 ⇒ 改名落盘、行是 done 且带真实路径
         let ok = receiver_holding("rcv-ok", &payload, payload.len() as u64, &real_sha);
         let (tmp, final_path) = (ok.tmp_path.clone(), ok.final_path.clone());
-        assert!(finish_receiver_into(&db, throwaway_logger(), "t-ok", ok).is_ok());
+        assert!(finish_receiver_into(&db, throwaway_logger(), "self-dev", "t-ok", ok).is_ok());
         assert!(!tmp.exists(), "临时文件必须被改名带走（留下就是双份）");
         assert_eq!(
             std::fs::read(&final_path).unwrap(),
@@ -2186,7 +2186,7 @@ mod tests {
         );
         let (tmp, final_path) = (short.tmp_path.clone(), short.final_path.clone());
         assert_eq!(
-            finish_receiver_into(&db, throwaway_logger(), "t-short", short).err(),
+            finish_receiver_into(&db, throwaway_logger(), "self-dev", "t-short", short).err(),
             Some(crate::error_codes::FILE_RECEIVE_INCOMPLETE.to_string())
         );
         assert!(
@@ -2202,7 +2202,7 @@ mod tests {
         let bad = receiver_holding("rcv-bad", &corrupted, payload.len() as u64, &real_sha);
         let (tmp, final_path) = (bad.tmp_path.clone(), bad.final_path.clone());
         assert_eq!(
-            finish_receiver_into(&db, throwaway_logger(), "t-bad", bad).err(),
+            finish_receiver_into(&db, throwaway_logger(), "self-dev", "t-bad", bad).err(),
             Some(crate::error_codes::FILE_INTEGRITY_FAILED.to_string())
         );
         assert!(
@@ -2214,7 +2214,7 @@ mod tests {
         // ④ 发送方没声明哈希（空期望）⇒ **fail-closed**：没有期望值不等于通过
         let nodecl = receiver_holding("rcv-nodecl", &payload, payload.len() as u64, "");
         assert_eq!(
-            finish_receiver_into(&db, throwaway_logger(), "t-nodecl", nodecl).err(),
+            finish_receiver_into(&db, throwaway_logger(), "self-dev", "t-nodecl", nodecl).err(),
             Some(crate::error_codes::FILE_INTEGRITY_FAILED.to_string()),
             "空 expected_sha256 必须判失败 —— 否则一条不带哈希的 FileDone 就能宣布成功"
         );
@@ -2227,7 +2227,7 @@ mod tests {
             payload.len() as u64,
             &real_sha.to_uppercase(),
         );
-        assert!(finish_receiver_into(&db, throwaway_logger(), "t-upper", upper).is_ok());
+        assert!(finish_receiver_into(&db, throwaway_logger(), "self-dev", "t-upper", upper).is_ok());
         assert_eq!(row("t-upper").0, "done");
     }
 
@@ -2296,7 +2296,7 @@ mod tests {
 
         std::fs::remove_dir_all(&root).unwrap();
 
-        let err = finish_receiver_into(&db, throwaway_logger(), "t-rot", r).err();
+        let err = finish_receiver_into(&db, throwaway_logger(), "self-dev", "t-rot", r).err();
         let _ = std::fs::remove_dir_all(&root);
         assert!(
             err.is_some(),
@@ -2326,7 +2326,7 @@ mod tests {
         let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
 
-        finish_receiver_into(&db, throwaway_logger(), "t-empty", recv)
+        finish_receiver_into(&db, throwaway_logger(), "self-dev", "t-empty", recv)
             .expect("0 字节的空文件必须能正常完成，不许因 size=0 被判成「没收完」");
         assert_eq!(
             std::fs::metadata(&final_path).unwrap().len(),
@@ -2357,7 +2357,7 @@ mod tests {
         let bad = receiver_holding("rcv-empty-bad", b"", 0, "不是真的哈希");
         let bad_final = bad.final_path.clone();
         assert!(
-            finish_receiver_into(&db, throwaway_logger(), "t-empty-bad", bad).is_err(),
+            finish_receiver_into(&db, throwaway_logger(), "self-dev", "t-empty-bad", bad).is_err(),
             "空文件摘要不符 ⇒ 必须失败，不许因 size=0 免检"
         );
         assert!(!bad_final.exists(), "摘要不符的空文件不许被改名成交付成品");
@@ -2562,7 +2562,7 @@ mod tests {
         let logger = capture_logger("primary");
 
         let r = receiver_holding("note-primary", &bytes, bytes.len() as u64, &cid);
-        let out = finish_receiver_into(&db, &logger, "xfer-note-primary", r);
+        let out = finish_receiver_into(&db, &logger, "self-dev", "xfer-note-primary", r);
         assert!(
             out.is_ok(),
             "台账写不进去不该把真实成功的接收判成失败，实得 {out:?}"
@@ -2594,7 +2594,7 @@ mod tests {
         let logger = capture_logger("both");
 
         let r = receiver_holding("note-both", &bytes, bytes.len() as u64, &cid);
-        let out = finish_receiver_into(&db, &logger, "xfer-note-both", r);
+        let out = finish_receiver_into(&db, &logger, "self-dev", "xfer-note-both", r);
         assert!(out.is_ok(), "文件已在盘上，收尾返回值不谎报失败：{out:?}");
 
         let notes = file_error_notes(&logger);
@@ -2618,7 +2618,7 @@ mod tests {
         let logger = capture_logger("clean");
 
         let r = receiver_holding("note-ok", &bytes, bytes.len() as u64, &cid);
-        finish_receiver_into(&db, &logger, "xfer-note-ok", r).expect("两张表都在，收尾应成功");
+        finish_receiver_into(&db, &logger, "self-dev", "xfer-note-ok", r).expect("两张表都在，收尾应成功");
         assert!(
             logger.snapshot(None).is_empty(),
             "正常路径不该留痕，实得 {:?}",
@@ -2636,7 +2636,7 @@ mod tests {
 
         // declared 256、实收 128 ⇒ 走"字节数不符"那一支
         let r = receiver_holding("note-size", &bytes, 256, &sha_hex(&bytes));
-        let err = finish_receiver_into(&db, &logger, "xfer-note-size", r)
+        let err = finish_receiver_into(&db, &logger, "self-dev", "xfer-note-size", r)
             .expect_err("字节数不符必须判失败");
         assert_eq!(err, crate::error_codes::FILE_RECEIVE_INCOMPLETE, "实得：{err}");
         let notes = file_error_notes(&logger);
@@ -2662,7 +2662,7 @@ mod tests {
         let logger = capture_logger("count-ok");
         let r = receiver_holding("count-ok", &bytes, bytes.len() as u64, &cid);
         let _ = db.take_summary(); // 夹具建表那几次先读走，下面只判被测那一段
-        finish_receiver_into(&db, &logger, "xfer-count-ok", r).expect("收尾应成功");
+        finish_receiver_into(&db, &logger, "self-dev", "xfer-count-ok", r).expect("收尾应成功");
         let s = db.take_summary();
         assert_eq!(
             s.takes, 1,
@@ -2676,7 +2676,7 @@ mod tests {
         let r2 = receiver_holding("count-fail", &bytes, 256, &cid);
         let _ = db2.take_summary();
         assert!(
-            finish_receiver_into(&db2, &logger2, "xfer-count-fail", r2).is_err(),
+            finish_receiver_into(&db2, &logger2, "self-dev", "xfer-count-fail", r2).is_err(),
             "声明 256、实收 2048 必须判失败"
         );
         assert_eq!(

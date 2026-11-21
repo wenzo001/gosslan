@@ -21,6 +21,8 @@ const props = defineProps<{
   /** 状态行的视觉档位（D-4）；不传按普通说明处理。 */
   statusTone?: TransferStatusTone;
   failed: boolean;
+  /** J3-2/J3-4：失败原因（fileFailReasonText 的结果，含码才给）。null ⇒ 回落通用文案。 */
+  failReason?: string | null;
   note: string | null;
   /** 群文件（gfile-）专用：按成员聚合的投递状态（单聊为 null 不显示）。 */
   delivery?: { completed: number; failed: number; waiting: number; cancelled: number } | null;
@@ -127,7 +129,7 @@ function onCardClick(e: MouseEvent) {
       </div>
       <div class="min-w-0 flex-1">
         <div class="gosslan-card-text line-clamp-2 break-all text-body font-medium leading-snug">{{ meta.name }}</div>
-        <div v-if="failed" class="mt-0.5 text-caption text-[var(--card-danger)]">{{ t("msg.sendFailed") }}</div>
+        <div v-if="failed" class="mt-0.5 text-caption text-[var(--card-danger)]">{{ failReason || t("msg.sendFailed") }}</div>
         <div v-else class="mt-0.5 flex items-center gap-1 text-caption text-[var(--card-ink-soft)]">
           <span>{{ extLabel }}</span>
           <span>·</span>

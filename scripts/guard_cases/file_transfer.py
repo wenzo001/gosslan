@@ -296,16 +296,16 @@ CASES: list[Case] = [
     for note in fail_notes {
         state.logger.error("file", note);
     }
-    emit_failed(state, transfer_id, reason);
+    emit_failed(state, transfer_id, &r.peer_id, reason);
 """,
             """        // 注入：把 emit 挪回锁存活期内（dbc 还握着，`notes` 仍是块尾 ⇒ 照样能编译）
-        emit_failed(state, transfer_id, reason);
+        emit_failed(state, transfer_id, &r.peer_id, reason);
         notes
     };
     for note in fail_notes {
         state.logger.error("file", note);
     }
-    emit_failed(state, transfer_id, reason);
+    emit_failed(state, transfer_id, &r.peer_id, reason);
 """,
         )],
         cmd=["node", "scripts/check-lock-scope.mjs"],

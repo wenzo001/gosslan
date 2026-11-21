@@ -15,7 +15,7 @@ import { progressAdvanced, stallFlagAlive } from "@/utils/transferProgressWatch"
 import type { ChatContext } from "./runtime";
 
 export function createMediaModule(ctx: ChatContext) {
-  const { app, transfers, messages } = ctx.state;
+  const { app, transfers, messages, activeConv } = ctx.state;
   const {
     enqueueMessage,
     captureSummary,
@@ -23,6 +23,8 @@ export function createMediaModule(ctx: ChatContext) {
     dropOptimistic,
     refreshTransfers,
     scheduleTransfersRepair,
+    applyIncoming,
+    refreshConversations,
   } = ctx.api;
 
   /** 统一文件发送：后端自动路由（有直连走直连，无直连自动中继）。 */
@@ -226,6 +228,22 @@ export function createMediaModule(ctx: ChatContext) {
       });
     }
     app.toast(`${t("send.fileFail")}${t("common.sep.colon")}${fileFailReasonText(d.reason, t)}`, "error");
+    // J3-2（旅程走查 2026-11-20）：SHA 校验失败是终局，后端已给收件方落一条本地
+    // 失败行（messages 表，msg_id=file-{tid}）—— 把它拉回缓存：没在看的会话下次
+    // 打开自然可见；正在看的立刻可见（聊天流里从此有处可重试，不再是错过就没）。
+    // 只在带 peer_id 且对得上当前会话时拉（群/中继路径的失败行不是本批次的落点）。
+    if (d.peer_id) {
+      void refreshConversations();
+      if (activeConv.value === d.peer_id) {
+        void (async () => {
+          try {
+            applyIncoming(await api.getMessages(d.peer_id, 50));
+          } catch {
+            // 拉取失败不致命：行已在库里，下次打开会话照常显示。
+          }
+        })();
+      }
+    }
   }
   return {
     sendFileTo,

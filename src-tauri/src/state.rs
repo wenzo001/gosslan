@@ -750,6 +750,11 @@ pub struct FileStalledInfo {
 pub struct FileFailedInfo {
     pub transfer_id: String,
     pub reason: String,
+    /// J3-2（旅程走查 2026-11-20）：终局失败（如 SHA 校验不符）时，后端会给收件方
+    /// 落一条本地失败展示行 —— 前端据此定位会话，把那行从库里拉回缓存。
+    /// 非 SHA 路径（fail_taken_receive 的通用收尾）由调用方补同一个值。
+    #[serde(default)]
+    pub peer_id: String,
 }
 
 /// `message-status-changed` 事件载荷（审计第 4 项：跨会话状态补丁）。

@@ -2484,3 +2484,67 @@ fn read_only_ledger_projection_keeps_each_ledgers_terminal_policy() {
         "ACK 账是重放队列，不是成员状态机"
     );
 }
+
+/// J3-2（旅程走查 2026-11-20，用户拍板）：SHA 校验失败给收件方落的本地失败行 ——
+/// 幂等（重复 FileDone 的迟到失败帧不重复插）+ seq 走会话逻辑时钟（落在末尾，
+/// 不乱序）+ content 带 sha256（重取按钮按 cid 匹配这一行的判据）。
+#[test]
+fn j3_2_failed_receive_row_is_idempotent_uses_clock_seq_and_carries_sha() {
+    let conn = fresh_db();
+    // 预热会话时钟到 41：失败行的 seq 应该是 42（下一次推进）
+    for _ in 0..41 {
+        crate::db::next_clock(&conn, "peer-a").unwrap();
+    }
+    let first = insert_failed_receive_message(
+        &conn,
+        "t-x1",
+        "peer-a",
+        "me",
+        "合同终稿.pdf",
+        123_456,
+        "abc123",
+        crate::error_codes::FILE_INTEGRITY_FAILED,
+        5_000,
+    )
+    .unwrap();
+    assert!(first, "第一次插入必须真的建行");
+    let again = insert_failed_receive_message(
+        &conn,
+        "t-x1",
+        "peer-a",
+        "me",
+        "合同终稿.pdf",
+        123_456,
+        "abc123",
+        crate::error_codes::FILE_INTEGRITY_FAILED,
+        6_000,
+    )
+    .unwrap();
+    assert!(!again, "同 msg_id 的迟到失败帧不许再插一行");
+    let (seq, status, fail_code): (i64, String, Option<String>) = conn
+        .query_row(
+            "SELECT seq, status, fail_code FROM messages WHERE msg_id = 'file-t-x1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(seq, 42, "seq 用会话逻辑时钟推进（41 → 42）");
+    assert_eq!(status, "failed");
+    assert_eq!(
+        fail_code.as_deref(),
+        Some(crate::error_codes::FILE_INTEGRITY_FAILED),
+        "失败码落 fail_code 列——前端 fileFailReasonText 直接认"
+    );
+    let content: String = conn
+        .query_row(
+            "SELECT content FROM messages WHERE msg_id = 'file-t-x1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(v["name"], "合同终稿.pdf");
+    assert_eq!(v["size"], 123_456);
+    assert_eq!(v["sha256"], "abc123", "重取按钮按 cid=sha256 匹配台账行");
+    assert!(v["path"].is_null(), "失败行没有本地路径");
+}
