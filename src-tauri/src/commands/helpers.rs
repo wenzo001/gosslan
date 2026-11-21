@@ -323,6 +323,60 @@ fn media_present_from(path: MediaPath) -> bool {
     !matches!(path, MediaPath::Gone)
 }
 
+/// 批量探测若干**绝对路径**是否仍是「本机存在的普通文件」（J3-5，旅程走查 2026-11-20）。
+///
+/// 面板（群文件 / 收藏）的列表行没有 `media_present` 那条 msg_id 反查链路：收藏副本是
+/// 收藏时拷出来的独立路径（`FavoriteEntry.media_path`），群文件行走 `GroupFileEntry.local_path`
+/// —— 按 msg_id 问只会问到**原消息**的附件，原附件还在不代表收藏副本还在（反之亦然），
+/// 那样的探测会把「副本已被清理」的行画成可用，用户点开才报错。
+///
+/// 安全口径与 [`resolve_media_path`] 对齐：路径 `canonicalize` 后必须落在
+/// `downloads_dir` 之下，越权 / 不存在 / 非普通文件一律 `false`（canonicalize 本身
+/// 对不存在的路径返回 Err ⇒ 直接 false，正是「已不可用」要的答案）。
+///
+/// 返回与入参**等长同序**的布尔数组（索引对齐，前端不用再拼 map）。
+///
+/// ⚠️ 每条都是一次 stat，面板几十项一批 ⇒ 必须离开 async worker
+/// （与 [`media_present`] 同一条规矩，审计 R-18）。
+#[tauri::command(async)]
+pub async fn files_present(
+    state: State<'_, Arc<AppState>>,
+    paths: Vec<String>,
+) -> Result<Vec<bool>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<bool>, String> {
+        // downloads 目录不可达不算"全部不在"的静默分支：留痕后按不可达处理
+        //（棘轮 B4-F1：`.ok()` 把失败变成"没有过这次检查"，连痕迹都不留）。
+        let downloads = match std::fs::canonicalize(
+            s.downloads_dir
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_path(),
+        ) {
+            Ok(dir) => Some(dir),
+            Err(e) => {
+                s.logger.warn(
+                    "file",
+                    format!("downloads 目录不可达，存在性探测按全部不在处理: {e}"),
+                );
+                None
+            }
+        };
+        Ok(paths
+            .iter()
+            .map(|p| match std::fs::canonicalize(p) {
+                Ok(file) => {
+                    let under = downloads.as_ref().map(|d| file.starts_with(d)).unwrap_or(false);
+                    under && file.is_file()
+                }
+                Err(_) => false,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("文件存在性检查被线程池中断: {e}"))?
+}
+
 /// 读取附件预览内容（原始字节，不走 base64 IPC）。
 ///
 /// 按 `msg_id` 反查记录里的本地 `path` 再读，前端据此渲染图片（→Blob/objectURL）

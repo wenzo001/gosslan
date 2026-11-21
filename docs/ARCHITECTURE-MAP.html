@@ -760,6 +760,7 @@ const CMDS = [
   ["copy_file", "helpers", "source str; destination str", "()|err"],
   ["copy_file_to_clipboard", "helpers", "path str", "()|err"],
   ["media_present", "helpers", "msg_id str", "bool|err"],
+  ["files_present", "helpers", "paths str[]", "bool[]|err"],
   ["read_clipboard_file_paths", "helpers", "", "str[]"],
   ["read_file_preview", "helpers", "msg_id str; max_bytes int", "Response|err"],
   ["save_data_file", "helpers", "base64_data str; destination str", "()|err"],
@@ -971,6 +972,7 @@ const SEM = {
   copy_file: { d: "复制文件（保存 / 拖出到别的目录）。", n: "无 api 包装" },
   copy_file_to_clipboard: { d: "把文件放进系统剪贴板。", n: "无 api 包装" },
   media_present: { d: "本地是否已有该媒体（决定气泡显示「看图」还是「重取」）。" },
+  files_present: { d: "按<b>绝对路径</b>批量探测文件是否仍在（等长同序 bool[]）。群文件/收藏面板行没有 msg_id 反查链路（收藏副本是独立路径），<code>media_present</code> 的 msgId 入参对不上。安全口径同 <code>resolve_media_path</code>：canonicalize 后必须在 downloads 下，越权/不存在/非普通文件一律 false。", n: "spawn_blocking" },
   read_clipboard_file_paths: { d: "读剪贴板里的文件路径（粘贴发图那条路）。", n: "无 api 包装" },
   read_file_preview: { d: "按 msgId 取前 <code>maxBytes</code> 字节 → ArrayBuffer；<b>超限返回 <code>\"TOO_LARGE\"</code> 并 reject</b>。", n: "无 api 包装" },
   save_data_file: { d: "base64 写到目标路径（另存为的落地一步）。", n: "无 api 包装" },
@@ -1085,6 +1087,7 @@ const EVENTS = [
   ["peer-read", "PeerReadInfo", "对端已读回执到达（发不出去先攒 <code>pending_reads</code>，建链/心跳补发）", "已读单勾变双勾", "全体窗口"],
   ["group-read", "GroupReadInfo", "群成员读位置前进（高水位，只增）", "chat.groupReads → 已读列表", "全体窗口"],
   ["file-progress", "FileProgress{transfer_id,received,total}", "每 250ms 节流；received 取<b>真正在线上的字节</b>而非已入队量", "进度条（大文件不会假快）", "全体窗口"],
+  ["content-transfer-resumed", "{transfer_id str, held int}", "接收端对 Offer 回 <code>ResumeFrom</code>（磁盘 .part / 内存前缀可续）时一次性", "进度行显「续传中」而不是普通「接收中」（J3-1：用户分不清重收与续传）", "全体窗口"],
   ["file-stalled", "FileStalledInfo{stalled,idle_ms,reason}", "停滞 15s 预警 / 恢复时 stalled=false；BLE-only 且 &gt;16MiB 直接判", "标「网络停滞」而不是继续转圈", "全体窗口"],
   ["file-done", "FileDoneInfo{transfer_id,path}", "接收端长度+sha256 双证并 rename 落位后；或发送端收到成功 CompleteAck", "气泡转完成 + 可打开", "全体窗口"],
   ["file-failed", "FileFailedInfo", "判死：不可重试 / 重试超 5 次 / 过期。<b>四张写库全部成功才 emit</b>", "标失败并给出原因", "全体窗口"],
@@ -1608,7 +1611,7 @@ function buildDir() {
     '<div class="grid2" style="margin-bottom:14px">' +
       '<div class="stat"><div class="num">' + CMDS.length + '</div><div>后端注册命令</div></div>' +
       '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
-      '<div class="stat"><div class="num">35</div><div>后端字面量 emit 事件名（另有 4 个经常量 emit_filter；表内合并成 ' + EVENTS.length + ' 行；动态拼的不计）</div></div>' +
+      '<div class="stat"><div class="num">36</div><div>后端字面量 emit 事件名（另有 4 个经常量 emit_filter；表内合并成 ' + EVENTS.length + ' 行；动态拼的不计）</div></div>' +
       '<div class="stat"><div class="num">21</div><div>SQLite 表（db.rs 20 + 内容库 1；`npm run map:stats` 现算 db.rs 那一半）</div></div>' +
       '<div class="stat"><div class="num">300</div><div>护栏非空转用例（改坏即红·这个数由 scripts/guard_cases/*.py 的 CASES 现算，判据 E 对账）</div></div>' +
       '<div class="stat"><div class="num">local</div><div>跨进程 E2E：正向轮接进 <code>verify</code> 的 <code>local</code> 组，要第三个真实实例那一轮单独挂在 <code>release</code> 组（发版前才跑，落点＝发版检查单点名）；每轮断言数由 <code>check-doc-numbers.mjs</code> 从 harness 现算对账，手写即红；入口 <code>npm run verify:e2e</code> / <code>npm run verify:release</code>；<b>两层 CI 都不跑</b></div></div>' +

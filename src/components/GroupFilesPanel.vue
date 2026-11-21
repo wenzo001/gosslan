@@ -38,6 +38,7 @@ import { groupFileCancelSide } from "@/utils/groupFileCancel";
 import { cancelOutcome, fileCancelKey } from "@/utils/cancelFeedback";
 import { PANEL_QUERY_POLICY } from "@/utils/panelQuery";
 import { createInitScope, type InitScope } from "@/utils/initScope";
+import { usePathPresence } from "@/composables/usePathPresence";
 import type { GroupFileEntry } from "@/types";
 
 const props = defineProps<{ open: boolean; groupId: string | null }>();
@@ -49,6 +50,22 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 const { memberProfile, myId } = useMemberProfile();
+
+/**
+ * J3-5（旅程走查 2026-11-20）：本机持有（local）的行要探测文件是否还在 ——
+ * 「存储清理」删掉文件后，行仍挂着「本机可打开」，用户点开才吃一次系统报错。
+ * 探测按 local_path 批量走后端 files_present；只对 local 行探测（其余状态本来
+ * 就不在本机，无文件可探测）。missing 的行在元信息行显式标注，打开入口拦截。
+ */
+const localPaths = computed(() =>
+  files.value
+    .filter((f) => f.local_state === "local" && f.local_path)
+    .map((f) => f.local_path as string),
+);
+const { missing } = usePathPresence(localPaths);
+function isMissing(f: GroupFileEntry): boolean {
+  return f.local_state === "local" && !!f.local_path && missing.value.has(f.local_path);
+}
 
 /**
  * 清单缓存交给 TanStack Query（见 utils/groupFilesQuery 的判据）：
@@ -205,6 +222,12 @@ async function revealInFolder(f: GroupFileEntry) {
 
 async function openFile(f: GroupFileEntry) {
   if (!f.local_path) return;
+  // J3-5：探测确认已被清理的行不再发起打开（后端报错是兜底，不是入口）——
+  // 给一次明确说明，聊天里定位那条消息让用户重新获取。
+  if (isMissing(f)) {
+    app.toast(t("group.files.missingToast"), "info");
+    return;
+  }
   // 平台差异（Android 改走另存为）统一在 utils/localFile 里，与消息气泡同一条路径。
   try {
     // 群文件的 msg_id 恒为 `gfile-{transfer_id}`；后端据此回绑台账（SEC-01）。
@@ -363,6 +386,14 @@ function stateText(state: GroupFileEntry["local_state"]): string {
               <template v-if="deliveryText(f)">
                 <span>·</span>
                 <span class="shrink-0">{{ deliveryText(f) }}</span>
+              </template>
+              <!-- J3-5：文件已被清理的行要明说，不能挂着「本机可打开」等用户点开才报错 -->
+              <template v-if="isMissing(f)">
+                <span>·</span>
+                <span
+                  class="shrink-0 text-[var(--gosslan-warning-text-ink)]"
+                  :title="t('group.files.missingHint')"
+                >{{ t("group.files.missing") }}</span>
               </template>
             </div>
           </div>

@@ -145,6 +145,17 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                             "接收端已有 {held} 字节，要求发送端从此续发 transfer={transfer_id}"
                         ),
                     );
+                    // J3-1（旅程走查 2026-11-20）：续传此前只在协议内部成立 —— 接收端
+                    // 回 ResumeFrom，进度从 held 起步，但前端拿不到任何"这是续传"的信号，
+                    // 用户分不清「重收」与「续传」。进度行文案需要这个事实。
+                    // 序列化字段 snake_case（与 MessageFailedInfo 同一口径）。
+                    let _ = state.app.emit(
+                        "content-transfer-resumed",
+                        &serde_json::json!({
+                            "transfer_id": transfer_id,
+                            "held": held,
+                        }),
+                    );
                     let _ = try_send(
                         state,
                         peer_id,

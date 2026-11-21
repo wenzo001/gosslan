@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isWaitingForPeer, isTransferBacked, WAITING_FOR_PEER_AFTER_MS } from "./sendWaiting.ts";
+import { isWaitingForPeer, isTransferBacked, countWaitingTexts, WAITING_FOR_PEER_AFTER_MS } from "./sendWaiting.ts";
 
 const T0 = 1_790_000_000_000;
 
@@ -69,4 +69,19 @@ test("对端明确离线 ⇒ 立即翻，不等 2 分钟", () => {
     false,
     "坏时间戳不翻",
   );
+});
+
+// J2-3：对端上线时说得出「排队的 N 条将陆续送达」—— 计数与 isWaitingForPeer 同一排除口径。
+test("countWaitingTexts：只数文本类 sending，文件与终态不算", () => {
+  const msgs = [
+    { status: "sending", msg_id: "m-1" },
+    { status: "sending", msg_id: "m-2" },
+    { status: "sending", msg_id: "file-x" }, // 传输 backed 不算
+    { status: "sending", msg_id: "gfile-y" }, // 群文件不算
+    { status: "delivered", msg_id: "m-3" }, // 已推进不算
+    { status: "failed", msg_id: "m-4" }, // 终态不算
+  ];
+  assert.equal(countWaitingTexts(msgs), 2);
+  assert.equal(countWaitingTexts([]), 0);
+  assert.equal(countWaitingTexts([{ status: "sending", msg_id: null }]), 1, "乐观期 msg_id 为空也按文本算");
 });

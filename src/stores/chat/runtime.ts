@@ -40,6 +40,18 @@ export interface ChatState {
   nicknameOf: (id: string) => string;
   rememberSeenNames: (list: readonly { device_id: string; nickname?: string | null }[]) => void;
   asReadError: (e: unknown) => string;
+  /**
+   * 某会话对端的在线状态（J2-2/J2-5）：群/机器人/自聊 → null，单聊查好友表。
+   * `false` = 明确离线；true/null 都不触发 UI 提示。
+   */
+  peerOnlineOf: (convId: string) => boolean | null;
+  /** J3-1：这个接收是不是续传（后端 ResumeFrom 事件登记过）。 */
+  isTransferResumed: (transferId: string) => boolean;
+  /**
+   * J2-1：发送后对端明确离线时给一次「已保留，上线自动送达」说明（会话级 60s 节流）。
+   * 发送路径统一从 sendToBackend 调它，别在调用点各写一遍。
+   */
+  notifyOfflineQueue: (convId: string, now?: number) => void;
 
   peers: Ref<Peer[]>;
   friends: Ref<Friend[]>;
@@ -89,6 +101,8 @@ export interface ChatState {
   operations: ComputedRef<OperationRow[]>;
   liveOperationCount: ComputedRef<number>;
   resendingIds: Ref<Set<string>>;
+  /** J3-1：确认发生过续传的 transfer_id 集合（后端 ResumeFrom 事件登记）。 */
+  resumedTransferIds: Ref<Set<string>>;
   groupTodoRows: Ref<TodoRowsByConv>;
   eventBridgeOk: Ref<boolean>;
 }
