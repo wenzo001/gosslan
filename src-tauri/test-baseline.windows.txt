@@ -1700,6 +1700,7 @@ tray::dot::tests::malformed_buffer_is_returned_as_is
 tray::dot::tests::unread_dot_edges_are_antialiased
 tray::dot::tests::unread_dot_is_small_and_lands_top_right
 tray::dot::tests::unread_dot_is_the_app_badge_red
+tray::tests::flash_plan_is_whole_rounds_starting_lit_and_ending_dark
 tray::tests::tooltip_carries_unread_count_only_when_positive
 tray::tests::tray_icon_redrawn_only_on_has_or_hasnt_transition
 tray::tests::tray_menu_labels_follow_language

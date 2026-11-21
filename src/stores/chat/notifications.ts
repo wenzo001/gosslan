@@ -114,7 +114,11 @@ export function createNotificationsModule(ctx: ChatContext) {
           // toast 错误 spawn 掉丢了 —— Windows 上“收不到通知”完全没有线索。
           // 现在由后端发送：失败会返回并记日志，设置页还能“发送测试通知”自检。
           // `convId` 是**点击定位**的依据：点击发生在后端，前端补不了这个信息。
-          void api.notifyDesktop(title, body, convId).catch(() => {
+          void api.notifyDesktop(title, body, convId).then(() => {
+            // 桌面端点击回不到 JS（见 noteDesktopNotice），所以"弹过什么"必须由我们记下来，
+            // 窗口被激活时才知道该跳哪一条。
+            noteDesktopNotice(convId);
+          }).catch(() => {
             /* 通知失败不影响聊天本身；后端已记日志 */
           });
         }
@@ -197,6 +201,47 @@ export function createNotificationsModule(ctx: ChatContext) {
           extra: { type: "bot" },
         });
       });
+  }
+
+  /**
+   * 桌面端**近似**的通知点击定位（用户 2026-11-21 拍板）。
+   *
+   * ## 为什么只能近似
+   * `tauri-plugin-notification` 2.4.0 的 Rust `generate_handler!` 只注册了
+   * `notify` / `request_permission` / `is_permission_granted` —— 前端 `onAction` 调的
+   * `plugin:notification|registerListener` **根本不存在**，桌面端永远注册失败
+   * （控制台那条 "Command not found" 就是它）。所以点击事件到不了 JS。
+   *
+   * ## 近似口径
+   * 弹过通知之后 **20 秒内**窗口被激活 ⇒ 认为用户是点着那条通知回来的 ⇒ 跳该会话
+   * （强提醒还带 `msg_id`，能定位到原消息）。超过窗口不猜；没弹过通知更不猜。
+   *
+   * 已知的误判方向：用户点任务栏图标也会激活窗口 ⇒ 会跳到最近那条通知的会话。
+   * 这条被接受的理由：他刚被那条消息打断过，跳到那里通常正是他想看的；而且**只在
+   * 20 秒内**成立，平时的窗口切换都有未读也不会误跳。
+   */
+  const DESKTOP_NOTICE_CLICK_WINDOW_MS = 20_000;
+  let desktopNotice: { convId: string; msgId?: string; at: number } | null = null;
+
+  /** 记一条"刚弹过"的桌面通知（`notifyDesktop` 成功后调用）。 */
+  function noteDesktopNotice(convId: string, msgId?: string) {
+    desktopNotice = { convId, msgId, at: Date.now() };
+  }
+
+  /**
+   * 窗口被激活时消费一次候选。**先清再判**：同一条通知只能带走一次跳转，
+   * 否则用户切走再切回来会被反复拽到同一个会话。
+   */
+  function consumeDesktopNoticeClick(): { convId: string; msgId?: string } | null {
+    const hit = desktopNotice;
+    desktopNotice = null;
+    if (!hit) return null;
+    // 间隔规则走 `shouldRunThrottled`（`utils/defer` 是这条规则的唯一家）：
+    // 手写 `now - at > WINDOW` 会被守卫判成第二份，而且方向容易写反。
+    // 语义换算：`shouldRunThrottled` = "距上次已超过间隔" ⇒ 取反才是"还在窗口内"。
+    const withinWindow = !shouldRunThrottled(Date.now(), hit.at, DESKTOP_NOTICE_CLICK_WINDOW_MS);
+    if (!withinWindow) return null;
+    return { convId: hit.convId, msgId: hit.msgId };
   }
 
   function requestAttentionOnce(urgent: boolean) {
@@ -552,6 +597,8 @@ export function createNotificationsModule(ctx: ChatContext) {
           actionLabel: t("notification.view"),
         })
         .then((sent) => {
+          // 强提醒的通知带 msg_id（后端组通知时已给），点击后要能落到原消息。
+          if (sent) noteDesktopNotice(rec.conv_id, payload.target);
           // 强提醒恒按紧急处理（Windows 闪任务栏 / macOS 弹跳 Dock）。
           // ⚠️ 这一路径不经过通知中心、不受勿扰开关影响 —— 设置页需如实说明。
           if (sent) requestAttentionOnce(true);
@@ -638,6 +685,7 @@ export function createNotificationsModule(ctx: ChatContext) {
     queueNotification,
     flushNotifications,
     requestAttentionOnce,
+    consumeDesktopNoticeClick,
     pushUnreadBadge,
     subscribeTrayEvents,
     subscribeBotEvents,

@@ -14,6 +14,28 @@
 
 ## [Unreleased]
 
+## [7.1.67] - 2026-11-21
+
+### 托盘图标闪烁（Windows 来消息时）+ 桌面通知点击的近似定位
+- 用户 2026-11-21：「右下角那个图标要闪」。查代码发现任务栏那条链**早就有**
+  （`request_attention` → Windows `Critical`，闪到点为止），但**关窗口 = 隐藏到托盘**
+  （`prevent_close` + `hide`）—— 窗口一隐藏，任务栏上就没有按钮可闪，那条链在这个
+  场景里是空的。托盘图标是唯一还在的"脸"。
+- 新增 `tray::flash_unread`：3 个来回（约 2.1s）在「原图」与「带未读红点」之间切换，
+  闪完**落回有未读的真实状态**（绝不停在熄灭那一帧）；用户回来（`show_main_window`）/
+  未读清零 / 下一轮闪烁都会立刻收手（`FLASH_GEN` 代号）。节奏由纯函数 `flash_plan`
+  决定，有单测（整数个来回、第一帧亮、最后一帧灭）。
+- 触发点只有一处，在 `request_attention` 里，且**只在窗口不可见/未聚焦**时补闪；
+  托盘重绘按 R-18 的规矩丢进 `spawn_blocking`（那两条守卫当场把我拦下来过）。
+- **桌面点通知跳会话**（用户拍板「近似实现」）：`tauri-plugin-notification` 2.4.0 的
+  Rust `generate_handler!` 只有 notify / request_permission / is_permission_granted ——
+  前端 `onAction` 调的 `registerListener` **根本不存在**，桌面端每次启动都打一条红字且
+  永远收不到点击。现在：`onAction` 只在移动端注册（Android 那条桥是真的），桌面端改用
+  「弹过通知后 20 秒内窗口被激活 ⇒ 跳到那条会话」（强提醒还能落到原消息）。时间窗走
+  `utils/defer::shouldRunThrottled`，不手写时间差。
+- 托盘悬停消息列表（QQ 式）的设计稿：`docs/notes/tray-hover-message-list-design-2026-11-21.md`
+  （Windows 没有这个系统能力，必须自绘一个小窗；含四个切片与 DPI/多显示器/抢焦点那些坑）。
+
 ## [7.1.66] - 2026-11-21
 
 ### Windows 抖动：7.1.65 的宽度源其实没生效（`min()` 的 computed 值不能 `parseFloat`）

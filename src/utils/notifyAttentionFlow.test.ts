@@ -99,3 +99,110 @@ test("macOS 菜单栏数字由未读总数驱动，0 条时清空", () => {
   // 纯函数那一半：0 → None（清空），不是 Some("0")
   assert.match(trayRs, /0 => None,/);
 });
+
+/**
+ * 托盘闪烁（用户 2026-11-21：「来消息时右下角图标要闪」）。
+ *
+ * 这条需求的**坑不在实现，在接线**：任务栏那边早就闪（`request_attention` → Windows
+ * `Critical`），但关窗口是"隐藏到托盘"（`prevent_close` + `hide`）—— 窗口一隐藏，
+ * 任务栏上根本没有按钮可闪，那条链在这个场景里是空的。真正的可见面只有托盘图标。
+ *
+ * 所以判三件事，缺一条就退回"用户看不见任何反应"：
+ *  ① 后端真的实现了闪烁，并且有一条**纯函数**计划（可测）；
+ *  ② 触发点在 `request_attention` 里，且只在**窗口不可见/未聚焦**时补闪
+ *    （可见时闪托盘是噪音：用户正看着界面）；
+ *  ③ 用户回来时必须收手，并按**真实未读数**落位（不能停在熄灭那一帧）。
+ */
+test("托盘闪烁：实现了、接在提醒出口、用户回来收手", () => {
+  // ① 实现 + 可测的计划
+  assert.ok(trayRs.includes("pub fn flash_unread"), "托盘侧没有闪烁实现");
+  assert.match(
+    trayRs,
+    /fn flash_plan\(rounds: usize\) -> Vec<bool>/,
+    "闪烁节奏必须是纯函数（真跑要托盘运行时，那一层测不到）",
+  );
+  assert.match(trayRs, /for with_dot in flash_plan\(FLASH_ROUNDS\)/, "线程没用那份计划 ⇒ 计划是摆设");
+  // 收尾必须落回"有未读"的真实状态：停在熄灭帧 = 托盘上留下没有红点的图标
+  assert.match(
+    trayRs,
+    /if FLASH_GEN\.load\(std::sync::atomic::Ordering::SeqCst\) == gen \{[\s\S]{0,200}?set_icon/,
+    "闪完没有按真实未读落位（最后一帧会留在熄灭状态）",
+  );
+
+  // ② 触发点：只此一处，且在"看不见窗口"的分支里
+  assert.match(
+    networkRs,
+    /let seen = win\.is_visible\(\)[\s\S]{0,120}?if !seen \{\s*crate::tray::flash_unread\(&app\);/,
+    "request_attention 没有在『窗口不可见/未聚焦』时补闪托盘（任务栏隐藏时这条链是空的）",
+  );
+  assert.equal(
+    (networkRs.match(/crate::tray::flash_unread\(/g) ?? []).length,
+    1,
+    "闪烁的触发点只许一处（第二处 = 第二个家，强度会漂）",
+  );
+
+  // ③ 收手：用户点托盘/菜单显示窗口时必须停，且按真实未读落位
+  assert.match(
+    trayRs,
+    /pub fn show_main_window[\s\S]{0,400}?stop_flash\(app\);/,
+    "show_main_window 没停闪烁 —— 用户回来了还闪，等于提醒失效",
+  );
+  assert.match(
+    trayRs,
+    /if unread == 0 \{\s*FLASH_GEN\.fetch_add\(1,/,
+    "未读清零时没打断闪烁（会和 set_unread_badge 的图标落位抢同一张图）",
+  );
+});
+
+/**
+ * 桌面端点通知的**近似**定位（用户 2026-11-21 拍板）。
+ *
+ * 先钉住一个事实：`tauri-plugin-notification` 2.4.0 的 Rust `generate_handler!` 只有
+ * notify / request_permission / is_permission_granted —— 前端 `onAction` 调的
+ * `plugin:notification|registerListener` **不存在**。所以桌面端注册必然失败，且永远
+ * 收不到点击。这条需求只能在"窗口被激活"这个信号上近似实现。
+ */
+test("桌面点通知：不再注册不存在的命令，改走窗口激活 + 20s 窗口", () => {
+  // ① onAction 必须收进 `app.isMobile`：桌面端注册 = 每次启动一条红字 + 永远收不到回调
+  assert.match(
+    store,
+    /if \(app\.isMobile\) \{\s*onAction\(/,
+    "桌面端又去注册 onAction 了 —— 那个命令在插件里不存在（控制台红字就是它）",
+  );
+  // ② 桌面分支：有且只有一个焦点监听，且挂 scope（init 重入会叠加监听器）
+  assert.match(
+    store,
+    /const onWindowFocus = \(\) => \{\s*const hit = consumeDesktopNoticeClick\(\);/,
+    "桌面分支没有消费『刚弹过的通知』",
+  );
+  assert.match(
+    store,
+    /routeNotificationClick\("chat", hit\.convId, hit\.msgId\)/,
+    "消费了却没路由过去 —— 用户还是看不到那条消息",
+  );
+  assert.equal(
+    (store.match(/window\.addEventListener\("focus", onWindowFocus\)/g) ?? []).length,
+    1,
+    "焦点监听只许一处",
+  );
+  assert.match(
+    store,
+    /scope\.onDispose\(\(\) => window\.removeEventListener\("focus", onWindowFocus\)\)/,
+    "焦点监听没挂 scope ⇒ init 重入后每轮叠一个，会跳好几次",
+  );
+  // ③ 候选必须由**两条**桌面通知路径各自记下（普通消息批 + 强提醒带 msg_id）
+  assert.equal(
+    (store.match(/noteDesktopNotice\(/g) ?? []).length,
+    3,
+    "应当是『一处定义 + 两处调用』；少一处就有一条通知点了不跳",
+  );
+  assert.match(store, /noteDesktopNotice\(rec\.conv_id, payload\.target\)/, "强提醒没带 msg_id ⇒ 点了只到会话、落不到原消息");
+  // ④ 近似的时间窗必须有限（不做窗口就是"随便切个窗口都跳"）
+  assert.match(store, /DESKTOP_NOTICE_CLICK_WINDOW_MS = 20_000/);
+  // 间隔规则必须走 `utils/defer` 那一个家（手写 `now - at` 会被 defer.test.ts 判红）
+  assert.match(
+    store,
+    /!shouldRunThrottled\(Date\.now\(\), hit\.at, DESKTOP_NOTICE_CLICK_WINDOW_MS\)/,
+    "窗口没被真的用上（而且间隔规则要走 shouldRunThrottled，不能手写时间差）",
+  );
+});

@@ -470,7 +470,7 @@ export const useChatStore = defineStore("chat", () => {
   Object.assign(apiRegistry, groupsModule);
   const mediaModule = createMediaModule(ctx);
   Object.assign(apiRegistry, mediaModule);
-  const { maybeNotify, ensureRemindChannel, handleIncomingNudge, handleIncomingRemind, routeNotificationClick, shakeSignal, nudgeNotice, notifMap, cancelNotificationTimers, subscribeTrayEvents, subscribeBotEvents } = notificationsModule;
+  const { maybeNotify, ensureRemindChannel, handleIncomingNudge, handleIncomingRemind, routeNotificationClick, consumeDesktopNoticeClick, shakeSignal, nudgeNotice, notifMap, cancelNotificationTimers, subscribeTrayEvents, subscribeBotEvents } = notificationsModule;
   // 托盘图标被点 ⇒ 跳第一条未读（用户 2026-11-16）。订阅在 store 初始化时做一次。
   void subscribeTrayEvents();
   // 后台轮询取到机器人消息 ⇒ 系统通知（只给摘要，不放正文）。
@@ -896,7 +896,14 @@ export const useChatStore = defineStore("chat", () => {
       );
       scope.onDispose(stopRemindChannelWatch);
     }
-    // 注册系统通知点击回调：点击通知 → 唤起窗口 + 定位到发送者会话
+    // 系统通知点击 → 唤起窗口 + 定位到发送者会话。
+    //
+    // ⚠️ **平台分叉是必须的**（2026-11-21 查实）：`tauri-plugin-notification` 2.4.0 的
+    // Rust `generate_handler!` 只注册了 notify / request_permission / is_permission_granted，
+    // 前端 `onAction` 走的 `plugin:notification|registerListener` **根本不存在** ⇒
+    // 桌面端每次启动都打一条 "Command not found" 红字，而且永远收不到点击。
+    // 移动端那条桥是真的（Android 有 actionPerformed），所以只在移动端注册。
+    if (app.isMobile) {
     onAction((n) => {
       // 兼容不同平台回调形状：对象 { id, actionId, extra } 或裸 id（number/string）
       const raw = (typeof n === "object" && n !== null
@@ -942,6 +949,26 @@ export const useChatStore = defineStore("chat", () => {
       // 注册失败只影响"点通知跳转"，不影响其余事件；留痕而不是静默吞掉。
       console.error("[chat] 通知点击回调注册失败：点系统通知不会定位到会话", e);
     });
+    } else {
+      /**
+       * 桌面端：**近似**点击定位（用户 2026-11-21 拍板）。
+       *
+       * 插件没有点击回调 ⇒ 换一个能拿到的信号：窗口**被激活**。规则在
+       * `consumers` 那一侧：弹过通知之后 20 秒内激活才算（见 notifications.ts 的
+       * `consumeDesktopNoticeClick`），超出窗口、或这段时间根本没弹过通知，都不猜。
+       *
+       * 为什么用 `focus` 而不是 `visibilitychange`：从托盘/任务栏点回来时文档一直可见
+       * （只是窗口失焦），`visibilitychange` 根本不发；`focus` 才会到。
+       */
+      const onWindowFocus = () => {
+        const hit = consumeDesktopNoticeClick();
+        if (!hit) return;
+        void api.focusWindow();
+        routeNotificationClick("chat", hit.convId, hit.msgId);
+      };
+      window.addEventListener("focus", onWindowFocus);
+      scope.onDispose(() => window.removeEventListener("focus", onWindowFocus));
+    }
     // 窗口重新可见：补发当前会话已读回执 + 冲刷后台期间滞留的消息批次
     // （具名函数 + 成对 removeEventListener：匿名 handler 摘不掉，重复 init 会叠加）
     const onVisibility = () => {

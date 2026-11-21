@@ -344,7 +344,7 @@ pub enum AttentionPlatform {
 /// `urgent` 由前端算：这条命令只拿到标题与正文，**只有前端看得见消息内容**
 /// （判据在 `src/utils/notifyUrgency.ts`：群公告 / 紧急档群任务才算紧急）。
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn request_attention(app: tauri::AppHandle, urgent: bool) -> Result<(), String> {
     let Some(kind) = attention_request(attention_platform(), urgent) else {
         return Ok(());
@@ -357,6 +357,18 @@ pub fn request_attention(app: tauri::AppHandle, urgent: bool) -> Result<(), Stri
     };
     // 失败不致命：个别 Linux 桌面环境 / 远程会话不支持，忽略即可（前端也不关心结果）。
     let _ = win.request_user_attention(Some(kind));
+    // 任务栏那条链有个空洞：**关窗口 = 隐藏到托盘**（`prevent_close` + `hide`），窗口
+    // 一隐藏任务栏上就没有按钮，`request_user_attention` 无处可闪。托盘图标是唯一
+    // 还在的那张脸 ⇒ 窗口不可见/未聚焦时补一轮托盘闪烁（用户 2026-11-21：「要闪」）。
+    // 判据放在这里而不是前端：前端只需要说"请提醒我"，具体哪个面还能闪是平台知识。
+    let seen = win.is_visible().unwrap_or(false) && win.is_focused().unwrap_or(false);
+    if !seen {
+        // 托盘重绘是**重活**（整张图标逐像素混合 + `set_icon`）：按 R-18 的规矩丢进
+        // 阻塞池，既不占 IPC 主线程、也不占 tokio worker。`flash_unread` 内部再起一个
+        // 短命线程做"亮→灭"的切换（那一步是 sleep 驱动的，同样不能占 worker）。
+        let app2 = app.clone();
+        tauri::async_runtime::spawn_blocking(move || crate::tray::flash_unread(&app2));
+    }
     Ok(())
 }
 

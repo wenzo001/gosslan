@@ -319,6 +319,12 @@ static TRAY_ICON_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU
 /// 幂等、可重复调用；失败一律静默（角标只是锦上添花，不该影响聊天）。
 pub fn set_unread_badge<R: tauri::Runtime>(app: &tauri::AppHandle<R>, unread: u32) {
     LAST_UNREAD.store(unread, std::sync::atomic::Ordering::Relaxed);
+    // 未读清零 ⇒ 正在跑的那一轮闪烁立刻收手（没有"还有未读"这件事了，再闪没有意义，
+    // 而且会和下面的图标落位抢同一张图）。未读**增加**时不打断：那时的闪烁正是要给
+    // 用户看的，让它在 300ms 去抖之后照旧跑完。
+    if unread == 0 {
+        FLASH_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
     let zh = app.state::<Arc<crate::state::AppState>>().is_zh();
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(tray_tooltip(zh, unread)));
@@ -402,6 +408,121 @@ pub fn set_watchdog_tooltip<R: tauri::Runtime>(app: &tauri::AppHandle<R>, stalle
     }
 }
 
+/// 一次闪烁的开关计划：`true` = 带未读红点。**纯函数**，便于把"几个来回、先亮后灭"
+/// 钉成判据（真跑要一个托盘运行时，那一层只能靠人眼）。
+///
+/// 为什么成对收尾（最后一步是灭）：闪烁结束的那一刻图标由 `stop_flash` / 收尾逻辑
+/// 按**真实未读数**落回，不看这里 —— 但计划本身必须是"亮→灭"的整数个来回，
+/// 否则视觉上是一次残闪。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn flash_plan(rounds: usize) -> Vec<bool> {
+    (0..rounds.saturating_mul(2)).map(|i| i % 2 == 0).collect()
+}
+
+/// 闪烁几个来回（用户 2026-11-21 拍板「要闪」）。3 个来回 ≈ 2.1s。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+const FLASH_ROUNDS: usize = 3;
+
+/// 每次切换的间隔（ms）：比 Windows 默认的任务栏闪烁慢一点，看得清、又不至于像卡住。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+const FLASH_STEP_MS: u64 = 350;
+
+/// 闪烁代号：每次启动/取消都 +1，后台线程只在代号没变时继续。
+static FLASH_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// 新消息到达时**闪托盘图标**（用户 2026-11-21：「右下角那个图标要闪」）。
+///
+/// ## 为什么闪的是托盘图标
+/// 任务栏侧本来就有 `request_attention`（Windows 上是 `Critical`，闪到用户点为止）。
+/// 但关窗口是"隐藏到托盘"（`prevent_close` + `hide`）—— 窗口一隐藏，任务栏上就没有
+/// 按钮可闪，那条链在这次场景里是空的。托盘图标是唯一还在的那张"脸"。
+///
+/// ## 为什么不满足于现成的红点
+/// `set_unread_badge` 的红点回答"还有多少没读"（常亮）；闪烁回答"**刚刚**来了一条"。
+/// 两件事：红点一直在，闪只亮这一次。
+///
+/// ## 纪律
+/// · 只在**窗口不可见或未聚焦**时闪（调用点判，见 `commands::request_attention`）；
+/// · 闪完落回"有未读"的真实状态，绝不停在熄灭那一帧；
+/// · 用户回来（显示窗口）、未读清零、或下一次闪烁 ⇒ 代号 +1，上一轮立刻收手；
+/// · ⚠️ Windows 上 `set_icon` = 新建 HICON + `Shell_NotifyIconW`，条数要克制：
+///   一轮 6 次，而通知本身已按 1.5s 去抖合批（见 `notifications.ts`）。
+#[cfg(not(target_os = "macos"))]
+pub fn flash_unread<R: tauri::Runtime + 'static>(app: &tauri::AppHandle<R>) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    let Some(base) = app.default_window_icon() else {
+        return;
+    };
+    let (w, h) = (base.width(), base.height());
+    let plain = base.rgba().to_vec();
+    let dotted = dot::with_unread_dot(&plain, w, h);
+    let gen = FLASH_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let spawned = std::thread::Builder::new()
+        .name("tray-flash".to_string())
+        .spawn(move || {
+            for with_dot in flash_plan(FLASH_ROUNDS) {
+                if FLASH_GEN.load(std::sync::atomic::Ordering::SeqCst) != gen {
+                    return; // 用户已经回来了 / 又来了新的一轮
+                }
+                let rgba = if with_dot {
+                    dotted.clone()
+                } else {
+                    plain.clone()
+                };
+                let _ = tray.set_icon(Some(tauri::image::Image::new_owned(rgba, w, h)));
+                std::thread::sleep(std::time::Duration::from_millis(FLASH_STEP_MS));
+            }
+            // 收尾：回到"未读仍在"的真实状态（熄灭那一帧绝不能留在托盘上）。
+            if FLASH_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen {
+                let _ = tray.set_icon(Some(tauri::image::Image::new_owned(dotted, w, h)));
+                TRAY_ICON_STATE.store(2, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+    if let Err(e) = spawned {
+        // 起不了线程不影响提醒：红点已经由 set_unread_badge 设上了。
+        eprintln!("[tray] 闪烁线程起不来（退化为常亮红点）: {e}");
+    }
+}
+
+/// 取消正在跑的闪烁，并**按真实未读数**把图标落回正确的那一张。
+///
+/// 只 +1 代号是不够的：线程可能正好停在"熄灭"那一帧返回，托盘上就会留下一个
+/// 没有红点、但其实还有未读的图标 —— 用户 2026-09-17 报过一模一样的形状
+/// （"红点清了但数字还挂着"的反向版）。
+#[cfg(not(target_os = "macos"))]
+pub fn stop_flash<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    FLASH_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    let Some(base) = app.default_window_icon() else {
+        return;
+    };
+    let (w, h) = (base.width(), base.height());
+    let unread = LAST_UNREAD.load(std::sync::atomic::Ordering::Relaxed);
+    let icon = if unread > 0 {
+        tauri::image::Image::new_owned(dot::with_unread_dot(base.rgba(), w, h), w, h)
+    } else {
+        base.clone()
+    };
+    if tray.set_icon(Some(icon)).is_ok() {
+        TRAY_ICON_STATE.store(
+            if unread > 0 { 2 } else { 1 },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
+/// macOS：托盘图标不参与未读表达（那边走 Dock 数字角标），闪烁按平台习惯不做。
+#[cfg(target_os = "macos")]
+pub fn flash_unread<R: tauri::Runtime + 'static>(_app: &tauri::AppHandle<R>) {}
+
+/// macOS 侧同上：没有闪烁，也就没有"取消闪烁"。
+#[cfg(target_os = "macos")]
+pub fn stop_flash<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) {}
+
 /// 恢复主窗口（取消最小化 → 显示 → 聚焦）。
 pub fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(win) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -409,6 +530,8 @@ pub fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
         let _ = win.show();
         let _ = win.set_focus();
     }
+    // 用户回来了 ⇒ 闪烁立刻收手（并落回真实未读状态）。
+    stop_flash(app);
 }
 
 /// 安装托盘图标与「关闭到托盘」行为。
@@ -641,7 +764,7 @@ fn install_close_to_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{tray_labels, tray_tooltip};
+    use super::{flash_plan, tray_labels, tray_tooltip, FLASH_ROUNDS};
 
     /// 托盘菜单的显示文案必须跟界面语言走，且中英两套不能混用。
     /// 菜单项 id（show/dnd/restart/quit）不在这里判 —— 它们不在结构体里，改不动。
@@ -662,6 +785,39 @@ mod tests {
         assert_ne!(zh.dnd, en.dnd);
         assert_ne!(zh.restart, en.restart);
         assert_ne!(zh.quit, en.quit);
+    }
+
+    /// 闪烁计划（用户 2026-11-21：「要闪」）。
+    ///
+    /// 真跑要一个托盘运行时，那一层只能靠人眼；这里把**形状**钉死：
+    /// 整数个"亮→灭"来回、第一步是亮（不然第一帧看起来没反应）、最后一步是灭
+    /// （由收尾逻辑落回真实未读状态，而不是停在一个随机帧上）。
+    #[test]
+    fn flash_plan_is_whole_rounds_starting_lit_and_ending_dark() {
+        let plan = flash_plan(FLASH_ROUNDS);
+        assert_eq!(plan.len(), FLASH_ROUNDS * 2, "一个来回 = 亮 + 灭");
+        assert_eq!(
+            plan.first(),
+            Some(&true),
+            "第一帧必须是亮的，否则看起来像没闪"
+        );
+        assert_eq!(
+            plan.last(),
+            Some(&false),
+            "最后一帧必须是灭的，收尾由 stop/落位逻辑负责"
+        );
+        assert_eq!(
+            plan.iter().filter(|b| **b).count(),
+            FLASH_ROUNDS,
+            "亮的次数 = 来回数"
+        );
+        // 空输入不许 panic（线程里会走 0 次循环，图标由收尾逻辑落位）。
+        assert!(flash_plan(0).is_empty());
+        // 相邻两帧必须不同：连亮两帧等于没闪。
+        assert!(
+            plan.windows(2).all(|w| w[0] != w[1]),
+            "闪烁计划里出现了连亮/连灭"
+        );
     }
 
     /// tooltip 必须带上条数：红点只表达"有未读"，**有几条**只有文字能给。
