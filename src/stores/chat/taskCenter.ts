@@ -21,6 +21,7 @@ export function createTaskCenterModule(ctx: ChatContext) {
     messageOpsError,
     updaterStatus,
     resendingIds,
+    resumedTransferIds,
   } = ctx.state;
 
   /** 并发触发时只让**最新那次**写回结果（迁入 `refreshGuard`，与上面几个共用同一份实现）。 */
@@ -81,6 +82,11 @@ export function createTaskCenterModule(ctx: ChatContext) {
     if (resendingIds.value.size) {
       const live = new Set(msgOps.map((o) => o.msg_id));
       for (const id of [...resendingIds.value]) if (!live.has(id)) resendingIds.value.delete(id);
+    }
+    // J3-1：续传标记同理——传输行终态离开台账后，标记也该剪掉（防长会话累积）。
+    if (resumedTransferIds.value.size) {
+      const live = new Set(list.map((x) => x.id));
+      for (const id of [...resumedTransferIds.value]) if (!live.has(id)) resumedTransferIds.value.delete(id);
     }
   }
   /**

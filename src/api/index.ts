@@ -625,6 +625,8 @@ export const api = {
   /** 媒体是否仍在本机（未被「存储清理」删除）。仅"确定已删除"时返回 false，
    *  查不到消息（在途的乐观消息）返回 true——不能把在途消息误标成已清理。 */
   mediaPresent: (msgId: string) => invoke<boolean>("media_present", { msgId }),
+  /** J3-5：按绝对路径批量探测文件是否仍在（与入参等长同序）。群文件/收藏面板用。 */
+  filesPresent: (paths: string[]) => invoke<boolean[]>("files_present", { paths }),
 
   /**
    * 以下 6 条以前**没有门面包装**：组件里直接 `invoke("copy_file", …)`，
@@ -1176,6 +1178,8 @@ export type EventHandlers = {
   /** 某条消息的渲染方式被作者切换（LWW 已由后端裁决）。 */
   onMessageRenderChanged: (msgId: string, kind: "code" | "text", lang: string | null) => void;
   onFileProgress: (p: FileProgress) => void;
+  /** J3-1：接收端对 Offer 回 ResumeFrom（续传成立）——进度行要从「接收中」换成「续传中」。 */
+  onContentTransferResumed: (p: { transfer_id: string; held: number }) => void;
   onFileStalled: (p: FileStalledInfo) => void;
   onFileDone: (d: FileDoneInfo) => void;
   onFileFailed: (d: FileFailedInfo) => void;
@@ -1303,6 +1307,10 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
       ),
     ),
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),
+    listen<{ transfer_id: string; held: number }>(
+      "content-transfer-resumed",
+      (e) => h.onContentTransferResumed(e.payload),
+    ),
     listen<FileStalledInfo>("file-stalled", (e) => h.onFileStalled(e.payload)),
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),
     listen<FileFailedInfo>("file-failed", (e) => h.onFileFailed(e.payload)),

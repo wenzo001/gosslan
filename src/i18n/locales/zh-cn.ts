@@ -719,6 +719,8 @@ export const zhCN: MessageDict = {
   // ---- 聊天输入区 ----
   "chat.composer.inputAria": "消息输入框",
   "chat.composer.peerOffline": "对方当前离线：消息会先保留在本地（最长 7 天），对方上线后自动送达",
+  "chat.composer.queuedOffline": "对方不在线，这条消息已保留，上线后会自动送达",
+  "chat.offlineQueue.resume": "对方已上线，之前排队的 {n} 条消息将陆续送达",
   "chat.composer.emoji": "表情",
   "emoji.frequent": "常用",
   "emoji.all": "全部表情",
@@ -1605,6 +1607,9 @@ export const zhCN: MessageDict = {
   "file.receiveWriteFailed": "本机没能把这一份写进磁盘；请检查磁盘状况后让对方重新发送",
   "file.receivePlaceFailed": "内容已收齐，但没能放到最终位置（同名或目录问题）；请清理下载目录后让对方重新发送",
   "group.files.stateLocal": "已在本机",
+  "group.files.missing": "文件已不在本机",
+  "group.files.missingHint": "这条文件已被存储清理删除，不能再打开",
+  "group.files.missingToast": "该文件已被清理，可在聊天记录里定位后让对方重新发送",
   "group.files.stateReceiving": "接收中",
   "group.files.stateRemote": "不在本机",
   "group.files.delivered": "已送达 {n}/{total}",
@@ -1991,6 +1996,7 @@ export const zhCN: MessageDict = {
   "send.notFriend": "对方不是好友，请先扫描添加好友之后再继续聊天。",
   "send.sendingPct": "发送中 {pct}%",
   "send.receivingPct": "接收中 {pct}%",
+  "send.resumingPct": "续传中 {pct}%（从中断处继续）",
   // 对端长时间没再收任何一片（后端按 writer 实发判定）：进度条会冻住，必须说清是网络卡住
   "send.stalled": "网络停滞，等待恢复…",
   "send.noProgress": "传输已停止：{secs} 秒没有任何进展，可以取消后重发",

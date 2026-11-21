@@ -17,6 +17,8 @@ import { detailText } from "@/composables/useErrorText";
 import { mergePeerList } from "@/utils/peerMerge";
 import { fileFailReasonText } from "@/utils/fileFailReason";
 import { isSelfConversation } from "@/utils/selfChat";
+import { shouldRunThrottled } from "@/utils/defer";
+import { countWaitingTexts } from "@/utils/sendWaiting";
 import { markFriendsOnlineFrom } from "@/utils/friendOnline";
 import { onAction, registerActionTypes } from "@tauri-apps/plugin-notification";
 import type { Conversation, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, MessageRecord, Peer, PendingMessageOp, PendingRequest, OutgoingFriendRequest, UpdaterStatus, ContentTransfer, TransferInfo } from "@/types";
@@ -172,6 +174,17 @@ export const useChatStore = defineStore("chat", () => {
   const conversations = ref<Conversation[]>([]);
   const groups = ref<Group[]>([]);
   const transfers = ref<TransferInfo[]>([]);
+  /**
+   * 确认发生过**续传**的接收（J3-1，旅程走查 2026-11-20）：后端对 Offer 回
+   * ResumeFrom 时经 `content-transfer-resumed` 事件登记 transfer_id。只增不删
+   * 是刻意的 —— 只在传输 active 态渲染时读（进度行文案），终态后没人读；
+   * `refreshTransfers` 里顺带清掉不在列表里的 id，防长会话累积。
+   */
+  const resumedTransferIds = ref(new Set<string>());
+  /** 进度行文案的判据（useMessageFile 用）：这个接收是不是续传。 */
+  function isTransferResumed(transferId: string): boolean {
+    return resumedTransferIds.value.has(transferId);
+  }
   /** 统一内容状态（ADR-0019）：未完成/失败的气泡据此显示「点击重试」。 */
   const contentTransfers = ref<ContentTransfer[]>([]);
   /**
@@ -323,6 +336,50 @@ export const useChatStore = defineStore("chat", () => {
     return friendById.value.get(convId)?.online ?? false;
   }
 
+  /**
+   * J2-1（旅程走查 2026-11-20）：发送那一刻对端**明确离线** ⇒ 给一次说明
+   * 「消息已保留，上线自动送达」。原来发完什么反馈都没有，用户离开屏幕后
+   * 不知道这条消息在等（气泡时钟只有回到聊天窗才看得见）。
+   * 会话级节流（60s）：连发多条只提示一次 —— 输入框上方另有常驻横幅（J2-2），
+   * 这里管的是"发完就走"的用户。群聊/机器人/自聊（null）与在线时不触发。
+   */
+  const offlineQueueToastAt: Record<string, number> = {};
+  function notifyOfflineQueue(convId: string, now: number = Date.now()) {
+    if (peerOnlineOf(convId) !== false) return;
+    if (!shouldRunThrottled(now, offlineQueueToastAt[convId] ?? 0, 60_000)) return;
+    offlineQueueToastAt[convId] = now;
+    app.toast(t("chat.composer.queuedOffline"), "info");
+  }
+
+  /**
+   * J2-3（旅程走查 2026-11-20）：对端从离线翻成在线 ⇒ 若那个单聊里还有在等的
+   * 文本消息，说一句「排队的 N 条将陆续送达」。原来这条转变完全静默 —— 状态从
+   * 时钟切成双勾，用户不知道发生了什么。文件/群文件不数（独立进度语义）。
+   *
+   * ⚠️ 在线口径与 `markFriendsOnlineFrom` 同源：**出现在本轮 peers 快照里 = 在线**
+   * （`Peer` 没有 online 字段，好友表.online 就是这么派生的）。所以"离线→在线"
+   * 的判定是「本轮快照有它、上一轮快照没有、且历史见过」—— 历史没见过（启动
+   * 首个快照）不算"回来"，否则刚打开应用就满屏"已上线"。
+   */
+  const peerOnlineEverSeen = new Set<string>();
+  const peerOnlineLastSnapshot = new Set<string>();
+  function notePeerOnlineFlips(list: readonly { device_id: string }[]) {
+    const ids = new Set(list.map((p) => p.device_id));
+    for (const id of ids) {
+      if (!peerOnlineLastSnapshot.has(id) && peerOnlineEverSeen.has(id)) {
+        const waiting = countWaitingTexts(messages.value[id] ?? []);
+        if (waiting > 0) {
+          app.toast(t("chat.offlineQueue.resume", { n: waiting }), "info");
+        }
+      }
+    }
+    peerOnlineLastSnapshot.clear();
+    for (const id of ids) {
+      peerOnlineEverSeen.add(id);
+      peerOnlineLastSnapshot.add(id);
+    }
+  }
+
 
 
 
@@ -370,13 +427,14 @@ export const useChatStore = defineStore("chat", () => {
   // ── chat store 拆分接线（状态唯一一份；动作经 `chatApi` 晚绑定） ─────────────
   const state: ChatState = {
     app, refreshGuard, myDeviceId, nicknameOf, rememberSeenNames, asReadError,
+    peerOnlineOf, notifyOfflineQueue, isTransferResumed,
     peers, friends, initialized, friendsLoaded, friendsError, conversationsLoaded, groupsLoaded,
     memberNames, rawPendingRequests, keyRotations, pendingRequests, rawOutgoingRequests,
     outgoingRequests, conversations, groups, transfers, contentTransfers, messageOps,
     transfersError, contentTransfersError, messageOpsError, groupReadsErrors, groupDeliveryErrors, updaterStatus,
     messages, renderLangs, groupDeliveries, messageLoadErrors, groupReads, groupHistorySync, groupHistoryStarting, activeConv,
     mentionedConvs, activeConversation, totalUnread, operations, liveOperationCount,
-    resendingIds, groupTodoRows, eventBridgeOk,
+    resendingIds, resumedTransferIds, groupTodoRows, eventBridgeOk,
   };
   const apiRegistry: Record<string, unknown> = {};
   const ctx: ChatContext = { state, api: createChatApi(apiRegistry) };
@@ -478,6 +536,9 @@ export const useChatStore = defineStore("chat", () => {
           // 与消息事件共用同一个 400ms 防抖，不会把 3/s 的拓扑事件放大成 IPC 风暴。
           scheduleTransfersRepair();
         }
+        // J2-3：在线转变（false→true）在这里检测 —— peers 是在线的唯一真源，
+        // friends.online 由它派生（markFriendsOnlineFrom）。
+        notePeerOnlineFlips(p);
         rememberSeenNames(p);
         markFriendsOnlineFrom(friends.value, p);
         // 同步好友/单聊会话的昵称/头像（对方改名后立即生效）
@@ -598,6 +659,15 @@ export const useChatStore = defineStore("chat", () => {
       onFileProgress: (p) => {
         // 进度由事件载荷直接更新，不再全量刷新传输列表（避免大文件 IPC 风暴卡死界面）
         updateTransferProgress(p);
+      },
+      // J3-1（旅程走查 2026-11-20）：接收端对重复 Offer 回 ResumeFrom ⇒ 这次接收是
+      // **续传**（从 .part/内存前缀接着收）。标记 transfer_id，进度行文案换成
+      // 「续传中 N%」—— 用户终于分得清「重收」与「续传」。集合只增不删是刻意的：
+      // 只在 active 态渲染时读，done/failed 后没人读它；refreshTransfers 时顺带清掉
+      // 已经不在列表里的 id，防长会话累积。
+      onContentTransferResumed: (p) => {
+        resumedTransferIds.value.add(p.transfer_id);
+        void refreshTransfers();
       },
       // 链路停滞（对端长时间没再收任何一片）：气泡文案要从「发送中 63%」变成
       // 「网络停滞」，否则用户只会觉得软件卡死 —— 后端在背压里等，前端什么都不知道。
@@ -876,6 +946,8 @@ export const useChatStore = defineStore("chat", () => {
     peers,
     friends,
     peerOnlineOf,
+    notifyOfflineQueue,
+    isTransferResumed,
     initialized,
     eventBridgeOk,
     groupFileDiag,

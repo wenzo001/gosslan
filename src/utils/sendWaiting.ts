@@ -43,3 +43,19 @@ export function isWaitingForPeer(
   if (input.peerOnline === false) return true;
   return now - input.ts >= WAITING_FOR_PEER_AFTER_MS;
 }
+
+/**
+ * 某个会话里**正在等对端**的文本消息条数（J2-3，旅程走查 2026-11-20）：
+ * 对端从离线翻成在线时，如果这个数 > 0，就告诉用户「排队的 N 条将陆续送达」。
+ * 与 `isWaitingForPeer` 的排除口径一致：非 sending 不算、文件/群文件不算
+ * （传输有独立的进度语义，不该被说成"排队"）。
+ */
+export function countWaitingTexts(
+  msgs: readonly { status: string; msg_id: string | null }[],
+): number {
+  let n = 0;
+  for (const m of msgs) {
+    if (m.status === "sending" && !isTransferBacked(m.msg_id)) n += 1;
+  }
+  return n;
+}

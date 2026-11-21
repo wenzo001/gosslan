@@ -142,6 +142,12 @@ export function useMessageFile(
     }
     if (transferShowsProgress(t.status)) {
       const pct = Math.round((t.progress ?? 0) * 100);
+      // J3-1（旅程走查 2026-11-20）：后端对 Offer 回过 ResumeFrom ⇒ 这次接收是**续传**
+      // （从 .part/内存前缀接着收）。文案换「续传中」，用户终于分得清「重收」与「续传」
+      // —— 旧行为里两者视觉全同，"传到 90% 又从头开始"的旧伤让人无从判断。
+      if (t.direction === "receive" && chat.isTransferResumed(t.id)) {
+        return $t("send.resumingPct", { pct });
+      }
       return t.direction === "send" ? $t("send.sendingPct", { pct }) : $t("send.receivingPct", { pct });
     }
     const key = transferStatusTextKey(t.status);

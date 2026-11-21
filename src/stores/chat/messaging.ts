@@ -55,6 +55,7 @@ export function createMessagingModule(ctx: ChatContext) {
     mentionedConvs,
     myDeviceId,
     groupTodoRows,
+    notifyOfflineQueue,
   } = ctx.state;
   const {
     touchCacheOrder,
@@ -492,7 +493,11 @@ export function createMessagingModule(ctx: ChatContext) {
     if (convId.startsWith("group:")) {
       return api.sendGroupMessage(convId.slice(6), content, kind, mentionIds, localId, lang);
     }
-    return api.sendMessage(convId, content, kind, localId, lang);
+    const rec = await api.sendMessage(convId, content, kind, localId, lang);
+    // J2-1（旅程走查 2026-11-20）：发送已入队且对端明确离线 ⇒ 说明一句（会话级节流）。
+    // 放在 invoke 成功之后：队列失败有自己的错误提示，不该被排队说明盖掉。
+    notifyOfflineQueue(convId);
+    return rec;
   }
 
   /**

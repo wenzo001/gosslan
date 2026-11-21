@@ -1028,6 +1028,7 @@ pub fn run() {
             commands::read_file_preview,
             commands::read_content_preview,
             commands::media_present,
+            commands::files_present,
             commands::export_chat_text,
             commands::clear_all_data,
             commands::get_discovery_diag,
