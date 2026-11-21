@@ -8,6 +8,7 @@ import { api } from "@/api";
 import { dropByMsgId } from "@/utils/optimistic";
 import type { PendingMessageOp } from "@/types";
 import type { ChatContext } from "./runtime";
+import { transferListEqual, contentListEqual, opsListEqual } from "@/utils/transferSnapshot";
 
 export function createTaskCenterModule(ctx: ChatContext) {
   const {
@@ -74,10 +75,18 @@ export function createTaskCenterModule(ctx: ChatContext) {
     // 旧快照里**没有**刚建的那条 transfer ⇒ 覆盖回来后，后续 file-progress 全部落空
     // （见 updateTransferProgress），进度条永久钉在「发送中 0%」——而对端早就收完已读。
     if (!refreshGuard.isCurrent("transfers", req)) return;
-    transfers.value = list;
-    // 顺带刷新统一内容状态：未完成 / 校验失败的气泡据此显示「点击重试」。
-    contentTransfers.value = contents;
-    messageOps.value = msgOps;
+    // ── 抖动修复（2026-11-21 Windows 诊断）────────────────────────────────────
+    // 后端心跳恒发 peers-updated ⇒ onPeers 每 ~333ms scheduleTransfersRepair（400ms
+    // 防抖）⇒ 这里每 400ms 拉一次三组快照并**整组替换**——内容明明没变（心跳只是
+    // last_seen 在动，台账三件套没变），引用却换了 ⇒ 依赖它们的 computed 全失效
+    // ⇒ 消息行（含纯文本行）跟着全量重渲染。DevTools 采样实证：无操作时 MessageItem
+    // 以 ~400ms 周期反复渲染。Windows WebView2 上这个高频重渲染与布局竞争，
+    // 就是长文本行抖动的放大器。
+    // 修复：逐字段比较，内容没变就**保留旧引用**——computed 不失效，渲染链在源头断掉。
+    // （传输进行中 progress 每 250ms 真的在变 ⇒ 比较不拦，该更新照常更新。）
+    if (!transferListEqual(transfers.value, list)) transfers.value = list;
+    if (!contentListEqual(contentTransfers.value, contents)) contentTransfers.value = contents;
+    if (!opsListEqual(messageOps.value, msgOps)) messageOps.value = msgOps;
     // 剪掉已经不在台账里的标记（见上面 `resendingIds` 的注释）。
     if (resendingIds.value.size) {
       const live = new Set(msgOps.map((o) => o.msg_id));
