@@ -131,6 +131,30 @@ export function createContactsModule(ctx: ChatContext) {
     }
     await refreshOutgoingRequests();
   }
+  /**
+   * J1-3（旅程走查 2026-11-20，用户 2026-11-21 拍板）：移除一条出站申请
+   * （「已失效」行 / 已撤回确认行）。`restart=true` = 移除后立即以全新
+   * first_at 重新申请（后端换协议身份 ⇒ 失效时钟重置）。
+   * 乐观：remove 直接从列表消失；restart 把那一行翻回 waiting、first_at 置为
+   * 现在；失败回滚并上抛（调用方 toast）。
+   */
+  async function removeOutgoingRequest(peerId: string, restart: boolean) {
+    const prev = rawOutgoingRequests.value;
+    rawOutgoingRequests.value = restart
+      ? prev.map((r) =>
+          r.peer_id === peerId
+            ? { ...r, status: "waiting", withdraw_confirmed: false, first_at: Date.now() }
+            : r,
+        )
+      : prev.filter((r) => r.peer_id !== peerId);
+    try {
+      await api.removeOutgoingFriendRequest(peerId, restart);
+    } catch (e) {
+      rawOutgoingRequests.value = prev;
+      throw e;
+    }
+    await refreshOutgoingRequests();
+  }
   /** 乐观交互：立即移出申请列表，失败回滚（调用方负责 toast）。 */
   async function respondRequest(peerId: string, accept: boolean) {
     const prev = rawPendingRequests.value;
@@ -259,6 +283,7 @@ export function createContactsModule(ctx: ChatContext) {
     syncFriendKeys,
     sendFriendRequest,
     cancelFriendRequest,
+    removeOutgoingRequest,
     respondRequest,
     removeFriend,
     favorites,

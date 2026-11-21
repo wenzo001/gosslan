@@ -946,6 +946,7 @@ pub fn run() {
             commands::get_pending_requests,
             commands::get_outgoing_friend_requests,
             commands::send_friend_request,
+            commands::remove_outgoing_friend_request,
             commands::cancel_friend_request,
             commands::respond_friend_request,
             commands::send_message,

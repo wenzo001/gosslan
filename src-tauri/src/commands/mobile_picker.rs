@@ -429,6 +429,94 @@ pub async fn send_friend_request(
     send_friend_request_via_link(s, &peer_id, request_id).await
 }
 
+/// 移除一条出站好友申请（J1-3，旅程走查 2026-11-20，用户 2026-11-21 拍板）。
+///
+/// 「已失效」的申请（7 天无回应，前端按 `first_at` 判定）用户可以：
+/// · **移除**（`restart=false`）—— 本地彻底清掉，对方那边不做任何事；
+/// · **重新申请**（`restart=true`）—— 移除后**立即**发起一次全新申请。
+///
+/// 为什么「重新申请」是删掉重发而不是原地重发：`first_at` 同时是这条申请的**协议身份**
+/// （request_id，补发帧与撤回帧都靠它命中，Block 1 Case A 的同意回执也按它比对）
+/// ⇒ **绝不能原地改**；「重发想重置 7 天时钟」只能作废旧记录、换一个全新的
+/// `first_at`。旧 id 的同意回执如果迟到，走 Block 1 Case B（验签 + 既有锚点）仍能
+/// 正常建立友谊 —— 兼容路径早已存在（见 handshake 的同意处理）。
+///
+/// 清理形状与 `get_outgoing_friend_requests` 的 already_friend 分支一致：DB 行、
+/// 补发登记（`pending_out_requests`）、撤回登记（`pending_out_withdrawals`）、
+/// 撤回墓碑与同意回执缓存（`friend_req_wd:` / `friend_acc:`，有则清）。
+/// 漏掉任何一处都会留一条"幽灵行"或一次幽灵补发。
+///
+/// ⚠️ DB 与内存表都是阻塞活 ⇒ spawn_blocking（INV-P34）；`restart` 的实际发送
+/// 需要 await ⇒ 放在 blocking 段之外。
+#[tauri::command(async)]
+pub async fn remove_outgoing_friend_request(
+    state: State<'_, Arc<AppState>>,
+    peer_id: String,
+    restart: bool,
+) -> Result<(), String> {
+    let s = state.inner().clone();
+    let s_cleanup = s.clone();
+    let peer_for_cleanup = peer_id.clone();
+    tauri::async_runtime::spawn_blocking(
+        move || -> Result<(), String> {
+            {
+                let dbc = s_cleanup.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::forget_outgoing_friend_request(&dbc, &peer_for_cleanup)
+                    .map_err(|e| e.to_string())?;
+                // 墓碑与同意回执缓存：有则清（移除 = 本地不留任何痕迹），无则跳过。
+                let _ = db::delete_setting(
+                    &dbc,
+                    &format!("{}{}", db::WITHDRAWN_REQUEST_KEY_PREFIX, peer_for_cleanup),
+                );
+                let _ = db::delete_setting(
+                    &dbc,
+                    &format!("{}{}", db::PENDING_OUT_ACCEPT_KEY_PREFIX, peer_for_cleanup),
+                );
+            }
+            s_cleanup
+                .pending_out_requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&peer_for_cleanup);
+            s_cleanup
+                .pending_out_withdrawals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&peer_for_cleanup);
+            Ok(())
+        },
+    )
+    .await
+    .map_err(|e| format!("移除好友申请被线程池中断: {e}"))??;
+
+    if !restart {
+        return Ok(());
+    }
+    // 全新申请：新 request_id（= 新 first_at）⇒ 7 天失效时钟从头算。
+    // 形状与 `send_friend_request` 的登记/落库一致（先登记再发，链路抖动由补发兜）。
+    let request_id = crate::db::now_ms();
+    s.pending_out_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(peer_id.clone(), (request_id, 0));
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = crate::db::OutgoingFriendRequest {
+            peer: peer_id.clone(),
+            first_at: request_id,
+            last_sent_at: 0,
+            status: "waiting".to_string(),
+            withdraw_confirmed: false,
+            withdraw_attempts: 0,
+            withdraw_last_at: 0,
+        };
+        if let Err(e) = crate::db::put_outgoing_friend_request(&dbc, &entry) {
+            crate::logging::log_write_failure(&s.logger, "put_outgoing_friend_request", e);
+        }
+    }
+    send_friend_request_via_link(&s, &peer_id, request_id).await
+}
+
 /// **同意好友申请**这条路径的**唯一**实现：落库（好友 + 会话 + 公钥）→ 回执（Gossip 定向加密）
 /// → 清 pending → 通知 UI。
 ///

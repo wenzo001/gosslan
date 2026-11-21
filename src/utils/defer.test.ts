@@ -285,6 +285,10 @@ const NOT_A_GATE = new Map<string, string>([
     "utils/sendWaiting.ts",
     "「这条消息停在 sending 超过 N 分钟」的年龄判定：只决定显示「等待对方上线」还是转圈，不放行任何动作",
   ],
+  [
+    "utils/friendRequests.ts",
+    "出站好友申请「7 天无回应 ⇒ 已失效」的年龄判定（J1-3）：只决定一行文案与操作入口，不放行任何动作",
+  ],
 ]);
 
 test("手写时间差闸门不许长回第二份：间隔规则只有 defer 那一个家", () => {

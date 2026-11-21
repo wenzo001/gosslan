@@ -264,6 +264,8 @@ export const api = {
     invoke<OutgoingFriendRequest[]>("get_outgoing_friend_requests"),
   sendFriendRequest: (peerId: string) => invoke<void>("send_friend_request", { peerId }),
   /** 撤回还没被对方处理的好友申请；对端已先同意时会返回"已是好友，无法撤回"。 */
+  removeOutgoingFriendRequest: (peerId: string, restart: boolean) =>
+    invoke<void>("remove_outgoing_friend_request", { peerId, restart }),
   cancelFriendRequest: (peerId: string) =>
     invoke<void>("cancel_friend_request", { peerId }),
   respondFriendRequest: (peerId: string, accept: boolean) =>
