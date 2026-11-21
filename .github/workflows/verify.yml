@@ -364,7 +364,7 @@ jobs:
   #  这条腿也顺手暴露了 `cargo test` 看不见的死代码（它不编测试、只看产品码）。
   # ---------------------------------------------------------------------------
   android:
-    name: Android 编译门禁（aarch64-linux-android）
+    name: Android 编译门禁（aarch64 + armv7）
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # 定时事件只为了全量护栏 ⇒ 这条腿不在夜间重付。
