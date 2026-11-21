@@ -16,3 +16,25 @@ export function actionableRequests<T extends { from: string }>(
   const ids = new Set(friendIds);
   return requests.filter((r) => !ids.has(r.from));
 }
+
+/**
+ * 出站好友申请的「已失效」判定（J1-3，旅程走查 2026-11-20，用户拍板）：
+ * `waiting` 且从**首次申请**（`first_at`，同时是协议身份 request_id）起 7 天
+ * 没有成为好友 ⇒ 这条申请已失效。
+ *
+ * 为什么用 `first_at` 而不是 `last_sent_at`：补发引擎对方在线时每 30s 就可能
+ * 补发一次 ⇒ `last_sent_at` 恒新鲜 ⇒ 按"最后一次发送"判会**永不失效**。
+ * 「重新申请」按钮走 remove+restart（后端换全新 first_at）⇒ 时钟自然重置。
+ */
+export const FRIEND_REQUEST_EXPIRE_MS = 7 * 24 * 3600_000;
+
+export function outgoingRequestExpired(
+  req: { status: string; first_at: number },
+  now: number,
+): boolean {
+  return (
+    req.status === "waiting" &&
+    req.first_at > 0 &&
+    now - req.first_at >= FRIEND_REQUEST_EXPIRE_MS
+  );
+}

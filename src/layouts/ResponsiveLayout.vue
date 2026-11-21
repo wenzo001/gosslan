@@ -510,6 +510,28 @@ async function cancelOutgoingRequest(r: OutgoingFriendRequest) {
   }
 }
 
+/** J1-3：失效申请「重新申请」——后端作废旧申请（换新 first_at）后立即重发。 */
+async function restartOutgoingRequest(r: OutgoingFriendRequest) {
+  try {
+    await chat.removeOutgoingRequest(r.peer_id, true);
+    app.toast(t("friend.request.resendToast"), "success");
+  } catch (e) {
+    app.toastError(e, t("common.operationFail"));
+    void chat.refreshOutgoingRequests();
+  }
+}
+
+/** J1-3：移除一条出站申请（失效行 / 已撤回确认行）。 */
+async function removeOutgoingRequestRow(r: OutgoingFriendRequest) {
+  try {
+    await chat.removeOutgoingRequest(r.peer_id, false);
+    app.toast(t("friend.request.removedToast"), "success");
+  } catch (e) {
+    app.toastError(e, t("common.operationFail"));
+    void chat.refreshOutgoingRequests();
+  }
+}
+
 /** 资料页「发消息」：回到消息视图并打开与该好友的会话 */
 async function sendMessageTo(id: string) {
   profileFriend.value = null;
@@ -1182,6 +1204,8 @@ function onResizeEnd() {
               @accept="acceptRequest"
               @reject="rejectRequest"
               @cancel="cancelOutgoingRequest"
+              @restart="restartOutgoingRequest"
+              @remove="removeOutgoingRequestRow"
             />
           </OverlayScroll>
         </div>
