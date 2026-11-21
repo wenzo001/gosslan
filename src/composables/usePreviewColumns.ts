@@ -14,7 +14,7 @@
  * 那一帧的 CSS clamp / 固定高度仍然兜着，不会闪出第六行。
  */
 import { onBeforeUnmount, onMounted, ref, watch, type Ref } from "vue";
-import { shouldRemeasure } from "@/utils/remeasureGate";
+import { COLUMN_HYSTERESIS, bubbleColumnCap, shouldRemeasure } from "@/utils/remeasureGate";
 
 /** 列数的合理区间：低于 8 列连一个汉字加省略号都放不下，高于 400 只可能是量错了。 */
 const MIN_COLUMNS = 8;
@@ -44,20 +44,33 @@ const unitCache = new Map<string, number>();
  */
 export function allowedColumnWidth(el: HTMLElement): number | null {
   const cap = el.closest(".msg-stack");
-  if (!cap) return null;
-  const max = parseFloat(getComputedStyle(cap).maxWidth);
-  if (!Number.isFinite(max) || max <= 0) return null;
+  const parent = cap?.parentElement;
+  if (!cap || !parent) return null;
+  // ⚠️ **不要** `parseFloat(getComputedStyle(cap).maxWidth)`：`.msg-stack` 上写的是
+  // `max-width: min(68%, 560px)`，而 computed 值**不会被解析成 px** —— 真浏览器实测返回
+  // 字符串 `"min(68%, 560px)"`，`parseFloat` 得到 `NaN`。7.1.65 就是这么"修完还是抖"的：
+  // `NaN` 被当成「没有上限」，静默退回正文实测宽，闭环一点没动。
+  // 改成读两个令牌自己算 min（纯函数在 `utils/remeasureGate.ts`，有单测）。
+  const cs = getComputedStyle(cap);
+  const pct = parseFloat(cs.getPropertyValue("--gosslan-msg-max"));
+  const pxLimit = parseFloat(cs.getPropertyValue("--gosslan-msg-max-px"));
+  const pcs = getComputedStyle(parent);
+  const parentContent =
+    parent.clientWidth - (parseFloat(pcs.paddingLeft) || 0) - (parseFloat(pcs.paddingRight) || 0);
+  const capPx = bubbleColumnCap(pct, pxLimit, parentContent);
+  if (capPx == null) return null;
+  // 上限是**盒宽**；正文能用的要扣掉中间各层的左右内边距/边框（气泡的 `px-3` 在这里）。
   let inset = 0;
   for (let n: HTMLElement | null = el; n; n = n.parentElement) {
-    const cs = getComputedStyle(n);
+    const cs2 = getComputedStyle(n);
     inset +=
-      (parseFloat(cs.paddingLeft) || 0) +
-      (parseFloat(cs.paddingRight) || 0) +
-      (parseFloat(cs.borderLeftWidth) || 0) +
-      (parseFloat(cs.borderRightWidth) || 0);
+      (parseFloat(cs2.paddingLeft) || 0) +
+      (parseFloat(cs2.paddingRight) || 0) +
+      (parseFloat(cs2.borderLeftWidth) || 0) +
+      (parseFloat(cs2.borderRightWidth) || 0);
     if (n === cap) break;
   }
-  const width = max - inset;
+  const width = capPx - inset;
   return width > 0 ? width : null;
 }
 
@@ -143,6 +156,10 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
     lastFont = font;
     if (widthChanged) lastWidth = inner;
     const next = Math.max(MIN_COLUMNS, Math.min(MAX_COLUMNS, Math.floor(inner / unit)));
+    // 双保险（2026-11-21 第六刀）：宽度源换成上限之后闭环本该断了，但 ±1 列的翻转是
+    // 这条链**唯一**的可见形状（20px = 一行），留一条带子：差 1 列不跟。
+    // 代价是窗口按 1 列的步长变化时列数晚一拍更新，肉眼不可见。
+    if (columns.value > 0 && Math.abs(next - columns.value) < COLUMN_HYSTERESIS) return;
     if (next !== columns.value) columns.value = next;
   };
 

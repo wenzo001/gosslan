@@ -3,7 +3,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-import { WIDTH_EPSILON_PX, shouldRemeasure } from "./remeasureGate.ts";
+import {
+  COLUMN_HYSTERESIS,
+  WIDTH_EPSILON_PX,
+  bubbleColumnCap,
+  shouldRemeasure,
+} from "./remeasureGate.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 判据 1~5：门本身的算术
@@ -134,9 +139,22 @@ test("接线：列数宽度取「列宽上限」而不是正文实测宽（否�
     /el\.closest\("\.msg-stack"\)/.test(composable),
     "没有从 `.msg-stack` 取列宽上限 ⇒ 宽度源还是正文自己，闭环会复活",
   );
+  // ⚠️ 这里**反向**钉一条：绝不能 `parseFloat(getComputedStyle(cap).maxWidth)`。
+  // `.msg-stack` 上写的是 `max-width: min(68%, 560px)`，而 computed 值不会被解析成 px
+  // （真浏览器返回字符串 "min(68%, 560px)" ⇒ parseFloat = NaN）。7.1.65 就是这么
+  // "修完还是抖"的：NaN 被判成「没有上限」，静默退回正文实测宽。
   assert.ok(
-    /parseFloat\(getComputedStyle\(cap\)\.maxWidth\)/.test(composable),
-    "上限必须读 max-width 的**计算值**（px）；读百分比或常量都会与 CSS 分叉",
+    !/parseFloat\([^)]*maxWidth\)/.test(composable),
+    "又去 parseFloat(maxWidth) 了 —— min() 的 computed 值是字符串，parseFloat 得 NaN（7.1.65 的原病）",
+  );
+  assert.ok(
+    /getPropertyValue\("--gosslan-msg-max"\)/.test(composable) &&
+      /getPropertyValue\("--gosslan-msg-max-px"\)/.test(composable),
+    "上限必须读 --gosslan-msg-max / --gosslan-msg-max-px 两个令牌自己算 min",
+  );
+  assert.ok(
+    /bubbleColumnCap\(pct, pxLimit, parentContent\)/.test(composable),
+    "算了令牌却没交给 bubbleColumnCap —— 判据都在纯函数里，绕过去等于没测",
   );
   // ② 上限是盒宽，正文能用的要扣掉中间各层的左右内边距/边框（气泡的 px-3 就在这里）。
   assert.ok(
@@ -158,5 +176,47 @@ test("接线：列数宽度取「列宽上限」而不是正文实测宽（否�
     gutted,
     /const inner\s*=\s*allowedColumnWidth\(el\) \?\?/,
     "去掉优先关系后仍然命中 ⇒ 这条判据在空集上恒绿",
+  );
+});
+
+/**
+ * 判据 9（2026-11-21 第六刀补）：上限的算术。这条是**真行为判据**，不是源码扫描。
+ *
+ * 7.1.65 的病根是"上限取不到值"，所以三种形状都要钉：百分比能解、像素上限能夹、
+ * 两个都拿不到时**必须返回 null**（让调用方明确退回实测宽，而不是拿 0 或 NaN 去算列数）。
+ */
+test("列宽上限：min(百分数, 像素上限)，任一缺失不编数", () => {
+  // 用户机器上的真实读数：行内容宽 592、68% ⇒ 402.56（截图上气泡约 402）
+  assert.ok(Math.abs((bubbleColumnCap(68, 560, 592) ?? 0) - 402.56) < 0.01);
+  // 宽窗：像素上限 560 夹住
+  assert.equal(bubbleColumnCap(68, 560, 2000), 560);
+  // 只给百分数
+  assert.ok(Math.abs((bubbleColumnCap(68, Number.NaN, 592) ?? 0) - 402.56) < 0.01);
+  // 只给像素
+  assert.equal(bubbleColumnCap(Number.NaN, 560, 592), 560);
+  // 都拿不到 ⇒ null（调用方退回实测宽；**不许**返回 0，否则列数会被 clamp 到 MIN 8）
+  assert.equal(bubbleColumnCap(Number.NaN, Number.NaN, 592), null);
+  // 包含块量不到 ⇒ null
+  assert.equal(bubbleColumnCap(68, 560, 0), null);
+  assert.equal(bubbleColumnCap(68, 560, Number.NaN), null);
+  // 越界的百分数不采信（宁可退回实测宽，也不用 0.68% 这种脏值算列数）
+  assert.equal(bubbleColumnCap(0, Number.NaN, 592), null);
+  assert.equal(bubbleColumnCap(120, Number.NaN, 592), null);
+});
+
+/**
+ * 判据 10：迟滞带存在且是"差一列不跟"这个量级。
+ * 宽度源被改坏时（历史上真发生过）它是第二把锁，所以常量本身也要被钉住。
+ */
+test("列数迟滞带：吸收 ±1 列的翻转，又不能让真实 resize 卡住", () => {
+  assert.ok(
+    COLUMN_HYSTERESIS >= 2,
+    `迟滞带 ${COLUMN_HYSTERESIS} < 2 ⇒ 差一列的翻转照样会被采纳（那正是抖动的形状）`,
+  );
+  assert.ok(COLUMN_HYSTERESIS <= 4, `迟滞带 ${COLUMN_HYSTERESIS} 太大 ⇒ 缩窗口后列数会明显滞后`);
+  // 接线：measure() 真的用了它
+  assert.ok(
+    /Math\.abs\(next - columns\.value\) < COLUMN_HYSTERESIS/.test(src),
+    "measure() 里没有迟滞判据 ⇒ 这个常量是摆设",
   );
 });

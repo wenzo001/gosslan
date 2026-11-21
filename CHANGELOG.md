@@ -14,6 +14,19 @@
 
 ## [Unreleased]
 
+## [7.1.66] - 2026-11-21
+
+### Windows 抖动：7.1.65 的宽度源其实没生效（`min()` 的 computed 值不能 `parseFloat`）
+- **7.1.65 白改的根因**：`.msg-stack` 上写的是 `max-width: min(68%, 560px)`，而
+  `getComputedStyle(cap).maxWidth` 返回的**不是 px**，是字符串 `"min(68%, 560px)"`
+  ⇒ `parseFloat` 得 `NaN` ⇒ 被「`Number.isFinite` 判否」当成"没有上限"，静默退回正文实测宽。
+  代码看起来改了，闭环一点没动 —— 这就是"拉了 7.1.65 还在抖"。
+  （这条结论不是推的：本机 Chromium 里同一段 CSS 实测返回 `"min(68%, 560px)"`、`rect` 402.55。）
+- 现在读 `--gosslan-msg-max` / `--gosslan-msg-max-px` 两个令牌，按包含块内容宽自己算 `min`
+  （纯函数 `bubbleColumnCap`，单测钉住「只有百分数 / 只有像素 / 两者都没有 ⇒ null」三种形状）。
+- 另加一条**迟滞带**（`COLUMN_HYSTERESIS = 2`，差 1 列不跟）作第二把锁：±1 列正是这条闭环
+  唯一的可见形状（20px = 一行）。上限源哪天又被改坏，也不会立刻抖起来。
+
 ## [7.1.65] - 2026-11-21
 
 ### Windows 抖动第六刀：列数的宽度源换成「列宽上限」（这次是定案）

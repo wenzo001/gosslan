@@ -55,3 +55,55 @@ export function shouldRemeasure(prevWidth: number, nextWidth: number): boolean {
   if (!Number.isFinite(prevWidth) || prevWidth < 0) return true;
   return Math.abs(nextWidth - prevWidth) >= WIDTH_EPSILON_PX;
 }
+
+/**
+ * 气泡的**列宽上限**（px）—— 列数真正该用的宽度源（2026-11-21 第六刀）。
+ *
+ * ## 为什么不能用"正文自己的实测宽"
+ * 气泡是收缩贴合的：宽度 = min(内容宽, 上限)。于是"正文实测宽"里混着**截断结果**，
+ * 列数与宽度互为因果：
+ *
+ *     列数 ↓ ⇒ 截掉更多字 ⇒ 最宽那行变短 ⇒ 气泡变窄 ⇒ 实测宽变小 ⇒ 列数 ↓
+ *
+ * 反向同样成立（换行点被挪动时最宽行会变长）⇒ 稳定态是两个值来回翻。用户 7.1.64 在
+ * Windows 上量到：`spacer 831.23 ↔ 851.23`（正好一行 20px）、`scrollTop 404 ↔ 424`、
+ * 同一条正文文本每拍重写；把正文宽度锁死后抖动立即停止。
+ *
+ * ## 为什么不能 `parseFloat(getComputedStyle(cap).maxWidth)`
+ * CSS 里写的是 `max-width: min(68%, 560px)`，而 **computed 值不会被解析成 px** ——
+ * 真浏览器实测返回字符串 `"min(68%, 560px)"`，`parseFloat` 得到 `NaN`。
+ * 7.1.65 就是这么"修完还是抖"的：`NaN` 被当成"没有上限"，静默退回正文实测宽。
+ * ⇒ 读两个令牌（`--gosslan-msg-max` / `--gosslan-msg-max-px`）自己算 `min`。
+ *
+ * @param pct              `--gosslan-msg-max` 的百分数（`"68%"` → 68）
+ * @param pxLimit          `--gosslan-msg-max-px` 的像素值（`"560px"` → 560）
+ * @param parentContentW   上限元素的**包含块内容宽**（`max-width` 的百分比按它解析）
+ * @returns 上限（px）；一个有效输入都没有、或包含块量不到时返回 `null`（调用方退回实测宽）。
+ */
+export function bubbleColumnCap(
+  pct: number,
+  pxLimit: number,
+  parentContentW: number,
+): number | null {
+  if (!Number.isFinite(parentContentW) || parentContentW <= 0) return null;
+  let cap = Number.POSITIVE_INFINITY;
+  if (Number.isFinite(pct) && pct > 0 && pct <= 100) {
+    cap = Math.min(cap, (pct / 100) * parentContentW);
+  }
+  if (Number.isFinite(pxLimit) && pxLimit > 0) {
+    cap = Math.min(cap, pxLimit);
+  }
+  return Number.isFinite(cap) && cap > 0 ? cap : null;
+}
+
+/**
+ * 列数的**迟滞带**（2026-11-21）：差 1 列不跟。
+ *
+ * 为什么还要这一层：宽度源换成「上限」之后，截断↔宽度那条环本该从定义上断掉；
+ * 但它唯一的可见形状就是 **±1 列**（→ 一行 20px）。留一条带子把"差一列"吸收掉，
+ * 相当于给闭环上第二把锁 —— 万一上限源哪天又被改回实测宽（7.1.65 就发生过一次：
+ * `min()` 的 computed 值 `parseFloat` 得 NaN，静默退回实测宽），这里也不会立刻抖起来。
+ *
+ * 为什么不更大：真实 resize 一次动很多列；带子取 2 只挡住"差一列"这种量级。
+ */
+export const COLUMN_HYSTERESIS = 2;
