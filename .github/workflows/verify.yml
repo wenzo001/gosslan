@@ -408,7 +408,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          # 与 check-mobile.sh 的 TARGETS 一一对应：**发版是这两个 ABI，门禁就必须查这两个**。
+          # 只装 aarch64 的话：① 脚本会显式 exit 2（门禁不完整 = 没门禁）；
+          # ② 即便放行，整类"只在 32 位上成立"的错误（常量算术溢出、usize 截断）也永远看不见
+          # —— 2026-11-21 的 armv7 打包红就是这么漏的。
+          targets: aarch64-linux-android,armv7-linux-androideabi
 
       - uses: Swatinem/rust-cache@v2
         with:
