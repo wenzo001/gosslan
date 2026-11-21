@@ -1736,6 +1736,9 @@ pub struct PendingKeyRotation {
 /// 原数据库一个字节都不改，由用户在提示里选择恢复/导出诊断。
 #[derive(Debug, thiserror::Error)]
 pub enum StartupError {
+    /// J1-4b：启动期从备份恢复主库时，文件挪动失败（现库挪不开 / pending 顶不上）。
+    #[error("从备份恢复主库失败：{context}")]
+    BackupRestore { context: String },
     #[error("身份密钥读取失败（读库错误）：{source}")]
     IdentityRead { source: rusqlite::Error },
     #[error("身份密钥不完整：{detail}")]
@@ -1766,6 +1769,7 @@ impl StartupError {
     pub fn code(&self) -> &'static str {
         match self {
             StartupError::IdentityRead { .. } => "IDENTITY_READ_FAILED",
+            StartupError::BackupRestore { .. } => "BACKUP_RESTORE_FAILED",
             StartupError::IdentityIncomplete { .. } => "IDENTITY_INCOMPLETE",
             StartupError::IdentityCorrupt => "IDENTITY_CORRUPT",
             StartupError::IdentityPersist { .. } => "IDENTITY_PERSIST_FAILED",
@@ -1782,6 +1786,11 @@ impl StartupError {
     pub fn user_message(&self, app_data: &Path) -> String {
         let code = self.code();
         let body = match self {
+            StartupError::BackupRestore { context } => format!(
+                "从备份恢复主库时文件挪动失败：{context}\n\
+                 数据目录里留有 `.pre-restore-*.bak`（恢复前的原库）与 `.restore-pending`（恢复用库），\
+                 可人工交换后重试；或删除 `.restore-pending` 放弃本次恢复。"
+            ),
             StartupError::IdentityRead { .. }
             | StartupError::DeviceIdRead { .. }
             | StartupError::SettingRead { .. }
@@ -2193,6 +2202,26 @@ impl AppState {
             "gosslan.db".to_string()
         };
         let db_path = app_data.join(db_name);
+        // J1-4b（2026-11-21，用户拍板「私钥进备份，加密备份」）：用户从备份恢复时
+        // `import_user_backup` 只把解密后的库落到 `*.restore-pending`，**替换主库发生
+        // 在这里** —— 运行中的连接不能被背后换文件，重启后的启动早期是唯一安全点。
+        // 顺序：现库先挪成 `.pre-restore.bak`（恢复错了还能人工找回）→ pending 顶上
+        // → 日志留痕。pending 校验过的（integrity_check + user_version），这里不再验。
+        let pending_restore = crate::commands::pending_restore_path(&db_path);
+        if pending_restore.exists() {
+            let bak = db_path.with_extension(format!("pre-restore-{}.bak", crate::db::now_ms()));
+            if db_path.exists() {
+                std::fs::rename(&db_path, &bak).map_err(|e| StartupError::BackupRestore {
+                    context: format!("恢复备份：挪开现库失败: {e}"),
+                })?;
+            }
+            std::fs::rename(&pending_restore, &db_path).map_err(|e| {
+                StartupError::BackupRestore {
+                    context: format!("恢复备份：pending 顶上主库失败: {e}"),
+                }
+            })?;
+            eprintln!("[backup] 已从备份恢复主库（现库留作 {}）", bak.display());
+        }
         // 必须在 `db::init` **之前**取：init 会把不存在的文件创建出来、写出 schema，
         // 之后再 stat 永远 > 0 —— 那个读数**不能**用来判「主库是否可用」。
         // 返回值同时供两处用：`db_preexisting` 只进日志，`pre_init_bytes` 决定

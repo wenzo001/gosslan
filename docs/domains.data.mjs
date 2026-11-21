@@ -167,6 +167,10 @@ export default {
       //    不能被两个域认领（判据 B/C）。
       paths: ["src-tauri/src/device_auth.rs", "src-tauri/src/device_auth", "src-tauri/src/share.rs",
         "src-tauri/src/rp_key_backup.rs", "src-tauri/src/commands/rp_key_backup.rs",
+        // J1-4b（2026-11-21）：用户数据全量备份——加密外壳（user_backup.rs）与命令层
+        // （VACUUM INTO + 信封明文化 + pending 替换）。与 rp_key_backup 同族：备份里
+        // 直接持/搬 RP 私钥（导出时解信封）与身份私钥（整库快照天然含 settings 两行）。
+        "src-tauri/src/user_backup.rs", "src-tauri/src/commands/user_backup.rs",
         "src-tauri/src/incoming_share.rs", "src-tauri/src/rp_key_store.rs", "src-tauri/src/rp_key_store",
         "src-tauri/src/commands/bots.rs"],
       invariants: [],

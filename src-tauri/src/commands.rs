@@ -158,6 +158,9 @@ include!("commands/device_auth.rs");
 include!("commands/external_share.rs");
 include!("commands/rp_key_backup.rs");
 
+// ---- user_backup.rs ----
+include!("commands/user_backup.rs");
+
 // ---- logs.rs ----
 include!("commands/logs.rs");
 
