@@ -216,7 +216,17 @@ test("列数迟滞带：吸收 ±1 列的翻转，又不能让真实 resize 卡�
   assert.ok(COLUMN_HYSTERESIS <= 4, `迟滞带 ${COLUMN_HYSTERESIS} 太大 ⇒ 缩窗口后列数会明显滞后`);
   // 接线：measure() 真的用了它
   assert.ok(
-    /Math\.abs\(next - columns\.value\) < COLUMN_HYSTERESIS/.test(src),
+    /hasMeasured && Math\.abs\(next - columns\.value\) < COLUMN_HYSTERESIS/.test(src),
     "measure() 里没有迟滞判据 ⇒ 这个常量是摆设",
+  );
+  // ⚠️ 迟滞带**只对已采纳过的真实值**生效：首次测量若被带子挡掉，基线已经提交 ⇒
+  // 之后所有回调都在宽度门返回，列数永久停在 fallback 估算值上（review 抓到的坑）。
+  assert.ok(
+    /if \(hasMeasured && /.test(src),
+    "迟滞带没有 hasMeasured 前置 ⇒ 首次真实测量可能被挡，列数永久停在估算值",
+  );
+  assert.ok(
+    /hasMeasured = false;/.test(src),
+    "元素换掉时没复位 hasMeasured ⇒ 新元素的首测会被旧元素的「已测过」状态挡住",
   );
 });

@@ -303,10 +303,13 @@ pub async fn import_user_backup(
         drop(snap);
         // 校验全过 ⇒ 临时文件转正成 pending：从这一刻起"存在"与"可信"才是同一件事
         //（启动段只按存在性判断，见上一段注释）。
-        let tmp_path = tmp.keep();
-        std::fs::rename(&tmp_path, &pending).map_err(|e| {
+        // ⚠️ **先 rename，再放行守卫**（2026-11-21 review）：顺序反过来的话，
+        // rename 失败（Windows 共享冲突 / 权限 / 进程被杀）会留下一个含**明文私钥**的
+        // `*.restore-tmp` 永久躺在 app_data 里 —— 守卫的用处恰恰是覆盖这种路径。
+        std::fs::rename(tmp.path(), &pending).map_err(|e| {
             error_codes::coded(error_codes::RP_KEY_BACKUP_IO, format!("落 pending 失败: {e}"))
         })?;
+        tmp.keep();
         s.logger.info(
             "backup",
             format!(

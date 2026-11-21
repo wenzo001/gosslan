@@ -83,9 +83,40 @@ pub async fn set_downloads_dir(
         ));
     }
     let s = state.inner().clone();
+    // 旧目录要在**换掉之前**取出来（换完就只剩新值了）：它是 `files_present` 白名单的
+    // 一部分 —— 改过接收目录之后，旧目录里仍在的文件还必须能被认出来。
+    // ⚠️ 先取这里、再进 spawn_blocking 里取 db 锁：两把锁不许嵌套（`db` 是全局热锁，
+    // 持有期间做任何别的事都是在给自己排长队）。
+    let old_dir = {
+        let cur = s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner());
+        cur.to_string_lossy().to_string()
+    };
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            let history = crate::user_dirs::parse_history(crate::db::get_setting(
+                &dbc,
+                crate::user_dirs::RECEIVE_HISTORY_KEY,
+            ));
+            let next = crate::user_dirs::push_recent(
+                history,
+                Some(&old_dir),
+                crate::user_dirs::RECEIVE_HISTORY_MAX,
+            );
+            match serde_json::to_string(&next) {
+                Ok(json) => {
+                    if let Err(e) =
+                        crate::db::set_setting(&dbc, crate::user_dirs::RECEIVE_HISTORY_KEY, &json)
+                    {
+                        // 记不上只是"旧目录的文件以后会被判不在"，不该阻断换目录本身。
+                        s.logger
+                            .warn("files", format!("接收目录历史写不进去: {e}"));
+                    }
+                }
+                Err(e) => s
+                    .logger
+                    .warn("files", format!("接收目录历史序列化失败: {e}")),
+            }
             // 与共享目录同一套处理：接收目录也是"用户自选的目录"，沙盒里同样需要书签
             crate::user_dirs::store(&dbc, crate::user_dirs::RECEIVE, &path)?;
         }

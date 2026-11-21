@@ -1983,6 +1983,72 @@ fn persist_identity(conn: &Connection, id: &Identity) -> Result<(), StartupError
     Ok(())
 }
 
+/// 把 `*.restore-pending` 换成主库：现库 → `.bak`，pending → 主库。
+///
+/// ## 为什么单独一个函数
+/// 这段是**唯一会动主库**的代码，五个失败点各有一种坏结局，内联在 `init` 里既读不出
+/// 顺序、也没法单独判。抽出来之后失败语义就一句话：**要么全换、要么一个字没动**。
+///
+/// ## 顺序为什么是"伴生文件 → 主库 → pending"
+/// `-wal` / `-shm` 属于**旧库**。把旧 WAL 留在新库名字下，SQLite 打开新库时会按名去找
+/// 同目录的 WAL —— 上一次非正常退出留下的帧就成了"恢复完库是坏的"的来源（2026-11-21
+/// 用户报的那次恢复失败就是这个形状的近亲）。所以：
+/// 1. 伴生文件先跟着走，挪不动就**放弃本次恢复**（主库这时一个字没动）；
+/// 2. 主库挪成 `.bak`，失败则把伴生文件挪回去；
+/// 3. pending 顶上，失败则把主库与伴生文件都挪回去（不能让用户停在没有主库的状态）。
+fn swap_in_pending_restore(
+    db_path: &std::path::Path,
+    pending: &std::path::Path,
+) -> Result<std::path::PathBuf, StartupError> {
+    let bak = db_path.with_extension(format!("pre-restore-{}.bak", crate::db::now_ms()));
+    let mut moved: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    if db_path.exists() {
+        for suffix in ["-wal", "-shm"] {
+            let mut from = db_path.as_os_str().to_os_string();
+            from.push(suffix);
+            let from = std::path::PathBuf::from(from);
+            if !from.exists() {
+                continue;
+            }
+            let mut to = bak.as_os_str().to_os_string();
+            to.push(suffix);
+            let to = std::path::PathBuf::from(to);
+            if let Err(e) = std::fs::rename(&from, &to) {
+                for (f, t) in moved.iter().rev() {
+                    let _ = std::fs::rename(t, f);
+                }
+                return Err(StartupError::BackupRestore {
+                    context: format!(
+                        "恢复备份：{} 挪不动（旧 WAL 会污染新库，本次放弃恢复）: {e}",
+                        from.display()
+                    ),
+                });
+            }
+            moved.push((from, to));
+        }
+        if let Err(e) = std::fs::rename(db_path, &bak) {
+            for (f, t) in moved.iter().rev() {
+                let _ = std::fs::rename(t, f);
+            }
+            return Err(StartupError::BackupRestore {
+                context: format!("恢复备份：挪开现库失败: {e}"),
+            });
+        }
+    }
+    if let Err(e) = std::fs::rename(pending, db_path) {
+        // 回滚：先把主库挪回来，再让伴生文件归位（best effort，但要尽力而为 ——
+        // 停在一个"没有主库"的状态比恢复失败严重得多）。
+        let _ = std::fs::rename(&bak, db_path);
+        for (f, t) in moved.iter().rev() {
+            let _ = std::fs::rename(t, f);
+        }
+        return Err(StartupError::BackupRestore {
+            context: format!("恢复备份：pending 顶上主库失败: {e}"),
+        });
+    }
+    Ok(bak)
+}
+
 /// 启动段换库前的最后一道闸：`*.restore-pending` 必须是个**打得开、并且版本认得**的库。
 ///
 /// 为什么需要（2026-11-21，与导入端同时改）：这段代码是**唯一会动主库**的地方，它此前
@@ -2250,34 +2316,7 @@ impl AppState {
             // 验不过就原地留着 pending、主库不动 —— 宁可这次不恢复，也不换一个打不开的库。
             match restore_pending_is_trustworthy(&pending_restore) {
                 Ok(()) => {
-                    let bak =
-                        db_path.with_extension(format!("pre-restore-{}.bak", crate::db::now_ms()));
-                    if db_path.exists() {
-                        // ⚠️ `-wal` / `-shm` 属于**旧库**：只挪主库文件、把它们留在原地，SQLite
-                        // 打开新库时会按名去找同目录的 WAL —— 上一次非正常退出留下的帧就成了
-                        // "恢复完库是坏的"的来源。跟着旧库一起改名（名字仍成对，人工排查也认得）。
-                        for suffix in ["-wal", "-shm"] {
-                            let mut from = db_path.clone().into_os_string();
-                            from.push(suffix);
-                            let mut to = bak.clone().into_os_string();
-                            to.push(suffix);
-                            let (from, to) =
-                                (std::path::PathBuf::from(from), std::path::PathBuf::from(to));
-                            if from.exists() {
-                                let _ = std::fs::rename(&from, &to);
-                            }
-                        }
-                        std::fs::rename(&db_path, &bak).map_err(|e| {
-                            StartupError::BackupRestore {
-                                context: format!("恢复备份：挪开现库失败: {e}"),
-                            }
-                        })?;
-                    }
-                    std::fs::rename(&pending_restore, &db_path).map_err(|e| {
-                        StartupError::BackupRestore {
-                            context: format!("恢复备份：pending 顶上主库失败: {e}"),
-                        }
-                    })?;
+                    let bak = swap_in_pending_restore(&db_path, &pending_restore)?;
                     eprintln!("[backup] 已从备份恢复主库（现库留作 {}）", bak.display());
                 }
                 // 验不过就原地留着 pending、主库不动 —— 宁可这次不恢复，也不换一个打不开的库。

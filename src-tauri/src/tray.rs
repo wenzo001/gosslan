@@ -430,6 +430,43 @@ const FLASH_STEP_MS: u64 = 350;
 /// 闪烁代号：每次启动/取消都 +1，后台线程只在代号没变时继续。
 static FLASH_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// 把托盘图标设成「原图 / 带红点」，并回报是否真的设上了。
+#[cfg(not(target_os = "macos"))]
+fn apply_tray_icon<R: tauri::Runtime>(
+    tray: &tauri::tray::TrayIcon<R>,
+    plain: &[u8],
+    dotted: &[u8],
+    w: u32,
+    h: u32,
+    with_dot: bool,
+) -> bool {
+    let rgba = if with_dot {
+        dotted.to_vec()
+    } else {
+        plain.to_vec()
+    };
+    tray.set_icon(Some(tauri::image::Image::new_owned(rgba, w, h)))
+        .is_ok()
+}
+
+/// 按**真实未读数**把图标落回正确的那一张（闪烁收手 / 被打断 / 未读清零都走它）。
+#[cfg(not(target_os = "macos"))]
+fn restore_tray_icon<R: tauri::Runtime>(
+    tray: &tauri::tray::TrayIcon<R>,
+    plain: &[u8],
+    dotted: &[u8],
+    w: u32,
+    h: u32,
+) {
+    let with_dot = LAST_UNREAD.load(std::sync::atomic::Ordering::Relaxed) > 0;
+    if apply_tray_icon(tray, plain, dotted, w, h, with_dot) {
+        TRAY_ICON_STATE.store(
+            if with_dot { 2 } else { 1 },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
 /// 新消息到达时**闪托盘图标**（用户 2026-11-21：「右下角那个图标要闪」）。
 ///
 /// ## 为什么闪的是托盘图标
@@ -466,18 +503,18 @@ pub fn flash_unread<R: tauri::Runtime + 'static>(app: &tauri::AppHandle<R>) {
                 if FLASH_GEN.load(std::sync::atomic::Ordering::SeqCst) != gen {
                     return; // 用户已经回来了 / 又来了新的一轮
                 }
-                let rgba = if with_dot {
-                    dotted.clone()
-                } else {
-                    plain.clone()
-                };
-                let _ = tray.set_icon(Some(tauri::image::Image::new_owned(rgba, w, h)));
+                let _ = apply_tray_icon(&tray, &plain, &dotted, w, h, with_dot);
+                // ⚠️ 写完**再验一次**：`stop_flash` / 未读清零可能正好落在"检查"与
+                // `set_icon` 之间 —— 那一帧会把刚归位的图标又画成闪烁帧（未读 0 却留红点）。
+                if FLASH_GEN.load(std::sync::atomic::Ordering::SeqCst) != gen {
+                    restore_tray_icon(&tray, &plain, &dotted, w, h);
+                    return;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(FLASH_STEP_MS));
             }
             // 收尾：回到"未读仍在"的真实状态（熄灭那一帧绝不能留在托盘上）。
             if FLASH_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen {
-                let _ = tray.set_icon(Some(tauri::image::Image::new_owned(dotted, w, h)));
-                TRAY_ICON_STATE.store(2, std::sync::atomic::Ordering::Relaxed);
+                restore_tray_icon(&tray, &plain, &dotted, w, h);
             }
         });
     if let Err(e) = spawned {
@@ -501,18 +538,9 @@ pub fn stop_flash<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
         return;
     };
     let (w, h) = (base.width(), base.height());
-    let unread = LAST_UNREAD.load(std::sync::atomic::Ordering::Relaxed);
-    let icon = if unread > 0 {
-        tauri::image::Image::new_owned(dot::with_unread_dot(base.rgba(), w, h), w, h)
-    } else {
-        base.clone()
-    };
-    if tray.set_icon(Some(icon)).is_ok() {
-        TRAY_ICON_STATE.store(
-            if unread > 0 { 2 } else { 1 },
-            std::sync::atomic::Ordering::Relaxed,
-        );
-    }
+    let plain = base.rgba().to_vec();
+    let dotted = dot::with_unread_dot(&plain, w, h);
+    restore_tray_icon(&tray, &plain, &dotted, w, h);
 }
 
 /// macOS：托盘图标不参与未读表达（那边走 Dock 数字角标），闪烁按平台习惯不做。

@@ -108,6 +108,15 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
   let lastWidth = -1;
   /** 上次测量时的字体指纹（`getComputedStyle().font`）。宽度之外**唯一**能让列数变的输入。 */
   let lastFont = "";
+  /**
+   * 是否已经有**一次真实测量被采纳过**。
+   *
+   * 迟滞带只对"已有真实值"生效（2026-11-21 review）：`columns` 的初值是
+   * `fallback`（`textColumns()` 的估算），首次真实测量若只差 1 列就被带子挡掉，
+   * 而基线（`lastWidth`/`lastFont`）已经提交 ⇒ 之后所有 RO 回调在宽度门就返回了，
+   * 列数会**永久**停在估算值上。所以首次必须无条件采纳。
+   */
+  let hasMeasured = false;
 
   /**
    * ⚠️ 2026-11-21（Windows 振荡根因，第六刀定案）：宽度源必须是「列宽上限」。
@@ -159,8 +168,10 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
     // 双保险（2026-11-21 第六刀）：宽度源换成上限之后闭环本该断了，但 ±1 列的翻转是
     // 这条链**唯一**的可见形状（20px = 一行），留一条带子：差 1 列不跟。
     // 代价是窗口按 1 列的步长变化时列数晚一拍更新，肉眼不可见。
-    if (columns.value > 0 && Math.abs(next - columns.value) < COLUMN_HYSTERESIS) return;
+    // ⚠️ 只对"已采纳过真实值"生效：首次测量必须无条件落地（否则会永久停在估算值上）。
+    if (hasMeasured && Math.abs(next - columns.value) < COLUMN_HYSTERESIS) return;
     if (next !== columns.value) columns.value = next;
+    hasMeasured = true;
   };
 
   onMounted(() => {
@@ -180,8 +191,10 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
       if (prev && observer) observer.unobserve(prev);
       if (el && observer) observer.observe(el);
       // 新元素的宽度与旧元素无关 ⇒ 必须重新建立基线，否则宽度差落在容差内会被误跳过。
+      // `hasMeasured` 一起复位：新元素第一次量到的值必须落地，不能被迟滞带挡掉。
       lastWidth = -1;
       lastFont = "";
+      hasMeasured = false;
       measure();
     },
   );

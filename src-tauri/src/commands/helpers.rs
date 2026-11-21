@@ -345,30 +345,44 @@ pub async fn files_present(
 ) -> Result<Vec<bool>, String> {
     let s = state.inner().clone();
     tokio::task::spawn_blocking(move || -> Result<Vec<bool>, String> {
-        // downloads 目录不可达不算"全部不在"的静默分支：留痕后按不可达处理
-        //（棘轮 B4-F1：`.ok()` 把失败变成"没有过这次检查"，连痕迹都不留）。
-        let downloads = match std::fs::canonicalize(
-            s.downloads_dir
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_path(),
-        ) {
-            Ok(dir) => Some(dir),
-            Err(e) => {
-                s.logger.warn(
-                    "file",
-                    format!("downloads 目录不可达，存在性探测按全部不在处理: {e}"),
-                );
-                None
-            }
+        // ⚠️ 白名单必须包含**历史上用过的接收目录**（2026-11-21 用户发现的真缺陷）：
+        // 只认当前目录时，用户改过接收目录之后，旧目录里仍在的文件全被判「不在本机」
+        // —— 群文件面板因此给它们打上"已不在本机"并拦住打开入口，而文件其实还在盘上。
+        //
+        // 目录**不可达不算"全部不在"的静默分支**：留痕后跳过（棘轮 B4-F1：`.ok()` 把失败
+        // 变成"没有过这次检查"，连痕迹都不留）。
+        let mut roots: Vec<std::path::PathBuf> = Vec::new();
+        let current = s
+            .downloads_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        match std::fs::canonicalize(&current) {
+            Ok(dir) => roots.push(dir),
+            Err(e) => s.logger.warn(
+                "file",
+                format!("downloads 目录不可达，存在性探测按全部不在处理: {e}"),
+            ),
+        }
+        // 历史目录：读库是在阻塞池里做的（本函数体在 `spawn_blocking` 内），不会卡主线程。
+        let history = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            crate::user_dirs::parse_history(crate::db::get_setting(
+                &dbc,
+                crate::user_dirs::RECEIVE_HISTORY_KEY,
+            ))
         };
+        for old in history {
+            if let Ok(dir) = std::fs::canonicalize(&old) {
+                if !roots.iter().any(|d| d == &dir) {
+                    roots.push(dir);
+                }
+            }
+        }
         Ok(paths
             .iter()
             .map(|p| match std::fs::canonicalize(p) {
-                Ok(file) => {
-                    let under = downloads.as_ref().map(|d| file.starts_with(d)).unwrap_or(false);
-                    under && file.is_file()
-                }
+                Ok(file) => roots.iter().any(|d| file.starts_with(d)) && file.is_file(),
                 Err(_) => false,
             })
             .collect())

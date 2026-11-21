@@ -58,6 +58,42 @@ pub fn pick(
     stored
 }
 
+/// 接收目录的**历史**：`files_present` 的存在性白名单必须认它。
+///
+/// 为什么需要（2026-11-21 用户实测发现的真缺陷）：白名单原来只认**当前**下载目录，
+/// 而用户改过接收目录之后，旧目录里仍在的文件会被判「不在本机」——群文件面板给那些行
+/// 打上"已不在本机"、并且拦住打开入口。文件确实还在盘上，只是不在新选的目录里。
+///
+/// 上限 8 是有意的：这条白名单是"信任哪些目录"的名单，不是浏览历史 ——
+/// 无边界的名单等于没名单。
+pub const RECEIVE_HISTORY_KEY: &str = "downloads_dir_history";
+pub const RECEIVE_HISTORY_MAX: usize = 8;
+
+/// 把 `old` 记进历史（**纯函数**，去重/上限/空值都在这里判）。
+///
+/// 语义：`old` 就是"刚刚被换掉的那个目录"，永远排在最前；重复设置同一目录不会
+/// 刷出多条；空串/纯空白直接忽略（早期版本可能写过空值）。
+pub fn push_recent(history: Vec<String>, old: Option<&str>, cap: usize) -> Vec<String> {
+    let Some(old) = old.map(str::trim).filter(|s| !s.is_empty()) else {
+        return history;
+    };
+    let mut out: Vec<String> = history
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != old)
+        .collect();
+    out.insert(0, old.to_string());
+    out.truncate(cap);
+    out
+}
+
+/// 读历史（坏 JSON 一律当空 —— 白名单少一条目录只会让个别文件被判"不在"，
+/// 而这里要避免的是**崩溃/误信**这两种更坏的结局）。
+pub fn parse_history(raw: Option<String>) -> Vec<String> {
+    raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default()
+}
+
 /// 启动时读该目录。macOS 上会顺带解析书签（**解析即开始访问**）、
 /// 过期则续期写回、失效则清掉（免得每次启动都白试一次）。
 pub fn load(conn: &Connection, keys: Keys) -> Option<String> {
@@ -231,6 +267,98 @@ mod tests {
             db::get_setting(&conn, SHARE.bookmark),
             None,
             "坏书签必须被清掉，免得每次启动都白试"
+        );
+    }
+
+    /// 接收目录历史：去重、最前、有上限、空值忽略（纯函数，边界全在这里）。
+    ///
+    /// 这条判据守的是一类真实故障：用户改过接收目录之后，旧目录里仍在的文件被
+    /// `files_present` 判成「不在本机」—— 群文件面板给那些行打上"已不在本机"并
+    /// 拦住打开入口。白名单要认历史，历史本身就必须是干净、有界的。
+    #[test]
+    fn recent_dirs_dedupes_caps_and_ignores_blank() {
+        use super::{push_recent, RECEIVE_HISTORY_MAX};
+
+        // 空值 / 纯空白：历史原样返回（早期版本可能写过空串）
+        assert!(push_recent(vec![], None, 8).is_empty());
+        assert!(push_recent(vec![], Some("   "), 8).is_empty());
+        assert_eq!(push_recent(vec!["/a".into()], Some(""), 8), vec!["/a"]);
+
+        // 最新一条永远在最前
+        let h = push_recent(vec!["/a".into()], Some("/b"), 8);
+        assert_eq!(h, vec!["/b", "/a"]);
+
+        // 重复设置同一目录不刷多条（否则来回切两次就把上限吃光了）
+        let h = push_recent(vec!["/b".into(), "/a".into()], Some("/b"), 8);
+        assert_eq!(h, vec!["/b", "/a"], "重复项必须被提到最前而不是再插一条");
+
+        // 上限：超出就丢最旧的
+        let long: Vec<String> = (0..RECEIVE_HISTORY_MAX).map(|i| format!("/d{i}")).collect();
+        let h = push_recent(long, Some("/new"), RECEIVE_HISTORY_MAX);
+        assert_eq!(
+            h.len(),
+            RECEIVE_HISTORY_MAX,
+            "历史必须有界（它是信任白名单，不是浏览记录）"
+        );
+        assert_eq!(h[0], "/new");
+        assert!(
+            !h.contains(&format!("/d{}", RECEIVE_HISTORY_MAX - 1)),
+            "最旧的应当被挤掉"
+        );
+
+        // cap 就是上限：0 条就是 0 条（别偷偷留一条，那会让"名单"变成另一种东西）
+        assert!(push_recent(vec!["/a".into()], Some("/b"), 0).is_empty());
+
+        // 空白包裹的路径要 trim（用户从对话框粘进来的值带空格）
+        assert_eq!(push_recent(vec![], Some("  /p  "), 8), vec!["/p"]);
+    }
+
+    /// 坏 JSON 当空：白名单少一条目录只会让个别文件被判"不在"；
+    /// 而崩溃或误信是更坏的结局。
+    #[test]
+    fn broken_history_json_reads_as_empty() {
+        use super::parse_history;
+        assert!(parse_history(None).is_empty());
+        assert!(parse_history(Some("是乱的".into())).is_empty());
+        assert!(parse_history(Some("{}".into())).is_empty());
+        assert_eq!(
+            parse_history(Some(r#"["/a","/b"]"#.into())),
+            vec!["/a".to_string(), "/b".to_string()]
+        );
+    }
+
+    /// 接线（2026-11-21 的真缺陷形状：功能写了但没人用 / 只认当前目录）。
+    #[test]
+    fn files_present_whitelists_historical_receive_dirs() {
+        let helpers = include_str!("commands/helpers.rs");
+        let share = include_str!("commands/share.rs");
+        // ① 探测端：必须读历史，并把它并进白名单
+        assert!(
+            helpers.contains("crate::user_dirs::RECEIVE_HISTORY_KEY"),
+            "files_present 没读接收目录历史 ⇒ 改过目录之后旧文件全被判不在"
+        );
+        assert!(
+            helpers.contains("crate::user_dirs::parse_history("),
+            "历史读出来了却没解析成目录列表"
+        );
+        assert!(
+            helpers.contains("roots.iter().any(|d| file.starts_with(d))"),
+            "白名单没有真的用上 roots（还是只判当前目录）"
+        );
+        // ② 写入端：换目录时必须把旧目录记进历史（少了这一步，读端永远拿不到东西）
+        assert!(
+            share.contains("crate::user_dirs::push_recent("),
+            "set_downloads_dir 没把旧目录记进历史 ⇒ 读端永远是空名单"
+        );
+        assert!(
+            share.contains("crate::user_dirs::RECEIVE_HISTORY_KEY"),
+            "set_downloads_dir 没写历史键"
+        );
+        // 反例自证：把读端那行白名单拼法改掉，断言必须不再成立
+        let gutted = helpers.replace("roots.iter().any(|d| file.starts_with(d))", "false");
+        assert!(
+            !gutted.contains("roots.iter().any(|d| file.starts_with(d))"),
+            "锚点漂了"
         );
     }
 

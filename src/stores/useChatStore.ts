@@ -470,7 +470,7 @@ export const useChatStore = defineStore("chat", () => {
   Object.assign(apiRegistry, groupsModule);
   const mediaModule = createMediaModule(ctx);
   Object.assign(apiRegistry, mediaModule);
-  const { maybeNotify, ensureRemindChannel, handleIncomingNudge, handleIncomingRemind, routeNotificationClick, consumeDesktopNoticeClick, shakeSignal, nudgeNotice, notifMap, cancelNotificationTimers, subscribeTrayEvents, subscribeBotEvents } = notificationsModule;
+  const { maybeNotify, ensureRemindChannel, handleIncomingNudge, handleIncomingRemind, routeNotificationClick, shakeSignal, nudgeNotice, notifMap, cancelNotificationTimers, subscribeTrayEvents, subscribeBotEvents } = notificationsModule;
   // 托盘图标被点 ⇒ 跳第一条未读（用户 2026-11-16）。订阅在 store 初始化时做一次。
   void subscribeTrayEvents();
   // 后台轮询取到机器人消息 ⇒ 系统通知（只给摘要，不放正文）。
@@ -901,7 +901,13 @@ export const useChatStore = defineStore("chat", () => {
     // ⚠️ **平台分叉是必须的**（2026-11-21 查实）：`tauri-plugin-notification` 2.4.0 的
     // Rust `generate_handler!` 只注册了 notify / request_permission / is_permission_granted，
     // 前端 `onAction` 走的 `plugin:notification|registerListener` **根本不存在** ⇒
-    // 桌面端每次启动都打一条 "Command not found" 红字，而且永远收不到点击。
+    // 桌面端每次启动都打一条 "Command not found" 红字。
+    //
+    // 桌面端的点击**本来就有**，而且更精确：Rust 在弹通知时把 conv_id/msg_id 一起给了
+    // （`notifications.rs::show_click_impl` 的 on_click），点下去发 `notification-clicked`，
+    // 前端 `onNotificationClicked` → `routeNotificationClick` 一条路。这里只是
+    // 不要去注册那条不存在的命令 —— **不要**再补"窗口激活就猜最近一条"之类的近似：
+    // 那会和精确事件抢同一个动作（先被近似拽走一条，再被精确事件拉回来）。
     // 移动端那条桥是真的（Android 有 actionPerformed），所以只在移动端注册。
     if (app.isMobile) {
     onAction((n) => {
@@ -949,25 +955,6 @@ export const useChatStore = defineStore("chat", () => {
       // 注册失败只影响"点通知跳转"，不影响其余事件；留痕而不是静默吞掉。
       console.error("[chat] 通知点击回调注册失败：点系统通知不会定位到会话", e);
     });
-    } else {
-      /**
-       * 桌面端：**近似**点击定位（用户 2026-11-21 拍板）。
-       *
-       * 插件没有点击回调 ⇒ 换一个能拿到的信号：窗口**被激活**。规则在
-       * `consumers` 那一侧：弹过通知之后 20 秒内激活才算（见 notifications.ts 的
-       * `consumeDesktopNoticeClick`），超出窗口、或这段时间根本没弹过通知，都不猜。
-       *
-       * 为什么用 `focus` 而不是 `visibilitychange`：从托盘/任务栏点回来时文档一直可见
-       * （只是窗口失焦），`visibilitychange` 根本不发；`focus` 才会到。
-       */
-      const onWindowFocus = () => {
-        const hit = consumeDesktopNoticeClick();
-        if (!hit) return;
-        void api.focusWindow();
-        routeNotificationClick("chat", hit.convId, hit.msgId);
-      };
-      window.addEventListener("focus", onWindowFocus);
-      scope.onDispose(() => window.removeEventListener("focus", onWindowFocus));
     }
     // 窗口重新可见：补发当前会话已读回执 + 冲刷后台期间滞留的消息批次
     // （具名函数 + 成对 removeEventListener：匿名 handler 摘不掉，重复 init 会叠加）

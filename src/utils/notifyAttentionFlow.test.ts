@@ -122,18 +122,33 @@ test("托盘闪烁：实现了、接在提醒出口、用户回来收手", () =>
     "闪烁节奏必须是纯函数（真跑要托盘运行时，那一层测不到）",
   );
   assert.match(trayRs, /for with_dot in flash_plan\(FLASH_ROUNDS\)/, "线程没用那份计划 ⇒ 计划是摆设");
-  // 收尾必须落回"有未读"的真实状态：停在熄灭帧 = 托盘上留下没有红点的图标
+  // 收尾必须落回"有未读"的真实状态：停在熄灭帧 = 托盘上留下没有红点的图标。
+  // 落位只有一个家（`restore_tray_icon` 按 LAST_UNREAD 选图），别在这里又写一份。
   assert.match(
     trayRs,
-    /if FLASH_GEN\.load\(std::sync::atomic::Ordering::SeqCst\) == gen \{[\s\S]{0,200}?set_icon/,
+    /if FLASH_GEN\.load\(std::sync::atomic::Ordering::SeqCst\) == gen \{[\s\S]{0,200}?restore_tray_icon\(/,
     "闪完没有按真实未读落位（最后一帧会留在熄灭状态）",
+  );
+  // 写完再复核一次代号：stop_flash / 未读清零可能正好落在 check 与 set_icon 之间。
+  assert.match(
+    trayRs,
+    /apply_tray_icon\(&tray, &plain, &dotted, w, h, with_dot\);[\s\S]{0,400}?FLASH_GEN\.load\([\s\S]{0,120}?restore_tray_icon\(/,
+    "闪烁帧写完后没有再验代号 ⇒ 可能在『已经归位』之后又把红点画回去",
   );
 
   // ② 触发点：只此一处，且在"看不见窗口"的分支里
   assert.match(
     networkRs,
-    /let seen = win\.is_visible\(\)[\s\S]{0,120}?if !seen \{\s*crate::tray::flash_unread\(&app\);/,
+    /let seen = win\.is_visible\(\)[\s\S]{0,160}?if !seen \{[\s\S]{0,320}?crate::tray::flash_unread\(&app2\)/,
     "request_attention 没有在『窗口不可见/未聚焦』时补闪托盘（任务栏隐藏时这条链是空的）",
+  );
+  // ⚠️ 托盘重绘是重活（逐像素 + set_icon）：必须丢进阻塞池。
+  // 曾经写成同步命令里直接调 ⇒ `blocking_commands_run_off_the_main_thread` 红；
+  // 只加 `(async)` ⇒ `worker_bound_heavy_commands_do_not_grow` 现数超上限。两条都得过。
+  assert.match(
+    networkRs,
+    /spawn_blocking\(move \|\| crate::tray::flash_unread\(&app2\)\)/,
+    "托盘闪烁没进 spawn_blocking ⇒ R-18 那两条棘轮会红（主线程 / worker 占用）",
   );
   assert.equal(
     (networkRs.match(/crate::tray::flash_unread\(/g) ?? []).length,
@@ -155,54 +170,34 @@ test("托盘闪烁：实现了、接在提醒出口、用户回来收手", () =>
 });
 
 /**
- * 桌面端点通知的**近似**定位（用户 2026-11-21 拍板）。
+ * 桌面端点通知：**只留一条路**（2026-11-21，含一次自我纠正）。
  *
- * 先钉住一个事实：`tauri-plugin-notification` 2.4.0 的 Rust `generate_handler!` 只有
- * notify / request_permission / is_permission_granted —— 前端 `onAction` 调的
- * `plugin:notification|registerListener` **不存在**。所以桌面端注册必然失败，且永远
- * 收不到点击。这条需求只能在"窗口被激活"这个信号上近似实现。
+ * 事实链（别再来回猜）：
+ *  · `tauri-plugin-notification` 2.4.0 的 Rust `generate_handler!` 只有
+ *    notify / request_permission / is_permission_granted ⇒ 前端 `onAction` 调的
+ *    `plugin:notification|registerListener` **不存在**，桌面端注册必然失败（控制台红字）；
+ *  · 但桌面点击**本来就有**，而且更精确：Rust 弹通知时就把 conv_id/msg_id 带上了
+ *    （`notifications.rs::show_click_impl` 的 on_click），点下去发 `notification-clicked`，
+ *    前端 `onNotificationClicked` → `routeNotificationClick` 一条路。
+ *
+ * 所以正确做法不是"补一个近似"，而是**只去掉那条不存在的注册**。本仓曾短暂加过
+ * 「窗口激活就跳最近一条」，它会与精确事件抢同一个动作（先被近似拽走、再被精确事件
+ * 拉回来，还会多弹一次 toast）—— 这条判据把那个形状钉死。
  */
-test("桌面点通知：不再注册不存在的命令，改走窗口激活 + 20s 窗口", () => {
-  // ① onAction 必须收进 `app.isMobile`：桌面端注册 = 每次启动一条红字 + 永远收不到回调
+test("桌面点通知只有一条路：不注册不存在的命令，也不许加近似路由", () => {
+  // ① onAction 必须收进 `app.isMobile`
+  assert.match(store, /if \(app\.isMobile\) \{\s*onAction\(/, "桌面端又去注册 onAction 了（那个命令不存在）");
+  // ② 精确链路必须在：Rust 事件 → onNotificationClicked → routeNotificationClick
   assert.match(
     store,
-    /if \(app\.isMobile\) \{\s*onAction\(/,
-    "桌面端又去注册 onAction 了 —— 那个命令在插件里不存在（控制台红字就是它）",
+    /onNotificationClicked: \(p\) => \{\s*routeNotificationClick\(p\.type, p\.conv_id, p\.msg_id\);/,
+    "桌面精确点击链路被删了 —— 那才是真的『点通知跳会话』",
   );
-  // ② 桌面分支：有且只有一个焦点监听，且挂 scope（init 重入会叠加监听器）
-  assert.match(
+  // ③ 不许出现第二条路由：没有候选机制、没有 focus 兜底
+  assert.doesNotMatch(store, /noteDesktopNotice|consumeDesktopNoticeClick/, "又出现了『近似点击』的候选机制（会和精确事件双跳）");
+  assert.doesNotMatch(
     store,
-    /const onWindowFocus = \(\) => \{\s*const hit = consumeDesktopNoticeClick\(\);/,
-    "桌面分支没有消费『刚弹过的通知』",
-  );
-  assert.match(
-    store,
-    /routeNotificationClick\("chat", hit\.convId, hit\.msgId\)/,
-    "消费了却没路由过去 —— 用户还是看不到那条消息",
-  );
-  assert.equal(
-    (store.match(/window\.addEventListener\("focus", onWindowFocus\)/g) ?? []).length,
-    1,
-    "焦点监听只许一处",
-  );
-  assert.match(
-    store,
-    /scope\.onDispose\(\(\) => window\.removeEventListener\("focus", onWindowFocus\)\)/,
-    "焦点监听没挂 scope ⇒ init 重入后每轮叠一个，会跳好几次",
-  );
-  // ③ 候选必须由**两条**桌面通知路径各自记下（普通消息批 + 强提醒带 msg_id）
-  assert.equal(
-    (store.match(/noteDesktopNotice\(/g) ?? []).length,
-    3,
-    "应当是『一处定义 + 两处调用』；少一处就有一条通知点了不跳",
-  );
-  assert.match(store, /noteDesktopNotice\(rec\.conv_id, payload\.target\)/, "强提醒没带 msg_id ⇒ 点了只到会话、落不到原消息");
-  // ④ 近似的时间窗必须有限（不做窗口就是"随便切个窗口都跳"）
-  assert.match(store, /DESKTOP_NOTICE_CLICK_WINDOW_MS = 20_000/);
-  // 间隔规则必须走 `utils/defer` 那一个家（手写 `now - at` 会被 defer.test.ts 判红）
-  assert.match(
-    store,
-    /!shouldRunThrottled\(Date\.now\(\), hit\.at, DESKTOP_NOTICE_CLICK_WINDOW_MS\)/,
-    "窗口没被真的用上（而且间隔规则要走 shouldRunThrottled，不能手写时间差）",
+    /addEventListener\("focus", onWindowFocus\)/,
+    "又加了『窗口聚焦就跳最近一条』—— 与精确事件抢同一个动作",
   );
 });
