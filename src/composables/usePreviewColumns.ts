@@ -75,8 +75,6 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
   const measure = (entry?: ResizeObserverEntry) => {
     const el = getEl();
     if (!el || !el.isConnected) return;
-    const unit = halfCharWidth(getComputedStyle(el).font);
-    if (unit <= 0) return;
     const inner =
       entry != null
         ? entry.contentRect.width // content box 浮点宽，已不含 padding
@@ -89,7 +87,13 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
     if (inner <= 0) return;
     // ⚠️ 高度变化触发的 RO 回调在这里止步：宽度没变 ⇒ 列数不可能变。
     // 缺了这两行，第一刀的"切断高度环"只存在于注释里（2026-11-21 补齐）。
+    //
+    // 顺序也是判据的一部分（2026-11-21 review）：`halfCharWidth(getComputedStyle(...))`
+    // 会**强制样式计算**。放在门前，等于"每次高度变化都白付一次 recalc" —— 在 RO 高频
+    // 回调下这本身就是抖动放大器（虽然不构成环）。先判宽度，再取字体。
     if (!shouldRemeasure(lastWidth, inner)) return;
+    const unit = halfCharWidth(getComputedStyle(el).font);
+    if (unit <= 0) return;
     lastWidth = inner;
     const next = Math.max(MIN_COLUMNS, Math.min(MAX_COLUMNS, Math.floor(inner / unit)));
     if (next !== columns.value) columns.value = next;

@@ -23,10 +23,9 @@ import BaseModal from "@/components/BaseModal.vue";
 import { fmtConversationTime, fmtDateTime } from "@/utils/time";
 import { formatBytes } from "@/utils/format";
 import { FILE_KIND_ICON_NAMES, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
-import { openLocalFile, saveLocalFile } from "@/utils/localFile";
+import { openLocalFile, revealLocalFile, saveLocalFile } from "@/utils/localFile";
 import { DropdownMenuItem } from "reka-ui";
 import ContextMenu from "@/components/ContextMenu.vue";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { detailText } from "@/composables/useErrorText";
@@ -213,8 +212,10 @@ async function saveAs(f: GroupFileEntry) {
 async function revealInFolder(f: GroupFileEntry) {
   ctx.value = null;
   if (!f.local_path) return;
+  // 平台差异（Android/iOS 没有"文件管理器定位"）统一在 utils/localFile，
+  // 与消息气泡右键同一个出口 —— 两处各调一次插件就会各自踩一次移动端。
   try {
-    await revealItemInDir(f.local_path);
+    await revealLocalFile(f.local_path);
   } catch (e) {
     app.toastError(e, t("msg.openFileFail"));
   }

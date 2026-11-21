@@ -26,6 +26,31 @@ test("WebView2 的亚像素抖动不算变化（375.2 vs 375.1999）", () => {
   assert.equal(shouldRemeasure(375.2, 375.45), false, `容差 ${WIDTH_EPSILON_PX}px 内的抖动一律忽略`);
 });
 
+/**
+ * 判据 2b（2026-11-21 第二版，**这条是本次修复的核心**）。
+ *
+ * 用户实测 Windows 是 **125% 缩放**（2560×1440 与 1920×1080 两台机都是）。1.25 缩放下
+ * 一个物理像素 = **0.8 CSS px** ⇒ WebView2 把 layout 吸附到物理像素网格后，同一个盒子的
+ * `contentRect.width` 在 375.2 / 376.0 之间来回跳。
+ *
+ * 第一版容差取 0.5（只考虑 Mac 的 2.0 DPR）⇒ 0.8 的抖动**一次也拦不住** ⇒ 闭环照旧，
+ * 用户回「改完还在抖」。所以这组真实读数必须进判据：容差小于 0.8 就红。
+ */
+test("125% 缩放的真实抖动（差 0.8px）必须被吸收 —— 第一版 0.5 就栽在这里", () => {
+  assert.equal(
+    shouldRemeasure(375.2, 376.0),
+    false,
+    "0.8px 的吸附抖动被放行 ⇒ 125% 缩放上「列数→高度→RO→列数」闭环照旧",
+  );
+  assert.equal(shouldRemeasure(376.0, 375.2), false, "反方向同样要拦");
+  assert.ok(
+    WIDTH_EPSILON_PX >= 1 / 1.25,
+    `容差 ${WIDTH_EPSILON_PX}px 必须 ≥ 一个物理像素在 125% 下的 CSS 宽（0.8px），否则这一档白修`,
+  );
+  // 150% 档（1 物理 px = 0.667 CSS px）顺带钉住：更大的缩放只会更宽，容差 1px 覆盖得住。
+  assert.equal(shouldRemeasure(375.0, 375.667), false, "150% 档也要吸收");
+});
+
 test("真正的宽度变化要放行（拖窗口 / 缩放 / 换字号）", () => {
   assert.equal(shouldRemeasure(375, 376), true);
   assert.equal(shouldRemeasure(375, 300), true, "一次变窄 75px，必须重算");

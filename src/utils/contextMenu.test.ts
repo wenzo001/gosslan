@@ -133,7 +133,11 @@ test("群文件行右键：没有本地文件就不弹菜单；两个动作都�
     /await saveLocalFile\(f\.local_path/,
     "另存为必须复用 utils/localFile（Android 走 SAF 的差异只在那一处）",
   );
-  assert.match(src, /await revealItemInDir\(f\.local_path\)/, "打开所在目录必须走 opener 插件");
+  assert.match(
+    src,
+    /await revealLocalFile\(f\.local_path\)/,
+    "打开所在目录必须走 utils/localFile 的唯一出口（平台差异只写一处）",
+  );
 
   // 正控：把"没有本地文件就不弹"那行砍掉，第一条断言必须红。
   const gutted = src.replace("if (!f.local_path) return;\n  e.preventDefault();", "e.preventDefault();");
@@ -224,4 +228,73 @@ test("三处右键菜单都保留「键盘唤起按元素矩形定位」的分�
     );
     assert.match(src, site.pos, `${site.file}：键盘唤起的定位坐标不是「元素矩形」那套`);
   }
+});
+
+/**
+ * 2026-11-21 用户拍板：「聊天里的文件，右键可以打开文件所在的文件夹，跟微信类似就行 ——
+ * 不要入口、不要聚合视图」。
+ *
+ * 这条钉三件事，缺一条就退回"点了没反应"：
+ *  ① 气泡菜单里有这条目，且**只上报意图**（菜单不知道 path，也不该自己去调插件 ——
+ *    否则平台差异与 SEC-01 的路径来源会在第二个家里各写一遍）；
+ *  ② 可见性只由 `useMessageFile.canRevealFile` 决定：本地真有文件 + 平台有文件管理器
+ *    （没落盘时给灰项比不给更糟，与群文件面板同一条口径）；
+ *  ③ `MessageItem` 把两者接上（`:can-reveal-file` / `@reveal-file`）—— 判据存在但没人
+ *    接线，是这条需求最容易复发的那一半。
+ */
+test("聊天文件右键「在文件夹中显示」：菜单只上报、可见性一个家、气泡接上", () => {
+  const menu = readFileSync(
+    join(import.meta.dirname, "..", "components", "message", "MessageContextMenu.vue"),
+    "utf8",
+  );
+  const hook = readFileSync(
+    join(import.meta.dirname, "..", "composables", "useMessageFile.ts"),
+    "utf8",
+  );
+  const item = readFileSync(join(import.meta.dirname, "..", "components", "MessageItem.vue"), "utf8");
+  const localFile = readFileSync(join(import.meta.dirname, "localFile.ts"), "utf8");
+
+  // ① 菜单：条目挂在文件那一组里，走 emit，不直连插件。
+  assert.match(
+    menu,
+    /v-if="canRevealFile"[\s\S]{0,120}?@select="emit\('reveal-file'\)"/,
+    "菜单里没有「在文件夹中显示」，或它的可见性不是 canRevealFile",
+  );
+  assert.match(menu, /\(e: "reveal-file"\): void;/, "菜单没有暴露 reveal-file 事件");
+  assert.match(menu, /canRevealFile\?: boolean;/, "菜单没有 canRevealFile prop");
+  assert.ok(
+    !/revealItemInDir|revealLocalFile/.test(menu),
+    "菜单自己调了插件/工具 ⇒ 动作出现第二个家（平台差异与路径来源会各写一份）",
+  );
+
+  // ② 可见性：本地有 path + 非移动端；动作走唯一出口。
+  assert.match(
+    hook,
+    /const canRevealFile = computed\(\s*\(\) => !isAndroid && !isIOS && !!fileMeta\.value\?\.path,\s*\)/,
+    "canRevealFile 的判据不是「本地真有文件 + 桌面平台」",
+  );
+  assert.match(hook, /await revealLocalFile\(path\)/, "revealFile 没有走 utils/localFile 的唯一出口");
+  assert.match(
+    localFile,
+    /if \(isAndroid \|\| isIOS\) return "unsupported";/,
+    "移动端没有短路 ⇒ Android 上会拿着 unsupported 的错误弹「打开失败」",
+  );
+
+  // ③ 接线：判据存在但没人传，是最容易漏的一半。
+  assert.match(item, /@reveal-file="revealFileFromMenu"/, "MessageItem 没接 reveal-file");
+  assert.match(item, /:can-reveal-file="canRevealFile"/, "MessageItem 没把 canRevealFile 传给菜单");
+  assert.match(
+    item,
+    /function revealFileFromMenu\(\)[\s\S]{0,120}?void revealFile\(\)/,
+    "revealFileFromMenu 没有转给 useMessageFile 的动作",
+  );
+
+  // 正控：砍掉菜单里的 v-if ⇒ 第一条必须红（否则它守的是"条目存在"，不是"可见性受控"）。
+  const gutted = menu.replace('v-if="canRevealFile" class="gosslan-menu-item" @select="emit(\'reveal-file\')"', 'class="gosslan-menu-item" @select="emit(\'reveal-file\')"');
+  assert.notEqual(gutted, menu, "变异没落进去 ⇒ 锚点写法变了");
+  assert.doesNotMatch(
+    gutted,
+    /v-if="canRevealFile"[\s\S]{0,120}?@select="emit\('reveal-file'\)"/,
+    "砍掉 v-if 之后仍然命中 ⇒ 这条判据在空集上恒绿",
+  );
 });
