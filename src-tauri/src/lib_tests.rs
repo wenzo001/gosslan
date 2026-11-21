@@ -88,6 +88,7 @@ mod tests {
             include_str!("commands/external_share.rs"),
             // RP 绑定密钥导出/恢复（口令加密的 .gosslankey）。
             include_str!("commands/rp_key_backup.rs"),
+            include_str!("commands/user_backup.rs"),
         )
     }
 

@@ -103,6 +103,7 @@ mod storage;
 mod transport;
 #[cfg(desktop)]
 mod tray;
+mod user_backup;
 mod user_dirs;
 mod watchdog;
 /// Windows 桌面快捷方式一次性对账（5.16.95 回归：`Gosslan.lnk` + `小院儿.lnk` 两份都在）。
@@ -946,6 +947,10 @@ pub fn run() {
             commands::get_pending_requests,
             commands::get_outgoing_friend_requests,
             commands::send_friend_request,
+            commands::export_user_backup,
+            commands::import_user_backup,
+            commands::apply_user_backup_restore,
+            commands::cancel_user_backup_restore,
             commands::remove_outgoing_friend_request,
             commands::cancel_friend_request,
             commands::respond_friend_request,

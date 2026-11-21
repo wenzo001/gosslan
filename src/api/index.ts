@@ -264,6 +264,22 @@ export const api = {
     invoke<OutgoingFriendRequest[]>("get_outgoing_friend_requests"),
   sendFriendRequest: (peerId: string) => invoke<void>("send_friend_request", { peerId }),
   /** 撤回还没被对方处理的好友申请；对端已先同意时会返回"已是好友，无法撤回"。 */
+  exportUserBackup: (password: string, destination: string) =>
+    invoke<{ fileBytes: number; bindingRows: number; bindingsKeptSealed: number }>(
+      "export_user_backup",
+      { password, destination },
+    ),
+  importUserBackup: (archivePath: string, password: string) =>
+    invoke<{
+      snapshotBytes: number;
+      dbUserVersion: number;
+      friendCount: number;
+      messageCount: number;
+      conversationCount: number;
+      appVersion: string | null;
+    }>("import_user_backup", { archivePath, password }),
+  applyUserBackupRestore: () => invoke<void>("apply_user_backup_restore"),
+  cancelUserBackupRestore: () => invoke<void>("cancel_user_backup_restore"),
   removeOutgoingFriendRequest: (peerId: string, restart: boolean) =>
     invoke<void>("remove_outgoing_friend_request", { peerId, restart }),
   cancelFriendRequest: (peerId: string) =>
