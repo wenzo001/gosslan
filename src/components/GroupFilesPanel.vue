@@ -56,16 +56,6 @@ const { memberProfile, myId } = useMemberProfile();
  * 探测按 local_path 批量走后端 files_present；只对 local 行探测（其余状态本来
  * 就不在本机，无文件可探测）。missing 的行在元信息行显式标注，打开入口拦截。
  */
-const localPaths = computed(() =>
-  files.value
-    .filter((f) => f.local_state === "local" && f.local_path)
-    .map((f) => f.local_path as string),
-);
-const { missing } = usePathPresence(localPaths);
-function isMissing(f: GroupFileEntry): boolean {
-  return f.local_state === "local" && !!f.local_path && missing.value.has(f.local_path);
-}
-
 /**
  * 清单缓存交给 TanStack Query（见 utils/groupFilesQuery 的判据）：
  * · queryKey 按群分键 ⇒ 切群时 A 群的慢响应只会写回 A 群的缓存，不存在"回填进 B 群"；
@@ -87,6 +77,23 @@ const filesQuery = useQuery(
 const queryClient = useQueryClient();
 
 const files = computed<GroupFileEntry[]>(() => filesQuery.data.value ?? []);
+/**
+ * ⚠️ 顺序是**语义**（2026-11-21 修复）：这两行必须在 `files` **之后**。
+ * `usePathPresence` 内部是 `watch(..., {immediate:true})` —— 它在 setup 期**同步**
+ * 读一次 `paths.value`，于是 `localPaths` 立刻求值、进而读 `files.value`。
+ * 把这段放在 `files` 之前 ⇒ 命中 `const` 的暂时性死区，打开面板当场
+ * `ReferenceError: Cannot access 'files' before initialization`。
+ * `vue-tsc` 看不见闭包里的前向引用，`npm test` 也不挂载组件 —— 这条只能靠位置保证。
+ */
+const localPaths = computed(() =>
+  files.value
+    .filter((f) => f.local_state === "local" && f.local_path)
+    .map((f) => f.local_path as string),
+);
+const { missing } = usePathPresence(localPaths);
+function isMissing(f: GroupFileEntry): boolean {
+  return f.local_state === "local" && !!f.local_path && missing.value.has(f.local_path);
+}
 /** 后端一次最多给 500 条（`GROUP_FILES_PANEL_LIMIT`）—— 达到上限就说明还有更早的。 */
 const truncated = computed(() => files.value.length >= 500);
 const loading = computed(

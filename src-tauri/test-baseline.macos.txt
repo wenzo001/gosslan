@@ -289,6 +289,7 @@ db::cascade_tests::fill_message_size_backfills_the_actual_size_once
 db::cascade_tests::group_cancel_button_matches_the_backend_outcome_for_every_status
 db::cascade_tests::group_cancel_writes_recipients_and_summary_atomically
 db::cascade_tests::group_message_lifecycle_policy_matches_ledger_sequences
+db::cascade_tests::j3_2_failed_receive_row_is_idempotent_uses_clock_seq_and_carries_sha
 db::cascade_tests::late_write_door_family_pins_every_status
 db::cascade_tests::migration_v7_purges_legacy_group_orphans_only
 db::cascade_tests::partially_delivered_group_message_can_cancel_the_rest_then_resend
@@ -1445,6 +1446,7 @@ state::tests::identity_failure_leaves_the_database_file_byte_for_byte_unchanged
 state::tests::incoming_message_flattens_the_record_and_carries_three_state_mentions
 state::tests::persist_failure_aborts_instead_of_running_with_an_ephemeral_identity
 state::tests::read_failure_is_not_mistaken_for_a_first_install
+state::tests::restore_pending_gate_rejects_untrusted_files
 state::tests::startup_error_message_is_actionable_and_names_the_code
 state::tests::ui_language_hint_states_are_distinct
 state::tests::ui_language_prefers_preference_then_frontend_hint_then_env
@@ -1727,6 +1729,11 @@ tray::tests::tooltip_carries_unread_count_only_when_positive
 tray::tests::tray_icon_redrawn_only_on_has_or_hasnt_transition
 tray::tests::tray_menu_labels_follow_language
 tray::tests::unread_flood_reapplies_icon_three_times_not_once_per_message
+user_backup::tests::magic_separates_the_two_backup_families
+user_backup::tests::newer_format_version_rejected
+user_backup::tests::seal_open_roundtrip_and_sqlite_gate
+user_backup::tests::weak_passphrase_rejected_before_any_crypto
+user_backup::tests::wrong_passphrase_and_tampering_both_fail
 user_dirs::tests::bookmark_wins_over_the_stored_path
 user_dirs::tests::broken_bookmark_falls_back_to_the_stored_path
 user_dirs::tests::corrupted_bookmark_is_cleared_and_path_still_used

@@ -9845,3 +9845,47 @@ test("输入框聚焦只用边框变色：不许加外圈/光晕（同一套标�
   // 空输入框点一下的那条选区带要抹掉
   assert.match(css, /\.gosslan-composer-editor:empty::selection/, "空输入框的选区带没抹掉");
 });
+
+/**
+ * setup 期同步求值的顺序（2026-11-21 真缺陷）：
+ * `usePathPresence` 内部是 `watch(..., { immediate: true })`，它在 setup 阶段**同步**
+ * 读一次 `paths.value`。所以「传进去的 computed」必须在它的依赖**之后**声明 ——
+ * 否则命中 `const` 的暂时性死区，组件一挂载就 `ReferenceError`。
+ *
+ * 为什么机器钉得住：`vue-tsc` 对闭包里的前向引用是静的（它只查类型，不做 TDZ 分析），
+ * 而 `npm test` 不挂载组件 —— 这一类「次序即语义」的错，此前只能靠人打开面板撞一次。
+ */
+test("群文件面板：localPaths 必须声明在它读的 files 之后（setup 期同步求值）", () => {
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "components", "GroupFilesPanel.vue"),
+    "utf8",
+  );
+  const at = (needle: string) => {
+    const i = src.indexOf(needle);
+    assert.ok(i >= 0, `锚点漂了：找不到 ${needle}`);
+    return i;
+  };
+  const filesAt = at("const files = computed<GroupFileEntry[]>");
+  const localAt = at("const localPaths = computed(");
+  assert.ok(
+    localAt > filesAt,
+    "localPaths 声明在 files 之前 ⇒ usePathPresence 的 immediate 求值会撞 TDZ（打开面板即崩）",
+  );
+  // 传参本身也要钉：只有它是 computed 才会在 setup 期被读。
+  assert.match(
+    src,
+    /const \{ missing \} = usePathPresence\(localPaths\);/,
+    "usePathPresence 的入参变了 —— 这条判据的前提（同步读 paths.value）需要重新确认",
+  );
+
+  // 反例自证：把 localPaths 挪到 files 之前，上面那条必须判红（否则它守的是「两段都存在」）。
+  const swapped = src.replace(
+    "const files = computed<GroupFileEntry[]>",
+    "const localPaths = computed(\n  files.value\n);\nconst files = computed<GroupFileEntry[]>",
+  );
+  assert.notEqual(swapped, src, "变异没落进去 ⇒ 锚点写法变了");
+  assert.ok(
+    swapped.indexOf("const localPaths = computed(") < swapped.indexOf("const files = computed<GroupFileEntry[]>"),
+    "把 localPaths 提前之后仍然没有变红 ⇒ 这条判据在空集上恒绿",
+  );
+});

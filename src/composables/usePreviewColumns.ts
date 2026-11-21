@@ -54,6 +54,8 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
   let observer: ResizeObserver | null = null;
   /** 上次真正用于测量的宽度（`<0` = 还没量过，或元素刚换过）。 */
   let lastWidth = -1;
+  /** 上次测量时的字体指纹（`getComputedStyle().font`）。宽度之外**唯一**能让列数变的输入。 */
+  let lastFont = "";
 
   /**
    * ⚠️ 2026-11-21（Windows 振荡根因）：此函数过去有两个形状缺陷，合起来构成一个
@@ -85,16 +87,24 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
             return el.clientWidth - padL - padR;
           })();
     if (inner <= 0) return;
-    // ⚠️ 高度变化触发的 RO 回调在这里止步：宽度没变 ⇒ 列数不可能变。
-    // 缺了这两行，第一刀的"切断高度环"只存在于注释里（2026-11-21 补齐）。
+    // ⚠️ 高度变化触发的 RO 回调在这里止步：宽度没变 ⇒ 列数**通常**不可能变。
+    // 缺了这道门，第一刀的"切断高度环"只存在于注释里（2026-11-21 补齐）。
     //
-    // 顺序也是判据的一部分（2026-11-21 review）：`halfCharWidth(getComputedStyle(...))`
-    // 会**强制样式计算**。放在门前，等于"每次高度变化都白付一次 recalc" —— 在 RO 高频
-    // 回调下这本身就是抖动放大器（虽然不构成环）。先判宽度，再取字体。
-    if (!shouldRemeasure(lastWidth, inner)) return;
-    const unit = halfCharWidth(getComputedStyle(el).font);
+    // 但"宽度不变"是**必要不充分**：用户改正文字号时宽度一点不动，而 `unit`
+    // （一个半角字符的宽度）变了 ⇒ 列数必须重算。所以门前再比一个**字体指纹**：
+    // 宽度和字体都没变才 return（2026-11-21 review 修回：只按宽度设门，会把
+    // 「只改字号」这条合法路径一起挡掉，`textColumns` 的注释承诺就落空了）。
+    //
+    // 代价：每次 RO 回调付一次 `getComputedStyle`。RO 回调发生在布局之后、样式没有
+    // 脏标记 ⇒ 这是**干净读**，不是强制 recalc；真正会放大抖动的是"被门挡掉之后还要
+    // 继续往下跑"，那一步已经被 return 掐掉了。
+    const widthChanged = shouldRemeasure(lastWidth, inner);
+    const font = getComputedStyle(el).font;
+    if (!widthChanged && font === lastFont) return;
+    const unit = halfCharWidth(font);
     if (unit <= 0) return;
-    lastWidth = inner;
+    lastFont = font;
+    if (widthChanged) lastWidth = inner;
     const next = Math.max(MIN_COLUMNS, Math.min(MAX_COLUMNS, Math.floor(inner / unit)));
     if (next !== columns.value) columns.value = next;
   };
@@ -117,6 +127,7 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
       if (el && observer) observer.observe(el);
       // 新元素的宽度与旧元素无关 ⇒ 必须重新建立基线，否则宽度差落在容差内会被误跳过。
       lastWidth = -1;
+      lastFont = "";
       measure();
     },
   );

@@ -568,18 +568,33 @@ export const useChatStore = defineStore("chat", () => {
         ];
       },
       onFriendAccepted: async (peerId) => {
+        /**
+         * ⚠️ 这个事件是**双向**的：对方同意时会来，本机点「同意」也会来（后端在两条
+         * 路径上都发）。所以 toast 不能无条件弹 —— 自己点同意却收到「X 已同意你的
+         * 好友申请」是明显的假话。
+         *
+         * 判据只用前端已有的状态：**本机有没有向对方发过申请**。发过 ⇒ 这次是对方
+         * 回应了我（值得说一声）；没发过 ⇒ 是我在回应对方，界面本来就在我手上，
+         * 不需要再告诉我一遍。`refreshOutgoingRequests` 会把这行刷掉，所以必须**先**
+         * 快照。
+         */
+        const weAsked = outgoingRequests.value.some((r) => r.peer_id === peerId);
         await refreshFriends();
         await refreshConversations();
         await refreshOutgoingRequests();
+        if (!weAsked) return;
         // J1-1（旅程走查 2026-11-20）：接受后原来只刷数据 —— 无 toast、不进会话，
         // 新用户要多走 2~3 步才发现"可以聊了"。给一次明确反馈并指路（不自动跳会话：
         // 用户可能正在别的事里，打断比少走两步更伤）。
-        // 事件载荷带 peer_id，但 api 层过去直接丢弃（handler 无参）⇒ 这里补收。
         const name = nicknameOf(peerId);
         app.toast(t("friend.request.acceptedByPeer", { name }), "success");
       },
       onFriendRejected: (peerId) => {
+        // 与 accepted 同一条纪律：我自己点「拒绝」也会收到这个事件（那是 inbound），
+        // 只有"我曾经发过申请、这次被对方拒了"才值得提示。
+        const weAsked = outgoingRequests.value.some((r) => r.peer_id === peerId);
         void refreshOutgoingRequests();
+        if (!weAsked) return;
         // J1-2：拒绝是终态，原来只能看到"等待"那一行悄悄消失。peerId 目前没有
         // 可用的展示名（不是好友、出站申请行不含昵称），文案用通用口径。
         void peerId;

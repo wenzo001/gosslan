@@ -91,8 +91,11 @@ function toggleSafetyVerified() {
   } else {
     cache[id] = Date.now();
     safetyVerifiedAt.value = cache[id];
-    writeSafetyVerified(safeStorageBackend, trimSafetyVerified(cache) ?? cache);
   }
+  // ⚠️ 两个分支都要写回（2026-11-21 修）：撤销那条以前只 `delete cache[id]` 改内存，
+  // 没落盘 ⇒ 关掉资料页再打开，「已核对」徽章照旧在 —— 而用户刚刚亲手取消了它。
+  // 信任标记的失效方向必须是"取消即取消"。
+  writeSafetyVerified(safeStorageBackend, trimSafetyVerified(cache) ?? cache);
 }
 
 watch(

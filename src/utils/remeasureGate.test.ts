@@ -80,8 +80,37 @@ test("接线：usePreviewColumns 必须真的调用 shouldRemeasure（注释不�
   const calls = src.split("shouldRemeasure(").length - 1;
   assert.equal(calls, 1, `shouldRemeasure( 的调用点应恰好 1 处（measure 里那道门），实测 ${calls}`);
   assert.ok(
-    /if \(!shouldRemeasure\(lastWidth, inner\)\) return;/.test(src),
-    "measure() 里必须有一道『宽度没变就 return』—— 缺了它，RO 的高度回调会重新算列数，环就闭上",
+    /const widthChanged = shouldRemeasure\(lastWidth, inner\);/.test(src),
+    "measure() 里必须真的拿宽度过门 —— 缺了它，RO 的高度回调会重新算列数，环就闭上",
   );
   assert.ok(src.includes("lastWidth = inner"), "通过门之后必须更新基线，否则每帧都判『变了』");
+});
+
+/**
+ * 判据 7（2026-11-21 review 修回）：门要**必要不充分**。
+ *
+ * 只按宽度设门会漏掉第二条合法输入 —— 用户改正文字号时宽度一点不动，`unit` 变了。
+ * 这里同时钉两件事：门之后仍有 return（环不复活），以及字体指纹参与判决（字号能跟上）。
+ */
+test("接线：宽度没变时还要看字体 —— 只按宽度设门会挡掉「改字号」这条合法路径", () => {
+  assert.ok(
+    /if \(!widthChanged && font === lastFont\) return;/.test(src),
+    "门退化成了只看宽度 ⇒ 改字号后列数不再重算（气泡 5 行截断按旧字号切，多出/少掉半行）",
+  );
+  assert.ok(
+    /const font = getComputedStyle\(el\)\.font;/.test(src),
+    "没有取字体指纹 ⇒ 上面那半个条件恒真，等于没接",
+  );
+  assert.ok(
+    /halfCharWidth\(font\)/.test(src),
+    "unit 不是用同一个字体串量出来的 ⇒ 指纹与量法不同源",
+  );
+  // 反例自证：把字体那半个条件删掉，必须不再命中（否则这条判据守的是别的字符串）。
+  const gutted = src.replace("if (!widthChanged && font === lastFont) return;", "if (!widthChanged) return;");
+  assert.notEqual(gutted, src, "变异没落进去 ⇒ 锚点写法变了");
+  assert.doesNotMatch(
+    gutted,
+    /if \(!widthChanged && font === lastFont\) return;/,
+    "删掉字体条件后仍然命中 ⇒ 这条判据在空集上恒绿",
+  );
 });

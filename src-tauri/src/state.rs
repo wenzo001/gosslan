@@ -1983,6 +1983,38 @@ fn persist_identity(conn: &Connection, id: &Identity) -> Result<(), StartupError
     Ok(())
 }
 
+/// 启动段换库前的最后一道闸：`*.restore-pending` 必须是个**打得开、并且版本认得**的库。
+///
+/// 为什么需要（2026-11-21，与导入端同时改）：这段代码是**唯一会动主库**的地方，它此前
+/// 只按「pending 存在」就换库 —— 存在性并不等于可信。7.1.61~7.1.63 的导入是"先落 pending
+/// 再校验"，校验失败（完整性/版本）也会把文件留在盘上，于是用户重启就丢掉了现库。
+/// 导入端已改成"验过再转正"，这里是给**已经踩到坑的安装**兜底：盘上那个坏文件不再生效。
+///
+/// 判据与导入端同一口径（integrity_check + user_version ≤ DB_VERSION），不重复造第二套。
+fn restore_pending_is_trustworthy(p: &std::path::Path) -> Result<(), String> {
+    let conn = rusqlite::Connection::open_with_flags(
+        p,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| format!("打不开: {e}"))?;
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .map_err(|e| format!("完整性检查失败: {e}"))?;
+    if integrity != "ok" {
+        return Err(format!("完整性检查未通过: {integrity}"));
+    }
+    let uv: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(|e| format!("读 schema 版本失败: {e}"))?;
+    if uv as u32 > db::DB_VERSION {
+        return Err(format!(
+            "备份的 schema 版本（{uv}）比本机程序（{}）新",
+            db::DB_VERSION
+        ));
+    }
+    Ok(())
+}
+
 /// 设备标识的决议：**只认已持久化的值，没有才生成一次**（派生式身份为什么会撞，见 `device.rs` 头）。
 ///
 /// 抽成独立函数是为了让「重启不换身份」这条性质有**自己名字**的用例（审计 TST-08）：
@@ -2209,18 +2241,50 @@ impl AppState {
         // → 日志留痕。pending 校验过的（integrity_check + user_version），这里不再验。
         let pending_restore = crate::commands::pending_restore_path(&db_path);
         if pending_restore.exists() {
-            let bak = db_path.with_extension(format!("pre-restore-{}.bak", crate::db::now_ms()));
-            if db_path.exists() {
-                std::fs::rename(&db_path, &bak).map_err(|e| StartupError::BackupRestore {
-                    context: format!("恢复备份：挪开现库失败: {e}"),
-                })?;
-            }
-            std::fs::rename(&pending_restore, &db_path).map_err(|e| {
-                StartupError::BackupRestore {
-                    context: format!("恢复备份：pending 顶上主库失败: {e}"),
+            // ⚠️ 换库前**再验一次**（2026-11-21）。这一步是给"已经踩过坑的安装"兜底的：
+            // 7.1.61~7.1.63 的 `import_user_backup` 是"先落 pending 再校验"，校验失败
+            // 也会把 pending 留在盘上 ⇒ 用户此刻盘上可能就躺着一个坏快照。启动段只按
+            // 存在性换库，那条路径下"恢复失败"会在下次启动变成"好库被换掉"。
+            //
+            // 判据放在这里而不是只看导入端：**唯一会动主库的地方**必须自己有能力说"不"。
+            // 验不过就原地留着 pending、主库不动 —— 宁可这次不恢复，也不换一个打不开的库。
+            match restore_pending_is_trustworthy(&pending_restore) {
+                Ok(()) => {
+                    let bak =
+                        db_path.with_extension(format!("pre-restore-{}.bak", crate::db::now_ms()));
+                    if db_path.exists() {
+                        // ⚠️ `-wal` / `-shm` 属于**旧库**：只挪主库文件、把它们留在原地，SQLite
+                        // 打开新库时会按名去找同目录的 WAL —— 上一次非正常退出留下的帧就成了
+                        // "恢复完库是坏的"的来源。跟着旧库一起改名（名字仍成对，人工排查也认得）。
+                        for suffix in ["-wal", "-shm"] {
+                            let mut from = db_path.clone().into_os_string();
+                            from.push(suffix);
+                            let mut to = bak.clone().into_os_string();
+                            to.push(suffix);
+                            let (from, to) =
+                                (std::path::PathBuf::from(from), std::path::PathBuf::from(to));
+                            if from.exists() {
+                                let _ = std::fs::rename(&from, &to);
+                            }
+                        }
+                        std::fs::rename(&db_path, &bak).map_err(|e| {
+                            StartupError::BackupRestore {
+                                context: format!("恢复备份：挪开现库失败: {e}"),
+                            }
+                        })?;
+                    }
+                    std::fs::rename(&pending_restore, &db_path).map_err(|e| {
+                        StartupError::BackupRestore {
+                            context: format!("恢复备份：pending 顶上主库失败: {e}"),
+                        }
+                    })?;
+                    eprintln!("[backup] 已从备份恢复主库（现库留作 {}）", bak.display());
                 }
-            })?;
-            eprintln!("[backup] 已从备份恢复主库（现库留作 {}）", bak.display());
+                // 验不过就原地留着 pending、主库不动 —— 宁可这次不恢复，也不换一个打不开的库。
+                Err(why) => {
+                    eprintln!("[backup] 待恢复文件未通过校验，本次不替换主库：{why}");
+                }
+            }
         }
         // 必须在 `db::init` **之前**取：init 会把不存在的文件创建出来、写出 schema，
         // 之后再 stat 永远 > 0 —— 那个读数**不能**用来判「主库是否可用」。
@@ -3421,8 +3485,8 @@ pub(crate) fn instance_id() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        load_or_create_identity, resolve_device_id, resolve_is_zh, StartupError, UI_LANG_EN,
-        UI_LANG_UNKNOWN, UI_LANG_ZH,
+        load_or_create_identity, resolve_device_id, resolve_is_zh, restore_pending_is_trustworthy,
+        StartupError, UI_LANG_EN, UI_LANG_UNKNOWN, UI_LANG_ZH,
     };
     use crate::logging::Logger;
     use rusqlite::Connection;
@@ -3792,6 +3856,57 @@ mod tests {
             msg.contains(&logs_dir.to_string_lossy().to_string()),
             "{msg}"
         );
+    }
+
+    /// 启动段换库的闸门（2026-11-21，J1-4b 的补丁）。
+    ///
+    /// 这条用例守的是**数据安全**而不是格式：`AppState::init` 只要看到
+    /// `*.restore-pending` 就换库，所以「存在」必须等价于「可信」。三个分支分别对应
+    /// 三种真实来路 —— 正常备份、被截断/写坏的文件、以及比本机新的 schema。
+    #[test]
+    fn restore_pending_gate_rejects_untrusted_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-restore-gate-{}-{}",
+            std::process::id(),
+            crate::db::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // ① 正常库：user_version 与本机一致 ⇒ 放行
+        let ok = dir.join("ok.db");
+        {
+            let c = Connection::open(&ok).unwrap();
+            c.pragma_update(None, "user_version", crate::db::DB_VERSION as i64)
+                .unwrap();
+            c.execute_batch("CREATE TABLE t (a INTEGER);").unwrap();
+        }
+        assert!(
+            restore_pending_is_trustworthy(&ok).is_ok(),
+            "正常备份必须放行，否则用户永远恢复不了"
+        );
+
+        // ② 截断/垃圾文件：以前这条路径会让下次启动拿它盖掉主库
+        let junk = dir.join("junk.db");
+        std::fs::write(&junk, b"this is not a sqlite database at all").unwrap();
+        assert!(
+            restore_pending_is_trustworthy(&junk).is_err(),
+            "不是库的文件绝不能当成能恢复的备份"
+        );
+
+        // ③ 比本机新的 schema：降级安装时打开会写坏，必须先拒
+        let newer = dir.join("newer.db");
+        {
+            let c = Connection::open(&newer).unwrap();
+            c.pragma_update(None, "user_version", crate::db::DB_VERSION as i64 + 1)
+                .unwrap();
+        }
+        let why = restore_pending_is_trustworthy(&newer).unwrap_err();
+        assert!(
+            why.contains("比本机程序"),
+            "拒绝理由要能指认是版本问题，实际：{why}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

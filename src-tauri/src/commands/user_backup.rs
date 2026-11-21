@@ -101,16 +101,18 @@ pub async fn export_user_backup(
             return Err(e);
         }
         // 快照写进 app_data 同目录（同一文件系统 ⇒ rename/删除都是原子便宜操作），
-        // 文件名带随机后缀防多开实例互踩。
-        let tmp_path = s
-            .db_path
-            .with_extension(format!("backup-{}.tmp", crate::db::now_ms()));
+        // 文件名带随机后缀防多开实例互踩。守卫兜底：下面任何一步 `return Err`
+        // 都会把它删掉（里面有明文私钥，见 `TempFile` 的注释）。
+        let tmp = TempFile::new(
+            s.db_path
+                .with_extension(format!("backup-{}.tmp", crate::db::now_ms())),
+        );
         // ① 一致性快照：VACUUM INTO 在主连接上执行（读写都停一瞬，秒级）。
         {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             dbc.execute(
                 "VACUUM INTO ?1",
-                rusqlite::params![tmp_path.to_string_lossy().as_ref()],
+                rusqlite::params![tmp.path().to_string_lossy().as_ref()],
             )
             .map_err(|e| {
                 error_codes::coded(
@@ -122,17 +124,18 @@ pub async fn export_user_backup(
         // ② 副本上的信封明文化（主库不动 —— 用户拍板「私钥进备份」，明文只活在
         //    密文层内；恢复端启动时按既有逻辑重新封）。
         let (binding_rows, bindings_kept_sealed) = {
-            let snap = rusqlite::Connection::open(&tmp_path)
+            let snap = rusqlite::Connection::open(tmp.path())
                 .map_err(|e| error_codes::coded(error_codes::RP_KEY_BACKUP_IO, format!("打开快照失败: {e}")))?;
             unseal_bindings_in_snapshot(&snap).map_err(|e| {
                 error_codes::coded(error_codes::RP_KEY_BACKUP_IO, format!("信封明文化失败: {e}"))
             })?
         };
-        // ③ 读快照字节 → 加密外壳 → 写目的地 → 清理临时文件。
-        let db_bytes = std::fs::read(&tmp_path).map_err(|e| {
+        // ③ 读快照字节 → 加密外壳 → 写目的地。临时文件由守卫在离开作用域时删除
+        //    （原来那行显式 `remove_file` 只覆盖成功路径）。
+        let db_bytes = std::fs::read(tmp.path()).map_err(|e| {
             error_codes::coded(error_codes::RP_KEY_BACKUP_IO, format!("读快照失败: {e}"))
         })?;
-        let _ = std::fs::remove_file(&tmp_path);
+        drop(tmp);
         let sealed = user_backup::seal_snapshot(
             &db_bytes,
             &password,
@@ -178,6 +181,39 @@ fn rand_nonce() -> [u8; user_backup::NONCE_LEN] {
     n
 }
 
+/// 「除非显式放行，否则离开作用域就删」的临时文件守卫。
+///
+/// 为什么必须有（2026-11-21 review）：导出快照里装着**已明文**的私钥（见
+/// `unseal_bindings_in_snapshot`），而中途每一步都可能 `return Err` —— 只写在成功路径上的
+/// `remove_file` 意味着任何一步失败都把明文文件留在 app_data 里。Drop 是唯一不依赖
+/// "以后记得加"的写法：新加的错误分支自动被覆盖。
+struct TempFile {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl TempFile {
+    fn new(path: PathBuf) -> Self {
+        Self { path, keep: false }
+    }
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+    /// 放行：不再删除，把路径交回去（后续 rename 由调用方负责）。
+    fn keep(mut self) -> PathBuf {
+        self.keep = true;
+        self.path.clone()
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// pending 恢复文件的标准命名（导出与启动检查共用同一个名字，别处别再拼）。
 pub fn pending_restore_path(db_path: &std::path::Path) -> PathBuf {
     db_path.with_extension("restore-pending")
@@ -208,13 +244,18 @@ pub async fn import_user_backup(
         let bytes = std::fs::read(&archive)
             .map_err(|e| error_codes::coded(error_codes::RP_KEY_BACKUP_UNREADABLE, format!("读备份失败: {e}")))?;
         let db_bytes = user_backup::open_snapshot(&bytes, &password)?;
-        // 落 pending 文件（启动时替换主库）
+        // ⚠️ 先落**临时文件**，校验全过之后才改名成 `restore-pending`（2026-11-21 review）。
+        // 启动段的口径是"只要 pending 在就换库"（见 state.rs 恢复段），而这里是"先落
+        // pending 再校验" —— 完整性/版本校验失败虽然返回了错误、界面上也算"解析失败"，
+        // pending 却已经躺在盘上了：下次启动照样把好库挪成 `.bak`、顶上这个库。
+        // 于是"恢复了但失败"静默变成"重启后丢数据"。
         let pending = pending_restore_path(&s.db_path);
-        std::fs::write(&pending, &db_bytes).map_err(|e| {
-            error_codes::coded(error_codes::RP_KEY_BACKUP_IO, format!("写 pending 失败: {e}"))
+        let tmp = TempFile::new(s.db_path.with_extension("restore-tmp"));
+        std::fs::write(tmp.path(), &db_bytes).map_err(|e| {
+            error_codes::coded(error_codes::RP_KEY_BACKUP_IO, format!("写恢复临时文件失败: {e}"))
         })?;
-        // 打开 pending 库做健康检查 + 概要统计
-        let snap = rusqlite::Connection::open(&pending)
+        // 打开临时库做健康检查 + 概要统计
+        let snap = rusqlite::Connection::open(tmp.path())
             .map_err(|e| error_codes::coded(error_codes::RP_KEY_BACKUP_UNREADABLE, format!("打开恢复库失败: {e}")))?;
         let integrity: String = snap
             .query_row("PRAGMA integrity_check", [], |r| r.get(0))
@@ -254,22 +295,31 @@ pub async fn import_user_backup(
                 None
             }
         };
+        let friends = count("SELECT COUNT(*) FROM friends");
+        let messages = count("SELECT COUNT(*) FROM messages");
+        let convs = count("SELECT COUNT(*) FROM conversations");
+        // ⚠️ Windows 上"文件还被连接占着"时 `rename` 直接失败（sharing violation）。
+        // 校验用的连接必须先关，再转正。
+        drop(snap);
+        // 校验全过 ⇒ 临时文件转正成 pending：从这一刻起"存在"与"可信"才是同一件事
+        //（启动段只按存在性判断，见上一段注释）。
+        let tmp_path = tmp.keep();
+        std::fs::rename(&tmp_path, &pending).map_err(|e| {
+            error_codes::coded(error_codes::RP_KEY_BACKUP_IO, format!("落 pending 失败: {e}"))
+        })?;
         s.logger.info(
             "backup",
             format!(
-                "备份解析通过 pending={} uv={user_version} friends={} messages={} convs={}",
+                "备份解析通过 pending={} uv={user_version} friends={friends} messages={messages} convs={convs}",
                 pending.display(),
-                count("SELECT COUNT(*) FROM friends"),
-                count("SELECT COUNT(*) FROM messages"),
-                count("SELECT COUNT(*) FROM conversations"),
             ),
         );
         Ok(ImportPreview {
             snapshot_bytes: db_bytes.len() as u64,
             db_user_version: user_version as u32,
-            friend_count: count("SELECT COUNT(*) FROM friends"),
-            message_count: count("SELECT COUNT(*) FROM messages"),
-            conversation_count: count("SELECT COUNT(*) FROM conversations"),
+            friend_count: friends,
+            message_count: messages,
+            conversation_count: convs,
             app_version,
         })
     })
