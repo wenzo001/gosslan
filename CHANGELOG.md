@@ -14,6 +14,27 @@
 
 ## [Unreleased]
 
+## [7.1.61] - 2026-11-21
+
+### Windows 抖动第三刀：消息行不再依赖「每拍都在换」的 peers 整表
+- **诊断**（读码定位，第二刀之后仍在的那一层）：后端每收到一次 announce 就把
+  `last_seen` 刷成 now 并推 `peers-updated`（`peer_registry.rs` 登记分支），
+  前端 `mergePeerList` 按**全字段**比对 ⇒ 每秒 1~3 拍都判成"变了"、整表换引用 ⇒
+  `peerById` 失效 ⇒ `nicknameOf`（消息行模板里逐行调用）每拍重算 ⇒ 整屏消息行重画。
+  与台账那条链**完全独立**，第二刀拦不住它。
+- **修法**：消息行只读 `peers` 的「身份 → 昵称」一列（新 `mergePeerNames`，昵称没变
+  就不换 Map，看 `utils/peerMerge.ts`）。`peers` 本身照旧每拍更新——拓扑页的 RTT /
+  离线判定读的是它，不受影响。判据：只动 `last_seen`/`rtt_ms` ⇒ 返回 null；
+  改名 / 上下线 ⇒ 新表（4 条，`peerMerge.test.ts`）。
+
+### 新消息入场动效第一次真正生效（顺带消掉每条消息一条 Vue 警告）
+- `MessageItem` 有**多个顶层节点**（消息块 + 表情条 + 一堆 Teleport 浮层）⇒ Vue 判它
+  "渲染 fragment 根"，父层透传的 `class` **既落不到任何元素上**，还每次渲染打一条
+  `Extraneous non-props attributes (class)`。空串也算一个属性键，换 `undefined` 也拦不住。
+- 于是 2026-10-24 接的入场动效（`:class="… ? 'gosslan-msg-enter' : ''"`）**上线即失效**，
+  控制台从那天起一直刷那条警告。改为 `:enter="…"` 走 prop、由组件自己绑到根节点：
+  警告消失，动效按原设计生效（`prefers-reduced-motion` 下仍然不播）。
+
 ## [7.1.60] - 2026-11-21
 
 ### J1-4b 用户数据全量备份 / 恢复（旅程走查，用户拍板「私钥进备份，加密备份」）
