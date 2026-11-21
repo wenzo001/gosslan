@@ -52,15 +52,38 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
   const columns = ref(fallback);
   let observer: ResizeObserver | null = null;
 
-  const measure = () => {
+  /**
+   * ⚠️ 2026-11-21（Windows 振荡根因）：此函数过去有两个形状缺陷，合起来构成一个
+   * **无限重排循环** —— 用户在 Windows 7.1.52/7.1.54 实测「某条长文本一直在重新算
+   * 高度」（移动端宽度不抖、桌面宽度抖；Mac 从不复现）：
+   *
+   * ① 宽度取自 `clientWidth` —— 它是**取整整数**。WebView2 的亚像素布局下（DPI
+   *    缩放 + 中文长文本），同一列宽会在两个整数之间交替；columns = floor(inner/unit)
+   *    ⇒ columns ±1 翻转 ⇒ 截断切刀差一个字 ⇒ 行内容变 ⇒ 微小高度变化 ⇒
+   * ② RO 观察的是**全维度**（高度变化也触发回调）⇒ measure 再次执行 ⇒ 循环闭合，
+   *    每帧重排。宽度相关的"桌面宽度才抖"正是列数大时切刀落在字素边界附近；
+   *    窄宽度下列数小、切刀远离边界 ⇒ 不抖。
+   *
+   * 修复：① 优先取 RO 的 `contentRect.width` —— **content box 的浮点宽**（不含
+   *    padding、不取整），布局稳定时它恒定；② 只在宽度真的变化时才继续测量
+   *    （高度变化、同宽度 ⇒ 直接返回），切断高度环。手动路径（挂载/watch）没有
+   *    entry，保留 clientWidth 兜底。
+   */
+  const measure = (entry?: ResizeObserverEntry) => {
     const el = getEl();
     if (!el || !el.isConnected) return;
-    const cs = getComputedStyle(el);
-    const padL = parseFloat(cs.paddingLeft) || 0;
-    const padR = parseFloat(cs.paddingRight) || 0;
-    const inner = el.clientWidth - padL - padR;
-    const unit = halfCharWidth(cs.font);
-    if (inner <= 0 || unit <= 0) return;
+    const unit = halfCharWidth(getComputedStyle(el).font);
+    if (unit <= 0) return;
+    const inner =
+      entry != null
+        ? entry.contentRect.width // content box 浮点宽，已不含 padding
+        : (() => {
+            const cs = getComputedStyle(el);
+            const padL = parseFloat(cs.paddingLeft) || 0;
+            const padR = parseFloat(cs.paddingRight) || 0;
+            return el.clientWidth - padL - padR;
+          })();
+    if (inner <= 0) return;
     const next = Math.max(MIN_COLUMNS, Math.min(MAX_COLUMNS, Math.floor(inner / unit)));
     if (next !== columns.value) columns.value = next;
   };
@@ -69,7 +92,7 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
     measure();
     const el = getEl();
     if (el && typeof ResizeObserver !== "undefined") {
-      observer = new ResizeObserver(measure);
+      observer = new ResizeObserver((entries) => measure(entries[entries.length - 1]));
       observer.observe(el);
     }
   });
