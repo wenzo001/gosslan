@@ -1,5 +1,5 @@
 import { acceptHMRUpdate, defineStore } from "pinia";
-import { computed, ref, watch } from "vue";
+import { computed, ref, shallowRef, watch } from "vue";
 import { api, bindEvents } from "@/api";
 import { furthestStatus, markFailureInCache, markStatusInCache, patchMessageInConv, transferFailureMsgIds, promoteOnPeerRead, syncProfileFromPeers } from "@/utils/messages";
 import { safeStorageBackend, storageGet } from "../utils/safeStorage.ts";
@@ -14,7 +14,7 @@ import { parseRemind } from "@/utils/reminders";
 import { type TodoRowsByConv } from "@/utils/todos";
 import { t } from "@/i18n";
 import { detailText } from "@/composables/useErrorText";
-import { mergePeerList } from "@/utils/peerMerge";
+import { mergePeerList, mergePeerNames } from "@/utils/peerMerge";
 import { fileFailReasonText } from "@/utils/fileFailReason";
 import { isSelfConversation } from "@/utils/selfChat";
 import { shouldRunThrottled } from "@/utils/defer";
@@ -298,7 +298,24 @@ export const useChatStore = defineStore("chat", () => {
   // 原先每行跑两次 `Array.prototype.find`（好友 + 在线节点）⇒ 30 行就是 120 次线性扫。
   // 与 `ConversationList.vue` 的 `friendById` 同形，只是这里是全仓唯一的数据源。
   const friendById = computed(() => new Map(friends.value.map((f) => [f.device_id, f])));
-  const peerById = computed(() => new Map(peers.value.map((p) => [p.device_id, p])));
+  /**
+   * peers 里**只有昵称那一列**进入消息行的依赖。
+   *
+   * 为什么不直接读 `peers`：后端每收到一次 announce 就把 `last_seen` 刷成 now 并推
+   * `peers-updated`（≈1~3 拍/秒），`mergePeerList` 是全字段比对 ⇒ 那张表每拍都换引用。
+   * 消息行只需要"身份 → 人名"，跟着每拍失效就等于把整屏消息重画（Windows 抖动的放大器，
+   * 见 `utils/peerMerge::mergePeerNames`）。这里让昵称列**引用稳定**：昵称没变就不换 Map。
+   * `peers` 本身照旧每拍更新 —— 拓扑页的 RTT / 离线判定读的是它，不受影响。
+   */
+  const peerNameById = shallowRef<ReadonlyMap<string, string>>(new Map());
+  watch(
+    peers,
+    (list) => {
+      const next = mergePeerNames(peerNameById.value, list);
+      if (next) peerNameById.value = next;
+    },
+    { flush: "sync", immediate: true },
+  );
 
   function nicknameOf(id: string): string {
     // 顺序与兜底的**判据**在 `utils/memberName.ts`（纯函数、可在 Node 单测）——
@@ -306,14 +323,13 @@ export const useChatStore = defineStore("chat", () => {
     // 连兜底都不一致：这里返回裸 `device_id`（= 用户 2026-10-14 说的"有时候显示设备名"），
     // 那里对自己返回「我」。同一个人同一屏可以两个写法，所以把判据收成一个家。
     const f = friendById.value.get(id);
-    const p = peerById.value.get(id);
     return resolveMemberName(
       id,
       {
         selfId: app.device?.device_id ?? "",
         selfNickname: app.device?.nickname ?? "",
         friendNickname: f?.nickname,
-        peerNickname: p?.nickname,
+        peerNickname: peerNameById.value.get(id),
         snapshotNickname: memberNames.value[id],
       },
       { me: t("common.me"), unknownMember: t("common.unknownMember") },

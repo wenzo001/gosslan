@@ -2204,7 +2204,7 @@ function retryHistory() {
         <template #default="{ item, index }">
           <MessageItem
             :message="item"
-            :class="enteringIds.has(item.msg_id) ? 'gosslan-msg-enter' : ''"
+            :enter="enteringIds.has(item.msg_id)"
             :prev="index > 0 ? messages[index - 1] : null"
             :is-group="isGroup"
             :group-side="groupSideAt(index)"

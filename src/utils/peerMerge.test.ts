@@ -13,7 +13,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mergePeerList, dedupePeers, sortPeersForAdd } from "./peerMerge.ts";
+import { mergePeerList, mergePeerNames, dedupePeers, sortPeersForAdd } from "./peerMerge.ts";
 import type { Peer } from "../types.ts";
 
 function peer(id: string, over: Partial<Peer> = {}): Peer {
@@ -110,4 +110,38 @@ test("添加好友列表排序是纯函数：不修改入参", () => {
   const before = list.map((p) => p.device_id);
   sortPeersForAdd(list, { friendIds: new Set(), now: 100 });
   assert.deepEqual(list.map((p) => p.device_id), before, "排序必须返回新数组，store 里的顺序不许被动");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `mergePeerNames`：消息行只读「身份 → 昵称」这一列
+//
+// 与 `mergePeerList` 的判据**刻意不同**：那边把 `last_seen`/`rtt_ms` 当变化（拓扑页要读），
+// 这边只看昵称（消息行只用它）。差别正是防抖动的全部：
+// 后端每拍刷新 `last_seen` ⇒ 整表换引用 ⇒ 若消息行也依赖整表，就等于把整屏重画一遍。
+// ─────────────────────────────────────────────────────────────────────────────
+
+const namesOf = (list: readonly Peer[]) => new Map(list.map((p) => [p.device_id, p.nickname]));
+
+test("昵称列：只有 last_seen / rtt_ms 在动时返回 null —— 消息行的依赖不许失效", () => {
+  const prev = namesOf([peer("a"), peer("b")]);
+  const next = [peer("a", { last_seen: 2_000 }), peer("b", { last_seen: 2_000, rtt_ms: 99 })];
+  assert.equal(mergePeerNames(prev, next), null, "心跳只改 last_seen ⇒ 人名没变 ⇒ 一次赋值都不该做");
+});
+
+test("昵称列：改名必须给出新表（否则界面永远停在旧名字）", () => {
+  const prev = namesOf([peer("a", { nickname: "老王" })]);
+  const merged = mergePeerNames(prev, [peer("a", { nickname: "王工" })]);
+  assert.ok(merged, "改名是一次真实的渲染变化");
+  assert.equal(merged!.get("a"), "王工");
+});
+
+test("昵称列：设备上下线（集合变化）必须给出新表", () => {
+  const prev = namesOf([peer("a")]);
+  assert.deepEqual([...mergePeerNames(prev, [peer("a"), peer("b")])!.keys()], ["a", "b"]);
+  assert.deepEqual([...mergePeerNames(prev, [])!.keys()], []);
+});
+
+test("昵称列：顺序变化不算变化 —— 它是查表用的 Map，顺序不进渲染", () => {
+  const prev = namesOf([peer("a"), peer("b")]);
+  assert.equal(mergePeerNames(prev, [peer("b"), peer("a")]), null);
 });

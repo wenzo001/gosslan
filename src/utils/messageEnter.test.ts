@@ -9,6 +9,10 @@ const chatSrc = readFileSync(
   join(import.meta.dirname, "..", "components", "ChatWindow.vue"),
   "utf8",
 );
+const msgItemSrc = readFileSync(
+  join(import.meta.dirname, "..", "components", "MessageItem.vue"),
+  "utf8",
+);
 
 /** 取 `@keyframes <name> { ... }` 的正文（按花括号配对，不信固定行数）。 */
 function keyframeBody(name: string): string {
@@ -91,7 +95,7 @@ test("进入资格·四种不该动的形状各自挡得住", () => {
   assert.equal(computeEnteringId({ ...base, prevLen: 3, nextLen: 23, nextLastId: "m1" }), null);
 });
 
-test("接线判据：判定只被调用一处、动效类名只绑一处（逻辑绿不等于被接上）", () => {
+test("接线判据：判定只被调用一处、动效类名只在组件内部绑一处（逻辑绿不等于被接上）", () => {
   // 正控：同一把尺子必须能读出"确实存在"的那两处（定义 + 调用），否则下面的 ==1 只是因为数不出东西
   assert.ok(
     codeOccurrences(chatSrc, "markEntering(") >= 2,
@@ -100,8 +104,23 @@ test("接线判据：判定只被调用一处、动效类名只绑一处（逻�
   const calls = codeOccurrences(chatSrc, "computeEnteringId(");
   assert.equal(calls, 1, `computeEnteringId( 的调用点应恰好 1 处，实测 ${calls}`);
   assert.ok(chatSrc.includes("computeEnteringId"), "ChatWindow 没 import 这个判定 ⇒ 动画永远不跑");
-  const cls = codeOccurrences(chatSrc, "gosslan-msg-enter");
-  assert.equal(cls, 1, `动效类名在 ChatWindow 里应恰好出现 1 次（模板绑定），实测 ${cls}`);
+  // ⚠️ 2026-11-21：这条判据以前数的是「`gosslan-msg-enter` 在 ChatWindow 里出现 1 次」，
+  // 而那次出现是一条**永远落不到元素上的死绑定** —— MessageItem 是 fragment 根，父层透传的
+  // class 会被 Vue 丢掉（还会每帧打一条 Extraneous non-props attributes）⇒ 判据绿了 7 个月，
+  // 动效从上线那天起一次都没播过。原判据守的是"类名出现过"，不是"动效真的被绑上了"。
+  // 现在：类名住在组件自己的根节点上，判定仍在会话层。三面都要钉：
+  //   ① 类名只在 MessageItem 里绑恰好 1 处；
+  //   ② ChatWindow 不许再出现这个类名（两处各绑一次 = 两个所有者）；
+  //   ③ ChatWindow 必须把判定结果**交给**组件（`:enter=`）—— 少了这一条，判定算得再对
+  //      也只是在内存里转一圈（这正是那次死绑定的形状）。
+  const clsInItem = codeOccurrences(msgItemSrc, "gosslan-msg-enter");
+  assert.equal(clsInItem, 1, `动效类名应在 MessageItem 里恰好绑 1 处，实测 ${clsInItem}`);
+  const clsInChat = codeOccurrences(chatSrc, "gosslan-msg-enter");
+  assert.equal(clsInChat, 0, `动效类名不许再出现在 ChatWindow（透传 class 是死绑定），实测 ${clsInChat}`);
+  const handed = codeOccurrences(chatSrc, ":enter=");
+  assert.equal(handed, 1, `ChatWindow 必须把判定结果交给 MessageItem（:enter=）恰好 1 处，实测 ${handed}`);
+  const declared = codeOccurrences(msgItemSrc, "enter?: boolean");
+  assert.equal(declared, 1, `MessageItem 必须把它声明成 prop（否则又掉回 attrs），实测 ${declared}`);
 });
 
 test("动效只碰 opacity/transform：不许动画布局尺寸（虚拟列表测量会被动到）", () => {

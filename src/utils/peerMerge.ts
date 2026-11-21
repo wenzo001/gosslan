@@ -31,6 +31,40 @@ function samePeer(a: Peer, b: Peer): boolean {
   return true;
 }
 
+/**
+ * 「身份 → 昵称」这一列：消息行真正需要的那一部分 `peers`。
+ *
+ * ## 为什么要单独一列
+ * `mergePeerList` 按**全字段**比对（含 `last_seen` / `rtt_ms`），而后端每收到一次
+ * announce 就把 `last_seen` 刷成 `now` 并 `emit_peers`（`peer_registry.rs` 的登记分支）
+ * ⇒ 长连时每秒 1~3 拍都判成"变了"、整表换引用 ⇒ 任何 `peerById` 的读者（`nicknameOf`
+ * 就在消息行的模板里逐行调用）每拍失效一次，整屏消息重画。
+ *
+ * 但"谁在线、多久前见过"是**面板**要的事实（拓扑页的 RTT / 离线判定），不是消息行要的：
+ * 消息行只把 `device_id` 翻成人名。所以那一列单独做引用稳定 —— 昵称没变就不换 Map，
+ * `NicknameOf` 的依赖不失效；`peers` 本身照旧每拍更新，面板读数不受影响。
+ *
+ * 返回 `null` = 与 `prev` 等价（顺序无关：这是查表用的 Map，顺序不进渲染）。
+ */
+export function mergePeerNames(
+  prev: ReadonlyMap<string, string>,
+  list: readonly Peer[],
+): Map<string, string> | null {
+  if (prev.size === list.length) {
+    let same = true;
+    for (const p of list) {
+      if (prev.get(p.device_id) !== p.nickname) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return null;
+  }
+  const next = new Map<string, string>();
+  for (const p of list) next.set(p.device_id, p.nickname);
+  return next;
+}
+
 /** `null` = 与 `prev` 完全等价，调用方什么都不必做。 */
 export function mergePeerList(prev: readonly Peer[], next: readonly Peer[]): Peer[] | null {
   const byId = new Map(prev.map((p) => [p.device_id, p]));

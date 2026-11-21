@@ -123,6 +123,17 @@ const props = withDefaults(
      * 不在已加载窗口）⇒ 提示行退回通用文案，宁可少说一句也不骗人。
      */
     recallerId?: string;
+    /**
+     * 新消息入场动效（会话层按「刚追加的那一条」现算，见 ChatWindow 的 `markEntering`）。
+     *
+     * ⚠️ 必须走 **prop** 而不是由父层透传 `class`：本组件有多个顶层节点（消息块 +
+     * 表情回应条 + 一堆 Teleport 浮层），Vue 判它"渲染 fragment 根" ⇒ 透传的
+     * `class` **既不会落到任何元素上**，还会每次渲染打一条
+     * `Extraneous non-props attributes (class)` 警告。2026-10-24 接动效时用的就是
+     * `:class="… ? 'gosslan-msg-enter' : ''"` ⇒ 动效从上线那天起从未生效过；
+     * 空串也算一个"属性键"，所以换成 `undefined` 也拦不住那条警告。
+     */
+    enter?: boolean;
   }>(),
   {
     prev: null,
@@ -141,6 +152,7 @@ const props = withDefaults(
     todoLive: () => new Map(),
     todoDeletedIds: () => new Set(),
     reminder: null,
+    enter: false,
   },
 );
 
@@ -1664,7 +1676,7 @@ async function copyFileToClipboard() {
        ⚠️ 不要给它加 `background-clip`/`-inset-*`/`w-fit`/`ring-*`，也不要把底色挪回 `.group/msg`
        或消息行上：挪回 `.group/msg` 就露出那 4px 白缝；挪到消息行则连"头像上面 / 气泡下面"
        的 6px 内边距都没有了 —— 这几条都被用户逐个否过。 -->
-  <div class="group/msg" :class="tintClass" :style="tintStyle">
+  <div class="group/msg" :class="[tintClass, enter ? 'gosslan-msg-enter' : '']" :style="tintStyle">
     <!-- 消息块：纵向只留 **`pb-0.5`(2px)** 这一条下间距，它同时是"同一发送者连续消息"的组内留白；
          组首（`atGroupStart`）再自己带 `pt-2.5`(10px) ⇒ 组与组之间是 2+10=12px。
          分割行压在上面时不带那 10px（见 needsTopPad），免得重复给间距。
