@@ -603,6 +603,7 @@ fn fail_file_job(state: &AppState, transfer_id: &str, reason: &str) {
             &crate::state::FileFailedInfo {
                 transfer_id: transfer_id.to_string(),
                 reason: reason.to_string(),
+                peer_id: String::new(),
             },
         );
     }

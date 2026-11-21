@@ -20,6 +20,7 @@ import { EMPTY_REACTION_CHIPS, EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { localizeQuoteHeader, parseQuote, stripQuoteMsgId } from "@/utils/quote";
 import { QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { parseFileMeta } from "@/utils/fileMeta";
+import { fileFailReasonText } from "@/utils/fileFailReason";
 import { isWindows } from "@/utils/platform";
 import { openLocalFile } from "@/utils/localFile";
 import { saveImageAs } from "@/utils/saveImageAs";
@@ -183,6 +184,12 @@ const displayContent = computed(() => {
   return raw.startsWith(prefix) ? raw.slice(prefix.length).replace(/^\s+/, "") : raw;
 });
 
+/** J3-2/J3-4：接收失败行（status=failed + fail_code）的失败原因（与发送失败同一映射家）。 */
+const bubbleFailReason = computed(() =>
+  sendState.value === "failed" && props.message.fail_code
+    ? fileFailReasonText(props.message.fail_code, t)
+    : null,
+);
 const retryableContent = computed(() => {
   if (props.message.kind !== "file" && props.message.kind !== "image") return null;
   // 载荷解析走唯一一份 `utils/fileMeta`（此前这里又手写了一次 JSON.parse）
@@ -2090,6 +2097,7 @@ async function copyFileToClipboard() {
             :status-text="fileStatusText"
             :status-tone="fileStatusTone"
             :failed="sendState === 'failed'"
+            :fail-reason="bubbleFailReason"
             :note="previewNote"
             :missing="attachmentMissing"
             :delivery="isGroupFile ? deliverySummary : null"

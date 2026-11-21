@@ -114,6 +114,7 @@ pub fn sweep_stale_relay(state: &AppState) -> usize {
                 &FileFailedInfo {
                     transfer_id: id,
                     reason: crate::logging::FAIL_CODE_FILE_RELAY_STALLED.to_string(),
+                    peer_id: String::new(),
                 },
             );
         }

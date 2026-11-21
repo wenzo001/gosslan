@@ -1383,6 +1383,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         &crate::state::FileFailedInfo {
                             transfer_id: payload.transfer_id.clone(),
                             reason: code.clone(),
+                            peer_id: env.sender_id.clone(),
                         },
                     );
                 }

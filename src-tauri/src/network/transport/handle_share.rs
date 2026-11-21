@@ -207,6 +207,7 @@ fn ensure_serve_worker(state: &Arc<AppState>, peer_id: &str) {
                                 &FileFailedInfo {
                                     transfer_id: job.transfer_id.clone(),
                                     reason,
+                                    peer_id: job.peer_id.clone(),
                                 },
                             );
                         }

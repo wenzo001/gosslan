@@ -474,6 +474,7 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                             &FileFailedInfo {
                                 transfer_id: transfer_id.clone(),
                                 reason: crate::error_codes::FILE_SEND_EXPIRED.to_string(),
+                                peer_id: String::new(),
                             },
                         );
                     }
@@ -514,6 +515,7 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                             &FileFailedInfo {
                                 transfer_id,
                                 reason: crate::error_codes::FILE_SEND_GIVEUP.to_string(),
+                                peer_id: String::new(),
                             },
                         );
                     }

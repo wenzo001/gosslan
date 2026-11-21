@@ -983,6 +983,7 @@ fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str, reaso
             &crate::state::FileFailedInfo {
                 transfer_id: transfer_id.to_string(),
                 reason: reason.to_string(),
+                peer_id: String::new(),
             },
         );
     }
@@ -1251,6 +1252,7 @@ async fn handle_group_file_done(
                     &crate::state::FileFailedInfo {
                         transfer_id: transfer_id.clone(),
                         reason: why.clone(),
+                        peer_id: String::new(),
                     },
                 );
             }

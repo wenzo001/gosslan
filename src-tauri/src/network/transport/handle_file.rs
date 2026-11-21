@@ -504,6 +504,7 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                         &FileFailedInfo {
                             transfer_id: transfer_id.clone(),
                             reason: e,
+                            peer_id: peer_id.to_string(),
                         },
                     );
                     if let Err(se) = try_send(

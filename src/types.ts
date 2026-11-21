@@ -409,6 +409,8 @@ export interface FileDoneInfo {
 export interface FileFailedInfo {
   transfer_id: string;
   reason: string;
+  /** J3-2：终局失败时后端给收件方落了本地失败行——按它定位会话拉回缓存。 */
+  peer_id: string;
 }
 
 /**

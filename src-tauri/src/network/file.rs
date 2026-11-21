@@ -27,12 +27,13 @@ use crate::network::transport::{
 use crate::protocol::{Message, ShareEntry, FILE_CHUNK};
 use crate::state::{AppState, FileDoneInfo, FileFailedInfo, FileReceiver};
 
-fn emit_failed(state: &AppState, transfer_id: &str, reason: impl Into<String>) {
+fn emit_failed(state: &AppState, transfer_id: &str, peer_id: &str, reason: impl Into<String>) {
     let _ = state.app.emit(
         "file-failed",
         &FileFailedInfo {
             transfer_id: transfer_id.to_string(),
             reason: reason.into(),
+            peer_id: peer_id.to_string(),
         },
     );
 }

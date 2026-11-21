@@ -46,6 +46,72 @@ pub fn insert_message(conn: &Connection, m: &MessageRecord) -> Result<()> {
     insert_message_if_new(conn, m).map(|_| ())
 }
 
+/// J3-2（旅程走查 2026-11-20，用户拍板）：1:1 文件**接收终局失败**（SHA 校验不符）
+/// 时，给收件方补一条本地失败展示行。
+///
+/// 为什么是"收件方自己插"而不是等对端的消息：1:1 文件是**传输先行、消息后到** ——
+/// 发送方在文件传完之后才发那条 `kind=file` 的聊天消息，传失败它根本不会发 ⇒
+/// 收件方永远等不到一条可以挂"接收失败"的行（`fileFailReason.ts` 注释里自认的
+/// "没有行可写"就是这个）。对端他自己的流里有他自己那条行，这条失败行**只在本机**，
+/// 不推送、不进 outbox —— 纯本地呈现事实，不改任何传输语义。
+///
+/// 行形状与成功接收的行完全同族（`msg_id = file-{transfer_id}`、sender = 对端、
+/// content 带 name/size/sha256），`status='failed'` + `fail_code`（词表 =
+/// `error_codes::MESSAGE_FAIL_CODES` 同族，前端 `fileFailReasonText` 直接认）。
+/// sha256 进 content 是重取按钮的判据（`MessageItem.retryableContent` 按 cid 匹配
+/// content_transfers 那一行）。
+///
+/// `insert_message_if_new` 的幂等口径：同 `msg_id` 再来一次（重复 FileDone 的迟到
+/// 失败帧）不会重复插。seq 用会话逻辑时钟推进，失败行落在会话末尾。
+#[allow(clippy::too_many_arguments)]
+pub fn insert_failed_receive_message(
+    conn: &Connection,
+    transfer_id: &str,
+    peer_id: &str,
+    receiver_id: &str,
+    name: &str,
+    size: u64,
+    sha256: &str,
+    fail_code: &str,
+    ts: i64,
+) -> Result<bool> {
+    let content = serde_json::json!({
+        "path": serde_json::Value::Null,
+        "name": name,
+        "size": size,
+        "sha256": sha256,
+    })
+    .to_string();
+    let m = MessageRecord {
+        id: 0,
+        msg_id: format!("file-{transfer_id}"),
+        conv_id: peer_id.to_string(),
+        sender_id: peer_id.to_string(),
+        receiver_id: receiver_id.to_string(),
+        kind: "file".to_string(),
+        content,
+        ts,
+        seq: next_clock(conn, peer_id)?,
+        status: "failed".to_string(),
+        mention_targets: None,
+        local_id: None,
+        fail_code: Some(fail_code.to_string()),
+    };
+    // 显式 `?` 传播（落库点守卫认这个形状）：Err 上抛给调用方（SHA 分支留痕不拦收尾）。
+    // ⚠️ 不走 `insert_message_if_new`：那份 SQL 不写 `fail_code` 列（全路径共享，动它
+    // 影响每一条消息写入），而失败行的失败码恰恰是这条行最要紧的信息——前端
+    // `fileFailReasonText` 直接认。幂等口径与它逐字一致（WHERE NOT EXISTS，不用
+    // OR IGNORE——local_id 冲突不能把新消息静默吞掉）。
+    let changed = conn.execute(
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id, fail_code)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, ?1), ?12
+         WHERE NOT EXISTS (SELECT 1 FROM messages WHERE msg_id = ?1)",
+        params![m.msg_id, m.conv_id, m.sender_id, m.receiver_id, m.kind, m.content, m.ts, m.seq, m.status,
+                encode_mention_targets(&m.mention_targets), m.local_id, m.fail_code],
+    )?;
+    Ok(changed > 0)
+}
+
 /// 原子地写入本地消息与可靠发送队列。
 /// 发送路径不能出现「消息已落库但 outbox 没写入」或反过来的半状态。
 pub fn insert_message_and_outbox(
