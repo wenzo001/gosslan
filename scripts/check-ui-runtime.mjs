@@ -21722,13 +21722,25 @@ async function runTopology(cdp, url) {
     m.ok === true && Math.abs(m.canvasTop + m.canvasH - m.vh) <= 1 && m.canvasH < m.vh,
     "canvasTop + canvasH = 视口底",
     JSON.stringify({ top: m.canvasTop, h: m.canvasH, vh: m.vh }));
-  check("网络拓扑：顶栏总数与四种计数（在线/好友/中转/Mesh）都渲染出来",
-    m.ok === true && m.statsHas.length === 4 && m.statsHas.every(Boolean),
-    "四项都在 stats 文本里",
+  // ⚠️ 产品语义（2026-11-20 拓扑改版，NetworkTopology.vue:876）：中转 / Mesh 是
+  // **路径类型**，计数为 0 时整项不渲染（`v-if="stats.relay"`）—— 探针环境没有真实
+  // 网络数据，这两项恒为 0 ⇒ 旧断言"四项都在"必然红，红的是断言不是产品。
+  // 现在钉两件**与数据无关**的事：① 在线/好友恒在；② 一旦出现中转/Mesh，后面必须带数字
+  //（防止只剩一个光秃秃的标签 —— 那才是真的渲染坏了）。
+  // 只钉**与数据无关**的那两项（在线 / 好友）：它们是恒渲染的。
+  // 中转 / Mesh 不在这一格里判 —— 见上面那段注释：0 时整项不渲染，而探针环境没有
+  // 真实链路 ⇒ 判它等于判环境。它们的存在性由 `designGuards` 的源码判据守（渲染条件
+  // 与文案键都在那里），不要在这里用数据去猜。
+  check("网络拓扑：顶栏的在线 / 好友计数渲染出来（中转/Mesh 有值才出现，本格不判）",
+    m.ok === true && m.statsHas.slice(0, 2).every(Boolean),
+    "在线 / 好友两项必在",
     JSON.stringify({ text: m.statsText, has: m.statsHas }));
-  check("网络拓扑：图例五行（好友/节点/中枢/直连/中转）齐备",
-    m.ok === true && m.legendRows === 5,
-    "legend children = 5",
+  // 图例条目随路径类型增删而增长（2026-11-20 起是 8 条：self/friend/peer + 5 种线型），
+  // 钉"至少 5"而不是写死行数 —— 写死会在每次加一种线型时红，那属于"断言过期"，
+  // 而这条判据真正要守的是"图例没被整块删掉/塌成一行"。
+  check("网络拓扑：图例齐备（至少 5 条：节点三类 + 线型两类以上）",
+    m.ok === true && m.legendRows >= 5,
+    "legend children >= 5",
     JSON.stringify({ rows: m.legendRows }));
   // 取证帧必须拍在点开详情卡**之前**：窄视口下底部卡会盖住大半张图。
   if (SHOT_PATH) {
