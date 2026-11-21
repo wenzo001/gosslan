@@ -22,6 +22,9 @@ import {
 import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useAppStore } from "@/stores/useAppStore";
+import { readSafetyVerified, writeSafetyVerified, trimSafetyVerified } from "@/utils/safetyVerification";
+import { safeStorageBackend } from "@/utils/safeStorage";
+import { fmtDateTime } from "@/utils/time";
 import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
 import BaseModal from "@/components/BaseModal.vue";
@@ -66,11 +69,38 @@ const isSelf = computed(() => props.friend.device_id === app.device?.device_id);
 const safetyNumber = ref<string | null>(null);
 const safetyFailed = ref(false);
 
+// ---------------- J1-4a：安全码核对标记（本机） ----------------
+/**
+ * 「我已与对方比对一致」的本机标记（safeStorage，不参与任何信任判断）。
+ * 勾选 = 留痕（带时刻）；撤销 = 删掉。换设备/清数据后标记自然消失 ——
+ * 核对这件事本来就只发生在那台设备的屏幕前。
+ */
+const safetyVerifiedAt = ref<number | null>(null);
+
+function loadSafetyVerified(id: string) {
+  const cache = readSafetyVerified(safeStorageBackend);
+  safetyVerifiedAt.value = cache[id] ?? null;
+}
+
+function toggleSafetyVerified() {
+  const id = props.friend.device_id;
+  const cache = readSafetyVerified(safeStorageBackend);
+  if (safetyVerifiedAt.value !== null) {
+    delete cache[id];
+    safetyVerifiedAt.value = null;
+  } else {
+    cache[id] = Date.now();
+    safetyVerifiedAt.value = cache[id];
+    writeSafetyVerified(safeStorageBackend, trimSafetyVerified(cache) ?? cache);
+  }
+}
+
 watch(
   () => props.friend.device_id,
   async (id) => {
     safetyNumber.value = null;
     safetyFailed.value = false;
+    loadSafetyVerified(id);
     if (id === app.device?.device_id) return; // 自己没有"双方安全码"这回事
     try {
       safetyNumber.value = await api.getSafetyNumber(id);
@@ -214,6 +244,35 @@ const confirmRemove = ref(false);
                 </div>
                 <div v-else class="mt-0.5 text-meta text-[var(--gosslan-text-2)]">
                   {{ safetyFailed ? t("friend.profile.safetyFail") : t("friend.profile.safetyUnavailable") }}
+                </div>
+                <!-- J1-4a（旅程走查 2026-11-20，用户拍板）：核对标记 —— 看过、比过、留个痕。
+                     纯本机记录（safeStorage），不参与任何信任判断；只有拿到安全码才显示。 -->
+                <div v-if="safetyNumber" class="mt-1.5 flex items-center gap-1.5 text-caption">
+                  <template v-if="safetyVerifiedAt === null">
+                    <button
+                      class="tap-safe text-[var(--gosslan-text-2)] underline-offset-2 transition hover:text-[var(--gosslan-text)] hover:underline"
+                      :title="t('friend.profile.safetyVerifiedHint')"
+                      @click="toggleSafetyVerified"
+                    >
+                      {{ t("friend.profile.safetyVerifyBtn") }}
+                    </button>
+                  </template>
+                  <template v-else>
+                    <span
+                      class="flex items-center gap-0.5 text-[var(--gosslan-accent-ink)]"
+                      :title="t('friend.profile.safetyVerifiedHint')"
+                    >
+                      <Icon name="check-circle2" class="h-3 w-3" />
+                      {{ t("friend.profile.safetyVerifiedAt", { date: fmtDateTime(safetyVerifiedAt) }) }}
+                    </span>
+                    <button
+                      class="tap-safe text-[var(--gosslan-text-2)] underline-offset-2 transition hover:underline"
+                      :aria-label="t('common.undo')"
+                      @click="toggleSafetyVerified"
+                    >
+                      {{ t("common.undo") }}
+                    </button>
+                  </template>
                 </div>
               </div>
             </div>
