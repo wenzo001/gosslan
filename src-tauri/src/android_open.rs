@@ -47,6 +47,11 @@ static OPEN_WITH_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
 /// 对照：`BlePeripheral` 里的 `external fun nativeBootstrap()` 在 object 内部 ⇒ 实例方法 ⇒
 /// 那边的宏**不加** `static`（见 `transport/ble_android.rs`）。护栏
 /// `jni_static_matches_kotlin_toplevel` 盯着这条对应关系。
+// ⚠️ jni-macros 0.22.4 的 `native_method!` 展开体里用了 `Atomic::fetch_update`，
+// 它在 rustc 1.100 起被废弃（改名 `try_update`），而上游至今未适配
+//（`cargo search jni` 最新仍是 0.22.4）⇒ 只能就地压住。判据在
+// `scripts/check-mobile.sh`：每个 `= native_method!` 的上一行必须是这个属性。
+#[allow(deprecated)]
 const NATIVE_ATTACH: NativeMethod = native_method! {
     java_type = "com.gosslan.app.OpenWithKt",
     static extern fn native_attach_open_with() -> (),

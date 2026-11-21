@@ -479,26 +479,35 @@ fn on_warning<'local>(
 
 // `extern` ⇒ 宏直接导出 JNI 符号名（JVM 按名字解析 bootstrap）；
 // 另外三个也在 `nativeBootstrap` 里显式注册一次（签名错了会当场报错）。
+// ⚠️ jni-macros 0.22.4 的 `native_method!` 展开体里用了 `Atomic::fetch_update`，
+// 它在 rustc 1.100 起被废弃（改名 `try_update`），而上游至今未适配
+//（`cargo search jni` 最新仍是 0.22.4）⇒ 只能就地压住。判据在
+// `scripts/check-mobile.sh`：每个 `= native_method!` 的上一行必须是这个属性。
+#[allow(deprecated)]
 const NATIVE_BOOTSTRAP: NativeMethod = native_method! {
     java_type = "com.gosslan.app.BlePeripheral",
     extern fn native_bootstrap() -> (),
     fn = native_bootstrap,
 };
+#[allow(deprecated)]
 const ON_FRAME: NativeMethod = native_method! {
     java_type = "com.gosslan.app.BlePeripheral",
     extern fn native_on_frame(address: JString, value: jbyte[]) -> (),
     fn = on_frame,
 };
+#[allow(deprecated)]
 const ON_UNLINKED: NativeMethod = native_method! {
     java_type = "com.gosslan.app.BlePeripheral",
     extern fn native_on_unlinked(address: JString) -> (),
     fn = on_unlinked,
 };
+#[allow(deprecated)]
 const ON_NOTICE: NativeMethod = native_method! {
     java_type = "com.gosslan.app.BlePeripheral",
     extern fn native_on_notice(text: JString) -> (),
     fn = on_notice,
 };
+#[allow(deprecated)]
 const ON_WARNING: NativeMethod = native_method! {
     java_type = "com.gosslan.app.BlePeripheral",
     extern fn native_on_warning(text: JString) -> (),

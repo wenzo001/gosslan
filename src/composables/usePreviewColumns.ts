@@ -14,6 +14,7 @@
  * 那一帧的 CSS clamp / 固定高度仍然兜着，不会闪出第六行。
  */
 import { onBeforeUnmount, onMounted, ref, watch, type Ref } from "vue";
+import { shouldRemeasure } from "@/utils/remeasureGate";
 
 /** 列数的合理区间：低于 8 列连一个汉字加省略号都放不下，高于 400 只可能是量错了。 */
 const MIN_COLUMNS = 8;
@@ -51,6 +52,8 @@ export function halfCharWidth(font: string): number {
 export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: number): Ref<number> {
   const columns = ref(fallback);
   let observer: ResizeObserver | null = null;
+  /** 上次真正用于测量的宽度（`<0` = 还没量过，或元素刚换过）。 */
+  let lastWidth = -1;
 
   /**
    * ⚠️ 2026-11-21（Windows 振荡根因）：此函数过去有两个形状缺陷，合起来构成一个
@@ -84,6 +87,10 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
             return el.clientWidth - padL - padR;
           })();
     if (inner <= 0) return;
+    // ⚠️ 高度变化触发的 RO 回调在这里止步：宽度没变 ⇒ 列数不可能变。
+    // 缺了这两行，第一刀的"切断高度环"只存在于注释里（2026-11-21 补齐）。
+    if (!shouldRemeasure(lastWidth, inner)) return;
+    lastWidth = inner;
     const next = Math.max(MIN_COLUMNS, Math.min(MAX_COLUMNS, Math.floor(inner / unit)));
     if (next !== columns.value) columns.value = next;
   };
@@ -104,6 +111,8 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
       if (el === prev) return;
       if (prev && observer) observer.unobserve(prev);
       if (el && observer) observer.observe(el);
+      // 新元素的宽度与旧元素无关 ⇒ 必须重新建立基线，否则宽度差落在容差内会被误跳过。
+      lastWidth = -1;
       measure();
     },
   );

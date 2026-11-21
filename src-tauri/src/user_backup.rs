@@ -56,7 +56,13 @@ pub const HEADER_LEN: usize = 66;
 
 /// 快照上限：2 GiB。整库快照比 RP 密钥清单大得多，但也不该把任意大文件喂进解析器
 /// （解密后先看魔数再看大小，顺序不能反）。
-pub const MAX_DB_BYTES: usize = 2 * 1024 * 1024 * 1024;
+///
+/// 类型是 **`u64`**，不是 `usize`：2026-11-21 的教训 —— 它曾经是 `usize`，调用处写成
+/// `MAX_DB_BYTES * 2`，在 **armv7 的 32 位 usize** 上就是 `2^31 * 2 = 2^32`，**编译期**
+/// 直接 `#[deny(arithmetic_overflow)]` 失败（aarch64 是 64 位，全绿 ⇒ 本地门禁当时只查
+/// aarch64，整类 32 位问题看不见）。文件长度本来就是 `u64`（`Metadata::len()`），
+/// 按字节数比较全程留在 `u64` 里，就不会再有"目标位宽决定能不能编译"这种事。
+pub const MAX_DB_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// 口令强度（与 rp_key_backup 同一把尺）。
 pub fn passphrase_error(passphrase: &str) -> Option<String> {
@@ -193,7 +199,8 @@ pub fn seal_snapshot(
     if let Some(e) = passphrase_error(passphrase) {
         return Err(e);
     }
-    if db_bytes.len() > MAX_DB_BYTES {
+    // `usize as u64` 是**无损**的（32 位也一样），所以这条在两种目标位宽上判据一致。
+    if db_bytes.len() as u64 > MAX_DB_BYTES {
         return Err(coded(
             error_codes::RP_KEY_BACKUP_TOO_LARGE,
             format!("快照超过 {MAX_DB_BYTES} 字节上限，拒绝打包"),

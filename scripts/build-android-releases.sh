@@ -46,6 +46,14 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# ⚠️ 日志必须**无色**（2026-11-21 的教训）：workflow 里 `CARGO_TERM_COLOR: always`
+# 是给"人在 Actions 页面读日志"用的，但 rustc 会给 `error` 与后面的 `:` **分别**上色
+# ⇒ 落盘文本是 `\e[31merror\e[0m: …`，`grep "error:"` 一条也匹配不到。
+# 后果：失败时"日志关键行"那一栏是空的，注解里只剩一句"构建失败"，根因（armv7 的
+# 常量溢出）整整藏了一轮。这里覆盖成 never，日志与注解才是逐字可检索的。
+export CARGO_TERM_COLOR=never
+export NO_COLOR=1
+
 # =============================================================================
 # 前置护栏（轻量版，平台无关）
 #
@@ -182,10 +190,14 @@ for ABI in aarch64 armv7; do
 print_gradle_failure() {
   local log="$1"
   echo "    ❌ 失败，日志关键行（这几行会进 CI 注解）："
-  grep -E "FAILURE:|What went wrong|Execution failed|Caused by:|Could not |Unable to |A problem occurred|error:|Error:|Exception|Out of memory|No space left" "$log" 2>/dev/null \
+  # ① 先剥 ANSI：即使上游（tauri CLI / Gradle）没吃 CARGO_TERM_COLOR，着色也不会
+  #    把 `error:` 拆成 `\e[31merror\e[0m:` 而让 grep 落空（本次事故的直接原因）。
+  # ② 模式里的 `error:` 放宽成 `error`：冒号后面可能跟空格/换行符，锚死冒号不值当。
+  perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$log" 2>/dev/null \
+    | grep -E "FAILURE:|What went wrong|Execution failed|Caused by:|Could not |Unable to |A problem occurred|error|Error|Exception|Out of memory|No space left" \
     | head -20 | cut -c1-200 | sed 's/^/    ❌ /'
   echo "    ❌ 日志尾部（逐字，最后 12 行）："
-  tail -12 "$log" 2>/dev/null | cut -c1-200 | sed 's/^/    /'
+  tail -12 "$log" 2>/dev/null | perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' | cut -c1-200 | sed 's/^/    /'
 }
 
 LOG="/tmp/gosslan-android-$ABI.log"

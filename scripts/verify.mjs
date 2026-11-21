@@ -608,19 +608,29 @@ if (!noGuards && !skipGuardSweep) {
 steps.push({
   group: "android",
   name: "移动端编译门禁（Android）",
-  why: "cargo check --target aarch64-linux-android（0 warning）—— 拦住「移动端整包编不出来」",
+  why:
+    "两个发版 ABI 的 cargo check（aarch64 + armv7，0 warning）+ 32 位 release 构建" +
+    " —— 拦住「移动端整包编不出来」与「只在 32 位上溢出的常量算术」",
   cwd: ROOT,
   cmd: "bash",
-  args: ["scripts/check-mobile.sh", "--bluetooth"],
+  // ⚠️ `--release` 不是可选项：`cargo check` 不做 codegen，而 `arithmetic_overflow`
+  // 这类常量折叠错误只在优化期触发（2026-11-21 armv7 的 `2GiB usize * 2` 就是这样
+  // 让整条 Android 打包红掉，而本地 check 两档全绿）。
+  args: ["scripts/check-mobile.sh", "--bluetooth", "--release"],
   skipReason: mobileSkipReason(),
 });
 
 /** 本地跑不了 Android 门禁时给出原因（CI 上无条件跑，所以本地跳过不影响覆盖）。 */
 function mobileSkipReason() {
-  const target = "aarch64-linux-android";
+  // 与 check-mobile.sh 的 TARGETS 同口径：缺**任一**发版 ABI 都算"跑不了完整门禁"。
+  const targets = ["aarch64-linux-android", "armv7-linux-androideabi"];
   const installed = spawnSync("rustup", ["target", "list", "--installed"], { encoding: "utf8" });
-  if (installed.status !== 0 || !installed.stdout?.includes(target)) {
-    return `未装 rust target ${target}（rustup target add ${target}）`;
+  if (installed.status !== 0) {
+    return "rustup 不可用，无法确认 Android target";
+  }
+  const missing = targets.filter((t) => !installed.stdout?.includes(t));
+  if (missing.length > 0) {
+    return `未装 rust target ${missing.join(" / ")}（rustup target add ${missing.join(" ")}）`;
   }
   const bases = [
     process.env.ANDROID_NDK_ROOT,

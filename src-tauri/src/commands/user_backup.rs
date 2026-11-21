@@ -195,7 +195,11 @@ pub async fn import_user_backup(
     spawn_blocking(move || -> Result<ImportPreview, String> {
         let meta = std::fs::metadata(&archive)
             .map_err(|_| error_codes::coded(error_codes::RP_KEY_BACKUP_UNREADABLE, "备份文件读不到"))?;
-        if meta.len() as usize > user_backup::MAX_DB_BYTES * 2 {
+        // ⚠️ `meta.len()` 本来就是 `u64`，**不要**转 `usize`：32 位目标上那是截断
+        // （>4 GiB 的文件会绕回小值），而且 `MAX_DB_BYTES * 2` 在 32 位 usize 上是
+        // 编译期溢出（2026-11-21 armv7 打包整条红在这里）。上限按"档案文件 ≈ 快照
+        // + 头 + 密文"给两倍余量，全程 u64 比较。
+        if meta.len() > user_backup::MAX_DB_BYTES * 2 {
             return Err(error_codes::coded(
                 error_codes::RP_KEY_BACKUP_TOO_LARGE,
                 "文件超过备份大小上限",

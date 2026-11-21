@@ -14,6 +14,43 @@
 
 ## [Unreleased]
 
+## [7.1.62] - 2026-11-21
+
+### ARMv7 打包整条红：32 位 `usize` 上的常量算术溢出（CI 真实根因）
+- 症状：`Build Android APK` 在 704423e0 上失败，**aarch64 成功、armv7 失败**；重跑同样红
+  （不是 runner 偶发）。注解里只有一句"构建失败"，根因被两处假绿掩盖了一轮。
+- 根因：`user_backup.rs` 的 `MAX_DB_BYTES: usize = 2 GiB`，命令层写成 `MAX_DB_BYTES * 2`。
+  64 位 usize 无事，32 位上是 `2^31 * 2 = 2^32` ⇒ `#[deny(arithmetic_overflow)]` **编译期**
+  直接失败。同时那行还先把 `Metadata::len()`（本来就是 `u64`）转成 `usize`，32 位会截断。
+- 修法：常量改 `u64`（文件长度本来就是 u64 语义），两处比较全程留在 u64。
+
+### Android 门禁自身两处「假绿」（比溢出更值得修）
+- **只查 64 位**：`check-mobile.sh` 只编译 `aarch64-linux-android`，而发版是
+  aarch64 + armv7 两个 ABI ⇒ 整类 32 位问题本地永远看不见。现在两个 ABI 都查，
+  并且对 32 位追加一次 `cargo build --release --lib`（`cargo check` **不做 codegen**，
+  常量溢出这类错误它一条也报不出来 —— 实测两个 ABI 的 check 全绿，只有 build 红）。
+- **0 warning 判据空转**：CI 的 `CARGO_TERM_COLOR=always` 让 `warning:` 前面带 ANSI 前缀，
+  `grep '^warning'` 数不到 ⇒ 日志里明写 `generated 7 warnings`，脚本却判 `PASS（0 warning）`；
+  另一半是 cargo 的增量缓存会记住"已经报过"的 warning，第二次跑就真的不打印了。
+  现在每条 cargo 命令都带 `--color never`，并在测量前 `cargo clean -p`（只清本 crate）。
+
+### Windows 抖动第四刀：列数测量的「高度环」其实一直没切断
+- 第一刀（7.1.55）的注释写着「② 只在宽度真的变化时才继续测量（高度变化、同宽度 ⇒ 直接返回），
+  切断高度环」，但 `usePreviewColumns.ts` 里**没有这段代码** —— 只落了"改用
+  `contentRect.width` 浮点宽"这一半。
+- 于是闭环仍在：`列数 → 内容高度 → ResizeObserver(高度也回调) → 重算列数 → …`。
+  它只在 Windows 闭合：WebView2 在 125%/150% 缩放下 `contentRect.width` 会在亚像素级
+  来回抖（375.2 / 375.1999），`floor(width / 半角字宽)` 贴着字素边界时就会 ±1 列翻转；
+  Mac 的 DPR 是整数（2.0），宽度恒定，闭合条件不成立 —— 这就是「Mac 复现不了」的全部差异。
+- 修法：新增 `utils/remeasureGate.ts`（零依赖纯函数 `shouldRemeasure`，0.5px 容差），
+  `measure()` 里宽度没变就 return。判据 6 条（含"接线"：源码里必须真有那道 `if`，
+  注释不算 —— 这次的 bug 形态就是注释与代码不一致）。
+
+### CI 失败注解通道：`error:` 被 ANSI 拆开，grep 一条也匹配不到
+- `print_gradle_failure()` 用 `grep "error:"` 找根因，但 rustc 给 `error` 与 `:` **分别**上色
+  ⇒ 落盘是 `\e[31merror\e[0m:`，模式匹配不上。失败时"日志关键行"是空的，注解里只剩
+  "构建失败"。现在脚本内 `CARGO_TERM_COLOR=never` + `NO_COLOR=1`，并在 grep 前用 perl 剥 ANSI。
+
 ## [7.1.61] - 2026-11-21
 
 ### Windows 抖动第三刀：消息行不再依赖「每拍都在换」的 peers 整表
