@@ -24,6 +24,14 @@ const props = defineProps<{
   pinned?: boolean;
   /** 文件消息正在发送中 —— 显示"取消发送"菜单项 */
   canCancelSend?: boolean;
+  /**
+   * 文件消息：本地真有一份（且这个平台有文件管理器）—— 显示「在文件夹中显示」。
+   *
+   * 用户 2026-11-21：「聊天里的文件，右键可以打开文件所在的文件夹，跟微信类似」。
+   * 判据在 `useMessageFile.canRevealFile`（本地有 path + 非移动端），菜单只读结论：
+   * 没落盘时不给**灰项**（灰项会让人以为"点了没反应"，群文件面板早就是这条口径）。
+   */
+  canRevealFile?: boolean;
   /** 自己发的、可提醒的消息 —— 显示「强提醒」入口 */
   canRemind?: boolean;
   x: number;
@@ -47,6 +55,8 @@ const emit = defineEmits<{
   (e: "save-image"): void;
   (e: "save-file"): void;
   (e: "copy-file"): void;
+  /** 在系统文件管理器里定位这份文件（不打开它）。 */
+  (e: "reveal-file"): void;
   (e: "quote"): void;
   /** 跳到本条消息引用的那条原消息（与微信一致：引用跳转也在菜单里）。 */
   (e: "locate-quote"): void;
@@ -123,6 +133,13 @@ const hasCopyOps = computed(
       <DropdownMenuItem class="gosslan-menu-item" @select="emit('copy-file')">
         <Icon name="copy" />
         {{ t("common.copyFile") }}
+      </DropdownMenuItem>
+      <!-- 「在文件夹中显示」（微信同款入口，2026-11-21 用户拍板）：
+           文件已经在盘上（收到的在接收目录、自己发的在原位置）⇒ 直接带用户在文件管理器里
+           定位到它，不另建"文件库"视图。没有本地文件时整条不渲染（见 canRevealFile）。 -->
+      <DropdownMenuItem v-if="canRevealFile" class="gosslan-menu-item" @select="emit('reveal-file')">
+        <Icon name="folder-open" />
+        {{ t("common.revealInFolder") }}
       </DropdownMenuItem>
     </template>
 

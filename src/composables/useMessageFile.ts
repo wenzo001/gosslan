@@ -10,9 +10,9 @@ import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import { loadThumbPreview } from "@/utils/filePreview";
 import { displayPathFor, parseFileMeta } from "@/utils/fileMeta";
-import { openLocalFile, saveLocalFile } from "@/utils/localFile";
+import { openLocalFile, revealLocalFile, saveLocalFile } from "@/utils/localFile";
 import { PREVIEW_FAILURE_KEYS, shouldProbePresence } from "@/utils/mediaAvailability";
-import { isAndroid } from "@/utils/platform";
+import { isAndroid, isIOS } from "@/utils/platform";
 import {
   transferDisplayKind,
   transferShowsProgress,
@@ -330,6 +330,39 @@ export function useMessageFile(
     }
   }
 
+  /**
+   * 右键「在文件夹中显示」（用户 2026-11-21：与微信一致 —— 文件在哪就在哪打开，不做文件库）。
+   *
+   * 路径来源与「另存为」**同一个**（`fileMeta.path`，已按 SEC-01 过滤：对端消息只认台账
+   * 落盘位置，载荷里的 path 只有本机发出的才作数）⇒ 不存在"另存为能点、定位不能点"的岔口。
+   *
+   * 未落盘（传输中 / 已被清理）时不给入口 —— 入口由 `canRevealFile` 决定是否渲染，
+   * 这里再判一次是防旁路（ActionSheet/快捷键）时拿着空路径调到插件。
+   */
+  async function revealFile() {
+    const path = fileMeta.value?.path;
+    if (!path) {
+      app.toast($t("msg.filePathUnavailable"), "info");
+      return;
+    }
+    try {
+      await revealLocalFile(path);
+    } catch (e) {
+      app.toastError(e, $t("msg.openFileFail"));
+    }
+  }
+
+  /**
+   * 「在文件夹中显示」入口是否出现：**本地真有这份文件** + **这个平台有文件管理器**。
+   *
+   * 为什么要绑 path：文件还在传、或已被存储清理时，reveal 只会得到一句"文件不存在" ——
+   * 与群文件面板同一条口径（没有 local_path 的行不弹菜单，而不是给灰项）。
+   * 平台那一半与 `revealLocalFile` 的 `unsupported` 分支对应，两边读同一个事实。
+   */
+  const canRevealFile = computed(
+    () => !isAndroid && !isIOS && !!fileMeta.value?.path,
+  );
+
   return {
     transfer,
     fileMeta,
@@ -346,5 +379,7 @@ export function useMessageFile(
     streamCodeClamped,
     openFile,
     saveAs,
+    revealFile,
+    canRevealFile,
   };
 }

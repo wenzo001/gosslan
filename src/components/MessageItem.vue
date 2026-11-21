@@ -303,6 +303,8 @@ const {
   previewNote,
   openFile,
   saveAs,
+  revealFile,
+  canRevealFile,
 } = useMessageFile(() => props.message, () => sendState.value);
 const { copiedKey, copyContent } = useClipboard();
 
@@ -1634,6 +1636,17 @@ function saveFileTo() {
   void saveAs();
 }
 
+/**
+ * 右键「在文件夹中显示」（2026-11-21 用户拍板，与微信一致）。
+ *
+ * 只关菜单、不重写动作：定位走 `useMessageFile.revealFile` —— 那里与「另存为」共用
+ * 同一个路径来源（`fileMeta.path`，SEC-01 已过滤）与同一份 toast 口径。
+ */
+function revealFileFromMenu() {
+  closeContextMenu();
+  void revealFile();
+}
+
 /** 右键「复制文件」：文件本体写系统剪贴板（CF_HDROP），
  *  可在资源管理器粘贴出文件，也可直接粘贴回聊天框发送（微信式）。 */
 async function copyFileToClipboard() {
@@ -2294,6 +2307,8 @@ async function copyFileToClipboard() {
     @save-image="saveImage"
     @save-file="saveFileTo"
     @copy-file="copyFileToClipboard"
+    @reveal-file="revealFileFromMenu"
+    :can-reveal-file="canRevealFile"
     @quote="doQuote"
     :can-recall="canRecallNow()"
     :can-render="renderTo !== null"
