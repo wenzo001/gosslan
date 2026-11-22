@@ -1628,7 +1628,10 @@ pub struct AppState {
     pub ui_recovery_notice: Mutex<Option<UiRecoveryNotice>>,
     /// 群文件接收表。用 `NamedLock` 而不是裸 `Mutex`（2026-11-04）：这两张表会在**持锁写盘**，
     /// 是除 `db` 外最可能长持有的锁；具名之后 HANG 现场能写出 `locks=`（谁握着、谁在等多久）。
-    pub group_file_receivers: crate::lock_watch::NamedLock<HashMap<String, FileReceiver>>,
+    /// STB-03 收尾（2026-11-22）：群文件表同样分片——1:1 的模板已验证
+    /// （`ReceiverStore` trait 让 `make_receiver` 双吃两种表的历史使命完成，
+    /// 两张表现在同型），群路径的 12 处单键位点与 4 处全表位点同款改造。
+    pub group_file_receivers: crate::network::file::ReceiverTable,
     /// 正在接收的文件：transfer_id -> FileReceiver
     /// STB-03（2026-11-22）：单聊接收表按 transfer_id 分片 —— write_chunk 的临界区
     /// 不再让 8 路并发收文件串行（见 `ReceiverTable` 的文档）。
@@ -2768,9 +2771,8 @@ impl AppState {
             ui_last_focus_focused: AtomicBool::new(false),
             ui_last_resize_ms: std::sync::atomic::AtomicI64::new(0),
             ui_recovery_notice: Mutex::new(None),
-            group_file_receivers: crate::lock_watch::NamedLock::new(
+            group_file_receivers: crate::network::file::ReceiverTable::with_name_prefix(
                 "group_file_receivers",
-                HashMap::new(),
             ),
             inbound_gate: Mutex::new(()),
             group_file_sending: Mutex::new(std::collections::HashSet::new()),

@@ -14,6 +14,27 @@
 
 ## [Unreleased]
 
+### STB-03 收尾：群文件接收表同型分片
+- `group_file_receivers` 与 1:1 同型换 `ReceiverTable`（8 片，注册表前缀 `group_file_receivers.s*`）：
+  12 处单键位点改片锁、4 处全表位点（sweep 键快照 / 配额读数 / prune / 清除数据 clear）改逐片聚合；
+  `make_receiver` 的 `ReceiverStore` trait 让群路径零改动接上。跨传输的分片写出不再互相排队。
+- 守卫同步：lock_watch 接线守卫升级为「两张表都分片、16 片逐片 NamedLock、禁退回整表锁」；
+  群收尾守卫锁锚点 `.lock()` → `.lock_key(&transfer_id)`（摘表在锁内、慢活在锁外，意图原样）。
+- Rust 1783 全绿、clippy/fmt 干净。
+
+### 审计 P3 清账三笔（STB-05 / STB-06 / SEC-07）
+- **STB-05**：1:1 消息「直发 Gossip / 补发 ChatMessage」两条落库路径的 kind 透传钉成判据
+  ——两处都必须原样 clone 线串，且接收路径不许调 `MsgKind::from_wire_str`（发送侧词表，
+  未知回落 Text 会静默改写对端真值）。今天两边已同源，判据防的是将来单侧偷偷归一化。
+- **STB-06**：群历史同步的取消窗口歧义收口——抢不到在飞名额时先过裁决表（纯函数），
+  取消已点亮 ⇒ 触发**排队**（一次性守望任务，有界 60s）等守卫归还后补跑；不再静默丢掉
+  入群钩子那种真需求（丢掉后状态停 `stopped`、清扫不接手）。守望登记 ONE_SHOT_SPAWNS；
+  在飞闸守卫的锚点随函数拆分搬迁（spawn_sync 体内仍恰一处起跑出口）。
+- **SEC-07**：announce 自报 tcp_port 参与回拨加两道闸——①每源 IP 拨号预算（24/min 固定
+  窗口，封旋转 device_id 的伪造风暴；合法节奏 12/min 有余量）；②知名端口（<1024）不拨，
+  掐掉「拿全网当扫描器」。审计原建议「只接受已知值」会断用户自配端口的首连，取等价收口；
+  合法用户零感。三判据：预算行为、端口行为、接线顺序（两道闸必须在 ensure_link 之前）。
+
 ## [7.2.1] - 2026-11-22
 
 ### 并发收文件吞吐塌陷：file_receivers 按 transfer_id 分片（审计 STB-03）

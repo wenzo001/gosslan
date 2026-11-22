@@ -152,8 +152,7 @@ pub fn build_group_resume_receiver(
 pub fn fail_group_receive(state: &AppState, transfer_id: &str, reason: &str) {
     if let Some(r) = state
         .group_file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_key(transfer_id)
         .remove(transfer_id)
     {
         fail_taken_group_receive(state, transfer_id, &r, reason);
@@ -170,31 +169,36 @@ pub fn take_group_receives_for_peer(
     state: &AppState,
     peer_id: &str,
 ) -> Vec<(String, FileReceiver)> {
-    let mut recv = state
-        .group_file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let ids: Vec<String> = recv
-        .iter()
-        .filter(|(_, r)| r.peer_id == peer_id)
-        .map(|(k, _)| k.clone())
-        .collect();
-    ids.into_iter()
-        .filter_map(|k| recv.remove(&k).map(|r| (k, r)))
-        .collect()
+    // STB-03 收尾：逐片「筛选+摘」同一次持锁（同 peer、同 transfer_id 的新 Offer
+    // 恒去同一片，被当前守卫挡住 ⇒ 原子性与全局锁时代一致）。
+    let mut out = Vec::new();
+    for i in 0..state.group_file_receivers.shard_count() {
+        let mut recv = state.group_file_receivers.lock_shard(i);
+        let ids: Vec<String> = recv
+            .iter()
+            .filter(|(_, r)| r.peer_id == peer_id)
+            .map(|(k, _)| k.clone())
+            .collect();
+        out.extend(ids.into_iter().filter_map(|k| recv.remove(&k).map(|r| (k, r))));
+    }
+    out
 }
 
 /// 静默群接收器的**原子**回收单位（理由同 `take_stalled_receive`：判据与摘表必须同一次持锁）。
 pub fn take_stalled_group_receive(state: &AppState, now: i64) -> Option<(String, FileReceiver)> {
-    let mut recv = state
-        .group_file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let key = recv
-        .iter()
-        .find(|(_, r)| receive_is_stale(now - r.fed_at_ms))
-        .map(|(k, _)| k.clone())?;
-    recv.remove(&key).map(|r| (key, r))
+    // STB-03 收尾：逐片「find+remove 同一次持锁」——同 id 的新 Offer 恒去同一片，
+    // 被当前守卫挡住 ⇒ 判据与摘表的原子性与全局锁时代一致。
+    for i in 0..state.group_file_receivers.shard_count() {
+        let mut recv = state.group_file_receivers.lock_shard(i);
+        if let Some(key) = recv
+            .iter()
+            .find(|(_, r)| receive_is_stale(now - r.fed_at_ms))
+            .map(|(k, _)| k.clone())
+        {
+            return recv.remove(&key).map(|r| (key, r));
+        }
+    }
+    None
 }
 
 /// **用户取消**一单群文件的接收：摘接收器、删 `.part`、内容状态记 `Cancelled`。返回是否真停了什么。
@@ -208,10 +212,7 @@ pub fn take_stalled_group_receive(state: &AppState, now: i64) -> Option<(String,
 /// （见文件头），参数化会把两处的失败口径搅在一起。
 pub fn cancel_group_receive(state: &AppState, transfer_id: &str) -> bool {
     let taken = {
-        let mut recv = state
-            .group_file_receivers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut recv = state.group_file_receivers.lock_key(transfer_id);
         recv.remove(transfer_id)
     };
     // 没有活跃接收器时，磁盘上仍可能留着上次的 `.part`（停滞被回收过）——照样要删。

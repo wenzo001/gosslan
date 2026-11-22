@@ -696,10 +696,8 @@ pub async fn clear_all_data(
     crate::commands::clear_device_auth_pending(&s.device_auth_pending, &s.device_auth_generation);
     // 群文件/文件投递运行态与待发群密钥同属聊天数据运行态（不清会残留
     // 已删群的 file_key，且 pending 群密钥可能在重连时复活已删群记录）
-    s.group_file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clear();
+    // STB-03 收尾：群表分片 ⇒ 逐片 clear（FileReceiver 的 Drop 关句柄，行为同旧 clear）。
+    s.group_file_receivers.clear();
     s.group_file_keys
         .lock()
         .unwrap_or_else(|e| e.into_inner())

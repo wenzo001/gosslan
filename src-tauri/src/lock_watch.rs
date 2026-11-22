@@ -560,24 +560,40 @@ mod tests {
     #[test]
     fn receiver_locks_are_wired() {
         let state = include_str!("state.rs");
+        // STB-03 收尾（2026-11-22）：1:1 与群两张接收表**同型分片**（ReceiverTable）——
+        // 判据意图原样：持锁写盘的每一片都必须有名字（lock_watch 等待诊断对每片生效）。
         let wired = "crate::lock_watch::NamedLock<HashMap<String, FileReceiver>>";
         assert_eq!(
             state.matches(wired).count(),
-            1,
-            "群文件接收表必须是 NamedLock（否则群侧持锁写盘那段永远没有名字）"
+            0,
+            "state.rs 里不许再有任何一把整表 NamedLock —— 退回全局锁会把 STB-03/收尾的并发修复改塌"
         );
-        // 单聊表必须仍是分片表（退回单把 NamedLock = 把 STB-03 改回去）。
-        assert!(
-            state.contains("file_receivers: crate::network::file::ReceiverTable"),
-            "单聊接收表必须是 ReceiverTable（分片）——退回单把全局锁会把并发收文件的吞吐改塌"
-        );
-        let receive = include_str!("network/file/receive.rs");
-        for i in 0..8 {
-            let shard_name = format!("\"file_receivers.s{i}\"");
+        for (field, prefix) in [
+            ("file_receivers", "file_receivers"),
+            ("group_file_receivers", "group_file_receivers"),
+        ] {
             assert!(
-                receive.contains(&shard_name),
-                "分片表第 {i} 片没有 NamedLock 名字（{shard_name}）—— 持锁写盘那段在这片上不可诊断"
+                state.contains(&format!("{field}: crate::network::file::ReceiverTable")),
+                "{field} 必须是 ReceiverTable（分片）——退回单把全局锁会把并发收文件的吞吐改塌"
             );
+            // 名字由 `with_name_prefix(prefix)` + `format!("{prefix}.s{i}")` 构造（运行时
+            // 拼，注册表里是 8 条互异名字）。源级判据钉「构造形状存在 + 前缀正确」：
+            let receive = include_str!("network/file/receive.rs");
+            assert!(
+                receive.contains("format!(\"{prefix}.s{i}\")"),
+                "分片名字构造形状不见了 —— 每片必须有互异的注册表名字"
+            );
+            if prefix == "file_receivers" {
+                assert!(
+                    receive.contains("Self::with_name_prefix(\"file_receivers\")"),
+                    "1:1 分片表的前缀必须仍是 file_receivers"
+                );
+            } else {
+                assert!(
+                    state.contains("with_name_prefix(\"group_file_receivers\")"),
+                    "群分片表的前缀必须仍是 group_file_receivers"
+                );
+            }
         }
         // 反例自证：字段若退回裸 Mutex，上面那条立刻变 0 ⇒ 红（不是空过）。
         assert!(

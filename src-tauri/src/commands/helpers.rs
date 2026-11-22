@@ -260,10 +260,7 @@ fn resolve_media_path(s: &AppState, msg_id: &str) -> MediaPath {
     let in_flight = transfer_id
         .map(|tid| {
             s.file_receivers.lock_key(tid).contains_key(tid)
-                || s.group_file_receivers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .contains_key(tid)
+                || s.group_file_receivers.lock_key(tid).contains_key(tid)
         })
         .unwrap_or(false);
     let Ok(file) = std::fs::canonicalize(&path) else {

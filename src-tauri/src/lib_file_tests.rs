@@ -697,10 +697,10 @@ fn group_receive_finalize_slow_work_runs_off_the_async_worker() {
             "群收尾的校验+fsync+rename 必须整体交给 spawn_blocking（同一个 runtime 上还排着所有 async 开窗命令）"
         );
     // 摘表形状：接收器必须按 transfer_id 摘出后再收尾（摘在锁内、收在锁外）
+    // STB-03 收尾（2026-11-22）：群表已分片 —— 锁锚点从 `.lock()` 搬到 `.lock_key(&transfer_id)`。
+    // 判据意图原样：摘表在锁内、慢活（校验+fsync+rename）在锁外；分片只缩小锁的范围。
     assert!(
-        flat.contains(
-            ".group_file_receivers.lock().unwrap_or_else(|e|e.into_inner()).remove(&transfer_id)"
-        ),
+        flat.contains(".group_file_receivers.lock_key(&transfer_id).remove(&transfer_id)"),
         "群接收器必须先按 transfer_id 摘出，锁不在慢活的作用域里"
     );
 

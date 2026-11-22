@@ -441,8 +441,7 @@ async fn handle_group_file_offer(
         let (has_active, active_received, active_path) = {
             let recv = state
                 .group_file_receivers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .lock_key(&transfer_id);
             match recv.get(&transfer_id) {
                 Some(r) => (true, r.received, Some(r.tmp_path.clone())),
                 None => (false, 0, None),
@@ -473,15 +472,13 @@ async fn handle_group_file_offer(
                 if has_active && active_received != n {
                     state
                         .group_file_receivers
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .lock_key(&transfer_id)
                         .remove(&transfer_id);
                 }
                 let prepared = if has_active && active_received == n {
                     let mut recv = state
                         .group_file_receivers
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
+                        .lock_key(&transfer_id);
                     match recv.get_mut(&transfer_id) {
                         Some(r) => {
                             r.next_seq = 0;
@@ -515,8 +512,7 @@ async fn handle_group_file_offer(
                                 Ok(_admission) => {
                                     state
                                         .group_file_receivers
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
+                                        .lock_key(&transfer_id)
                                         .insert(transfer_id.clone(), r);
                                     true
                                 }
@@ -562,8 +558,7 @@ async fn handle_group_file_offer(
                 if !prepared {
                     state
                         .group_file_receivers
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .lock_key(&transfer_id)
                         .remove(&transfer_id);
                     {
                         // 锁只在写库这一格活着；下面 send 的 await 不能跨 std MutexGuard。
@@ -587,8 +582,7 @@ async fn handle_group_file_offer(
                 // 但这是"等一条新代码就会挂"的活扣，按既有约定摆正。
                 let final_path = state
                     .group_file_receivers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .lock_key(&transfer_id)
                     .get(&transfer_id)
                     .map(|r| r.final_path.clone())
                     .unwrap_or_else(|| part_path.clone());
@@ -618,8 +612,7 @@ async fn handle_group_file_offer(
             file::GroupOfferDecision::Restart => {
                 state
                     .group_file_receivers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .lock_key(&transfer_id)
                     .remove(&transfer_id);
                 // 走到 Restart = 磁盘上没有可用前缀（0 字节 / ≥声明总长 / 身份不符）。
                 // 旧 `.part` 必须一起删：否则下一次 Offer 会把"旧字节 + 新字节"当成
@@ -646,8 +639,7 @@ async fn handle_group_file_offer(
             let now = db::now_ms();
             state
                 .group_file_receivers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .lock_key(&transfer_id)
                 .get(&transfer_id)
                 .map(|r| now - r.fed_at_ms)
         };
@@ -1125,8 +1117,7 @@ async fn handle_group_file_done(
     // 空文件：无 Chunk 阶段，Done 时才建立接收状态（0 字节 .part）
     if !state
         .group_file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_key(&transfer_id)
         .contains_key(&transfer_id)
     {
         if gf.size == 0 {
@@ -1153,8 +1144,7 @@ async fn handle_group_file_done(
     // 从接收表移除（取得所有权），做最终校验与落盘
     let r = match state
         .group_file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_key(&transfer_id)
         .remove(&transfer_id)
     {
         Some(r) => r,
@@ -2156,8 +2146,7 @@ async fn handle_group_file_chunk(
     // 首个合法 chunk 到达时才创建 `.part`（安全路径，downloads 目录内）
     if !state
         .group_file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_key(&transfer_id)
         .contains_key(&transfer_id)
     {
         if let Err(why) = file::begin_group_receive(
@@ -2214,8 +2203,8 @@ async fn handle_group_file_chunk(
     //
     // 与单聊同形：锁在**池内**取（不在 await 里持锁），且这条链路的帧本来就是逐条 await 处理，
     // 搬进阻塞池不等于并发化 —— "同一传输的分片必须串行"照旧成立。
-    // `group_file_receivers` 那把进程级锁本轮**不动**（改它要动几十个引用点，只有跨进程 E2E
-    // 能证；见审计 STB-03）。
+    // `group_file_receivers` 已随 STB-03 收尾（2026-11-22）同型分片：这一格的临界区
+    // 只挡**同一传输**的分片写出，跨传输不再被连坐（跨进程 E2E 的吞吐证明留给实机）。
     let st = state.clone();
     let tid = transfer_id.clone();
     let outcome = tokio::task::spawn_blocking(move || {
@@ -2256,8 +2245,7 @@ fn write_group_chunk_blocking(
     use std::io::Write;
     let mut recv = state
         .group_file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .lock_key(transfer_id);
     let Some(r) = recv.get_mut(transfer_id) else {
         return GroupChunkWrite::Gone;
     };

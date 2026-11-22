@@ -64,13 +64,7 @@ pub fn sweep_stale_parts(state: &AppState) -> usize {
     let active: std::collections::HashSet<String> = {
         // STB-03：分片表的全表键快照（逐片取，片间无原子性要求）。
         let a: Vec<String> = state.file_receivers.keys_snapshot();
-        let b: Vec<String> = state
-            .group_file_receivers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .keys()
-            .cloned()
-            .collect();
+        let b: Vec<String> = state.group_file_receivers.keys_snapshot();
         a.into_iter().chain(b).collect()
     };
     let mut removed = 0;
@@ -497,21 +491,17 @@ impl ReceiverTable {
     const SHARDS: usize = 8;
 
     pub fn new() -> Self {
+        Self::with_name_prefix("file_receivers")
+    }
+
+    /// 指定 lock_watch 注册表名字前缀：1:1 与群两张分片表都要进注册表，
+    /// 名字必须互异（`file_receivers.s{i}` / `group_file_receivers.s{i}`）。
+    pub fn with_name_prefix(prefix: &str) -> Self {
         Self {
             shards: (0..Self::SHARDS)
                 .map(|i| {
                     crate::lock_watch::NamedLock::new(
-                        // 名字进 lock_watch 注册表，必须互不相同。
-                        match i {
-                            0 => "file_receivers.s0",
-                            1 => "file_receivers.s1",
-                            2 => "file_receivers.s2",
-                            3 => "file_receivers.s3",
-                            4 => "file_receivers.s4",
-                            5 => "file_receivers.s5",
-                            6 => "file_receivers.s6",
-                            _ => "file_receivers.s7",
-                        },
+                        Box::leak(format!("{prefix}.s{i}").into_boxed_str()),
                         HashMap::new(),
                     )
                 })
@@ -816,13 +806,6 @@ pub(crate) fn usage_sum(parts: &[(usize, u64)]) -> (usize, u64) {
 /// 中继那张表（`relay_file_keys`）也必须算进来（审计 SEC-05）：它同样是"对端一次性声明
 /// 一份大小、本机就得为它留出磁盘与内存"的入站资源，漏掉它等于给配额开了一扇侧门。
 fn inbound_usage(state: &AppState) -> (usize, u64) {
-    fn one(map: &crate::lock_watch::NamedLock<HashMap<String, FileReceiver>>) -> (usize, u64) {
-        let g = map.lock().unwrap_or_else(|e| e.into_inner());
-        (
-            g.len(),
-            g.values().map(|r| r.size).fold(0u64, |a, b| a.saturating_add(b)),
-        )
-    }
     let relay = {
         let g = state
             .relay_file_keys
@@ -838,7 +821,8 @@ fn inbound_usage(state: &AppState) -> (usize, u64) {
     // STB-03：一对一表已分片 ⇒ 读数走 len_and_bytes（逐片累加）；群表仍是单锁。
     usage_sum(&[
         state.file_receivers.len_and_bytes(),
-        one(&state.group_file_receivers),
+        // STB-03 收尾：群表同型分片 ⇒ 同款逐片读数。
+        state.group_file_receivers.len_and_bytes(),
         relay,
     ])
 }
@@ -966,14 +950,7 @@ fn prune_retained_parts(state: &AppState, keep_transfer: &str, incoming: u64) ->
         let mut ids: Vec<String> = Vec::new();
         // STB-03：一对一表分片 ⇒ 键快照走 helper；群表仍单锁。
         ids.extend(state.file_receivers.keys_snapshot());
-        ids.extend(
-            state
-                .group_file_receivers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .keys()
-                .cloned(),
-        );
+        ids.extend(state.group_file_receivers.keys_snapshot());
         ids.extend(
             state
                 .relay_file_keys
