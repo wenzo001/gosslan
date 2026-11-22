@@ -21,6 +21,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useOpenProfile } from "@/composables/useOpenProfile";
+import { sharedPreviewColumns, sharedPreviewWidth, sharedPreviewFont } from "@/composables/usePreviewColumns";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
@@ -582,6 +583,22 @@ const isPeerFriend = computed(() => {
   return chat.friends.some((f) => f.device_id === conv.value!.id);
 });
 
+
+/** 字符串像素宽的量具（2026-11-22）：canvas measureText，字体串来自渲染端抄送。 */
+let pxCanvas: HTMLCanvasElement | null = null;
+let pxFontCache = "";
+function measureTextPx(text: string): number {
+  if (!pxCanvas) pxCanvas = document.createElement("canvas");
+  const ctx = pxCanvas.getContext("2d");
+  if (!ctx) return 0;
+  const font = sharedPreviewFont.value;
+  if (font !== pxFontCache) {
+    ctx.font = font;
+    pxFontCache = font;
+  }
+  return ctx.measureText(text).width;
+}
+
 /** 与 MessageItem 共用 previewMetrics 常量：估算高度 = 真实渲染高度。 */
 function estimateHeight(m: MessageRecord, index?: number): number {
   return estimateMessageHeight(m, index, {
@@ -590,6 +607,14 @@ function estimateHeight(m: MessageRecord, index?: number): number {
     selfId: app.device?.device_id,
     senderKeyOf,
     fontSize: app.chatStyle.fontSize,
+    // 实测列数 + 像素级行数输入（usePreviewColumns 的会话级共享值）：估算与渲染同一个数
+    // ⇒ 行数判定一致，虚拟列表不再背着「估算比实测多一行」的账
+    // （2026-11-22 切会话跳变 410px 的根因：栅格把 CJK 计 2 列而数字字形只有 CJK 的 ~57%）。
+    textColumns: sharedPreviewColumns.value || undefined,
+    textPx:
+      sharedPreviewWidth.value > 0 && sharedPreviewFont.value
+        ? { width: sharedPreviewWidth.value, measure: (text: string) => measureTextPx(text) }
+        : undefined,
     // 任务卡片的实时尺寸（面板里补的图/描述）——与渲染端读同一张折叠表。
     todoLive: (todoId) => {
       const item = todoLive.value.get(todoId);

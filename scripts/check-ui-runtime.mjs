@@ -7332,6 +7332,7 @@ async function runScrollSwitch(cdp, url) {
     "rows≥3 且 blank≤1", JSON.stringify(ready));
 
 
+
   // 抓两张图给用户看：① 静止（滑块不可见）② 指针在聊天区（滑块出现）
   const shotDir = path.join(ROOT, "test-results", "ui-shots", "scrollbar");
   fs.mkdirSync(shotDir, { recursive: true });
@@ -7386,6 +7387,74 @@ async function runScrollSwitch(cdp, url) {
     JSON.stringify({ topJumpAfterTarget: cached && cached.topJumpAfterTarget,
       firstTargetFrame: cached && cached.firstTargetFrame,
       head: cached && cached.head && cached.head.slice(0, 4) }));
+
+  // 诊断（2026-11-22，不入判据）：「切回已缓存会话跳 410px」的归因量 —— 走完整列表
+  // 强制全行实测，对账「估算总高 vs 实测总高」与逐行误差。只打印，不判绿红。
+  const estDiag = await cdp.eval(`(async () => {
+    const H = await import('/src/utils/messageHeight.ts');
+    const A = await import('/src/stores/useAppStore.ts');
+    const S = await import('/src/stores/useChatStore.ts');
+    const PC = await import('/src/composables/usePreviewColumns.ts');
+    const shared = PC.sharedPreviewColumns;
+    const chat = S.useChatStore(window.__pinia);
+    const app = A.useAppStore(window.__pinia);
+    const sc = (() => { let el = document.querySelector('[data-vlist-key]');
+      while (el && !el.hasAttribute('data-overlayscrollbars-viewport')) el = el.parentElement;
+      return el; })();
+    if (!sc) return { err: 'no viewport' };
+    const walk = async () => {
+      const steps = Math.ceil(sc.scrollHeight / Math.max(200, sc.clientHeight * 0.7));
+      for (let i = 0; i <= steps + 2; i++) {
+        sc.scrollTop = Math.min(sc.scrollHeight, i * sc.clientHeight * 0.7);
+        await new Promise(r => setTimeout(r, 140));
+      }
+    };
+    await walk(); await walk();
+    const msgs = chat.messages['group:swb'] || [];
+    const seen = new Set(); const rows = [];
+    const rawKeys = [...document.querySelectorAll('[data-vlist-key]')].slice(0, 4)
+      .map(el => el.getAttribute('data-vlist-key'));
+    for (const el of document.querySelectorAll('[data-vlist-key]')) {
+      const key = el.getAttribute('data-vlist-key') || '';
+      if (seen.has(key)) continue; seen.add(key);
+      const m2 = msgs.find(x => key.endsWith(String(x.msg_id)) || key.endsWith('m-' + x.msg_id));
+      if (!m2) continue;
+      const real = Math.round(el.getBoundingClientRect().height * 100) / 100;
+      const w = Math.round(el.clientWidth);
+      const stackW = (() => { const st = el.closest('.msg-stack');
+        return st ? Math.round(st.getBoundingClientRect().width) : null; })();
+      // 文本行：量它自己的 .gosslan-bubble-text 的内容宽 + 按当前字体折算列数
+      const txt = el.querySelector('.gosslan-bubble-text');
+      const txtW = txt ? Math.round(txt.clientWidth) : null;
+      const font = txt ? getComputedStyle(txt).font : null;
+      const AC = await import('/src/composables/usePreviewColumns.ts');
+      const txtCols = txt && font ? Math.floor(AC.allowedColumnWidth(txt) / AC.halfCharWidth(font)) : null;
+      const est = H.estimateMessageHeight(m2, msgs.indexOf(m2), { messages: msgs, isGroup: true,
+        selfId: 'dev-me', fontSize: app.chatStyle.fontSize, textColumns: shared.value || undefined,
+        textPx: PC.sharedPreviewWidth.value > 0 && PC.sharedPreviewFont.value
+          ? { width: PC.sharedPreviewWidth.value,
+              measure: (t) => { const c = document.createElement('canvas').getContext('2d');
+                if (!c) return 0; c.font = PC.sharedPreviewFont.value; return c.measureText(t).width; } }
+          : undefined });
+      rows.push({ k: key.slice(-10), kind: m2.kind, est, real, d: +(real - est).toFixed(1), w, stackW, txtW, txtCols });
+    }
+    let estSum = 0;
+    msgs.forEach((m2, i) => { estSum += H.estimateMessageHeight(m2, i, { messages: msgs, isGroup: true,
+      selfId: 'dev-me', fontSize: app.chatStyle.fontSize, textColumns: shared.value || undefined,
+      textPx: PC.sharedPreviewWidth.value > 0 && PC.sharedPreviewFont.value
+        ? { width: PC.sharedPreviewWidth.value,
+            measure: (t) => { const c = document.createElement('canvas').getContext('2d');
+              if (!c) return 0; c.font = PC.sharedPreviewFont.value; return c.measureText(t).width; } }
+        : undefined }); });
+    const byKind = {};
+    rows.forEach(r => { byKind[r.kind] = byKind[r.kind] || { n: 0, sum: 0 };
+      byKind[r.kind].n++; byKind[r.kind].sum = +(byKind[r.kind].sum + r.d).toFixed(1); });
+    return { shared: shared.value, n: rows.length, rawKeys, estSum: Math.round(estSum), scrollH: Math.round(sc.scrollHeight),
+      measuredSum: +rows.reduce((a, r) => a + r.real, 0).toFixed(1),
+      sumD: +rows.reduce((a, r) => a + r.d, 0).toFixed(1), byKind,
+      worst: rows.slice().sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 5) };
+  })()`);
+  console.log("  · 估算误差诊断（swb 全行实测）：", JSON.stringify(estDiag));
 
   // E 类：`itemSizeCache` 按消息 id 存、切会话**不清**；上限 6000 时 `measure()` 会整表清空。
   // 这里量"来回切会话时缓存怎么长"，判它是否是一条会突然全量重测的悬崖。

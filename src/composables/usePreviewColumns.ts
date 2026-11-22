@@ -96,6 +96,29 @@ export function halfCharWidth(font: string): number {
 }
 
 /**
+ * **会话级共享列数**（2026-11-22）：最后一个被实测过的气泡的列数。
+ *
+ * 为什么能共享：列数只由「列宽上限（容器宽的 min(68%,560px)）+ 字号」决定，与文字长短
+ * 无关 ⇒ 同一个聊天视口里**所有气泡的列数相同**。估算端（`messageHeight`）拿不到 DOM，
+ * 过去只能用写死 35 列的粗模型 —— 与实测列数差出的每一行都是虚拟列表的一笔校正
+ * （探针实测算出 40 行的种子会话估算总高比实测多 736px，切回时整列肉眼可见地缩）。
+ * 渲染端量一次就把准确值抄给估算端，两边从此同一个家。
+ *
+ * ⚠️ 模块级 ref 是**每个 WebView 一个实例**，不跨窗口共享 —— 正好符合"列数是窗口属性"。
+ */
+export const sharedPreviewColumns = ref(0);
+/**
+ * 会话级共享的**正文内容宽**（px）与**字体串**（2026-11-22）。
+ *
+ * 像素级行数估算需要这两个输入：行数 = Σ ceil(该行像素宽 / 内容宽)，比
+ * 「CJK=2 列」的栅格模型准 —— 栅格假设 CJK 恰好是数字字形的 2 倍宽，而真实字体里
+ * 数字字形只有 CJK 的 ~57%，CJK 长文因此被系统性多算一行（探针实测 -280px/14 行）。
+ * 字体串由渲染端量一次抄上来（同一个家：`usePreviewColumns` 的 measure）。
+ */
+export const sharedPreviewWidth = ref(0);
+export const sharedPreviewFont = ref("");
+
+/**
  * 跟着元素真实宽度走的列数。
  *
  * @param getEl 要量的元素（必须已挂载）；返回 null 时保持上一次的值。
@@ -172,6 +195,14 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
     if (hasMeasured && Math.abs(next - columns.value) < COLUMN_HYSTERESIS) return;
     if (next !== columns.value) columns.value = next;
     hasMeasured = true;
+    // 抄送会话级共享值（估算端读它，见上面的说明）。迟滞带**之后**抄：估算端拿到的
+    // 是与渲染端当前生效值完全相同的那个数。
+    sharedPreviewColumns.value = columns.value;
+    const elNow = getEl();
+    if (elNow) {
+      sharedPreviewWidth.value = allowedColumnWidth(elNow) ?? 0;
+      sharedPreviewFont.value = getComputedStyle(elNow).font;
+    }
   };
 
   onMounted(() => {

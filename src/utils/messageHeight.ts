@@ -56,7 +56,14 @@ const NICKNAME_ROW = 18;
  */
 const TIME_DIVIDER = 38.5;
 /** 普通文件卡片 */
-const FILE_CARD = 92;
+/**
+ * 普通文件卡片：`MessageFileBubble` 是 **264px 定宽**（不随窗口折行），高度几乎恒定 ——
+ * py-2.5(20) + 名字/图标行(40) + `gap-2`(8) + 圆角(2) ≈ 62。
+ * 92 是旧版（卡片多一行元信息时代）的遗留值，2026-11-22 用探针的逐行对账诊断
+ * （scrollswitch 段「估算误差诊断」）实测校准：est 104 vs real 74，恰好差一个旧元信息行。
+ * 失败态（多一行 failReason）与两行名字由真实测量校正兜底 —— 估算只负责首帧排布。
+ */
+const FILE_CARD = 62;
 /** 提示行（系统消息 / 已撤回）：text-xs 行盒 16 + ROW_PADDING 12。 */
 const SYSTEM_ROW = 28;
 /**
@@ -120,6 +127,22 @@ export interface EstimateContext {
   selfId?: string;
   fontSize: FontSizeKey;
   /**
+   * **实测列数**（`usePreviewColumns` 的会话级共享值，2026-11-22）。
+   *
+   * 为什么要有它：长文本的行数 = 内容宽能放多少列，而估算端拿不到 DOM —— 过去用
+   * `previewMetrics` 写死的 35 列粗模型，与实测列数差出的每一行都是 20px 的排布误差
+   * （探针实测：40 行种子会话估算总高比实测多 736px，切回来整列肉眼可见地缩）。
+   * 渲染端量一次就把准确值抄进 `usePreviewColumns.sharedPreviewColumns`，调用方
+   * （ChatWindow）把它传进来。缺省/为 0 时回退固定模型（独立调用方仍可用）。
+   */
+  textColumns?: number;
+  /**
+   * 像素级行数估算的输入（2026-11-22，见 `previewMetrics.TextPixelMetrics`）：
+   * 正文内容像素宽 + 字符串量具。给了就用像素行数（与渲染端真实换行一致），
+   * 不给回退栅格模型。
+   */
+  textPx?: { width: number; measure: (s: string) => number };
+  /**
    * 任务卡片**当前**的展示尺寸输入（来自折叠结果）。
    *
    * 消息载荷是创建那一刻的快照；任务面板里补的图片/描述只走静默的 `todo_update`。
@@ -161,14 +184,17 @@ function bubbleHeightCached(
   m: MessageRecord,
   fontSize: FontSizeKey,
   live?: TodoCardLiveMetrics,
+  textColumns?: number,
+  textPx?: { width: number; measure: (s: string) => number },
 ): number {
   // 任务卡片的实时尺寸会变（用户补图/补描述）⇒ 键里带上实时输入，变了自然失效。
-  const key = live
-    ? `${fontSize}|${m.msg_id}|t${live.images}:${live.hasDescription ? 1 : 0}`
-    : `${fontSize}|${m.msg_id}`;
+  // 列数也进键：窗口宽度变了（列数变）⇒ 同一条消息的估算跟着变。
+  const key = `${fontSize}|c${textColumns ?? 0}|${m.msg_id}${live
+    ? `|t${live.images}:${live.hasDescription ? 1 : 0}`
+    : ""}`;
   const hit = bubbleCache.get(key);
   if (hit !== undefined) return hit;
-  const v = computeBubbleHeight(m, fontSize, live);
+  const v = computeBubbleHeight(m, fontSize, live, textColumns, textPx);
   bubbleCache.set(key, v);
   trimOldest(bubbleCache, BUBBLE_CACHE_MAX);
   return v;
@@ -179,6 +205,8 @@ function computeBubbleHeight(
   m: MessageRecord,
   fontSize: FontSizeKey,
   live?: TodoCardLiveMetrics,
+  textColumns?: number,
+  textPx?: { width: number; measure: (s: string) => number },
 ): number {
   switch (m.kind) {
     case "code":
@@ -227,7 +255,7 @@ function computeBubbleHeight(
     }    // 本机不认识的 kind（对端版本比本机新）⇒ 渲染占位气泡，高度与载荷长度无关
     // （详见 `UNSUPPORTED_BUBBLE` 的说明：按文本估会留出一大片空白）。
     default:
-      return isKnownKind(m.kind) ? textBubbleHeight(m.content, fontSize) : UNSUPPORTED_BUBBLE;
+      return isKnownKind(m.kind) ? textBubbleHeight(m.content, fontSize, textColumns, textPx) : UNSUPPORTED_BUBBLE;
   }
 }
 
@@ -249,7 +277,7 @@ export function estimateMessageHeight(
 ): number {
   const prev = index != null && index > 0 ? ctx.messages[index - 1] : null;
 
-  const bubble = bubbleHeightCached(m, ctx.fontSize, liveTodoMetrics(m, ctx));
+  const bubble = bubbleHeightCached(m, ctx.fontSize, liveTodoMetrics(m, ctx), ctx.textColumns, ctx.textPx);
 
   // 分割行的**判定**与渲染端共用 `shouldShowTimeDivider`（阈值也在那里）：分割行自己占
   // TIME_DIVIDER 那 38.5px，两边判得不一致就是"相邻消息互相遮挡"本文件顶部那条契约。

@@ -95,12 +95,21 @@ export function textColumns(fontSize: FontSizeKey): number {
   return Math.max(12, Math.round((COLUMNS_PER_LINE * BASE_FONT_PX) / fontPx(fontSize)));
 }
 
+/**
+ * 估算用的**生效列数**（2026-11-22）：有实测列数（`usePreviewColumns` 的会话级共享值）就用它，
+ * 没有退回固定模型。渲染端与估算端从此用同一个数 ⇒ 行数判定两边一致，
+ * 虚拟列表不再背着「估算比实测多一行」的账切会话。
+ */
+export function effectiveTextColumns(fontSize: FontSizeKey, measured?: number): number {
+  return typeof measured === "number" && measured >= 12 ? measured : textColumns(fontSize);
+}
+
 /** 是否需要截断：渲染端与估算端共用它，保证「有没有第 6 行」两边判断一致。
  *  ⚠️ 只看**正文** —— 被 clamp 的就是正文那个 div，引用头不在其中。
  *  把引用头当成一行正文算进来，正文正好 5 行的引用消息会凭空多出一条「展开」操作条，
  *  点开弹出的全文和气泡里显示的一模一样。 */
-export function textNeedsClamp(content: string, fontSize: FontSizeKey): boolean {
-  return visualLineCount(quoteBody(content), textColumns(fontSize)) > PREVIEW_LINES;
+export function textNeedsClamp(content: string, fontSize: FontSizeKey, measured?: number): boolean {
+  return visualLineCount(quoteBody(content), effectiveTextColumns(fontSize, measured)) > PREVIEW_LINES;
 }
 
 /** 引用块排版：`text-meta leading-4`（行高 16px）+ `py-1`(8) + `mb-1.5`(6)。
@@ -120,12 +129,53 @@ function quoteHeaderHeight(header: string): number {
 }
 
 /** 文本气泡高度（含引用块 + 截断态的操作条）；正文截断后恒为 5 行，不再随内容增高。 */
-export function textBubbleHeight(content: string, fontSize: FontSizeKey): number {
+export interface TextPixelMetrics {
+  /** 正文能用的**像素宽**（`usePreviewColumns.sharedPreviewWidth`）。 */
+  width: number;
+  /** 字符串像素宽的量具（canvas `measureText`，字体与渲染端一致）。 */
+  measure: (s: string) => number;
+}
+
+/**
+ * 像素级行数（2026-11-22）：Σ ceil(该行像素宽 / 内容宽)。
+ *
+ * 为什么不用栅格（`visualLineCount`）：栅格把 CJK 计 2 列、列宽按数字字形计 —— 真实字体里
+ * 数字字形只有 CJK 的 ~57%，CJK 长文被系统性多算一行（探针实测：14 行种子文本全部 +20px、
+ * 合计 -280px）。截断**判定**仍走栅格（渲染端 clamp 用同一把尺，两边一致）；只有
+ * **未截断**正文的自然行数走像素 —— 那是渲染端按真实字形换行的世界。
+ */
+export function pixelLineCount(
+  content: string,
+  px: TextPixelMetrics,
+): number {
+  if (!(px.width > 0)) return 0;
+  let lines = 0;
+  for (const line of content.split("\n")) {
+    if (!line) { lines += 1; continue; }
+    const w = px.measure(line);
+    lines += Math.max(1, Math.ceil(w / px.width));
+  }
+  return lines;
+}
+
+export function textBubbleHeight(
+  content: string,
+  fontSize: FontSizeKey,
+  measured?: number,
+  px?: TextPixelMetrics,
+): number {
   const { header, body } = parseQuote(content);
   const lineH = fontPx(fontSize) * TEXT_LINE_RATIO;
-  const bodyH = textNeedsClamp(content, fontSize)
-    ? PREVIEW_LINES * lineH + TEXT_ACTION_BAR
-    : visualLineCount(body, textColumns(fontSize)) * lineH;
+  const needsClamp = textNeedsClamp(content, fontSize, measured);
+  let bodyLines: number;
+  if (needsClamp) {
+    bodyLines = PREVIEW_LINES;
+  } else if (px && px.width > 0) {
+    bodyLines = Math.max(1, pixelLineCount(body, px));
+  } else {
+    bodyLines = visualLineCount(body, effectiveTextColumns(fontSize, measured));
+  }
+  const bodyH = (needsClamp ? PREVIEW_LINES * lineH + TEXT_ACTION_BAR : bodyLines * lineH);
   return TEXT_BUBBLE_BORDER + TEXT_BUBBLE_PADDING + quoteHeaderHeight(header) + bodyH;
 }
 
