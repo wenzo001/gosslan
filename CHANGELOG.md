@@ -14,6 +14,13 @@
 
 ## [Unreleased]
 
+### TST-02 收尾：对端在线翻转抽成纯状态机（useChatStore 1129 行）
+- 审计时 store 3471 行、零运行时测试；基线之后的大抽取已把判据全部收进纯 utils
+  （memberName/peerMerge/optimistic/optimisticMutate/messages/channelState/sendWaiting，
+  共 220+ 条测试）。本笔把最后一块内联纯逻辑——「离线→在线」三轮快照集合判定
+  （`notePeerOnlineFlips`）——抽成 `utils/peerFlips`（零 @/ 依赖，node --test 直跑）：
+  首个快照只建档不翻、消失再出现才算回来、同轮混合去重，5 条行为测试；store 只留副作用。
+
 ### SEC-08 收尾：中继解封器接入全局在途帧预算
 - 主闸（tcp.rs `read_bytes_capped`，1 GiB 聚合、既计量也拒绝）2026-10-29 已落地；本笔补上
   它自陈未覆盖的另一半——`relay_seal.rs` 中继解封器的记录体（对端声明、上限 64MiB+overhead）

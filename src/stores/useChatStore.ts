@@ -19,6 +19,7 @@ import { fileFailReasonText } from "@/utils/fileFailReason";
 import { isSelfConversation } from "@/utils/selfChat";
 import { shouldRunThrottled } from "@/utils/defer";
 import { countWaitingTexts } from "@/utils/sendWaiting";
+import { advancePeerFlips, createPeerFlipState } from "@/utils/peerFlips";
 import { markFriendsOnlineFrom } from "@/utils/friendOnline";
 import { onAction, registerActionTypes } from "@tauri-apps/plugin-notification";
 import type { Conversation, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, MessageRecord, Peer, PendingMessageOp, PendingRequest, OutgoingFriendRequest, UpdaterStatus, ContentTransfer, TransferInfo } from "@/types";
@@ -377,22 +378,15 @@ export const useChatStore = defineStore("chat", () => {
    * 的判定是「本轮快照有它、上一轮快照没有、且历史见过」—— 历史没见过（启动
    * 首个快照）不算"回来"，否则刚打开应用就满屏"已上线"。
    */
-  const peerOnlineEverSeen = new Set<string>();
-  const peerOnlineLastSnapshot = new Set<string>();
+  // 翻转判定抽成纯状态机（`utils/peerFlips`，TST-02 收尾）：三轮快照集合的判定
+  // 与推进在那里、带行为测试；这里只留「对每个翻上的人喊一声排队消息」的副作用。
+  const peerFlips = createPeerFlipState();
   function notePeerOnlineFlips(list: readonly { device_id: string }[]) {
-    const ids = new Set(list.map((p) => p.device_id));
-    for (const id of ids) {
-      if (!peerOnlineLastSnapshot.has(id) && peerOnlineEverSeen.has(id)) {
-        const waiting = countWaitingTexts(messages.value[id] ?? []);
-        if (waiting > 0) {
-          app.toast(t("chat.offlineQueue.resume", { n: waiting }), "info");
-        }
+    for (const id of advancePeerFlips(peerFlips, list)) {
+      const waiting = countWaitingTexts(messages.value[id] ?? []);
+      if (waiting > 0) {
+        app.toast(t("chat.offlineQueue.resume", { n: waiting }), "info");
       }
-    }
-    peerOnlineLastSnapshot.clear();
-    for (const id of ids) {
-      peerOnlineEverSeen.add(id);
-      peerOnlineLastSnapshot.add(id);
     }
   }
 
