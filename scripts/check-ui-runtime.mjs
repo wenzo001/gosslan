@@ -8373,7 +8373,12 @@ async function runTodoDraft(cdp, url) {
   const read = () => cdp.eval(`(() => {
     const card = document.querySelector('.glass-3');
     if (!card) return { ok: false, reason: 'no-card', text: (document.body.innerText || '').slice(-240) };
-    const scroller = card.querySelector('.gosslan-scroll');
+    // ⚠️ 2026-11-20 起弹窗内容区走 OverlayScroll：挂 .gosslan-scroll 的是**宿主**，
+    // 它自己不滚（scrollHeight == clientHeight），真正滚的是它内部的 OS viewport。
+    // 这里继续读宿主的话，scrollable 恒 false、"还有谁在滚"还会把 viewport 算成第二层
+    // —— 三条判据一起假红（2026-11-22 实测 scroller:false / others:["div"]）。
+    const scrollHost = card.querySelector('.gosslan-scroll');
+    const scroller = scrollHost?.querySelector('[data-overlayscrollbars-viewport]') || scrollHost;
     const ta = card.querySelector('textarea');
     if (!scroller || !ta) return { ok: false, reason: 'no-scroll-or-textarea' };
     const cr = card.getBoundingClientRect();
@@ -8462,13 +8467,17 @@ async function runTodoDraft(cdp, url) {
       others: wideLong.otherYScrollables,
       scroller: wideLong.scroller.scrollable,
     }));
-  check("弹窗内容区走统一滚动口径：both-edges + 两侧 8px 空隙，且无横向溢出",
+  // ⚠️ 这条原来钉 `scrollbar-gutter: both-edges` + 两侧 8px。那套口径已随 2026-11-20 的
+  // true-overlay 迁移整体退役（滚动条不再占布局宽度 ⇒ 不需要 gutter 预留，车道改由
+  // `--gosslan-os-lane` 的 padding 提供）。留着它只会永远红。
+  // 现在钉**还成立的三件事**：内容区真的能滚、左右留白对称、长文不横向溢出。
+  check("弹窗内容区：真能滚 + 左右留白对称 + 无横向溢出（gutter 口径已退役）",
     !!wideLong && wideLong.ok === true
-      && /both-edges/.test(wideLong.scroller.gutter)
-      && wideLong.scroller.padL === "8px" && wideLong.scroller.padR === "8px"
+      && wideLong.scroller.scrollable === true
+      && wideLong.scroller.padL === wideLong.scroller.padR
       && wideLong.horizOverflow === 0,
-    "gutter=both-edges / pad=8px / hOverflow=0",
-    JSON.stringify(wideLong && { gutter: wideLong.scroller.gutter, padL: wideLong.scroller.padL, padR: wideLong.scroller.padR, h: wideLong.horizOverflow }));
+    "scrollable + padL==padR + hOverflow=0",
+    JSON.stringify(wideLong && { scrollable: wideLong.scroller.scrollable, padL: wideLong.scroller.padL, padR: wideLong.scroller.padR, h: wideLong.horizOverflow }));
 
   // 窄窗回退：同一套表单在 420px 宽窗口里必须仍留在视口内，不能横向溢出。
   await cdp.send("Emulation.setDeviceMetricsOverride", {
@@ -9398,9 +9407,12 @@ async function runLangDd(cdp, url) {
         !!m && m.present === true
           && m.menu.h <= m.scroller.h - 14
           && m.scroll.overflowY === "auto"
-          && m.scroll.gutter === "stable"
+          // ⚠️ 这里原来还要求 `scrollbar-gutter: stable`。那条口径**已于 2026-11-20 整体退役**
+          // （全仓滚动区统一到 OverlayScrollbars 的 true overlay：轨道不占布局宽度 ⇒ 不需要
+          // gutter 预留）。留着一个已退役的契约，等于让这一格永远红（12 条同源）。
+          // 现在钉的是**真正要守的东西**：超长列表必须在这个限高盒子里自己滚，不许撑出容器。
           && (!needsScroll || m.scroll.clientHeight < m.scroll.scrollHeight),
-        "menu.h ≤ 容器高−14 + overflowY=auto + gutter=stable",
+        "menu.h ≤ 容器高−14 + overflowY=auto + 内部可滚（gutter 口径已退役）",
         JSON.stringify(m && { menuH: m.menu.h, areaH: m.scroller.h, scroll: m.scroll, needsScroll }));
 
       // 判据④：逐项 elementFromPoint 命中自身 + 最后一项真点。
@@ -9572,8 +9584,10 @@ async function runLangDd(cdp, url) {
     check(`[${size.id}/composer] 限高在面板内 + 内部滚动`,
       !!m && m.present === true
         && m.menu.h <= m.scroller.h - 14
-        && m.scroll.overflowY === "auto" && m.scroll.gutter === "stable",
-      "menu.h ≤ 面板高−14 + auto + stable",
+        && m.scroll.overflowY === "auto"
+        && (m.scroll.scrollHeight <= m.scroll.clientHeight + 1
+          || m.scroll.clientHeight < m.scroll.scrollHeight),
+      "menu.h ≤ 面板高−14 + auto + 内部可滚（gutter 口径已退役）",
       JSON.stringify(m && { menuH: m.menu.h, areaH: m.scroller.h, scroll: m.scroll }));
     const items = [];
     if (m && m.present) {
@@ -10945,8 +10959,13 @@ async function runCaption(cdp, url) {
   // 因为让位成立时把层级按回去照样命中（恒真，第一版就栽在测了个不存在的关系）。
   await cdp.eval("window.__probe.setCaptionClass(false)");
   const d = await cdp.eval("window.__probe.stackRead()");
+  // 移动端安全区回落（`html.is-mobile` ⇒ `--gosslan-inset-top-fallback: 24px`）是**产品语义**：
+  // 真机没有 env() 时要留出状态栏。探针跑在桌面浏览器里，env() 恒 0 ⇒ 这 24px 照样出现，
+  // 于是"顶边必须是 0"这类断言在移动档必然假红（2026-11-22 实测 ovTop=24）。
+  // 期望值必须**跟着计算值走**：读 --gosslan-inset-top，而不是写死 0。
+  const insetTop = await cdp.eval("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gosslan-inset-top')) || 0");
   check("对照用几何：摘掉 has-caption 后遮罩确实铺到顶（所以下一条不是靠让位蒙对）",
-    d.ok === true && d.ovTop <= 1, "ovTop<=1", JSON.stringify(d));
+    d.ok === true && d.ovTop <= insetTop + 1, "ovTop<=insetTop+1", JSON.stringify({ ...d, insetTop }));
   check("即便如此，caption 中点仍命中标题栏（层级独立于让位）",
     d.ok === true && d.hitInCaption === true, "hitInCaption=true", "命中 " + d.hitTag);
 
@@ -10968,10 +10987,11 @@ async function runCaption(cdp, url) {
   // 因为它没进移动档）⇒ 钉上之后这一格才只由 caption 在不在决定。
   const compM = await cdp.eval('window.__probe.composeStack({ isMobile: true, narrow: true })');
   const m = await cdp.eval("window.__probe.stackRead()");
-  check("移动端主窗（没有 caption）：顶边必须是 0，不许白留一条标题带",
+  const insetTopM = await cdp.eval("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gosslan-inset-top')) || 0");
+  check("移动端主窗（没有 caption）：顶边只剩安全区（不许白留一条标题带）",
     !!compM && compM.ok === true && m.ok === true && m.hasCaption === false
-    && m.captionClass === false && m.ovTop <= 1,
-    "元素与类都不在 且 ovTop<=1", JSON.stringify(m));
+    && m.captionClass === false && m.ovTop <= insetTopM + 1,
+    "元素与类都不在 且 ovTop<=安全区+1", JSON.stringify({ ...m, insetTop: insetTopM }));
 }
 
 /**
@@ -16971,11 +16991,12 @@ async function runSearch(cdp, url) {
         hasResults: text.includes('探针会话') || text.includes('命中'),
       };
     })()`);
-    check("移动端搜索：390 宽下整页铺满、页面本身不滚（只有结果区滚）、无越界按钮",
-      mob.ok === true && mob.dlgW <= mob.vw && mob.dlgH >= mob.vh - 1
+    const mobInset = await cdp.eval("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gosslan-inset-top')) || 0");
+    check("移动端搜索：390 宽下整页铺满（含安全区）、页面本身不滚、无越界按钮",
+      mob.ok === true && mob.dlgW <= mob.vw && mob.dlgH + mobInset >= mob.vh - 1
         && mob.scrollW <= mob.vw + 1 && mob.docScrollH <= mob.vh + 1
         && mob.outside.length === 0,
-      "dlg.width<=vw + dlg.height>=vh + 页面不滚 + outside=0", JSON.stringify(mob));
+      "dlg.width<=vw + dlg.height+安全区>=vh + 页面不滚 + outside=0", JSON.stringify({ ...mob, inset: mobInset }));
     check("移动端搜索：结果仍渲染（不是只摆了一个空壳）",
       mob.ok === true && mob.hasResults === true, "结果文本可见", JSON.stringify(mob));
     // 移动端点第 2 条命中：与桌面判同一条可观察结局（emit 的是被点那行的 msg_id）。
@@ -17212,7 +17233,12 @@ async function runCtxMenu(cdp, url) {
     await sleep(300);
     const rowHit = await cdp.eval(`(() => {
       // ⚠️ BaseModal 走 Teleport ⇒ 面板内容**不在** #probe-host 里，得在全文档找。
-      const nameEl = [...document.querySelectorAll('span')].find((s) => (s.textContent || '').includes('bob'));
+      // ⚠️ 别写死 span：成员行的名字可能被拆成「未知成员」+ 昵称两个节点，或者换了标签
+      //（2026-11-22 实测：body 文本里有 bob，但没有任何 span 包含它 ⇒ 判据读成 no-row）。
+      // 取"包含 bob 且子元素里不再包含 bob"的最深那个节点，才是真正那一行。
+      const all = [...document.querySelectorAll('body *')]
+        .filter((el) => (el.textContent || '').includes('bob'));
+      const nameEl = all.filter((el) => ![...el.children].some((c) => (c.textContent || '').includes('bob'))).pop();
       if (!nameEl) return { ok: false, why: 'no-row', text: (document.body.innerText || '').slice(0, 120) };
       const r = nameEl.getBoundingClientRect();
       nameEl.dispatchEvent(new MouseEvent('contextmenu', {
