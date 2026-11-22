@@ -551,8 +551,11 @@ class Cdp {
       expression, awaitPromise: true, returnByValue: true, onlyPromise: false,
     });
     if (r.exceptionDetails) {
+      // 诊断：SyntaxError 这类解析错误要能定位到**哪一段 eval 源码**——带上它的头尾。
+      const head = String(expression).slice(0, 90).replace(/\s+/g, " ");
+      const tail = String(expression).slice(-90).replace(/\s+/g, " ");
       throw new Error(`页面里抛错：${r.exceptionDetails.exception?.description
-        ?? r.exceptionDetails.text}`);
+        ?? r.exceptionDetails.text}【eval 源码头：${head} ｜ 尾：${tail}】`);
     }
     return r.result?.value;
   }
@@ -2372,13 +2375,15 @@ window.__probe = (() => {
     const titleRow = closeBtn ? closeBtn.closest('div') : null;
     if (which === 'gutter-off') {
       // ⚠️ 原来撤的是负外边距 -mr-[滚动 gutter] —— 那套"预留 gutter 宽度"的口径已随
-      // 2026-11-20 的 true-overlay 迁移整体退役（滚动条不再占布局宽度）。反面对照的目的
-      // 没变：证明"左右对称"这条判据咬得住不对称。改成就地注入 8px 右侧留白（padding-right），
-      // 净右留白必然 +8 ⇒ 主判据必须翻红；量完立刻还原。
+      // 2026-11-20 的 true-overlay 迁移整体退役。反面对照的目的没变：证明"左右对称"这条
+      // 判据咬得住不对称。就地**在现有值之上**注入 +8px 右侧留白——2026-11-22 实测
+      // viewport 本来就带 16px 的 scroll-inset padding，直接写 8px 会把它改小、方向反了。
       if (!scroller) return { ok: false, why: '没找到滚动区' };
-      scroller.style.paddingRight = '8px';
+      scroller.dataset.beforePad = scroller.style.paddingRight || '';
+      const cur = parseFloat(getComputedStyle(scroller).paddingRight) || 0;
+      scroller.style.paddingRight = (cur + 8) + 'px';
     } else if (which === 'gutter-on') {
-      if (scroller) scroller.style.paddingRight = '';
+      if (scroller) { scroller.style.paddingRight = scroller.dataset.beforePad || ''; delete scroller.dataset.beforePad; }
     } else if (which === 'title-off') {
       if (!titleRow) return { ok: false, why: '没找到标题行' };
       titleRow.style.flexShrink = '1'; // 撤掉 shrink-0
@@ -10795,15 +10800,26 @@ async function rosterChecks(cdp, url) {
   const pts = await cdp.eval("window.__probe.allChipPoints()");
   check("多颗：拿得到每一颗胶囊的落点（>= 8 颗才谈得上「贴哪一边」）",
     Array.isArray(pts) && pts.length >= 8, "至少 8 颗", "现读 " + (pts ? pts.length : 0) + " 颗");
-  const leftmost = pts.reduce((x, y) => (y.left < x.left ? y : x));
-  const rightmost = pts.reduce((x, y) => (y.right > x.right ? y : x));
+  // ⚠️ 胶囊矩形要**hover 前现采**：全量跑时前序段可能动过消息/表情条的状态，
+  // 段首采样的落点到 hover 时已经漂了（2026-11-22 全量实测名单与胶囊差 47px ——
+  // 面板没错位，是量的那颗胶囊换了位置）。
+  const chipNow = (idx) => cdp.eval(`(() => {
+    const el = [...document.querySelectorAll('[data-reaction-chip]')][${idx}];
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { left: Math.round(r.left), right: Math.round(r.right) };
+  })()`);
+  const pickL = () => cdp.eval("(() => { const a = window.__probe.allChipPoints(); return a.reduce((x, y) => (y.left < x.left ? y : x)).i; })()");
+  const pickR = () => cdp.eval("(() => { const a = window.__probe.allChipPoints(); return a.reduce((x, y) => (y.right > x.right ? y : x)).i; })()");
 
-  await hoverInto(leftmost.i);
+  const li = await pickL();
+  await hoverInto(li);
   const r1 = await cdp.eval("window.__probe.reactionRoster()");
+  const chipL = await chipNow(li);
   check("多颗：贴左那颗的名单**往右长**（名单左缘就是胶囊左缘，左缘不越界）",
-    r1.ok === true && Math.abs(r1.left - leftmost.left) <= 2 && r1.overLeft <= 0,
+    r1.ok === true && !!chipL && Math.abs(r1.left - chipL.left) <= 2 && r1.overLeft <= 0,
     "|名单.left - 胶囊.left| <= 2 且 左溢 <= 0",
-    "名单 left=" + r1.left + " 胶囊 left=" + leftmost.left + " 左溢 " + r1.overLeft);
+    "名单 left=" + r1.left + " 胶囊 left=" + (chipL && chipL.left) + " 左溢 " + r1.overLeft);
   const rows1 = await cdp.eval("window.__probe.reactionRows()");
   // 判"长名字那一行"必须真被省略号截断（短行不该截 —— 第一版我写成"每行都要 clipped"，
   // 那是判据自己太严：同事乙 那行本来就短，红得没道理）
@@ -10821,12 +10837,14 @@ async function rosterChecks(cdp, url) {
     rows1.ok === true && rows1.panelW >= 250,
     "长名字面板 >= 250", "面板宽 " + (rows1.ok === true ? rows1.panelW : "?") + "px");
 
-  await hoverInto(rightmost.i);
+  const ri = await pickR();
+  await hoverInto(ri);
   const r2 = await cdp.eval("window.__probe.reactionRoster()");
+  const chipR = await chipNow(ri);
   check("多颗：贴右那颗的名单**往左长**（名单右缘就是胶囊右缘，右缘不越界）",
-    r2.ok === true && Math.abs(r2.right - rightmost.right) <= 2 && r2.overRight <= 0,
+    r2.ok === true && !!chipR && Math.abs(r2.right - chipR.right) <= 2 && r2.overRight <= 0,
     "|名单.right - 胶囊.right| <= 2 且 右溢 <= 0",
-    "名单 right=" + r2.right + " 胶囊 right=" + rightmost.right + " 右溢 " + r2.overRight);
+    "名单 right=" + r2.right + " 胶囊 right=" + (chipR && chipR.right) + " 右溢 " + r2.overRight);
   // 宽度按名字长短**伸缩**（用户 2026-10-07：「框框是固定长度，名字不够长后面有空白」）。
   // 这一条是**两颗互证**的：同一块面板、短名字那颗必须明显窄于长名字那颗 ——
   // 只要宽度是写死的，两个读数就相等，这条当场红。所以它不需要额外的反面对照。
@@ -10870,12 +10888,22 @@ async function rosterChecks(cdp, url) {
   // 反面对照：把壳的 fixed 坐标推到**远在视口外**（+2000px，而不是贴右缘）⇒ 里面那块面板必须跟着出去。
   // 贴右缘那版在 756 宽的视口里会被面板自身的居中/位移吃掉（实测 rect 右缘 748 < 756 ⇒ 判据不咬），
   // 那不是"视口判据坏了"，而是对照没把壳真正推出视口。
-  await cdp.eval("(function(){var el=document.querySelector('[data-reaction-picker]');"
-    + "if(!el)return false;"
-    + "var box=el.closest('[data-reka-popper-content-wrapper]')||el;"
-    + "box._o={left: box.style.left, right: box.style.right, transform: box.style.transform};"
-    + "box.style.right='auto';box.style.left=(window.innerWidth + 2000) + 'px';box.style.transform='none';return true;})()");
-  const ppOut = await cdp.eval("window.__probe.floatLayer('[data-reaction-picker] [role=dialog]')");
+  // ⚠️ 推壳与读数必须**同一次 eval**：Reka 的浮层带 autoUpdate，跨 eval 的间隙里它会把
+  // 壳重新定位回锚点旁（2026-11-22 全量实测面板 rect 388-748 又回到了视口内）。
+  // 单线程的同一 eval 内"改完立刻量"，重定位不可能插进来。
+  const ppOut = await cdp.eval(`(() => {
+    const el = document.querySelector('[data-reaction-picker]');
+    if (!el) return { ok: false, why: 'no picker' };
+    const box = el.closest('[data-reka-popper-content-wrapper]') || el;
+    box._o = { left: box.style.left, right: box.style.right, transform: box.style.transform };
+    box.style.right = 'auto';
+    box.style.left = (window.innerWidth + 2000) + 'px';
+    box.style.transform = 'none';
+    const out = window.__probe.floatLayer('[data-reaction-picker] [role=dialog]');
+    box.style.left = box._o.left; box.style.right = box._o.right;
+    box.style.transform = box._o.transform; delete box._o;
+    return out;
+  })()`);
   check("对照：把选择器那层壳推到视口右缘外 ⇒ 面板必须落到视口外（证明那条视口判据会咬）",
     ppOut.ok === true && ppOut.inViewport === false,
     "inViewport === false",
@@ -20024,10 +20052,11 @@ async function runOscillate(cdp, url, botMode = 0) {
       + " const msgs = chat.messages[CONV] || [];"
       + " const m = msgs[20];"
       + " if (!m) return { err: 'no message', keys: Object.keys(chat.messages).slice(0, 6) };"
-      + " // ⚠️ 字号从**渲染出来的气泡**读（computed font-size），不从 store 读："
-      + " // 全量跑时前面的段会动 chatStyle.fontSize（字号档测试），估高与实测一旦"
-      + " // 各拿一档，就会差出一整档（est=141.86 vs real=147，2026-11-22 全量实测）。"
-      + " // 按 px 反查 key（CHAT_FONT_SIZES 五档），保证两边永远同一档。"
+      // ⚠️ 字号从**渲染出来的气泡**读（computed font-size），不从 store 读：全量跑时前面的段
+      // 会动 chatStyle.fontSize（字号档测试），估高与实测各拿一档就会差出一整档
+      // （est=141.86 vs real=147，2026-11-22 全量实测）。按 px 反查 key 保证两边同一档。
+      // ⚠️⚠️ 这段 eval 是 **单行拼接串** —— 页面代码里不许写 // 注释（会把本行剩余全部吞掉，
+      // "Unexpected end of input" 就是这么来的），说明只能写在 .mjs 这一层。
       + " const F = await import('/src/utils/chatStyle.ts');"
       + " const bodyEl0 = [...document.querySelectorAll('[data-msg-body]')]"
       + "   .find((el) => (el.innerText || '').includes('会议号'));"
