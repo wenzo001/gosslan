@@ -14,6 +14,8 @@
 
 ## [Unreleased]
 
+## [7.2.2] - 2026-11-23
+
 ### 审计清账：Windows 行为用例勘察判「已闭合」
 - 「Windows 侧缺 3 类行为用例」无详情；实勘：CI 的 Rust 单测 matrix 本就含 windows-latest
   （verify.yml），cfg(windows) 门控的行为用例全部在上面跑——TCP abortive close 后立即重绑、
