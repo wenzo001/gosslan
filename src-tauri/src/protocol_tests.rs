@@ -7,6 +7,39 @@
 mod tests {
     use super::*;
 
+    /// **STB-05（审计 P3）：1:1 消息「直发 Gossip / 补发 ChatMessage」两条落库路径的
+    /// kind 必须原样透传，不许任何一侧偷偷归一化。**
+    ///
+    /// 为什么钉：两条路径（`gossip.rs` 直发、`handle_messaging.rs` 补发）各自落一条
+    /// MessageRecord —— 一侧做归一化/回落、另一侧透传，用户就会看到「同一条消息按到达
+    /// 顺序决定类型」的显示差异（审计原文的病）。今天两边都是字符串透传（INV-P24：
+    /// 未知 kind 原样入库由前端占位），这里把「透传」钉成判据：
+    /// ① 两处 kind 字段都是线串原样 clone；② 两份生产码都不许调 `MsgKind::from_wire_str`
+    /// —— 那是**发送侧词表**（未知一律回落 Text），出现在接收路径就是静默改写对端真值。
+    #[test]
+    fn one_on_one_kind_is_passthrough_on_both_record_paths() {
+        let gossip = include_str!("network/transport/gossip.rs");
+        let messaging = include_str!("network/transport/handle_messaging.rs");
+        let flat = |src: &str| src.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        assert!(
+            flat(gossip).contains("kind:kind.clone(),"),
+            "gossip 直发路径的落库 kind 必须是线串原样（kind: kind.clone()）—— \
+             归一化会让直发与补发两路出现按到达顺序决定的类型差异（STB-05）"
+        );
+        assert!(
+            flat(messaging).contains("kind:kind_str.clone(),"),
+            "ChatMessage 补发路径的落库 kind 必须是线串原样（kind: kind_str.clone()）—— \
+             归一化会让两路出现按到达顺序决定的类型差异（STB-05）"
+        );
+        for (name, src) in [("gossip.rs", gossip), ("handle_messaging.rs", messaging)] {
+            assert!(
+                !src.contains("from_wire_str"),
+                "{name} 的接收路径不许调 MsgKind::from_wire_str —— 那是发送侧词表，\
+                 未知 kind 会被静默回落成 Text（INV-P24：接收侧透传真值，前端占位）"
+            );
+        }
+    }
+
     /// 历史 video/audio 行在**读出口**归一为文件卡片；其余 kind 原样（数据不回写）。
     #[test]
     fn display_kind_maps_legacy_media_to_file() {
