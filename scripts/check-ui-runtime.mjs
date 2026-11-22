@@ -1309,6 +1309,16 @@ window.__probe = (() => {
   H.installMenu = async (propsJson, specJson) => {
     const V = window.__probe.vue;
     if (!V) return { ok: false, why: '先跑一次 install 把页面那份 vue 拿进来' };
+    // ⚠️ 卸载上一个实例再清场（2026-11-22）：这里原来直接清 body —— 上一个 app 实例还活着，
+    // 之后任何一次状态翻转（open=false）都会让 Vue 在**已脱离文档**的树上走 fragment 卸载；
+    // OverlayScrollbars 又把宿主子节点搬进过 viewport ⇒ 锚点链断了 ⇒ removeFragment 读
+    // null.nextSibling 抛错（groupadmin 段整段被打断的就是它）。先 unmount（DOM 还连着，
+    // OS 的 destroy 会把结构还原，与生产同路径），再清 innerHTML。失败不连坐本段。
+    const prevApp = window.__probe.__menuApp;
+    if (prevApp) {
+      try { prevApp.unmount(); } catch (e) { console.warn('[probe] 上一个菜单实例卸载失败（忽略）:', e && e.message); }
+      window.__probe.__menuApp = null;
+    }
     // spec 让这段能量**业务菜单**（§6.88 带回的结论：要挂父级、靠状态渲染，不能把菜单组件当根强开）。
     // 不传 spec 就还是消息菜单那一份 ⇒ ctxmenu 段的既有调用零改动。
     const spec = specJson ? JSON.parse(specJson) : {};
@@ -1346,6 +1356,7 @@ window.__probe = (() => {
     // 把根实例挂到探针上：有些能力是 defineExpose 出来的（如 MessageComposer.insertMention），
     // 不经 DOM 事件就能调；没有这个句柄就没法量"调完之后编辑器里到底长出了什么"。
     app.mount(host);
+    window.__probe.__menuApp = app;
     window.__probe.lastVm = window.__probe.__child && window.__probe.__child.value;
     window.__probe.vue = V;
     await V.nextTick(); await V.nextTick();
@@ -16741,14 +16752,26 @@ async function runErrorText(cdp, url) {
     const lines = await cdp.eval(`(() => {
       const box = document.querySelector('#probe-host [role="alert"]');
       if (!box) return null;
-      return [...box.querySelectorAll(':scope > div')]
+      // ⚠️ StateBlock 的标题/详情是两个 <span>（曾经是 div）—— ':scope > div' 恒空（2026-11-22）。
+      // 读全部元素孩子，跳过图标（aria-hidden）与按钮。
+      return [...box.children]
+        .filter((d) => d.tagName === 'SPAN')
         .map((d) => (d.innerText || '').replace(/\\s+/g, ' ').trim());
     })()`);
-    return { lang, mounted, lines: lines || [] };
+    // 诊断：alert 没渲染时要说清 host 里到底有什么（StateBlock 在不在 / 日志是不是空壳）。
+    const diag = lines ? null : await cdp.eval(`(() => ({
+      alerts: document.querySelectorAll('[role="alert"]').length,
+      hostKids: (document.querySelector('#probe-host') || { children: [] }).children.length,
+      hostText: ((document.querySelector('#probe-host') || { innerText: '' }).innerText || '').slice(0, 80),
+    }))()`);
+    return { lang, mounted, lines: lines || [], diag };
   };
 
-  const d = await dict();
+  // ⚠️ dict() 必须在**导航之后**跑：探针起步页是 about:blank，'/src/...' 的动态 import
+  // 解析不了（2026-11-22 实测 Failed to resolve module specifier）—— mountFail 会导航到
+  // dev server，先挂载再读词典即可（词典与页面语言无关，读的是两个字典模块）。
   const en = await mountFail("en-US");
+  const d = await dict();
   /*
    * 正文只取「说明」那一半（`detailText`），不能再把动作前缀拼进正文 ——
    * 错误块的标题已经是 `logs.loadFail` 了，正文再带一次就是「加载失败：加载失败」
@@ -16761,7 +16784,7 @@ async function runErrorText(cdp, url) {
     && en.lines[0] === d.enTitle && en.lines[1] === enWant
     && !String(en.lines[1] || "").includes(d.enTitle),
     "标题==logs.loadFail、正文==errors.rule.system 且不重复标题",
-    JSON.stringify({ lang: en.lang, ok: en.mounted && en.mounted.ok, lines: en.lines }));
+    JSON.stringify({ lang: en.lang, ok: en.mounted && en.mounted.ok, lines: en.lines, diag: en.diag }));
   check("错误文案·英文档：错误块整块没有中日韩字，也没有后端串（os error / 文件路径 / 裸 key 都不许上屏）",
     en.lines.length > 0 && !en.lines.some((l) => CJK.test(l))
     && !en.lines.some((l) => /os error|gosslan-probe\.log/.test(l))
@@ -25348,8 +25371,16 @@ async function runTasksMobile(cdp, url) {
 
     const menuOpened = await openRowMenu();
     const host = await cdp.eval(`(() => {
+      // ⚠️ 2026-11-20 起滚动层走 OverlayScroll：挂滚动语义的是宿主（.gosslan-scroll），
+      // 真正滚的是内部 [data-overlayscrollbars-viewport] —— closest('div.overflow-y-auto')
+      // 扑空 ⇒ scroll 合成段直接 dispatchEvent on null 抛错（2026-11-22 实测）。两级解析。
+      const findScrollAncestor = (from) => {
+        const h = from.closest('.gosslan-scroll');
+        if (h) return h.querySelector('[data-overlayscrollbars-viewport]') || h;
+        return from.closest('div.overflow-y-auto');
+      };
       const row = document.querySelector('button.min-w-0.flex-1');
-      const el = row && row.closest('div.overflow-y-auto');
+      const el = row && findScrollAncestor(row);
       return { found: !!el, winY: window.scrollY };
     })()`);
     check("开局核对：行菜单打得开，且行**确实挂在一层 `overflow-y-auto` 里**（那才是 scroll 事件的来源元素），window 自己没滚",
@@ -25360,8 +25391,17 @@ async function runTasksMobile(cdp, url) {
     // 换成在 window 上临时挂一根**冒泡相**探针：它收不到 ⇒ 正面证明这根事件确实到不了 window 的冒泡相，
     // 而菜单照样被撤掉 ⇒ 收它的只能是组件那条带 capture 的 window 监听。
     const fired = await cdp.eval(`(() => {
+      // ⚠️ 2026-11-20 起滚动层走 OverlayScroll：挂滚动语义的是宿主（.gosslan-scroll），
+      // 真正滚的是内部 [data-overlayscrollbars-viewport] —— closest('div.overflow-y-auto')
+      // 扑空 ⇒ scroll 合成段直接 dispatchEvent on null 抛错（2026-11-22 实测）。两级解析。
+      const findScrollAncestor = (from) => {
+        const h = from.closest('.gosslan-scroll');
+        if (h) return h.querySelector('[data-overlayscrollbars-viewport]') || h;
+        return from.closest('div.overflow-y-auto');
+      };
       const row = document.querySelector('button.min-w-0.flex-1');
-      const el = row.closest('div.overflow-y-auto');
+      const el = row && findScrollAncestor(row);
+      if (!el) return { bubSawIt: null, winY: window.scrollY, err: 'no scroll ancestor' };
       let bubSawIt = false;
       const probe = () => { bubSawIt = true; };
       window.addEventListener("scroll", probe, false);
@@ -25406,11 +25446,15 @@ async function runTasksMobile(cdp, url) {
         rows: document.querySelectorAll('button.min-w-0.flex-1').length,
       };
     })()`);
-    check("移动端群任务：面板整页铺满、页面不滚（列表自己滚），任务行仍在",
+    // ⚠️ 高度判据要扣**上下两条安全区**：is-mobile 回落各 24px，实测 820 = 844 − 底部
+    // （与 search 段同族；期望值跟 --gosslan-inset-* 的使用值走，见 resolveVarPx）。
+    const tmInset = (await resolveVarPx(cdp, "--gosslan-inset-top")) + (await resolveVarPx(cdp, "--gosslan-inset-bottom"));
+    check("移动端群任务：面板整页铺满（含安全区）、页面不滚（列表自己滚），任务行仍在",
       panelMounted && panelMounted.ok === true && panel.ok === true
-        && panel.w >= panel.vw - 1 && panel.h >= panel.vh - 1
+        && panel.w >= panel.vw - 1 && panel.h + tmInset >= panel.vh - 1
         && panel.docScrollH <= panel.vh + 1 && panel.overflowY === "hidden" && panel.rows >= 2,
-      "dialog=vw×vh + overflowY=hidden + 页面不滚 + rows>=2", JSON.stringify(panel));
+      "dialog=vw×(vh−上下安全区) + overflowY=hidden + 页面不滚 + rows>=2",
+      JSON.stringify({ ...panel, inset: tmInset }));
     if (SHOT_PATH) {
       const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
       const p = SHOT_PATH.replace(/\.png$/, "-tasksmobile.png");
@@ -26566,7 +26610,20 @@ async function runGroupAdmin(cdp, url) {
 
   // 群：群主 dev-me，管理员 bob，普通成员 carol。三种视角各挂一次面板数按钮。
   const GROUP = { id: 'g1', name: '管理员探针群', creator: 'dev-me', members: ['dev-me', 'bob', 'carol'], admins: ['bob'], avatar: null };
+  // ⚠️ 处置 install 挂的那个初始实例：installMenu 每次都会清 body（不 unmount —— 夹具
+  // 约定如此），于是这个 GroupMemberPanel 成了孤儿：view() 里对 chat.groups / app.device
+  // 的每次写入都让它在一棵**锚点已被 OS 搬断**的树上 patch/unmount ⇒
+  // removeFragment 读 null.nextSibling（2026-11-22 实测，打断了整段）。
+  const disposeInitial = () => cdp.eval(`(() => {
+    if (window.__probe.__initialDisposed) return 'already';
+    window.__probe.__initialDisposed = true;
+    const a = window.__probe.app;
+    if (a) { try { a.unmount(); } catch (e) { return 'unmount-failed: ' + (e && e.message); } }
+    window.__probe.app = null;
+    return 'disposed';
+  })()`);
   const view = async (deviceId) => {
+    await disposeInitial();
     await cdp.eval(`window.__probe.installMenu(${JSON.stringify(JSON.stringify({ open: true, groupId: 'g1' }))}, ${JSON.stringify(JSON.stringify({
       path: '/src/components/GroupMemberPanel.vue',
       emits: ['close', 'open-tasks', 'mention', 'open-profile'],
