@@ -26019,9 +26019,33 @@ async function runContextGuard(cdp, url) {
       };
     })()`);
     console.log("  · 移动端选字 CSS 实测：" + JSON.stringify(cssState));
-    check("移动端 CSS：消息内容列不可选（长按昵称/卡片归自定义面板），正文层显式可选",
-      !!m2 && m2.ok === true && cssState.colSelect === "none" && cssState.textSelect === "text",
-      "col=none / text=text", JSON.stringify(cssState));
+    // ⚠️ 契约在 2026-11-07 反转过（安卓实测：正文层默认可选 ⇒ 长按直接被系统选字接管，
+    // 自定义面板永远不弹）：触屏下正文层**默认也是 none**，长按先弹面板；
+    // 只有「选择文字」模式（MessageItem selectMode ⇒ .gosslan-selecting）整列重新开放。
+    // 断言跟着现行契约走：默认两档都 none；selectMode 挂上后正文层必须回到 text。
+    check("移动端 CSS：消息内容列与正文层默认都不可选（长按归自定义面板，2026-11-07 契约）",
+      !!m2 && m2.ok === true && cssState.colSelect === "none" && cssState.textSelect === "none",
+      "col=none / text=none", JSON.stringify(cssState));
+    // 完整链路（长按 → ActionSheet → 选择文字）走的是触控派发 = 本机引擎边界（白名单那条）。
+    // 这里钉**CSS 契约**本身：选择文字模式下 MessageTextBubble 根会落 .gosslan-selecting，
+    // coarse 块靠它整列重开 —— 手动落类读级联，等价于"类真的挂上之后"那一帧的样式。
+    const selState = await cdp.eval(`(() => {
+      const bubble = document.querySelector('#probe-host .gosslan-bubble-text');
+      if (!bubble) return { ok: false };
+      bubble.classList.add('gosslan-selecting');
+      const text = document.querySelector('#probe-host .gosslan-selectable');
+      const out = {
+        ok: true,
+        selecting: bubble.classList.contains('gosslan-selecting'),
+        textSelect: text ? getComputedStyle(text).userSelect : null,
+        callout: text ? (getComputedStyle(text).webkitTouchCallout || '') : null,
+      };
+      bubble.classList.remove('gosslan-selecting');
+      return out;
+    })()`);
+    check("移动端「选择文字」模式：gosslan-selecting 落上后正文层重新可选（CSS 契约）",
+      selState.ok === true && selState.selecting === true && selState.textSelect === "text",
+      "selecting=true / text=text", JSON.stringify(selState));
 
     const sheetState = () => cdp.eval(`(() => ({
       sheet: !!document.querySelector('.gosslan-dialog-sheet'),
