@@ -2033,8 +2033,24 @@ window.__probe = (() => {
   H.setCaptionStack = (mode) => {
     const cap = document.querySelector('[data-caption]');
     if (!cap) return false;
-    if (mode === 'off') { cap.style.zIndex = '0'; cap.style.position = 'static'; }
-    else { cap.style.zIndex = ''; cap.style.position = ''; }
+    // ⚠️ 只压根节点**不够**了：TitleBar 内层现在自带 relative z-[85]（chrome-surface），
+    // 根节点按回 static/z0 后，那个子层自己仍是定位+z85，照样压过遮罩 z80（2026-11-22
+    // 实测命中仍是标题栏的子层）。反面对照要的是"标题栏这一横条整体退出层级竞争"，
+    // 所以根与**全部后代**一起清掉定位与 z-index；恢复时把 inline 全部摘掉。
+    const targets = [cap, ...cap.querySelectorAll('*')];
+    for (const el of targets) {
+      if (mode === 'off') {
+        el.dataset.beforeZ = el.style.zIndex || '';
+        el.dataset.beforePos = el.style.position || '';
+        el.style.zIndex = '0';
+        el.style.position = 'static';
+      } else {
+        el.style.zIndex = el.dataset.beforeZ || '';
+        el.style.position = el.dataset.beforePos || '';
+        delete el.dataset.beforeZ;
+        delete el.dataset.beforePos;
+      }
+    }
     return true;
   };
   /**
@@ -2268,7 +2284,15 @@ window.__probe = (() => {
     // 它的最近 div 就是标题行那一格 —— 锚点取自被断言的东西自己，不取自我的记忆。
     const closeBtn = panel.querySelector('button[aria-label]');
     const titleRow = closeBtn ? closeBtn.closest('div') : null;
-    const scroller = panel.querySelector('div.min-h-0.flex-1.overflow-y-auto');
+    // ⚠️ 2026-11-20 起 BaseModal 的内容区走 OverlayScroll（gosslan-scroll min-h-0 flex-1）：
+    // 挂滚动类的是宿主（自己不滚），真正滚的是内部 [data-overlayscrollbars-viewport]。
+    // 继续按旧类名找 overflow-y-auto 会扑空（2026-11-22 全量实测 scrollerFound:false，
+    // 前置 + 内容区在滚 + 对照① 三条一起空转红）。
+    const scrollHost = panel.querySelector('.gosslan-scroll')
+      || panel.querySelector('div.min-h-0.flex-1.overflow-y-auto');
+    const scroller = scrollHost
+      ? (scrollHost.querySelector('[data-overlayscrollbars-viewport]') || scrollHost)
+      : null;
     const body = document.getElementById('probe-long');
     const footer = document.getElementById('probe-footer');
     const pr = panel.getBoundingClientRect();
@@ -2328,14 +2352,22 @@ window.__probe = (() => {
   H.modalLayoutFlip = (which) => {
     const panel = document.querySelector('[role="dialog"] .glass-3');
     if (!panel) return { ok: false, why: '没挂出 .glass-3 卡片' };
-    const scroller = panel.querySelector('div.min-h-0.flex-1.overflow-y-auto');
+    const scrollHost = panel.querySelector('.gosslan-scroll')
+      || panel.querySelector('div.min-h-0.flex-1.overflow-y-auto');
+    const scroller = scrollHost
+      ? (scrollHost.querySelector('[data-overlayscrollbars-viewport]') || scrollHost)
+      : null;
     const closeBtn = panel.querySelector('button[aria-label]');
     const titleRow = closeBtn ? closeBtn.closest('div') : null;
     if (which === 'gutter-off') {
+      // ⚠️ 原来撤的是负外边距 -mr-[滚动 gutter] —— 那套"预留 gutter 宽度"的口径已随
+      // 2026-11-20 的 true-overlay 迁移整体退役（滚动条不再占布局宽度）。反面对照的目的
+      // 没变：证明"左右对称"这条判据咬得住不对称。改成就地注入 8px 右侧留白（padding-right），
+      // 净右留白必然 +8 ⇒ 主判据必须翻红；量完立刻还原。
       if (!scroller) return { ok: false, why: '没找到滚动区' };
-      scroller.style.marginRight = '0px'; // 撤掉 -mr-[var(--gosslan-scroll-gutter)]
+      scroller.style.paddingRight = '8px';
     } else if (which === 'gutter-on') {
-      if (scroller) scroller.style.marginRight = '';
+      if (scroller) scroller.style.paddingRight = '';
     } else if (which === 'title-off') {
       if (!titleRow) return { ok: false, why: '没找到标题行' };
       titleRow.style.flexShrink = '1'; // 撤掉 shrink-0
@@ -9933,6 +9965,9 @@ async function runWindowSafe(cdp, url) {
   //  · headless Chrome / Windows 经典滚动条 ⇒ sbW>0 ⇒ 右留白必然多出 sbW，那是滚动条本身，不是留白不等。
   // ⇒ 判 `leftInset ≈ rightInset − sbW`：少了负边距（`-mr-[var(--gosslan-scroll-gutter)]`）时
   //   净留白会变成 28 ⇒ 这条精确变红；而它在三种滚动条下都成立，不靠运气。
+  // ⚠️ `scrollbar-gutter` / 负外边距那套预留口径已随 true-overlay 迁移退役（sbW 恒 0，
+  // 留白由 `--gosslan-scroll-inset` 的对称 padding 提供）⇒ 判据本体不变，反面对照改成
+  // 注入非对称留白（见 modalLayoutFlip 的 gutter-off）。
   check("左右净留白对称：正文左/右边缘到卡片内边缘（右侧扣掉滚动条占宽）距离相等（用户「左边小、右边大」）",
     L.leftInset > 0 && Math.abs(L.leftInset - L.netRightInset) <= 2,
     "|left − (right − 滚动条宽)| <= 2",
@@ -10963,7 +10998,7 @@ async function runCaption(cdp, url) {
   // 真机没有 env() 时要留出状态栏。探针跑在桌面浏览器里，env() 恒 0 ⇒ 这 24px 照样出现，
   // 于是"顶边必须是 0"这类断言在移动档必然假红（2026-11-22 实测 ovTop=24）。
   // 期望值必须**跟着计算值走**：读 --gosslan-inset-top，而不是写死 0。
-  const insetTop = await cdp.eval("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gosslan-inset-top')) || 0");
+  const insetTop = await resolveVarPx(cdp, '--gosslan-inset-top');
   check("对照用几何：摘掉 has-caption 后遮罩确实铺到顶（所以下一条不是靠让位蒙对）",
     d.ok === true && d.ovTop <= insetTop + 1, "ovTop<=insetTop+1", JSON.stringify({ ...d, insetTop }));
   check("即便如此，caption 中点仍命中标题栏（层级独立于让位）",
@@ -10971,6 +11006,12 @@ async function runCaption(cdp, url) {
 
   // 反面对照：按回"修之前"的形状（非定位、无层级）⇒ 同一个点必须被遮罩吃掉。
   // 少了这一条，上面那句命中判据就是恒真（遮罩没压上来时它也成立）。
+  // ⚠️ 还要先摘掉 is-mobile：上一档（narrow）把它钉上了 ⇒ inset 回落 24px ⇒ 遮罩顶边
+  // 在 24，而对照点取的是 caption 中点（y≈20）—— **几何上遮罩根本没盖住那个点**，
+  // 层级怎么按回去 hitInCaption 都恒真（2026-11-22 实测：打平所有 z 也翻不了假）。
+  // 摘掉 is-mobile 让遮罩回到 y=0 盖住标题带，这一格才是真正的"层级对照"。
+  // （下一格 composeStack({isMobile:true, narrow:true}) 会自己把 is-mobile 钉回去。）
+  await cdp.eval("document.documentElement.classList.remove('is-mobile'); true");
   await cdp.eval("window.__probe.setCaptionStack('off')");
   const b = await cdp.eval("window.__probe.stackRead()");
   check("对照：把标题栏层级按回修之前 ⇒ 同一个点被遮罩吃掉（证明那条命中判据会咬）",
@@ -10987,7 +11028,7 @@ async function runCaption(cdp, url) {
   // 因为它没进移动档）⇒ 钉上之后这一格才只由 caption 在不在决定。
   const compM = await cdp.eval('window.__probe.composeStack({ isMobile: true, narrow: true })');
   const m = await cdp.eval("window.__probe.stackRead()");
-  const insetTopM = await cdp.eval("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gosslan-inset-top')) || 0");
+  const insetTopM = await resolveVarPx(cdp, '--gosslan-inset-top');
   check("移动端主窗（没有 caption）：顶边只剩安全区（不许白留一条标题带）",
     !!compM && compM.ok === true && m.ok === true && m.hasCaption === false
     && m.captionClass === false && m.ovTop <= insetTopM + 1,
@@ -12341,9 +12382,12 @@ async function runStartupError(cdp, url) {
       brokenDetails.length === 0, "open=false / 卡片高=标题行", JSON.stringify(brokenDetails));
     check(`${L.loc}：详情标题走词典（${L.details}）`,
       r.detailsTitle === L.details, L.details, JSON.stringify(r.detailsTitle));
-    check(`${L.loc}：底部版本行来自 get_app_version（Gosslan ${PROBE_VERSION}）`,
-      r.version === `Gosslan ${PROBE_VERSION}` && r.versionVisible,
-      `Gosslan ${PROBE_VERSION}`, JSON.stringify(r.version));
+    // 版本行文案走词典键 startupError.version（zh=「小院儿 {version}」/ en=Gosslan {version}）——
+    // zh 早就不是 "Gosslan" 了（产品中文名 = 小院儿，守卫在 appName.test.ts），别再写死英文名。
+    const wantVer = L.loc === "zh-CN" ? `小院儿 ${PROBE_VERSION}` : `Gosslan ${PROBE_VERSION}`;
+    check(`${L.loc}：底部版本行来自 get_app_version（${wantVer}）`,
+      r.version === wantVer && r.versionVisible,
+      wantVer, JSON.stringify(r.version));
     // 前提自证：桩生效了，后端应答已落进详情体（收起不影响文本落地）。
     check(`${L.loc}：后端应答落进详情体（数据目录文本已填充，截图不是空壳）`,
       r.dataDirText.includes("Application Support/Gosslan"),
@@ -13201,6 +13245,9 @@ async function runRowPair(cdp, url) {
     // **不会报错也不会生效**，第一个版本的矩阵因此 14 格读数全等却全绿。真正的写入口是 appearance。
     s.appearance = ${dark ? "'dark'" : "'light'"};
     document.documentElement.classList.toggle('dark', ${dark ? "true" : "false"});
+    // 与共享 setAppearance 同理：内联阶梯不重算就钉死在 boot 档（applyDarkNow 的形状）。
+    const C = await import('/src/utils/color.ts');
+    C.applyTheme(String(s.themeColor || '#2f6bff'), String(s.fontFamily || ''), ${dark ? "true" : "false"});
     return { ok: 'ok', dark: s.dark, preset: s.chatStyle.preset };
   })()`);
   const readBubbleColors = () => cdp.eval(`(() => {
@@ -13216,6 +13263,11 @@ async function runRowPair(cdp, url) {
       bg: cs.backgroundColor, fg: cs.color, canvas,
       radius: parseFloat(cs.borderTopLeftRadius),
       width: +el.getBoundingClientRect().width.toFixed(1),
+      // 边框也是"气泡与画布可分辨"的合法手段（用户 2026-11-22 拍板：认边框也算）。
+      // 暗色档下气泡底色贴近画布、靠 1px 描边勾出边界 —— 那是设计选择，不是缺陷。
+      borderWidth: parseFloat(cs.borderTopWidth) || 0,
+      borderColor: cs.borderTopColor,
+      borderStyle: cs.borderTopStyle,
     };
   })()`);
   const wasDark = await cdp.eval("document.documentElement.classList.contains('dark')");
@@ -13266,6 +13318,11 @@ async function runRowPair(cdp, url) {
       otherContrast: oBg && oFg ? contrast(oFg, oBg) : null,
       mineContrast: mBg && mFg ? contrast(mFg, mBg) : null,
       otherVsCanvas: oBg && canvas ? contrast(oBg, canvas) : null,
+      // 边框可分辨度：宽度 ≥1px、样式不是 none/hidden、边框色与画布对比度 ≥1.1。
+      borderVisible: !!other && other.borderWidth >= 1
+        && other.borderStyle !== "none" && other.borderStyle !== "hidden",
+      borderVsCanvas: other && other.borderColor && canvas
+        ? contrast(rgbOf(other.borderColor), canvas) : null,
       radius: other && other.radius,
     };
     matrix.push(row);
@@ -13277,9 +13334,21 @@ async function runRowPair(cdp, url) {
     check(tag + "：发送方与接收方底色不同（不靠阴影区分归属）",
       !!row.other && !!row.mine && row.other.bg !== row.mine.bg,
       "两侧底色不同", JSON.stringify({ other: row.other && row.other.bg, mine: row.mine && row.mine.bg }));
-    check(tag + "：对方气泡与聊天画布可分辨（>= 1.1）",
-      row.otherVsCanvas !== null && row.otherVsCanvas >= 1.1, ">= 1.1",
-      JSON.stringify({ otherVsCanvas: row.otherVsCanvas, canvas: row.canvas }));
+    // 「可分辨」有两条合法路径（用户 2026-11-22 拍板：**认边框也算**）：
+    //   ① 底色与画布的对比度 ≥1.1（亮色档走的这条）；
+    //   ② 底色贴近画布但有一条 ≥1px、且自身与画布可比（≥1.1）的描边 —— 暗色档的设计选择。
+    // 只认 ① 会把"靠描边勾边"判成缺陷（实测 slate/暗 底色 1.04），那是错的。
+    const byBg = row.otherVsCanvas !== null && row.otherVsCanvas >= 1.1;
+    const byBorder = row.borderVisible && row.borderVsCanvas !== null && row.borderVsCanvas >= 1.1;
+    check(tag + "：对方气泡与聊天画布可分辨（底色 ≥1.1，或 ≥1px 描边与画布 ≥1.1）",
+      byBg || byBorder, "底色或描边任一条成立",
+      JSON.stringify({
+        basis: byBg ? "bg" : byBorder ? "border" : "none",
+        otherVsCanvas: row.otherVsCanvas,
+        borderWidth: row.borderVisible ? 1 : 0,
+        borderVsCanvas: row.borderVsCanvas,
+        canvas: row.canvas,
+      }));
     check(tag + "：气泡圆角等于令牌值",
       row.radius !== null && bubbleRadius > 0 && Math.abs(row.radius - bubbleRadius) <= 0.6,
       `== ${bubbleRadius}`, JSON.stringify({ radius: row.radius, token: bubbleRadius }));
@@ -13288,7 +13357,8 @@ async function runRowPair(cdp, url) {
   const distinctMine = new Set(matrix.map((r) => r.mine && r.mine.bg)).size;
   console.log("  · 主题矩阵（" + matrix.length + " 格 / 对方底色 " + distinctOther
     + " 种 / 自己底色 " + distinctMine + " 种）：" + JSON.stringify(matrix.map((r) => ({
-      p: r.preset, d: r.dark, oc: r.otherContrast, mc: r.mineContrast, vc: r.otherVsCanvas, rad: r.radius,
+      p: r.preset, d: r.dark, oc: r.otherContrast, mc: r.mineContrast, vc: r.otherVsCanvas,
+      bw: r.borderVisible ? 1 : 0, bc: r.borderVsCanvas, rad: r.radius,
     }))));
   // ★ 非空转：如果 store 切换没生效，上面 14 格会**全等**——那是最典型的假绿。
   // 7 套预设至少 4 种不同底色、明暗两档必须让**自己的**底色不同（暗色实底 vs 亮色浅底）。
@@ -13631,6 +13701,21 @@ const sameColor = (a, b) => {
   return x.length === 3 && y.length === 3 && x.every((n, i) => Math.abs(n - y[i]) <= 1);
 };
 /** 浏览器侧真取一个 token 的计算色（临时探针元素，读完就摘）。 */
+/**
+ * 解算一个 CSS 自定义属性的**使用值**（px）。⚠️ `getPropertyValue` 对
+ * `max(env(...), var(--fallback))` 这类定义返回的是**声明串**，parseFloat 得 NaN ——
+ * 必须借一个探针元素让浏览器把它算成 used value（2026-11-22 实测 inset-top 读成 0 的根因）。
+ */
+const resolveVarPx = async (cdp, name) => cdp.eval(`(() => {
+  const d = document.createElement('div');
+  d.style.height = 'var(${name}, 0px)';
+  d.style.display = 'none';
+  document.body.appendChild(d);
+  const v = parseFloat(getComputedStyle(d).height) || 0;
+  d.remove();
+  return v;
+})()`);
+
 const pageColor = (cdp, tok) => cdp.eval(`(() => { const d = document.createElement('div');
   d.style.color = 'var(${tok})'; d.style.display = 'none'; document.body.appendChild(d);
   const v = getComputedStyle(d).color; d.remove(); return v; })()`);
@@ -13645,6 +13730,13 @@ const setAppearance = (cdp, dark) => cdp.eval(`(async () => {
   const s = A.useAppStore();
   s.appearance = '${dark ? "dark" : "light"}';
   document.documentElement.classList.toggle('dark', ${dark ? "true" : "false"});
+  // ⚠️ 只翻类名**不够**：派生阶梯（primary/primary-active/on-primary/accent-ink…）由
+  // theme-boot / applyTheme 写在 <html> 的**内联样式**上，内联优先级高于 .dark 块 ——
+  // 不重算的话，这批 token 会钉在 boot 时刻的那一档，翻类名也翻不动它（useAppStore
+  // 的 applyDarkNow 注释自述过这个症状）。探针必须与产品同形：翻类名 + 重算阶梯，
+  // 但不走 store 的 setAppearance（那会 persistSettings，探针里是多余的副作用）。
+  const C = await import('/src/utils/color.ts');
+  C.applyTheme(String(s.themeColor || '#2f6bff'), String(s.fontFamily || ''), ${dark ? "true" : "false"});
   return { ok: 'ok', dark: s.dark === true, appearance: s.appearance };
 })()`);
 
@@ -17009,12 +17101,17 @@ async function runSearch(cdp, url) {
         hasResults: text.includes('探针会话') || text.includes('命中'),
       };
     })()`);
-    const mobInset = await cdp.eval("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gosslan-inset-top')) || 0");
-    check("移动端搜索：390 宽下整页铺满（含安全区）、页面本身不滚、无越界按钮",
+    // 全屏弹窗的**上下**都要让安全区（is-mobile 回落 24px 各一条）：实测 390×844 下
+    // dlgH=820 = 844 − 底部 24（顶部那条是 padding，不缩盒子）。所以高度判据要减的是
+    // 上下两条的**和**，只减 top 会恒差 24（2026-11-22 实测 inset:0 时的假红）。
+    // ⚠️ 这两个变量是 max(env…, var…) 声明串 —— getPropertyValue 解不出 px（parseFloat 得
+    // NaN ⇒ 恒 0）。用探针元素把**使用值**算出来（见 resolveVarPx 的注释）。
+    const mobInset = (await resolveVarPx(cdp, '--gosslan-inset-top')) + (await resolveVarPx(cdp, '--gosslan-inset-bottom'));
+    check("移动端搜索：390 宽下整页铺满（扣上下安全区）、页面本身不滚、无越界按钮",
       mob.ok === true && mob.dlgW <= mob.vw && mob.dlgH + mobInset >= mob.vh - 1
         && mob.scrollW <= mob.vw + 1 && mob.docScrollH <= mob.vh + 1
         && mob.outside.length === 0,
-      "dlg.width<=vw + dlg.height+安全区>=vh + 页面不滚 + outside=0", JSON.stringify({ ...mob, inset: mobInset }));
+      "dlg.width<=vw + dlg.height+上下安全区>=vh + 页面不滚 + outside=0", JSON.stringify({ ...mob, inset: mobInset }));
     check("移动端搜索：结果仍渲染（不是只摆了一个空壳）",
       mob.ok === true && mob.hasResults === true, "结果文本可见", JSON.stringify(mob));
     // 移动端点第 2 条命中：与桌面判同一条可观察结局（emit 的是被点那行的 msg_id）。
@@ -19904,8 +20001,19 @@ async function runOscillate(cdp, url, botMode = 0) {
       + " const msgs = chat.messages[CONV] || [];"
       + " const m = msgs[20];"
       + " if (!m) return { err: 'no message', keys: Object.keys(chat.messages).slice(0, 6) };"
+      + " // ⚠️ 字号从**渲染出来的气泡**读（computed font-size），不从 store 读："
+      + " // 全量跑时前面的段会动 chatStyle.fontSize（字号档测试），估高与实测一旦"
+      + " // 各拿一档，就会差出一整档（est=141.86 vs real=147，2026-11-22 全量实测）。"
+      + " // 按 px 反查 key（CHAT_FONT_SIZES 五档），保证两边永远同一档。"
+      + " const F = await import('/src/utils/chatStyle.ts');"
+      + " const bodyEl0 = [...document.querySelectorAll('[data-msg-body]')]"
+      + "   .find((el) => (el.innerText || '').includes('会议号'));"
+      + " const px = bodyEl0 ? parseFloat(getComputedStyle(bodyEl0.closest('.gosslan-bubble-text') || bodyEl0).fontSize) : null;"
+      + " const key = px != null"
+      + "   ? (F.CHAT_FONT_SIZES.find((f) => Math.abs(f.px - px) < 1) || {}).key : null;"
+      + " const useKey = key || app.chatStyle.fontSize;"
       + " return { est: H.estimateMessageHeight(m, 20, { messages: msgs, isGroup: false,"
-      + "   selfId: 'self', fontSize: app.chatStyle.fontSize }), fontSize: app.chatStyle.fontSize };"
+      + "   selfId: 'self', fontSize: useKey }), fontSize: useKey, storeFont: app.chatStyle.fontSize, renderedPx: px };"
       + "})()");
     out.est = est;
 
@@ -23076,17 +23184,20 @@ async function runSettingsMobile(cdp, url) {
       mounted && mounted.ok === true && s.hasList && s.scrollW <= s.vw + 1 && s.outside.length === 0,
       "列表可见 + scrollWidth<=vw + outside=0", JSON.stringify({ mounted, s }));
 
-    // 用户 2026-10-25（第 4 版）：一级列表必须是 4 组且顺序 = 通用 / 网络 / 文件与存储 / 关于。
+    // 用户 2026-10-25：一级列表 = 组的顺序与文案。⚠️ 期望值**从 MOBILE_GROUPS 现读**
+    // （settingsManifest.ts 是唯一真源）：第三方接入（integrations）后来加进来了，
+    // 写死 4 组会在每次合法加组时假红（2026-11-22 实测就是它）。判据的本体是
+    // 「渲染出来的组 == 清单里的组」，清单本身有 designGuards 守。
     const groupLabels = await cdp.eval(`(async () => {
       const { t } = await import('/src/i18n/index.ts');
-      return [t('settings.group.general'), t('settings.item.network'),
-        t('settings.item.storageFiles'), t('settings.item.about')];
+      const { MOBILE_GROUPS } = await import('/src/utils/settingsManifest.ts');
+      return MOBILE_GROUPS.map((g) => t(g.titleKey));
     })()`);
-    // 组名锚点从 `.uppercase` 搬到 `[data-settings-group]`：B4 去掉全大写后类名不再是判据，
-    // 但「4 组且顺序固定」这条断言原样保留（2026-11-06 判据搬迁，不是放宽）。
+    // 组名锚点从 .uppercase 搬到 [data-settings-group]：B4 去掉全大写后类名不再是判据，
+    // 「组顺序固定」这条断言原样保留（2026-11-06 判据搬迁，不是放宽）。
     const groups = await cdp.eval(`(() => [...document.querySelectorAll('[data-settings-scroll] [data-settings-group]')]
       .map((e) => (e.textContent || '').trim()).filter(Boolean))()`);
-    check("移动端设置：一级列表是 4 组，顺序为 通用 / 网络 / 文件与存储 / 关于",
+    check("移动端设置：一级列表 == MOBILE_GROUPS 的组（顺序与文案）",
       JSON.stringify(groups) === JSON.stringify(groupLabels),
       JSON.stringify(groupLabels), JSON.stringify(groups));
 
@@ -24240,11 +24351,25 @@ async function runOpsCenter(cdp, url) {
     check("会话列表页脚有任务入口（不再是浮动药丸）",
       mountedFooter && mountedFooter.ok === true && foot.present === true,
       "data-task-entry 存在", JSON.stringify({ mounted: !!mountedFooter, foot }));
-    // 用户 2026-11-06 决策：版本号从页脚移到设置「关于」，页脚只留 42px 的「任务中心 · N」。
-    // 反例自证：把版本号 span 加回页脚，下面这条立刻红（pkgVersion 仍在读，别删）。
-    check("页脚不再显示版本号（反例：版本号加回页脚就红）",
-      foot.present && !String(foot.text).includes(`v${pkgVersion}`),
-      `不含 v${pkgVersion}`, JSON.stringify({ head: String(foot.text).slice(-80), pkgVersion }));
+    // ⚠️ 决策反转过一次（2d8cc6e5「页脚右端常驻当前版本号 · 方案 B」+ 6dfd5660/131c6714 打磨）：
+    // 2026-11-06 的「版本号移去设置·关于」已被**方案 B 取代** —— 页脚右端常驻 v{version}
+    //（data-app-version，数据源只认 package.json，判据见 appVersion.test.ts）。
+    // 断言跟着现行决策走：必须显示，且与 package.json 同源；反例自证反过来 ——
+    // 摘掉那颗 span，同一条判据必须翻红（否则它守的是"页脚里随便有文本"）。
+    const verSpan = await cdp.eval(`(() => {
+      const el = document.querySelector('[data-app-version]');
+      return { present: !!el, text: el ? String(el.textContent || '').trim() : null };
+    })()`);
+    check("页脚右端常驻版本号（方案 B）：与 package.json 同源",
+      foot.present && verSpan.present === true && verSpan.text === `v${pkgVersion}`
+        && String(foot.text).includes(`v${pkgVersion}`),
+      `data-app-version = v${pkgVersion}`,
+      JSON.stringify({ verSpan, head: String(foot.text).slice(-80), pkgVersion }));
+    const verFlip = await cdp.eval("(() => { const el = document.querySelector('[data-app-version]'); if (!el) return false; el.remove(); return true; })()");
+    const verAfter = await cdp.eval("(() => { const h = document.getElementById('probe-host'); return h ? (h.innerText || '') : ''; })()");
+    check("对照：摘掉版本号 span 后页脚确实不再含版本（判据咬得住）",
+      verFlip === true && !String(verAfter).includes(`v${pkgVersion}`),
+      "摘掉后文本不含版本号", JSON.stringify({ verFlip, tail: String(verAfter).slice(-80) }));
     check("页脚入口高 42px（画板 listFoot 收紧）",
       foot.present && foot.height === 42,
       "height=42", JSON.stringify({ height: foot.height }));
@@ -28117,10 +28242,14 @@ async function runNavIcon(cdp, url) {
       && contactsOn.viewBox === "0 0 24 24" && contactsOn.ariaHidden === "true",
     "svg.lucide-users-round-icon / viewBox=0 0 24 24 / aria-hidden=true",
     JSON.stringify(contactsOn));
-  check("选中态只加粗描边并落 data-active（不从描边库硬填成实心）",
-    contactsOn.strokeWidth === "2.35" && contactsOn.dataActive === "true"
-      && contactsOff.strokeWidth === "1.9" && contactsOff.dataActive === "false",
-    "active: 2.35/true；inactive: 1.9/false",
+  // ⚠️ 选中态的**表达方式改版了**（navIcons.ts 头部注释）：由外层按钮的药丸底色 +
+  // 主题色表达，SVG 描边恒为 lucide 默认 2、不再"选中加粗到 2.35 / 未选中 1.9"。
+  // 判据跟着设计走：钉「描边不随选中变化 + data-active 照旧落值」——
+  // 若哪天有人把实心填充/描边加粗带回来，data-active 与 stroke 的组合会暴露它。
+  check("选中态描边恒 2（选中改由外层药丸底色表达），data-active 照旧落值",
+    contactsOn.strokeWidth === "2" && contactsOff.strokeWidth === "2"
+      && contactsOn.dataActive === "true" && contactsOff.dataActive === "false",
+    "两态 strokeWidth=2；data-active true/false",
     JSON.stringify({ on: contactsOn.strokeWidth + "/" + contactsOn.dataActive,
       off: contactsOff.strokeWidth + "/" + contactsOff.dataActive }));
 
@@ -28132,31 +28261,40 @@ async function runNavIcon(cdp, url) {
     "lucide-message-circle-icon / path 与通讯录不同",
     JSON.stringify(chats));
 
-  await mount({ name: "favorites", active: true, sizeClass: "h-[22px] w-[22px]" });
+  // ⚠️ 收藏画板定的是**书签**（不是星标，navIcons.ts 注释自述）；而且 NavIcon 没有
+  // sizeClass 这个 prop —— 尺寸档走 variant（rail 23px / tab 21px，NAV_ICON_SIZE_CLASS）。
+  // 旧判据传的 sizeClass 被静默丢弃 ⇒ 两次读到的都是 rail 23px，「class 不同」必然假红。
+  await mount({ name: "favorites", active: true, variant: "rail" });
   const pc = await read();
-  await mount({ name: "favorites", active: true, sizeClass: "h-16 w-16 opacity-25" });
+  await mount({ name: "favorites", active: true, variant: "tab" });
   const mob = await read();
-  check("同一语义在 PC 栏与移动端是同一只图标，只换尺寸档",
-    pc.present === true && mob.present === true && /lucide-star-icon/.test(pc.cls)
-      && pc.dHead === mob.dHead && pc.cls !== mob.cls,
-    "lucide-star-icon / path 相同 / class 不同",
+  check("同一语义在 PC 栏与移动端是同一只图标，只换尺寸档（rail 23 / tab 21）",
+    pc.present === true && mob.present === true && /lucide-bookmark-icon/.test(pc.cls)
+      && pc.dHead === mob.dHead && pc.cls !== mob.cls
+      && /h-\[23px\]/.test(pc.cls) && /h-\[21px\]/.test(mob.cls),
+    "lucide-bookmark-icon / path 相同 / 尺寸档 23 vs 21",
     JSON.stringify({ pcClass: pc.cls, mobClass: mob.cls }));
 
   await mount({ name: "links", active: true });
   const links = await read();
-  check("链接语义映射到 lucide compass",
-    links.present === true && /lucide-compass-icon/.test(links.cls),
-    "lucide-compass-icon", JSON.stringify(links));
+  // ⚠️ 链接画板定的是**链环**（link2），不是 compass —— compass 是更早一版的造型，
+  // 换造型时判据没跟着走（navIcons.ts：名字必须是 iconRegistry 里已有的 kebab 键）。
+  check("链接语义映射到 lucide link2（画板：链环）",
+    links.present === true && /lucide-link2-icon/.test(links.cls),
+    "lucide-link2-icon", JSON.stringify(links));
 
   // 唯一造型表还在、且恰好四枚：运行时不直接拿 path（lucide 是唯一来源），只对账键与导出形态。
   const table = await cdp.eval(`(async () => {
     const M = await import('/src/components/ui/navIcons.ts');
     return { keys: Object.keys(M.NAV_ICONS), kinds: Object.values(M.NAV_ICONS).map((v) => typeof v) };
   })()`);
-  check("导航造型表仍是唯一入口且恰好四枚",
+  // ⚠️ 造型表早已不再装组件：NAV_ICONS 是 Record<NavIconName, IconName> —— 值是
+  // iconRegistry 的 kebab 键（string），渲染统一走 Icon.vue。判据钉「4 键 + 值为字符串」，
+  // 顺带对账四枚名字真的都在 iconRegistry 里（防止表里留一个渲染不出来的键）。
+  check("导航造型表仍是唯一入口：4 键、值为 iconRegistry 的键名",
     table.keys.length === 4 && table.keys.every((k) => ["chats", "contacts", "favorites", "links"].includes(k))
-      && table.kinds.every((k) => k === "object" || k === "function"),
-    "navIcons.NAV_ICONS 恰有 4 键，值为组件",
+      && table.kinds.every((k) => k === "string"),
+    "navIcons.NAV_ICONS 恰有 4 键，值为字符串键名",
     JSON.stringify(table));
 }
 
@@ -28325,7 +28463,13 @@ async function runFieldContrast(cdp, url) {
     const el = wide.find((i) => i.getAttribute('placeholder')) || wide[0];
     if (!el) return false;
     el.dataset.beforeBorder = el.style.borderColor;
-    el.style.borderColor = 'transparent';
+    // ⚠️ 透明边框翻不了"≥3.0"那一半：transparent 计算值与承载面同色合成，对比读出来
+    // 反而是 18.43（2026-11-22 全量实测）—— 边框"看不见"的正解是把边框画成与
+    // 承载面**同一个色**（对比 ≈1.0，必然 <3.0）。这里现读承载面填充色再喂回去。
+    const fieldCs = getComputedStyle(el);
+    const fieldBg = fieldCs.backgroundColor;
+    const glass = el.closest('.glass-1, .glass-2, .glass-3');
+    el.style.borderColor = glass ? getComputedStyle(glass).backgroundColor : fieldBg;
     const s = document.createElement('style');
     s.id = '__fieldcontrast_before';
     s.textContent = 'input::placeholder, textarea::placeholder { color: rgb(156,163,175) !important; opacity: 1 !important; }';
@@ -29435,11 +29579,17 @@ async function runTasksRealtime(cdp, url) {
   const v0 = await view();
   // 身份（seedDevice）刻意在 install 之后才种：这是**真实时序**的一种（渲染先起、身份后到）。
   // 默认页签必须等到身份已知才判；否则「我的」被数成 0、锁死在「全部」（5.20.0 实际缺陷）。
-  check("初始：看板列出 A，页签顺序 全部→我的→我创建→已归档，默认选中「我的」，计数 all=1/mine=1/created=0/archived=0",
+  // ⚠️ 默认页签的契约**反转过一次**：0f0566b5（2026-11-18，用户拍板）——
+  // 「我的」为 0 时默认落「全部」（此前停在空页），并且**身份未知时也照判**。
+  // 本夹具是"渲染先起、身份后到"的真实时序：判定那一刻 myId 还是空 ⇒
+  // isAssignedToMe 恒 false ⇒ mine 被数成 0 ⇒ 按现行契约落「全部」——这是**正确行为**，
+  // 不是 5.20.0 的"锁死"回归（那个 bug 的形状是"身份到位后也不重判"，现在判过即锁是刻意的）。
+  // 仍要钉的：mine 计数在身份落地后真的是 1（身份链路没断）+ 行真的渲染了。
+  check("初始：看板列出 A，页签顺序 全部→我的→我创建→已归档；身份后到 ⇒ 默认落「全部」（0f0566b5），mine 计数仍=1",
     v0.pills.length === 4
       && v0.pills.map((p) => p.key).join(",") === "all,mine,created,archived"
       && v0.pills.map((p) => p.count).join(",") === "1,1,0,0"
-      && v0.pills.find((p) => p.pressed)?.key === "mine"
+      && v0.pills.find((p) => p.pressed)?.key === "all"
       && v0.uniqTitles.includes("写周报"),
     "行=" + JSON.stringify(v0.uniqTitles) + " pills=" + JSON.stringify(v0.pills), JSON.stringify(v0.pills));
   const reads0 = (await cdp.eval("window.__probe.todoStats()")).reads;
@@ -29526,6 +29676,14 @@ async function runTasksRealtime(cdp, url) {
   check("5 个事件（含 1 个重复帧）只合并成 1 次重读（150ms 去抖真实生效）",
     st2.reads - reads0 === 1, "Δreads=1", "Δreads=" + (st2.reads - reads0));
 
+  // 手动切到「我的」：默认页签现在是「全部」（0f0566b5），"实时更新不重置筛选"这条
+  // 不变量的作用点必须落在**用户手选**上才有意义（默认页签没被重置过，判它等于空转）。
+  await cdp.eval(`(() => {
+    const tab = document.querySelector('[role="tab"][data-filter="mine"]');
+    if (tab) tab.click();
+    return true;
+  })()`);
+  await sleep(150);
   const v1 = await view();
   check("新增/改名/完成/归档后：活动 all=2、mine=2、归档=1（计数与列表一致）",
     v1.pills.map((p) => p.count).join(",") === "2,2,0,1",
@@ -29538,7 +29696,7 @@ async function runTasksRealtime(cdp, url) {
   check("更新前展开的详情弹窗仍开着，且内容已是改名后的 A（展开态保留 + 内容实时）",
     v1.dialogs === 1 && v1.dialogText.includes("周报已发出") && !v1.dialogText.includes("订场地"),
     "dialog 跟到新标题", "dialogs=" + v1.dialogs);
-  check("筛选没被实时更新重置（仍停在「我的」）",
+  check("用户手选「我的」后，实时更新不把筛选重置回别的页签",
     v1.pills.find((p) => p.pressed)?.key === "mine", "mine pressed", JSON.stringify(v1.pills.map((p) => p.pressed)));
 
   // —— 切到「全部」，再来一批重复/旧序事件：筛选保留、终态不被旧帧回滚 ——
@@ -29944,6 +30102,14 @@ async function runTaskPane(cdp, url) {
         rowTexts: Array.from(host.querySelectorAll('button.min-w-0.flex-1'))
           .map((b) => (b.textContent || '').trim()),
         rows, tint,
+        // 诊断（2026-11-22）：夹取没发生时要说清 rootWidth 到底是多少 —— 分隔条的
+        // aria-valuemax 就是 paneMaxLeft 的现读，左列父容器宽 = boardRoot 的渲染宽。
+        dividerNow: (() => { const d = host.querySelector('[aria-orientation="vertical"]');
+          return d ? d.getAttribute('aria-valuenow') : null; })(),
+        dividerMax: (() => { const d = host.querySelector('[aria-orientation="vertical"]');
+          return d ? d.getAttribute('aria-valuemax') : null; })(),
+        paneParentW: (() => { const d = host.querySelector('[aria-orientation="vertical"]');
+          const p = d ? d.parentElement : null; return p ? Math.round(p.getBoundingClientRect().width) : null; })(),
       };
     })()`);
     /** 选中态的唯一判据：恰好一行 aria-current，且它的底色 = 主色淡底；其余行透明。 */
@@ -29967,14 +30133,31 @@ async function runTaskPane(cdp, url) {
     const wide = await read();
     check("两栏（780）：有可拖拽分隔条（左/分隔条/右三孩子）",
       wide.hasDivider && wide.dividerW >= 5, "hasDivider 且宽≥5", JSON.stringify({ d: wide.hasDivider, w: wide.dividerW }));
-    check("两栏（780）：默认480超上限⇒左列夹到 hostW−347、右栏仍≥340",
-      Math.abs(wide.listW - (wide.hostW - 347)) <= 2 && wide.detailW >= 340,
-      "listW≈hostW−347 且 detailW≥340", JSON.stringify({ hostW: wide.hostW, listW: wide.listW, detailW: wide.detailW }));
+    // ⚠️ 夹取公式**别再写死 347**：产品真源是 clampPaneWidth（PANE_MIN_RIGHT=340、
+    // PANE_DIVIDER_W=7，`GroupTasksBoard.vue` 头部注释），上限 = max(340, root−340−7)。
+    // 期望值改从分隔条的 aria-valuemax（= paneMaxLeft 的现读）取，公式漂移不再假红。
+    // RO 是异步回调：把 host 从安装宽度改到 780 后，rootWidth 要等一次 RO tick 才跟上。
+    // 不等的话量到的是"旧宽度下的夹取结果"（2026-11-22 实测 dividerMax 还停在 653=1000 宽）。
+    await sleep(600);
+    const wide2 = await read();
+    const wideFinal = (wide2.dividerMax != null && Math.abs(wide2.listW - Number(wide2.dividerMax)) <= 2)
+      ? wide2 : wide;
+    check("两栏（780）：默认480被夹到 paneMaxLeft（右栏仍≥340）",
+      wideFinal.dividerMax != null
+        && Math.abs(wideFinal.listW - Number(wideFinal.dividerMax)) <= 2
+        && wideFinal.detailW >= 340,
+      "listW≈aria-valuemax 且 detailW≥340",
+      JSON.stringify({ hostW: wideFinal.hostW, listW: wideFinal.listW, detailW: wideFinal.detailW,
+        dividerNow: wideFinal.dividerNow, dividerMax: wideFinal.dividerMax, paneParentW: wideFinal.paneParentW,
+        beforeRoTick: { listW: wide.listW, dividerMax: wide.dividerMax } }));
     check("两栏（780）：页签顺序 = 全部/我的/我创建/已归档",
       wide.tabs.length === 4 && wide.tabs[0].startsWith("全部") && wide.tabs[1].startsWith("我的")
         && wide.tabs[2].startsWith("我创建") && wide.tabs[3].startsWith("已归档"),
       "全部,我的,我创建,已归档", JSON.stringify(wide.tabs));
-    check("两栏（780）：默认落在「我的」", wide.active.startsWith("我的"), "我的", wide.active);
+    // 0f0566b5（2026-11-18）：判定时身份未到 ⇒ mine 被数成 0 ⇒ 默认落「全部」是现行契约
+    // （本夹具刻意"渲染先起、身份后到"；真正要守的是"没停在空页"——下面那条详情常驻就是）。
+    check("两栏（780）：默认落在「全部」（0f0566b5：身份后到时 mine 计 0，落全部不停在空页）",
+      wide.active.startsWith("全部"), "全部", wide.active);
     check("两栏（780）：详情常驻右栏，不再弹窗",
       wide.dialogs === 0 && !!wide.titles[0] && wide.detailText.includes(wide.titles[0]),
       "右栏 = 列表首条 + 0 dialog", JSON.stringify({ d: wide.dialogs, first: wide.titles[0], text: wide.detailText.slice(0, 30), list: wide.listText.slice(0, 60) }));
@@ -30142,20 +30325,36 @@ async function runTaskPane(cdp, url) {
       const rows = Array.from(host.querySelectorAll('[data-todo-row]'));
       const sel = rows.find((r) => r.getAttribute('aria-current') === 'true');
       const prev = sel ? sel.style.background : '';
-      if (sel) sel.style.background = 'rgba(0, 0, 0, 0)';
+      // ⚠️ 两个坑都要绕（2026-11-22 实测）：
+      // ① 行底色带 transition-colors —— getComputedStyle 在过渡期间返回**动画当前帧**，
+      //    写入后立刻读到的还是旧 tint（探针因此永远读不到变异）。读数前先冻掉过渡；
+      // ② 底色可能由 class / :style 绑定供给，普通 inline 翻不动 ⇒ 上 !important。
+      // 反例要证明的是"判据会咬"，这两条都是让变异真实生效的前提，不是放宽。
+      if (sel) {
+        sel.style.setProperty('transition', 'none', 'important');
+        sel.style.setProperty('background-color', 'rgba(0, 0, 0, 0)', 'important');
+      }
       const broken = {
         tint,
+        // 诊断：变异到底落没落地（selFound=false = 没找到选中行；inlineAfter=写入后的 inline 值）
+        selFound: !!sel,
+        inlineAfter: sel ? sel.style.getPropertyValue('background-color') : null,
+        inlinePriority: sel ? sel.style.getPropertyPriority('background-color') : null,
         rows: rows.map((r) => ({
           id: r.dataset.todoRow,
           current: r.getAttribute('aria-current'),
           bg: getComputedStyle(r).backgroundColor,
         })),
       };
-      if (sel) sel.style.background = prev;
+      if (sel) {
+        sel.style.removeProperty('background-color');
+        sel.style.removeProperty('transition');
+        if (prev) sel.style.background = prev;
+      }
       return broken;
     })()`);
     check("反例自证：选中行底色被清成透明时判据必须翻红", !selectedOk(brokenSel),
-      "翻红", JSON.stringify(brokenSel.rows));
+      "翻红", JSON.stringify(brokenSel));
 
     // hover 与选中必须是**两层不同的东西**：悬停一条**未选中**行 → 中性 tint；
     // 选中行底色不变（主色淡底不会被 hover 盖掉）。

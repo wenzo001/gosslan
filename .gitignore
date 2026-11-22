@@ -71,3 +71,5 @@ __pycache__/
 .codex/config.toml.backup.*
 # Qoder CLI 的 MCP 宿主配置：内嵌本机绝对路径，入库后在别的机器上就是坏的
 .qoder/
+
+.project-audit/
