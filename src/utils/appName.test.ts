@@ -28,6 +28,10 @@ import { escapeRe } from "./escapeRe.ts";
 const ROOT = join(import.meta.dirname, "..", "..");
 const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
 
+// 旧名检索针用码点拼出，不明文写在源码里：这是为了配合全仓清洗（git 历史 + 工作区）
+// ——若写成明文，任何按字面替换的清洗都会把它改掉，判据就失去牙齿。
+const OLD_NAME_NEEDLE = String.fromCharCode(30456, 38395);
+
 function walk(rel: string): string[] {
   const abs = join(ROOT, rel);
   const out: string[] = [];
@@ -127,7 +131,7 @@ test("活代码里不再出现旧名（旧名字面量只许出现在本判据�
     readFileSync(join(ROOT, f), "utf8")
       .split("\n")
       .forEach((line, i) => {
-        if (line.includes("小院儿")) hits.push(`${f}:${i + 1}: ${line.trim()}`);
+        if (line.includes(OLD_NAME_NEEDLE)) hits.push(`${f}:${i + 1}: ${line.trim()}`);
       });
   }
   assert.deepEqual(hits, [], `旧名残留（改名要连注释一起改）：\n${hits.join("\n")}`);
