@@ -30,6 +30,15 @@
 - 依赖安全：`url` 2.5.8 → 2.5.9（RUSTSEC-2026-0592，嵌套 `blob:` URL 栈溢出；经
   tauri/wry/reqwest 传递引入）。两批 Verify 被该 advisory 拦红，升级后本地 cargo deny 全绿。
 
+### 审计 P3 清账：TST-04 落地；DUP-15 复核判「不收敛」
+- **TST-04**（好友 reject 零测试）补两判据：行为半——被拒后入站申请与**出站登记**必须
+  一起从库里消失（漏出站 = 建链时反复重发的原始缺陷形状）；接线半——FriendReject 臂必须走
+  `forget_pending_request` 这个家且不许手抄清表、必须 emit friend-rejected。
+- **DUP-15**（FavoritePanel/MobilePageFrame 各一份 overlay 壳）复核为**不收敛**：设计守卫
+  （㊿ pageOwners==2「不许被『统一』顺手删掉」+ N16 的文件级安全区尺子）刻意要求每个 .vue
+  自申报安全区——壳字面量归一会让这两把尺子变瞎。实测改完 npm test 红 3 条，守卫意图优先，
+  已回退；重复的是一句 class 串，换来的是每处安全区对判据可见。
+
 ## [7.2.0] - 2026-11-22
 
 ### 设置·文件与存储：新增「已发图片」容量显示与手动清理（NEW-01）

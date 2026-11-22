@@ -71,6 +71,99 @@
         );
     }
 
+    /// **TST-04（审计）行为半：被拒申请必须连出站登记一起从库里清掉。**
+    ///
+    /// 真实缺陷：FriendReject 臂原先只清**入站**那一张 ⇒ `flush_pending_friend_request`
+    /// 每次建链都把已被拒绝的申请再发一遍，对方的「新朋友」里那条永远删不掉。
+    /// `forget_pending_request` 现在清内存两张表 + 库两处登记 —— 这里把库那半的行为
+    /// 钉死（内存表的状态机由接线半的形状判据看）：写进去 → forget → 读不回。
+    /// 重启也不许端回来：这两处登记的恢复源就是这两张库行。
+    #[test]
+    fn forgotten_friend_reject_clears_both_ledger_rows() {
+        use crate::db;
+        let conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(db::SCHEMA).expect("建 schema");
+
+        // 入站：对方发来的申请（FriendReject 到达时要清它）。
+        let inbound = crate::state::PendingRequest {
+            from: "peer-r".into(),
+            from_nickname: "R".into(),
+            from_avatar: None,
+            ts: 1_700_000_000_000,
+            request_id: 1_700_000_000_000,
+        };
+        db::put_friend_request(&conn, &inbound).expect("写入站");
+        assert!(
+            db::get_friend_request(&conn, "peer-r").unwrap().is_some(),
+            "前置：入站申请必须真的进了库"
+        );
+
+        // 出站：我方发出去、正在等回执的登记（**漏清它就是反复重发的原始缺陷**）。
+        let outbound = crate::db::OutgoingFriendRequest {
+            peer: "peer-r".into(),
+            first_at: 1_700_000_000_000,
+            last_sent_at: 1_700_000_000_000,
+            status: "waiting".into(),
+            withdraw_confirmed: false,
+            withdraw_attempts: 0,
+            withdraw_last_at: 0,
+        };
+        db::put_outgoing_friend_request(&conn, &outbound).expect("写出站");
+        assert!(
+            db::get_outgoing_friend_request(&conn, "peer-r").unwrap().is_some(),
+            "前置：出站登记必须真的进了库"
+        );
+
+        // forget 两处（与 forget_pending_request 的库半同款调用）。
+        db::forget_friend_request(&conn, "peer-r").expect("清入站");
+        db::forget_outgoing_friend_request(&conn, "peer-r").expect("清出站");
+        assert!(
+            db::get_friend_request(&conn, "peer-r").unwrap().is_none(),
+            "入站申请还在库里 ⇒ 重启后新朋友里又冒出来"
+        );
+        assert!(
+            db::get_outgoing_friend_request(&conn, "peer-r").unwrap().is_none(),
+            "出站登记还在库里 ⇒ 每次建链 flush 都把被拒申请再发一遍（TST-04 原始缺陷形状）"
+        );
+    }
+
+    /// **TST-04（审计）接线半：FriendReject 臂必须走 `forget_pending_request` 这个家**，
+    /// 且不许在臂里手抄清表 —— 家里清几张表是那一份事实，臂里手抄正是"只清一张"
+    /// 缺陷的原始形状。
+    #[test]
+    fn friend_reject_arm_forgets_via_the_single_home() {
+        // ⚠️ 臂体住在 `transport/handle_identity.rs`（transport.rs:1647 include!），
+        // **不在** `transport_src_for_guards()` 视图里 —— 那份全集刻意不并它
+        // （视图纪律：漏登记是假绿，但也别为一条判据把共享视图变宽）。
+        // 这里直接读分册本体切函数体。
+        let identity = include_str!("network/transport/handle_identity.rs");
+        let body = rust_fn_body(identity, "async fn handle_identity_and_friend_messages(");
+        assert!(!body.is_empty(), "分册函数切不出来 ⇒ 锚点失效，判据在空转");
+        let flat_body = code_flat(&body);
+        // 臂体 = FriendReject 变体臂到下一个变体臂（FriendRemove）之间。
+        let start = flat_body
+            .find("Message::FriendReject{from,to}=>")
+            .expect("FriendReject 臂不见了 ⇒ 判据锚点要跟着改");
+        let end = flat_body[start..]
+            .find("Message::FriendRemove")
+            .expect("找不到下一个臂 ⇒ 臂体切分锚点要跟着改");
+        let arm = &flat_body[start..start + end];
+        assert!(
+            arm.contains("forget_pending_request(state,&from)"),
+            "FriendReject 臂必须走 forget_pending_request 这个家 —— 它一次清内存两张表 + \
+             库两处登记；绕开家 = 回到只清一张的缺陷形状"
+        );
+        assert!(
+            !arm.contains("pending_requests") && !arm.contains("pending_out_requests"),
+            "臂里不许手抄清表（TST-04 的原始缺陷就是臂里只清了入站那张）"
+        );
+        // 事件也要发：前端「新朋友」列表靠它把那条申请摘掉。
+        assert!(
+            arm.contains("friend-rejected"),
+            "FriendReject 臂必须 emit friend-rejected，否则前端列表不知道要摘"
+        );
+    }
+
     /// **每一条"同意好友"的路径都必须清掉那条申请**。
     ///
     /// 真实缺陷（用户 2026-09-12 真机实测）：双方互发过申请时，A 点了同意，B 的「新朋友」里
