@@ -11,12 +11,18 @@ import SettingsSelect from "@/components/ui/SettingsSelect.vue";
 import { formatBytes } from "@/utils/format";
 import { fmtDateStamp } from "@/utils/time";
 import { t } from "@/i18n";
-import type { CacheInfo } from "@/types";
+import type { CacheInfo, SentUsage } from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
 const app = useAppStore();
 const cacheInfo = ref<CacheInfo | null>(null);
+/** 已发图片（sent 托管目录）的占用读数与清理档位（30/180/360，后端白名单）。 */
+const sentUsage = ref<SentUsage | null>(null);
+const sentDays = ref(180);
+const sentCleaning = ref(false);
+/** 「清理已发图片」二次确认。 */
+const confirmSentClean = ref(false);
 /** 0 = 永久 / 无限制 */
 const retentionDays = ref(0);
 const maxQuotaMb = ref(0);
@@ -179,10 +185,47 @@ async function cleanNow() {
   }
 }
 
+/**
+ * 已发图片与本机接收缓存是**两类东西、两种清理语义**（用户拍板可清理的是本机发出的）：
+ * 读数各自一条命令，混在一个数字里用户分不清哪个归哪次清理。
+ */
+async function loadSent() {
+  sentUsage.value = await api.getSentUsage();
+}
+
+function setSentDays(value: string | number) {
+  sentDays.value = Number(value);
+}
+
+function askSentClean() {
+  confirmSentClean.value = true;
+}
+
+async function sentClean() {
+  confirmSentClean.value = false;
+  sentCleaning.value = true;
+  try {
+    const r = await api.cleanSentImages(sentDays.value);
+    if (r.removed === 0) {
+      app.toast(t("settings.storage.sent.toast.nothing"), "info");
+    } else {
+      app.toast(t("settings.storage.sent.toast.cleaned", { n: r.removed, bytes: formatBytes(r.freed_bytes) }), "success");
+    }
+  } catch (e) {
+    app.toastError(e, t("settings.storage.sent.toast.cleanFail"));
+  } finally {
+    sentCleaning.value = false;
+    await loadSent();
+  }
+}
+
 watch(
   () => [props.active, props.reloadToken],
   () => {
-    if (props.active) void loadCache();
+    if (props.active) {
+      void loadCache();
+      void loadSent();
+    }
   },
   { immediate: true },
 );
@@ -248,6 +291,35 @@ watch(
         {{ t("settings.storage.clean.btn") }}
       </button>
     </div>
+
+    <SettingsRow
+      :label="t('settings.storage.sent.days')"
+      :description="t('settings.storage.sent.days.desc')"
+    >
+      <SettingsSelect
+        :model-value="sentDays"
+        :options="[30, 180, 360].map((n) => ({ value: n, label: t('settings.storage.sent.days.option', { n }) }))"
+        :select-label="t('settings.storage.sent.days')"
+        @update:model-value="setSentDays"
+      />
+    </SettingsRow>
+
+    <div class="settings-card-row flex items-center justify-between gap-3">
+      <span class="min-w-0 text-xs leading-5 text-[var(--gosslan-text-2)]">
+        {{ t("settings.storage.sent.stats") }}
+        <b>{{ sentUsage?.files ?? 0 }}</b> {{ t("settings.storage.stats.unit") }} ·
+        <b>{{ formatBytes(sentUsage?.bytes ?? 0) }}</b>
+      </span>
+      <button
+        class="flex shrink-0 items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+        :disabled="sentCleaning"
+        :title="t('settings.storage.sent.clean.title')"
+        @click="askSentClean"
+      >
+        <Icon name="trash2" class="h-3.5 w-3.5" />
+        {{ t("settings.storage.sent.clean.btn") }}
+      </button>
+    </div>
   </SettingsGroup>
 
   <!-- 自动删除策略：开启前确认（替代 window.confirm，与整体样式一致） -->
@@ -268,5 +340,15 @@ watch(
     :confirm-label="t('settings.storage.clean.btn')"
     @cancel="confirmClean = false"
     @confirm="cleanNow"
+  />
+
+  <!-- 清理已发图片：删的是本机发出的原图（对端那份不受影响）→ 二次确认 -->
+  <ConfirmDialog
+    :open="confirmSentClean"
+    :title="t('settings.storage.sent.clean.title')"
+    :body="t('settings.storage.sent.clean.confirm', { n: sentDays })"
+    :confirm-label="t('settings.storage.sent.clean.btn')"
+    @cancel="confirmSentClean = false"
+    @confirm="sentClean"
   />
 </template>

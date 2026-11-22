@@ -900,6 +900,12 @@ export interface CacheInfo {
   max_bytes: number | null;
 }
 
+export interface SentUsage {
+  /** 已发图片（sent 托管目录）：文件数与合计占用 */
+  files: number;
+  bytes: number;
+}
+
 /** 缓存清理结果 */
 export interface CleanupReport {
   removed: number;

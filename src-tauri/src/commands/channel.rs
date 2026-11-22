@@ -642,6 +642,107 @@ fn db_file_bytes(s: &AppState) -> u64 {
     total
 }
 
+/// 「已发图片」（sent 托管目录）的占用读数：文件数与合计字节。
+///
+/// 为什么单独一条命令而不是塞进 `CacheInfo`：sent 是**本机发出的**图片（用户拍板可清理），
+/// 与「接收的媒体」是两类东西、两种清理语义 —— 混在一个读数里，用户分不清哪个数字归哪次清理。
+#[derive(Serialize)]
+pub struct SentUsage {
+    files: usize,
+    bytes: u64,
+}
+
+/// 手动清理的**档位白名单**（纯函数）。2026-11-21 用户拍板：30 / 180 / 360 天三档、
+/// 用户主动触发。不接受任意天数 —— 这是「删用户文件」的命令，输入面越小越好；
+/// 也不做「自动按保留期清」：`lib_file_tests.rs` 的判据明确钉着「自动清理不得把
+/// sent_dir 纳入删除面」（2026-11-10「自己发的图升级后打不开」的修复取舍），那条不放松。
+pub fn sent_clean_days_allowed(days: u32) -> bool {
+    matches!(days, 30 | 180 | 360)
+}
+
+/// 截止时刻（纯函数）：`now - days` 天。mtime **严格早于**它才算「超龄」——
+/// 恰好等于边界的文件留下（宁可少删，删错的代价不可逆）。
+pub fn sent_cutoff_ms(now_ms: i64, days: u32) -> i64 {
+    now_ms - (days as i64) * 86_400_000
+}
+
+/// 「已发图片」的占用（设置页「文件与存储」打开时读取）。
+#[tauri::command(async)]
+pub async fn get_sent_usage(state: State<'_, Arc<AppState>>) -> Result<SentUsage, String> {
+    let s = state.inner().clone();
+    // 递归 walk sent 目录：R-18 整段进阻塞池（与 get_cache_info 同形）。
+    tokio::task::spawn_blocking(move || -> Result<SentUsage, String> {
+        let dir = s.sent_dir.clone();
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let (files, bytes) = crate::storage::cache_cleaner::usage(std::slice::from_ref(&dir));
+        Ok(SentUsage { files, bytes })
+    })
+    .await
+    .map_err(|e| format!("已发图片用量统计被线程池中断: {e}"))?
+}
+
+/// 手动清理已发图片：只删 sent 托管目录内、mtime 早于 `days` 档位的文件。
+///
+/// ## 安全边界
+/// · 目录来源是 `state.sent_dir`（应用自己的托管目录），**不接受前端传路径** ——
+///   没有路径输入面就没有路径注入面；
+/// · 档位走白名单（`sent_clean_days_allowed`）；
+/// · 与缓存清理互不相干：不触碰 downloads / media_dirs（自动清理不纳 sent 的那条
+///   判据原样保留，这里走的是**用户主动触发**的另一条路）。
+///
+/// ## 清理后消息为什么不用改库
+/// 消息里的图片走**存在性探测**（`files_present` 的白名单含 sent_dir）—— 文件删掉后
+/// 探测自然判「不在本机」，界面转占位，与缓存清理的既有口径完全一致；库里那行消息
+/// （与对端收到的那份）不受影响。
+#[tauri::command(async)]
+pub async fn clean_sent_images(
+    state: State<'_, Arc<AppState>>,
+    days: u32,
+) -> Result<CleanupReport, String> {
+    if !sent_clean_days_allowed(days) {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::SENT_CLEAN_DAYS_INVALID,
+            format!("清理档位只支持 30 / 180 / 360 天，收到 {days}"),
+        ));
+    }
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<CleanupReport, String> {
+        let dir = s.sent_dir.clone();
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let now = crate::logging::now_ms();
+        let cutoff = sent_cutoff_ms(now, days);
+        let mut removed = 0usize;
+        let mut freed = 0u64;
+        for path in crate::storage::cache_cleaner::walk_files(&dir) {
+            let Ok(meta) = path.metadata() else { continue };
+            let Ok(mtime) = meta.modified() else { continue };
+            let age = mtime
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(i64::MAX);
+            if age >= cutoff {
+                continue;
+            }
+            let size = meta.len();
+            if std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+                freed += size;
+            }
+        }
+        s.logger.info(
+            "storage",
+            format!("手动清理已发图片：档位 {days} 天，删除 {removed} 个文件、释放 {freed} 字节"),
+        );
+        Ok(CleanupReport {
+            removed,
+            freed_bytes: freed,
+            db_compact_state: None,
+        })
+    })
+    .await
+    .map_err(|e| format!("已发图片清理被线程池中断: {e}"))?
+}
+
 /// 存储占用与当前清理策略。
 #[tauri::command(async)]
 pub async fn get_cache_info(state: State<'_, Arc<AppState>>) -> Result<CacheInfo, String> {
@@ -927,5 +1028,32 @@ mod cache_clean_schedule_tests {
             inside.contains("CACHE_CLEAN_INTERVAL_SECS"),
             "循环体里没有周期 sleep ⇒ 自动清理变成无间隔死循环"
         );
+    }
+}
+
+
+#[cfg(test)]
+mod sent_clean_tests {
+    use super::{sent_clean_days_allowed, sent_cutoff_ms};
+
+    /// 档位白名单：只认 30/180/360，其余一律拒 —— 「删用户文件」的命令输入面越小越好。
+    #[test]
+    fn sent_clean_days_whitelist() {
+        for d in [30u32, 180, 360] {
+            assert!(sent_clean_days_allowed(d), "档位 {d} 应放行");
+        }
+        for d in [0u32, 1, 7, 29, 31, 179, 181, 359, 361, 1000, u32::MAX] {
+            assert!(!sent_clean_days_allowed(d), "档位 {d} 应拒绝");
+        }
+    }
+
+    /// 截止时刻：严格早于边界才删 —— 恰好等于边界的文件留下（宁可少删，删错不可逆）。
+    #[test]
+    fn sent_cutoff_is_now_minus_days() {
+        let now: i64 = 1_700_000_000_000;
+        assert_eq!(sent_cutoff_ms(now, 30), now - 30 * 86_400_000);
+        assert_eq!(sent_cutoff_ms(now, 360), now - 360 * 86_400_000);
+        // 保留期越长 → 截止时刻越早 → 删得越少（30 天档删得最多）。
+        assert!(sent_cutoff_ms(now, 180) < sent_cutoff_ms(now, 30));
     }
 }

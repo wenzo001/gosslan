@@ -482,6 +482,8 @@ pub const SHARE_NO_ROUTE: &str = "SHARE_NO_ROUTE";
 pub const SHARE_SEND_FAILED: &str = "SHARE_SEND_FAILED";
 /// 通道设置：清理缓存任务失败（human 带底层原因）。
 pub const CHANNEL_CACHE_CLEAN_FAILED: &str = "CHANNEL_CACHE_CLEAN_FAILED";
+/// 手动清理已发图片的档位不在白名单（只许 30 / 180 / 360 天，2026-11-21 用户拍板）。
+pub const SENT_CLEAN_DAYS_INVALID: &str = "SENT_CLEAN_DAYS_INVALID";
 
 // ── B6 第九批：日志诊断 ────────────────────────────────────────────────────
 //

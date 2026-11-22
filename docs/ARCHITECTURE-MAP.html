@@ -625,6 +625,8 @@ const EDGES = [
 /* 接口规则表（真签名） */
 const CMDS = [
   ["clean_cache_now", "channel", "", "CleanupReport|err"],
+  ["get_sent_usage", "channel", "", "SentUsage|err"],
+  ["clean_sent_images", "channel", "", "CleanupReport|err"],
   ["default_nickname", "channel", "", "str"],
   ["get_cache_info", "channel", "", "CacheInfo"],
   ["get_runtime_snapshot", "channel", "", "RuntimeSnapshot|err"],
@@ -1071,6 +1073,8 @@ const SEM = {
   set_channel_enabled: { d: "开 / 关 <code>lan | bluetooth</code>。返回全量 <code>RuntimeSnapshot</code> 并<b>只发给其他窗口</b>。⚠️ 区分 <code>enabled</code>（用户意图，落库）与 <code>running</code>（实际在跑）。", w: "settings(lan_enabled/bt_enabled)" },
   get_runtime_snapshot: { d: "运行时唯一事实源：<code>channels[] · online · boundIp · peerCount · present · routedEndpoints · relay{enabled,connected} · ble{featureCompiled}</code>。<b>没有这条，前端就会有两份「局域网开没开」的表示</b>（历史上必现「外面开了里面还是关的」）。" },
   get_cache_info: { d: "媒体目录用量 + 当前策略（条数 / 字节 / db 大小）。" },
+  get_sent_usage: { d: "已发图片（sent 托管目录）占用读数：文件数与字节。" },
+  clean_sent_images: { d: "手动清理已发图片：档位白名单 30/180/360 天，mtime 严格早于截止才删；不触接收缓存。" },
   set_cache_policy: { d: "保留天数（3|7|30|null=永不）与字节配额。<b>null 的语义是「不限制」，不是 0</b>。", w: "settings(cache_*)" },
   clean_cache_now: { d: "手动清一次。<b>按 mtime 过期优先，再按最老优先删到配额内；跳过符号链接；删了才 VACUUM。</b>" },
   default_nickname: { d: "按平台 / 语言给一个默认昵称（纯函数式读，<b>不写库</b>）。" },

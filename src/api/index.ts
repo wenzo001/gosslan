@@ -2,7 +2,7 @@
 
 import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, BotCreatedView, BotPullOutcome, BotView, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, DeviceAuthRevokeOutcome, RpBindingInfo, RpKeyExportSummary, RpKeyImportReport, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, SharePrompt, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
+import type { AppSettings, BotCreatedView, BotPullOutcome, BotView,CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, DeviceAuthRevokeOutcome, RpBindingInfo, RpKeyExportSummary, RpKeyImportReport, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, SharePrompt, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo, SentUsage } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -770,6 +770,11 @@ export const api = {
   setCachePolicy: (retentionDays: number | null, maxBytes: number | null) =>
     invoke<void>("set_cache_policy", { retentionDays, maxBytes }),
   cleanCacheNow: () => invoke<CleanupReport>("clean_cache_now"),
+
+  /** 已发图片（sent 托管目录）的占用读数（设置页「文件与存储」打开时读取）。 */
+  getSentUsage: () => invoke<SentUsage>("get_sent_usage"),
+  /** 手动清理已发图片：`days` 只许 30 / 180 / 360（后端白名单，其他值直接报错）。 */
+  cleanSentImages: (days: number) => invoke<CleanupReport>("clean_sent_images", { days }),
 
   /** 导出全部聊天文字到指定文件。`utcOffsetMinutes` = -new Date().getTimezoneOffset()：
    *  Rust 侧不引入时区库，本地时间换算需要前端给出偏移。 */

@@ -929,6 +929,8 @@ pub fn run() {
             commands::get_cache_info,
             commands::set_cache_policy,
             commands::clean_cache_now,
+            commands::get_sent_usage,
+            commands::clean_sent_images,
             commands::get_settings,
             commands::log_frontend_error,
             commands::import_picked_file,
