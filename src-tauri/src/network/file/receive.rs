@@ -62,13 +62,8 @@ pub fn sweep_stale_parts(state: &AppState) -> usize {
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     let active: std::collections::HashSet<String> = {
-        let a: Vec<String> = state
-            .file_receivers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .keys()
-            .cloned()
-            .collect();
+        // STB-03：分片表的全表键快照（逐片取，片间无原子性要求）。
+        let a: Vec<String> = state.file_receivers.keys_snapshot();
         let b: Vec<String> = state
             .group_file_receivers
             .lock()
@@ -182,10 +177,10 @@ pub fn resume_receive(
     let transfer_id = transfer_id.as_str();
     // 配额判据与新建接收器同一份（SEC-05）：续传会重新占一格接收表，
     // 不能让"先被拒、再续传"成为绕过并发上限的路径。放在读 `.part` 之前 —— 那是阻塞的。
+    // STB-03：单键查询走片锁（同一 id 恒同片）。
     let replacing = state
         .file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_key(transfer_id)
         .contains_key(transfer_id);
     let (active, inflight) = inbound_usage(state);
     if let Err(breach) = inbound_quota_verdict(active, inflight, replacing, size) {
@@ -292,21 +287,19 @@ pub fn resume_receive(
     let final_path = unique_path(&dl, &safe_name);
     // 哈希读完才走到这里：占用可能已经变了（别的链路刚插进来）⇒ **插入前再判一次**，
     // 并且这一判与 insert 在同一把闸下（上面的初判只是"别白读几个 GB"的快速失败）。
+    // STB-03：三处操作同一 transfer_id ⇒ 恒在同一片锁上；准入闸（inbound_gate）
+    // 是全局互斥，check-then-act 的原子性与全局锁时代一字不差。
+    // STB-03：三处操作同一 transfer_id ⇒ 恒在同一片锁上；准入闸（inbound_gate）
+    // 是全局互斥，check-then-act 的原子性与全局锁时代一字不差。
     let replacing_now = state
         .file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_key(transfer_id)
         .contains_key(transfer_id);
     let _admission = admit_inbound(state, replacing_now, transfer_id, peer_id, size)?;
+    let _ = state.file_receivers.lock_key(transfer_id).remove(transfer_id);
     state
         .file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(transfer_id);
-    state
-        .file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_key(transfer_id)
         .insert(
             transfer_id.to_string(),
             FileReceiver {
@@ -457,10 +450,10 @@ pub fn decide_offer(
 ///
 /// 返回 `None` = 没有活跃接收器（此时 `.part` 磁盘前缀才是唯一事实）。
 pub fn receiver_progress(state: &AppState, transfer_id: &str) -> Option<u64> {
+    // STB-03：片锁。
     state
         .file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_key(transfer_id)
         .get(transfer_id)
         .map(|r| r.received)
 }
@@ -475,11 +468,273 @@ pub fn receiver_progress(state: &AppState, transfer_id: &str) -> Option<u64> {
 pub fn restart_segment(state: &AppState, transfer_id: &str) {
     if let Some(r) = state
         .file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_key(transfer_id)
         .get_mut(transfer_id)
     {
         r.next_seq = 0;
+    }
+}
+
+/// 单聊接收表：**按 transfer_id 分片**（STB-03，2026-11-22）。
+///
+/// 旧形态是一把全局锁包整张表：任一传输 `write_chunk` 的临界区（AEAD 解密 + 增量哈希 +
+/// `write_all`）会把**其它所有并发传输**的分片写出堵在同一条队上 —— 8 路并发收文件时
+/// 聚合吞吐 ≈ 单路吞吐（审计 STB-03：并发收文件吞吐塌陷）。
+///
+/// 分片后：`shard(transfer_id)` 是**纯函数** ⇒ 同一传输的「查-改-摘」永远落在同一把片锁上，
+/// 原子性与全局锁时代一字不差（准入门 `admit_inbound` 走全局 `inbound_gate`，与此无关）；
+/// 而不同传输各锁各的片，临界区不再互相排队。片锁仍是 `NamedLock` —— lock_watch 的
+/// 等待诊断对每片照常生效（8 片 + 既有 2 项，远低于注册表上限 64）。
+///
+/// ⚠️ 群文件的 `group_file_receivers` **本版不动**（拍板范围：只改 1:1）；它仍是单把
+/// `NamedLock`，`make_receiver` 靠 [`ReceiverStore`] 同时吃两种表。
+pub struct ReceiverTable {
+    shards: Vec<crate::lock_watch::NamedLock<HashMap<String, FileReceiver>>>,
+}
+
+impl ReceiverTable {
+    /// 片数 = 并发接收上限（`MAX_CONCURRENT_RECEIVES`）：8 路并发时每路大概率各占一片。
+    const SHARDS: usize = 8;
+
+    pub fn new() -> Self {
+        Self {
+            shards: (0..Self::SHARDS)
+                .map(|i| {
+                    crate::lock_watch::NamedLock::new(
+                        // 名字进 lock_watch 注册表，必须互不相同。
+                        match i {
+                            0 => "file_receivers.s0",
+                            1 => "file_receivers.s1",
+                            2 => "file_receivers.s2",
+                            3 => "file_receivers.s3",
+                            4 => "file_receivers.s4",
+                            5 => "file_receivers.s5",
+                            6 => "file_receivers.s6",
+                            _ => "file_receivers.s7",
+                        },
+                        HashMap::new(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// 分片函数（纯函数）：`DefaultHasher::new()` 的键是固定的 ⇒ 同一进程内同一 id
+    /// 恒得同一片 —— 这是「同一传输的操作在同一把锁上互斥」的全部依据。
+    fn shard_of(&self, transfer_id: &str) -> &crate::lock_watch::NamedLock<HashMap<String, FileReceiver>> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        transfer_id.hash(&mut h);
+        let idx = (h.finish() as usize) % self.shards.len();
+        &self.shards[idx]
+    }
+
+    /// 单键操作入口：拿到这一片整张子表的守卫。判空/查改/摘全部经由它，
+    /// 与旧「锁全表再 get」的写法一一对应，只是锁的范围缩小到片。
+    pub fn lock_key(
+        &self,
+        transfer_id: &str,
+    ) -> crate::lock_watch::NamedGuard<'_, HashMap<String, FileReceiver>> {
+        self.shard_of(transfer_id)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 片数（供「逐片 扫描+摘」的调用方循环）。
+    pub fn shard_count(&self) -> usize {
+        self.shards.len()
+    }
+
+    /// 按序取第 i 片的守卫（供「逐片 扫描+摘」：find+remove 必须在同一次持锁里完成，
+    /// 见 `take_stalled_receive` / `take_receives_for_peer` 的注释）。
+    pub fn lock_shard(
+        &self,
+        i: usize,
+    ) -> crate::lock_watch::NamedGuard<'_, HashMap<String, FileReceiver>> {
+        self.shards[i]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 全表键快照（清扫/对账用）：逐片取，片间无原子性要求。
+    pub fn keys_snapshot(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for shard in &self.shards {
+            out.extend(
+                shard
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .keys()
+                    .cloned(),
+            );
+        }
+        out
+    }
+
+    /// 全表读数（配额显示用）：逐片累加。各片之间非同一瞬间快照 ——
+    /// 配额的 check-then-act 由全局 `inbound_gate` 兜底，这里的读数只是判据输入。
+    pub fn len_and_bytes(&self) -> (usize, u64) {
+        let (mut n, mut bytes) = (0usize, 0u64);
+        for shard in &self.shards {
+            let g = shard.lock().unwrap_or_else(|e| e.into_inner());
+            n += g.len();
+            bytes += g
+                .values()
+                .map(|r| r.size)
+                .fold(0u64, |a, b| a.saturating_add(b));
+        }
+        (n, bytes)
+    }
+
+    /// 全表清空（「清除数据」）：逐片 clear。`FileReceiver` 的 Drop 会关文件句柄，
+    /// 与旧全局锁的 clear 行为一致。
+    pub fn clear(&self) {
+        for shard in &self.shards {
+            shard.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        }
+    }
+
+    /// 分片索引（测试专用）：行为判据要选「必然异片」的 id 对，
+    /// 没有这个探针就只能靠碰运气或制造死锁来验证。
+    #[cfg(test)]
+    fn shard_idx(&self, transfer_id: &str) -> usize {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        transfer_id.hash(&mut h);
+        (h.finish() as usize) % self.shards.len()
+    }
+}
+
+#[cfg(test)]
+mod receiver_table_tests {
+    use super::*;
+    use sha2::Digest as _;
+
+    fn mk(id: &str) -> FileReceiver {
+        let dir = std::env::temp_dir().join(format!("rt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{id}.part"));
+        FileReceiver {
+            file: std::fs::File::create(&path).unwrap(),
+            name: format!("{id}.bin"),
+            size: 100,
+            received: 0,
+            next_seq: 0,
+            attempt: 0,
+            stale_dropped: 0,
+            tmp_path: path,
+            final_path: dir.join(format!("{id}.final")),
+            peer_id: "peer-x".into(),
+            last_report_ms: crate::db::now_ms(),
+            fed_at_ms: crate::db::now_ms(),
+            file_key: [0u8; 32],
+            expected_sha256: String::new(),
+            hasher: sha2::Sha256::new(),
+        }
+    }
+
+    /// 分片纯函数 ⇒ 同一 id 的 contains/take 恒看同一片：put 后必须查得到、
+    /// take 摘回同一份、再查必须没有。扫描 helper 的读数逐片累加后与写入数对账。
+    #[test]
+    fn receiver_table_put_take_roundtrip_and_helpers() {
+        let t = ReceiverTable::new();
+        t.put("t1".into(), mk("t1"));
+        assert!(t.contains("t1"), "put 后 contains 必须真（同片）");
+        assert!(t.take("t1").is_some(), "take 必须摘回同一份");
+        assert!(!t.contains("t1"), "摘走后再查必须没有");
+        t.put("a".into(), mk("a"));
+        t.put("b".into(), mk("b"));
+        let (n, bytes) = t.len_and_bytes();
+        assert_eq!(n, 2, "两张跨片的键都要数到");
+        assert_eq!(bytes, 200);
+        assert_eq!(t.keys_snapshot().len(), 2);
+        t.clear();
+        assert_eq!(t.len_and_bytes().0, 0, "clear 必须清到全表");
+    }
+
+    /// **STB-03 的行为判据**：不同传输的临界区必须能并行 —— 一片被长持锁时，
+    /// 另一片上的操作要在窗口内完成（旧全局锁下这条必然超时）。用 shard_idx
+    /// 探针选「必然异片」的 id 对，不靠运气、也绝不制造死锁。
+    #[test]
+    fn receiver_table_distinct_shards_progress_concurrently() {
+        use std::sync::mpsc;
+        use std::sync::Arc as StdArc;
+        use std::time::Duration;
+
+        let t = StdArc::new(ReceiverTable::new());
+        let mut pair = None;
+        'outer: for i in 0..64u32 {
+            for j in 0..64u32 {
+                let (a, b) = (format!("shard-a{i}"), format!("shard-b{j}"));
+                if t.shard_idx(&a) != t.shard_idx(&b) {
+                    pair = Some((a, b));
+                    break 'outer;
+                }
+            }
+        }
+        let (a, b) = pair.expect("64×64 的 id 空间必然存在异片对");
+
+        // 线程 1：长持 a 片 300ms（模拟一条传输正在临界区里写盘）。
+        let t1 = t.clone();
+        let holder = std::thread::spawn(move || {
+            let _g = t1.lock_key(&a);
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        // 给 holder 足够时间真正持锁。
+        std::thread::sleep(Duration::from_millis(80));
+
+        // 线程 2：锁 b 片 —— 必须 200ms 内完成（全局锁时代它要等满 300ms）。
+        let t2 = t.clone();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _g = t2.lock_key(&b);
+            tx.send(()).unwrap();
+        });
+        let ok = rx
+            .recv_timeout(Duration::from_millis(200))
+            .is_ok();
+        let _ = worker.join();
+        let _ = holder.join();
+        assert!(
+            ok,
+            "异片的临界区必须互不排队（STB-03：并发收文件吞吐塌陷的修复判据）"
+        );
+    }
+}
+
+/// `make_receiver` 的双表适配：一对一走分片表、群文件仍是单把全局锁（本版不动）。
+/// 三个操作的语义逐字对应旧写法（锁内 contains_key / remove / insert），
+/// 差别只在锁的范围（片 vs 全表）。
+pub(crate) trait ReceiverStore {
+    fn contains(&self, id: &str) -> bool;
+    fn take(&self, id: &str) -> Option<FileReceiver>;
+    fn put(&self, id: String, r: FileReceiver);
+}
+
+impl ReceiverStore for crate::lock_watch::NamedLock<HashMap<String, FileReceiver>> {
+    fn contains(&self, id: &str) -> bool {
+        self.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(id)
+    }
+    fn take(&self, id: &str) -> Option<FileReceiver> {
+        self.lock().unwrap_or_else(|e| e.into_inner()).remove(id)
+    }
+    fn put(&self, id: String, r: FileReceiver) {
+        self.lock().unwrap_or_else(|e| e.into_inner()).insert(id, r);
+    }
+}
+
+impl ReceiverStore for ReceiverTable {
+    fn contains(&self, id: &str) -> bool {
+        self.lock_key(id).contains_key(id)
+    }
+    fn take(&self, id: &str) -> Option<FileReceiver> {
+        self.lock_key(id).remove(id)
+    }
+    fn put(&self, id: String, r: FileReceiver) {
+        let key = id.clone();
+        self.lock_key(&key).insert(id, r);
     }
 }
 
@@ -580,8 +835,9 @@ fn inbound_usage(state: &AppState) -> (usize, u64) {
                 .fold(0u64, |a, b| a.saturating_add(b)),
         )
     };
+    // STB-03：一对一表已分片 ⇒ 读数走 len_and_bytes（逐片累加）；群表仍是单锁。
     usage_sum(&[
-        one(&state.file_receivers),
+        state.file_receivers.len_and_bytes(),
         one(&state.group_file_receivers),
         relay,
     ])
@@ -708,14 +964,16 @@ fn prune_retained_parts(state: &AppState, keep_transfer: &str, incoming: u64) ->
         .clone();
     let registered: std::collections::HashSet<String> = {
         let mut ids: Vec<String> = Vec::new();
-        for map in [&state.file_receivers, &state.group_file_receivers] {
-            ids.extend(
-                map.lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .keys()
-                    .cloned(),
-            );
-        }
+        // STB-03：一对一表分片 ⇒ 键快照走 helper；群表仍单锁。
+        ids.extend(state.file_receivers.keys_snapshot());
+        ids.extend(
+            state
+                .group_file_receivers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .keys()
+                .cloned(),
+        );
         ids.extend(
             state
                 .relay_file_keys
@@ -806,7 +1064,7 @@ fn make_receiver(
     size: u64,
     file_key: [u8; 32],
     expected_sha256: String,
-    receivers: &crate::lock_watch::NamedLock<HashMap<String, FileReceiver>>,
+    receivers: &impl ReceiverStore,
 ) -> Result<PathBuf, String> {
     let safe_name = safe_file_name(name).ok_or("文件名非法")?;
     // transfer_id 会成为 `{id}.part` 的文件名，必须与文件名同级消毒（见 safe_transfer_id）
@@ -817,10 +1075,7 @@ fn make_receiver(
     }
     // 配额判据（SEC-05）：必须在建 `.part` **之前**，而且判定与下面的 insert 共用一把闸 ——
     // 中间隔着 `create_dir_all` / `File::create`，不持闸时两条链路会同时读到旧占用、双双通过。
-    let replacing = receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains_key(transfer_id);
+    let replacing = receivers.contains(transfer_id);
     let _admission = admit_inbound(state, replacing, transfer_id, peer_id, size)?;
     // 同一个 transfer_id 又收到一次 Offer = 发送方在**重试**（它每次都从 seq 0 重新开始）。
     // 旧实现这里直接返回「重复的文件传输」⇒ 接收方拒收 ⇒ 发送方 15s 等 accept 超时 ⇒
@@ -828,10 +1083,7 @@ fn make_receiver(
     // 「文件分片顺序错误」。现在：把旧状态丢掉、从零重新开始。
     // 安全性：临时文件按 `transfer_id` 命名，下面 `File::create` 会**截断**它，
     // 新 attempt 不会与旧字节混写；`final_path` 仍走 `unique_path`（旧 final 未完成 ⇒ 不存在）。
-    if let Some(old) = receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(transfer_id)
+    if let Some(old) = receivers.take(transfer_id)
     {
         let _ = std::fs::remove_file(&old.tmp_path);
     }
@@ -849,7 +1101,7 @@ fn make_receiver(
     let tmp_path = dl.join(format!("{transfer_id}.part"));
     let f = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
 
-    receivers.lock().unwrap_or_else(|e| e.into_inner()).insert(
+    receivers.put(
         transfer_id.to_string(),
         FileReceiver {
             file: f,
@@ -944,8 +1196,7 @@ pub const LEGACY_ATTEMPT: u32 = 0;
 pub fn note_offer_attempt(state: &AppState, transfer_id: &str, attempt: Option<u32>) {
     if let Some(r) = state
         .file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_key(transfer_id)
         .get_mut(transfer_id)
     {
         r.attempt = attempt.unwrap_or(LEGACY_ATTEMPT);
@@ -958,10 +1209,7 @@ pub fn note_offer_attempt(state: &AppState, transfer_id: &str, attempt: Option<u
 /// 陈旧完成帧会被当成"重复 FileDone"去补一个成功 Ack，或更糟 —— 拿这一轮刚开头的
 /// `received ≠ size` 把整单打死。没有接收器时返回 true，交给原有"未知传输"分支处理。
 pub fn done_is_current(state: &AppState, transfer_id: &str, attempt: Option<u32>) -> bool {
-    let recv = state
-        .file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let recv = state.file_receivers.lock_key(transfer_id);
     match recv.get(transfer_id) {
         Some(r) => frame_is_current(attempt, r.attempt),
         None => true,
@@ -982,11 +1230,10 @@ pub fn write_chunk(
     use std::io::Write;
     // 锁作用域：先算完，把要落库的进度取出来，**释放 file_receivers 锁之后**再动 db
     // （避免 file_receivers -> db 的嵌套锁顺序）。
+    // STB-03：分片临界区 —— 本片的解密+哈希+写盘不再与其它传输排队
+    // （旧全局锁下 8 路并发的聚合吞吐 ≈ 单路）。
     let (received, cid, owner, report) = {
-        let mut recv = state
-            .file_receivers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut recv = state.file_receivers.lock_key(transfer_id);
         let r = recv.get_mut(transfer_id).ok_or("未知传输")?;
         if r.peer_id != peer_id {
             return Err("文件传输来源不匹配".to_string());
@@ -1085,10 +1332,7 @@ pub fn write_chunk(
 
 /// 终止损坏或超时的接收：摘表 → 收尾（见 `fail_taken_receive`）。
 pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: &str) -> bool {
-    let mut recv = state
-        .file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut recv = state.file_receivers.lock_key(transfer_id);
     let Some(r) = recv.remove(transfer_id) else {
         return false;
     };
@@ -1117,10 +1361,7 @@ pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: 
 /// 对端可能已经不再发了，但用户要的是"这一单别再出现在我的进行中"）。
 pub fn cancel_receive(state: &AppState, transfer_id: &str) -> bool {
     let taken = {
-        let mut recv = state
-            .file_receivers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut recv = state.file_receivers.lock_key(transfer_id);
         recv.remove(transfer_id)
     };
     let Some(r) = taken else {
@@ -1169,15 +1410,19 @@ pub fn cancel_receive(state: &AppState, transfer_id: &str) -> bool {
 /// （同一 transfer_id 重新建接收器、`fed_at_ms` 就是现在）—— 按 id 收尾会把那个
 /// **正在收**的传输判死。宁可每轮只摘一个、循环到没有，也不留这个缝。
 pub fn take_stalled_receive(state: &AppState, now: i64) -> Option<(String, FileReceiver)> {
-    let mut recv = state
-        .file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let key = recv
-        .iter()
-        .find(|(_, r)| receive_is_stale(now - r.fed_at_ms))
-        .map(|(k, _)| k.clone())?;
-    recv.remove(&key).map(|r| (key, r))
+    // STB-03：逐片「find+remove 同一次持锁」—— 新 Offer 对同一 id 要拿**同一片**的锁，
+    // 会被当前守卫挡住 ⇒ 「判据与摘表同一次持锁」的原子性与全局锁时代一致。
+    for i in 0..state.file_receivers.shard_count() {
+        let mut recv = state.file_receivers.lock_shard(i);
+        if let Some(key) = recv
+            .iter()
+            .find(|(_, r)| receive_is_stale(now - r.fed_at_ms))
+            .map(|(k, _)| k.clone())
+        {
+            return recv.remove(&key).map(|r| (key, r));
+        }
+    }
+    None
 }
 
 /// 摘表之后的收尾：落 failed 终态、记 Incomplete、emit。
@@ -1265,18 +1510,19 @@ pub fn fail_taken_receive(state: &AppState, transfer_id: &str, r: &FileReceiver,
 /// 正在收的传输判死。后果有界（内容记 Incomplete、建链时按退避自动重取），
 /// 但"多等一轮"本身就是用户看到的"下载卡在重试"。
 pub fn take_receives_for_peer(state: &AppState, peer_id: &str) -> Vec<(String, FileReceiver)> {
-    let mut recv = state
-        .file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let ids: Vec<String> = recv
-        .iter()
-        .filter(|(_, r)| r.peer_id == peer_id)
-        .map(|(k, _)| k.clone())
-        .collect();
-    ids.into_iter()
-        .filter_map(|k| recv.remove(&k).map(|r| (k, r)))
-        .collect()
+    // STB-03：逐片「筛选+摘」同一次持锁（同 peer、同 transfer_id 的新 attempt 会去
+    // 同一片，被当前守卫挡住 ⇒ 不会把新接收器判死，理由同全局锁时代的注释）。
+    let mut out = Vec::new();
+    for i in 0..state.file_receivers.shard_count() {
+        let mut recv = state.file_receivers.lock_shard(i);
+        let ids: Vec<String> = recv
+            .iter()
+            .filter(|(_, r)| r.peer_id == peer_id)
+            .map(|(k, _)| k.clone())
+            .collect();
+        out.extend(ids.into_iter().filter_map(|k| recv.remove(&k).map(|r| (k, r))));
+    }
+    out
 }
 
 pub fn fail_receives_for_peer(state: &AppState, peer_id: &str) {
@@ -1312,11 +1558,10 @@ pub async fn finish_receive(
     transfer_id: &str,
     peer_id: &str,
 ) -> Result<Option<(String, u64, PathBuf, String)>, String> {
+    // STB-03：片锁 —— 摘出仍在块内（块尾即放锁），慢活照旧在锁外。
+    // （注释放块外：形状守卫按去空白原文匹配，块内的注释会污染它的锚点。）
     let r = {
-        let mut recv = state
-            .file_receivers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut recv = state.file_receivers.lock_key(transfer_id);
         match recv.remove(transfer_id) {
             Some(r) => {
                 if r.peer_id != peer_id {

@@ -627,14 +627,18 @@ fn receive_finalize_slow_work_happens_outside_the_receiver_lock() {
     let file = &crate::network::file_src_for_guards();
     let body = rust_fn_body(file, "pub async fn finish_receive(");
     let flat = code_flat(&body);
+    // STB-03（2026-11-22）表已分片：锁锚点从 `.lock()` 搬到 `.lock_key(transfer_id)`——
+    // 判据的意图原样：摘出必须在块内（块尾即放锁），慢活（SHA+fsync+rename）必须在锁外。
+    // 分片改变的是「这把锁还挡住谁」（同片的其它传输照旧互斥，跨片的不再被连坐），
+    // 不改变「慢活不进锁」这条纪律。
     assert!(
-        flat.contains("letr={letmutrecv=state.file_receivers.lock()"),
+        flat.contains("letr={letmutrecv=state.file_receivers.lock_key(transfer_id)"),
         "接收器必须在块内摘出（块尾即放锁）。函数作用域的锁会把 SHA+fsync+rename \
-             全包进锁里 —— 600MB 的 fsync 期间，其它并发文件的 write_chunk 全堵在同一把锁上，\
+             全包进锁里 —— 600MB 的 fsync 期间，同片其它传输的 write_chunk 全堵在同一把锁上，\
              它们不再写出 ⇒ 发送端 60s 停滞判据把它们判死"
     );
     assert!(
-            !flat.contains("letmutrecv=state.file_receivers.lock().unwrap_or_else(|e|e.into_inner());letr=matchrecv.remove"),
+            !flat.contains("letmutrecv=state.file_receivers.lock_key(transfer_id).unwrap_or_else(|e|e.into_inner());letr=matchrecv.remove"),
             "旧的函数作用域形状不许回来（那份守卫横跨全部慢活）"
         );
     // 来源不符时的"塞回去"必须留在锁内

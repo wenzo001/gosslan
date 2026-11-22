@@ -554,13 +554,9 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
             //      文件正在收，哈希必然对不上，纯抢带宽），或这份 `.part` 的 mtime 还在最近 60s 内
             //      （真的在落盘）。⚠️ 只看 `.part` 后缀会永久饿死一个"名字就叫 xxx.part"的成品文件
             //      —— 这一列里从来只写改名后的最终路径，判据细节见 `part_is_being_written`。
-            let inflight: std::collections::HashSet<String> = {
-                let recv = state
-                    .file_receivers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                recv.keys().cloned().collect()
-            };
+            // STB-03：分片表的全表键快照（逐片取）。
+            let inflight: std::collections::HashSet<String> =
+                state.file_receivers.keys_snapshot().into_iter().collect();
             let mut byte_budget = CONTENT_RECONCILE_TICK_BYTE_BUDGET;
             let mut scanned = 0usize;
             for c in cands {

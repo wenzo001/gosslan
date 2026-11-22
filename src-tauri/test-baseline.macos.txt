@@ -953,6 +953,8 @@ network::file::group_resume_tests::sender_starts_from_the_authoritative_offset
 network::file::place_unique_tests::place_unique_does_not_overwrite_existing_candidate
 network::file::place_unique_tests::place_unique_keeps_the_begin_time_name_when_free
 network::file::place_unique_tests::place_unique_reports_missing_dir_instead_of_creating_it
+network::file::receiver_table_tests::receiver_table_distinct_shards_progress_concurrently
+network::file::receiver_table_tests::receiver_table_put_take_roundtrip_and_helpers
 network::file::retained_part_path_rejects_unsafe_transfer_ids
 network::file::send_complete_guard_tests::a_share_tree_exactly_at_the_cap_is_not_truncated
 network::file::send_complete_guard_tests::nested_walk_also_obeys_the_cap

@@ -722,10 +722,8 @@ pub async fn clear_all_data(
         .clear();
     *s.relay.lock().unwrap_or_else(|e| e.into_inner()) = crate::file_relay::RelayManager::new();
     // 先关闭未完成接收的文件句柄，再清理 downloads 目录中的 .part 临时文件。
-    s.file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clear();
+    // STB-03：分片表逐片清空（FileReceiver 的 Drop 关句柄，行为同旧 clear）。
+    s.file_receivers.clear();
 
     // 3. 文件系统清理（DB commit 成功后执行）
     //    收集错误而非立即返回，避免文件清理失败伪装成"整个操作失败"。

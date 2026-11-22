@@ -552,16 +552,33 @@ mod tests {
         );
     }
 
-    /// ⑥ 接线判据：两张接收表必须真的是 `NamedLock`（否则本模块一行读数都不会有）。
+    /// ⑥ 接线判据：接收表的每一把锁都必须是 `NamedLock`（否则本模块一行读数都不会有）。
+    /// STB-03（2026-11-22）：单聊表按 transfer_id 分成 8 片（`ReceiverTable`）——
+    /// 判据跟着走：片锁在 `receive.rs` 里逐片 NamedLock（file_receivers.s0..s7），
+    /// 群文件表仍是单把 NamedLock（拍板范围只改 1:1）。意图不变：持锁写盘那段
+    /// 必须有名字，lock_watch 的等待诊断对每片照常生效。
     #[test]
     fn receiver_locks_are_wired() {
         let state = include_str!("state.rs");
         let wired = "crate::lock_watch::NamedLock<HashMap<String, FileReceiver>>";
         assert_eq!(
             state.matches(wired).count(),
-            2,
-            "两张接收表必须都是 NamedLock（单聊 + 群文件），否则持锁写盘那段永远没有名字"
+            1,
+            "群文件接收表必须是 NamedLock（否则群侧持锁写盘那段永远没有名字）"
         );
+        // 单聊表必须仍是分片表（退回单把 NamedLock = 把 STB-03 改回去）。
+        assert!(
+            state.contains("file_receivers: crate::network::file::ReceiverTable"),
+            "单聊接收表必须是 ReceiverTable（分片）——退回单把全局锁会把并发收文件的吞吐改塌"
+        );
+        let receive = include_str!("network/file/receive.rs");
+        for i in 0..8 {
+            let shard_name = format!("\"file_receivers.s{i}\"");
+            assert!(
+                receive.contains(&shard_name),
+                "分片表第 {i} 片没有 NamedLock 名字（{shard_name}）—— 持锁写盘那段在这片上不可诊断"
+            );
+        }
         // 反例自证：字段若退回裸 Mutex，上面那条立刻变 0 ⇒ 红（不是空过）。
         assert!(
             !state.contains("file_receivers: Mutex<HashMap<String, FileReceiver>>")

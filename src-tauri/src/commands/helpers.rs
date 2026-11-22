@@ -259,10 +259,7 @@ fn resolve_media_path(s: &AppState, msg_id: &str) -> MediaPath {
         .or_else(|| msg_id.strip_prefix("gfile-"));
     let in_flight = transfer_id
         .map(|tid| {
-            s.file_receivers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains_key(tid)
+            s.file_receivers.lock_key(tid).contains_key(tid)
                 || s.group_file_receivers
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())

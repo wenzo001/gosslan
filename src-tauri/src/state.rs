@@ -1630,7 +1630,9 @@ pub struct AppState {
     /// 是除 `db` 外最可能长持有的锁；具名之后 HANG 现场能写出 `locks=`（谁握着、谁在等多久）。
     pub group_file_receivers: crate::lock_watch::NamedLock<HashMap<String, FileReceiver>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
-    pub file_receivers: crate::lock_watch::NamedLock<HashMap<String, FileReceiver>>,
+    /// STB-03（2026-11-22）：单聊接收表按 transfer_id 分片 —— write_chunk 的临界区
+    /// 不再让 8 路并发收文件串行（见 `ReceiverTable` 的文档）。
+    pub file_receivers: crate::network::file::ReceiverTable,
     /// 入站登记的**唯一闸门**（审计 SEC-05 的 check-then-act 修正）。
     ///
     /// 配额判定（数活跃接收器 / 累加字节）与"把新接收器插进表里"必须落在同一个临界区：
@@ -2776,7 +2778,7 @@ impl AppState {
             file_sending: Mutex::new(std::collections::HashSet::new()),
             file_send_inflight: Arc::new(Mutex::new(std::collections::HashSet::new())),
             file_send_cancels: Mutex::new(HashMap::new()),
-            file_receivers: crate::lock_watch::NamedLock::new("file_receivers", HashMap::new()),
+            file_receivers: crate::network::file::ReceiverTable::new(),
             file_wire_progress: Mutex::new(HashMap::new()),
             pending_share_tree: Mutex::new(HashMap::new()),
             pending_group_history: Mutex::new(HashMap::new()),

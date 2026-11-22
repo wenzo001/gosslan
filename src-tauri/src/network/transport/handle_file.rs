@@ -427,10 +427,8 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                 Ok(received) => {
                     // 节流：每 250ms 至多上报一次进度，避免大文件 IPC 事件风暴
                     let (total, should_emit) = {
-                        let mut recv = state
-                            .file_receivers
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
+                        // STB-03：片锁（同一 id 恒同片，与 write_chunk 的片一致）。
+                        let mut recv = state.file_receivers.lock_key(&transfer_id);
                         match recv.get_mut(&transfer_id) {
                             Some(r) => {
                                 let now = db::now_ms();
