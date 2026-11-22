@@ -14,6 +14,13 @@
 
 ## [Unreleased]
 
+### SEC-08 收尾：中继解封器接入全局在途帧预算
+- 主闸（tcp.rs `read_bytes_capped`，1 GiB 聚合、既计量也拒绝）2026-10-29 已落地；本笔补上
+  它自陈未覆盖的另一半——`relay_seal.rs` 中继解封器的记录体（对端声明、上限 64MiB+overhead）
+  也按同一把尺计入 `frame_read_bytes`：接受声明长度时先过预算闸（超限拒收、对端按协议错误
+  重试），仪表 RAII 挂在 OpenPipe 字段上（记录完成摘下、断链随结构体归还）。
+  128 条中继连接 × 64MiB 的聚合放大入口至此闭合。行为判据：预算占满时拒收、归还后放行。
+  审计对这格的描述已过期（「只计量不拒绝」），实际主闸早已在。
 ### STB-03 收尾：群文件接收表同型分片
 - `group_file_receivers` 与 1:1 同型换 `ReceiverTable`（8 片，注册表前缀 `group_file_receivers.s*`）：
   12 处单键位点改片锁、4 处全表位点（sweep 键快照 / 配额读数 / prune / 清除数据 clear）改逐片聚合；

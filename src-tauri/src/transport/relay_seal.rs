@@ -511,6 +511,9 @@ pub struct OpenPipe {
     body_need: Option<usize>,
     record: Vec<u8>,
     plain: VecDeque<u8>,
+    /// **SEC-08 收尾**：在途记录的全局预算仪表（RAII 挂字段：记录完成显式摘下，
+    /// 连接断开随结构体整体归还）——不接进来，`frame_read` 只是下限。
+    in_flight_gauge: Option<crate::mem_diag::FrameReadGauge>,
 }
 
 impl OpenPipe {
@@ -522,6 +525,7 @@ impl OpenPipe {
             body_need: None,
             record: Vec::new(),
             plain: VecDeque::new(),
+            in_flight_gauge: None,
         }
     }
 
@@ -563,9 +567,25 @@ impl OpenPipe {
                     if len < min || len > MAX_FRAME + RECORD_OVERHEAD {
                         return Err(invalid("记录长度非法"));
                     }
+                    // SEC-08（2026-11-22 收尾）：在途记录并入**全局预算**（与 tcp.rs 的
+                    // `read_bytes_capped` 同一把尺）——聚合超限时拒收这条记录，让对端按
+                    // 协议错误重试，而不是让 128 条中继连接把进程分配器打死。
+                    if !crate::mem_diag::frame_budget_allows(
+                        crate::mem_diag::frame_read_bytes(),
+                        len as u64,
+                        crate::mem_diag::INBOUND_FRAME_BUDGET_BYTES,
+                    ) {
+                        crate::logging::crash_note(&format!(
+                            ">>> code=INBOUND_FRAME_BUDGET_EXCEEDED scope=relay declared={len} in_flight={} budget={}",
+                            crate::mem_diag::frame_read_bytes(),
+                            crate::mem_diag::INBOUND_FRAME_BUDGET_BYTES
+                        ));
+                        return Err(invalid("入站帧聚合超过全局预算"));
+                    }
                     self.record.clear();
                     self.head_len = 0;
                     self.body_need = Some(len);
+                    self.in_flight_gauge = Some(crate::mem_diag::FrameReadGauge::new(len as u64));
                     crate::mem_diag::note_big_alloc("relay_record", len as u64);
                 }
                 continue;
@@ -577,6 +597,9 @@ impl OpenPipe {
             i += take;
             if self.body_need.unwrap() == 0 {
                 self.body_need = None;
+                // 记录收齐 ⇒ 预算仪表立刻归还（明文队列 plain 不在预算口径里：
+                // 已认证数据、消费方逐帧取走，与"对端一句话就让我们握着"不同）。
+                self.in_flight_gauge = None;
                 let frame = self
                     .open
                     .open_record(&self.record)
@@ -598,6 +621,33 @@ mod tests {
     use super::*;
     use crate::transport::tcp::{read_bytes, write_bytes};
     use tokio::io::AsyncWriteExt;
+
+    /// **SEC-08 行为判据**：全局预算被占住时，中继解封器必须**拒收**新记录
+    /// （而不是把 128 条中继连接 × 64MiB 全吃进内存）。预算闸在记录认证**之前**
+    /// ——只看声明长度，不依赖密钥正确性。
+    #[test]
+    fn relay_record_over_global_budget_is_rejected() {
+        let budget = crate::mem_diag::INBOUND_FRAME_BUDGET_BYTES;
+        // 把全局在途占用顶到预算 -1 字节：任何新记录都必然超限。
+        let _hog = crate::mem_diag::FrameReadGauge::new(budget - 1);
+        let mut pipe = OpenPipe::new([7u8; 32]);
+        // 最小合法声明长度（nonce + 标签 + 计数器 + 内层头）。
+        let len = (NONCE_LEN + TAG_LEN + CTR_LEN + INNER_LEN_PREFIX) as u32;
+        let mut chunk = len.to_be_bytes().to_vec();
+        chunk.extend(std::iter::repeat(0u8).take(len as usize));
+        let err = pipe.absorb_encrypted(&chunk).unwrap_err();
+        assert!(
+            format!("{err}").contains("入站帧聚合超过全局预算"),
+            "超预算的记录必须被预算闸拒收（先于记录认证）：{err}"
+        );
+        // 归还后同一份数据能继续走（这次会走到认证失败——密钥是假的——但不再被预算拦）。
+        drop(_hog);
+        let err2 = pipe.absorb_encrypted(&chunk).unwrap_err();
+        assert!(
+            !format!("{err2}").contains("入站帧聚合超过全局预算"),
+            "预算归还后不得继续拦（错误应是认证类）：{err2}"
+        );
+    }
 
     fn ident() -> (crate::crypto::IdentitySigner, String) {
         let sk = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
