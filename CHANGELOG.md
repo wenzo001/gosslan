@@ -14,6 +14,12 @@
 
 ## [Unreleased]
 
+### 审计清账：Windows 行为用例勘察判「已闭合」
+- 「Windows 侧缺 3 类行为用例」无详情；实勘：CI 的 Rust 单测 matrix 本就含 windows-latest
+  （verify.yml），cfg(windows) 门控的行为用例全部在上面跑——TCP abortive close 后立即重绑、
+  隐藏属性判隐、卷根解析（盘符/UNC）、DPAPI platform_seal/open 往返、.lnk 目标解析（合成
+  lnk 纯函数测试）。OS 绑定的纯图形项（窗口圆角/托盘字形）无行为语义可断言，不属缺口。
+
 ### TST-02 收尾：对端在线翻转抽成纯状态机（useChatStore 1129 行）
 - 审计时 store 3471 行、零运行时测试；基线之后的大抽取已把判据全部收进纯 utils
   （memberName/peerMerge/optimistic/optimisticMutate/messages/channelState/sendWaiting，
