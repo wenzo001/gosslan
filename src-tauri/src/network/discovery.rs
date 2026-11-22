@@ -571,6 +571,47 @@ fn diag_event_from_send_result(
     }
 }
 
+// ---------------- SEC-07：announce 自报端口的回拨闸（纯函数 + 每源 IP 预算） ----------------
+
+/// 每源 IP 的 announce 拨号预算窗口（秒）：合法 announce 周期 5s ⇒ 每 IP 12 次/分；
+/// 预算给到 24/min = 允许两台合法节点共享同一源 IP（NAT 场景），伪造旋转超出即被限。
+pub const ANNOUNCE_DIAL_BUDGET_WINDOW_MS: i64 = 60_000;
+pub const ANNOUNCE_DIAL_BUDGET_MAX: u32 = 24;
+
+/// 固定窗口计数的预算格子。锁外只算、锁内只读写这一格（与 discovery 其余状态同风格）。
+#[derive(Default)]
+pub struct AnnounceDialBudgets {
+    inner: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, (i64, u32)>>,
+}
+
+/// 预算判据（纯函数，可逐格测试）：窗口内未超限 ⇒ 放行并计数；
+/// 新窗口 ⇒ 重置计数。超限 ⇒ 拒。`budgets` 为 None 时是**纯判定**（测试用）。
+pub fn announce_dial_budget_allowed(
+    budgets: &AnnounceDialBudgets,
+    ip: std::net::IpAddr,
+    now_ms: i64,
+) -> bool {
+    let mut g = budgets.inner.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = g.entry(ip).or_insert((now_ms, 0u32));
+    let (win_start, count) = *entry;
+    if now_ms - win_start >= ANNOUNCE_DIAL_BUDGET_WINDOW_MS {
+        // 新窗口：重置。
+        *entry = (now_ms, 1);
+        return true;
+    }
+    if count >= ANNOUNCE_DIAL_BUDGET_MAX {
+        return false;
+    }
+    *entry = (win_start, count + 1);
+    true
+}
+
+/// 端口合理性（纯函数）：应用监听端口永不 <1024（TCP_PORT=59992 系 + 用户自配）。
+/// 伪造 announce 指向 22/80/445 等知名端口 ⇒ 直接不拨，掐掉「拿全网当扫描器」的主用途。
+pub fn announce_port_plausible(tcp_port: u16) -> bool {
+    tcp_port >= 1024
+}
+
 /// 处理一个收到的发现报文（`announce` / `who_has`）。
 ///
 /// 从接收循环里抽出来是为了**两个 socket 共用同一套逻辑**（见 `spawn` 里为什么有两个）。
@@ -594,6 +635,42 @@ async fn handle_datagram(
     }
     match pkt.kind.as_str() {
         "announce" => {
+            // ===== SEC-07（审计）：自报 tcp_port 参与回拨的两道闸 =====
+            //
+            // announce 的 `pkt.tcp_port` 是**发送方自报**的，而 `src` 是网络栈给的源地址。
+            // 伪造源 IP（ingress filtering 缺失的网络）+ 自己签名（verify_announce 拦不住——
+            // 签名只保证「这份包是我签的」，端口是自由字段）⇒ 全网节点都会去拨
+            // 「受害者 IP : 任意端口」——同时构成拨号风暴与第三方端口扫描器。
+            //
+            // 审计给的修复方向是「忽略自报端口 / 只接受已知值」，但本机端口空间含**用户自配值**
+            // （tcp_port 设置 + 多开偏移），硬白名单会断自定义端口用户的首连。等价收口：
+            // ① 拨号预算（每源 IP 限速）——封旋转 device_id 的伪造风暴；
+            // ② 知名端口拒绝——应用监听端口永不 <1024，掐掉「拿全网当扫描器」的主要用途。
+            // 合法用户（5s 周期 announce、真实监听端口）完全无感。
+            if !announce_dial_budget_allowed(
+                &state.announce_dial_budgets,
+                src.ip(),
+                crate::db::now_ms(),
+            ) {
+                state.push_diag_event(
+                    "announce_dial_throttled",
+                    &format!(
+                        "from={} port={} —— 每源 IP 拨号预算用尽（SEC-07）",
+                        pkt.device_id, pkt.tcp_port
+                    ),
+                );
+                return;
+            }
+            if !announce_port_plausible(pkt.tcp_port) {
+                state.push_diag_event(
+                    "announce_port_rejected",
+                    &format!(
+                        "port={} —— 知名端口不拨（SEC-07：应用监听端口永不 <1024）",
+                        pkt.tcp_port
+                    ),
+                );
+                return;
+            }
             // 自签名校验：带签名却验不过 = 篡改或伪造，**在它影响任何状态之前**丢掉。
             // 无签名（旧端）放行 —— 它只能驱动拨号，身份绑定一律由 Hello 验签决定
             // （announce 来的公钥恒为 keys_verified=false，见 upsert_peer）。
@@ -999,6 +1076,84 @@ fn sweep_peers(state: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **SEC-07 行为判据（预算）**：合法节奏（5s/次 = 12/min）放行；
+    /// 旋转伪造（>24/min）在第 25 次被拒；跨窗口重置。
+    #[test]
+    fn announce_dial_budget_caps_rotating_forgeries() {
+        let b = AnnounceDialBudgets::default();
+        let ip = std::net::IpAddr::V4(Ipv4Addr::new(192, 168, 31, 99));
+        let t0 = 1_700_000_000_000i64;
+        // 24 次全部压进同一个 60s 窗口（2s 间隔 = 48s < 60s）：全放行。
+        for i in 0..24u32 {
+            assert!(
+                announce_dial_budget_allowed(&b, ip, t0 + (i as i64) * 2_000),
+                "窗口内第 {i} 次必须放行"
+            );
+        }
+        assert!(
+            !announce_dial_budget_allowed(&b, ip, t0 + 50_000),
+            "窗口内第 25 次必须拒（伪造旋转 device_id 也绕不开——预算按源 IP 计）"
+        );
+        // 跨窗口重置：60s 后放行。
+        assert!(
+            announce_dial_budget_allowed(&b, ip, t0 + ANNOUNCE_DIAL_BUDGET_WINDOW_MS + 1),
+            "新窗口必须重置预算"
+        );
+        // 不同 IP 互不影响（NAT 后两台合法节点共享源 IP 也各有余量——预算 24 > 12×2? 不：
+        // 同 IP 两台合法节点 = 24/min，恰好压线；第三台同 IP 才会被限，可接受）。
+        let other = std::net::IpAddr::V4(Ipv4Addr::new(192, 168, 31, 100));
+        assert!(
+            announce_dial_budget_allowed(&b, other, t0 + 1_000),
+            "别的 IP 必须独立计"
+        );
+    }
+
+    /// **SEC-07 行为判据（端口）**：知名端口不拨；应用端口族放行。
+    #[test]
+    fn announce_port_plausible_rejects_wellknown_ports() {
+        for p in [0u16, 22, 80, 443, 445, 1023] {
+            assert!(
+                !announce_port_plausible(p),
+                "知名端口 {p} 必须拒——全网不当扫描器用"
+            );
+        }
+        for p in [1024u16, 59992, 60002, 65535] {
+            assert!(
+                announce_port_plausible(p),
+                "{p} 必须放行（应用端口族/用户自配）"
+            );
+        }
+    }
+
+    /// **SEC-07 接线形状**：announce 臂必须先过两道闸再走 ensure_link——
+    /// 且两道闸都在**拨号 spawn 之前**（影响任何状态之前）。
+    #[test]
+    fn announce_arm_gates_the_dial_with_sec07_checks() {
+        let src = include_str!("discovery.rs");
+        let flat = src
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        let arm_start = flat.find("\"announce\"=>{").expect("announce 臂不见了");
+        let arm = &flat[arm_start..];
+        assert!(
+            arm.find("announce_dial_budget_allowed(&state.announce_dial_budgets")
+                .expect("预算闸不在臂里")
+                < arm
+                    .find("ensure_link(&state,&device_id,&ip,port,shutdown)")
+                    .expect("回拨不在臂里"),
+            "拨号预算闸必须排在 ensure_link 之前"
+        );
+        assert!(
+            arm.find("announce_port_plausible(pkt.tcp_port)")
+                .expect("端口闸不在臂里")
+                < arm
+                    .find("ensure_link(&state,&device_id,&ip,port,shutdown)")
+                    .expect("回拨不在臂里"),
+            "端口闸必须排在 ensure_link 之前"
+        );
+    }
 
     /// 审计 R-04：`peer_manager` 必须进超时回收名单，但**好友除外**。
     /// 判据只有一格 ⇒ 给它真值表，并把它最容易写反的那一面钉住（照抄 retain 会忘好友）。

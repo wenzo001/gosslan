@@ -1680,6 +1680,8 @@ pub struct AppState {
     /// 从中间砍掉会留下"请求还在路上、应答没人等"的半截现场。
     pub group_history_cancels: Mutex<std::collections::HashSet<String>>,
 
+    /// **SEC-07**：announce 触发拨号的每源 IP 预算格子（`discovery.rs` 纯函数 `announce_dial_budget_allowed`）。
+    pub announce_dial_budgets: crate::network::discovery::AnnounceDialBudgets,
     /// 节点表是否需要向前端推送（节流合并用，见 `spawn_peer_emitter`）
     pub peers_dirty: AtomicBool,
     /// **网络世代号**（D8-4）：每次 `start()`/`stop()` 自增。
@@ -2784,6 +2786,7 @@ impl AppState {
             pending_group_history: Mutex::new(HashMap::new()),
             group_history_active: Mutex::new(std::collections::HashSet::new()),
             group_history_cancels: Mutex::new(std::collections::HashSet::new()),
+            announce_dial_budgets: Default::default(),
             peers_dirty: AtomicBool::new(false),
             network_generation: AtomicU64::new(0),
             peers_notify: Arc::new(Notify::new()),
