@@ -13244,6 +13244,11 @@ async function runRowPair(cdp, url) {
   const otherRows = await colorsFor("peer-a");
 
   const matrix = [];
+  // ⚠️ 圆角别写死区间：`--gosslan-bubble-radius` 已是 20px（令牌由 designGuards 钉着），
+  // 写死 17~19 会让这一族在令牌合法调整后成片假红（rowpair 段一次 100 条）。
+  const bubbleRadius = await cdp.eval(
+    "parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gosslan-bubble-radius')) || 0",
+  );
   for (let i = 0; i < combos.length; i++) {
     const other = otherRows[i];
     const mineC = mineRows[i];
@@ -13275,8 +13280,9 @@ async function runRowPair(cdp, url) {
     check(tag + "：对方气泡与聊天画布可分辨（>= 1.1）",
       row.otherVsCanvas !== null && row.otherVsCanvas >= 1.1, ">= 1.1",
       JSON.stringify({ otherVsCanvas: row.otherVsCanvas, canvas: row.canvas }));
-    check(tag + "：气泡圆角落在 17~19px",
-      row.radius !== null && row.radius >= 17 && row.radius <= 19, "17~19", JSON.stringify({ radius: row.radius }));
+    check(tag + "：气泡圆角等于令牌值",
+      row.radius !== null && bubbleRadius > 0 && Math.abs(row.radius - bubbleRadius) <= 0.6,
+      `== ${bubbleRadius}`, JSON.stringify({ radius: row.radius, token: bubbleRadius }));
   }
   const distinctOther = new Set(matrix.map((r) => r.other && r.other.bg)).size;
   const distinctMine = new Set(matrix.map((r) => r.mine && r.mine.bg)).size;
@@ -13335,8 +13341,9 @@ async function runRowPair(cdp, url) {
         check(`卡片 ${kind}/${label} ${c.preset}/${c.dark ? "暗" : "亮"}：尾巴填充 = 卡片底色`,
           !!col && !!col.tailFill && col.tailFill === col.bg,
           "tailFill === bg", JSON.stringify({ tailFill: col && col.tailFill, bg: col && col.bg }));
-        check(`卡片 ${kind}/${label} ${c.preset}/${c.dark ? "暗" : "亮"}：圆角落在 17~19px`,
-          !!col && col.radius >= 17 && col.radius <= 19, "17~19", JSON.stringify({ radius: col && col.radius }));
+        check(`卡片 ${kind}/${label} ${c.preset}/${c.dark ? "暗" : "亮"}：圆角等于令牌值`,
+          !!col && bubbleRadius > 0 && Math.abs(col.radius - bubbleRadius) <= 0.6,
+          `== ${bubbleRadius}`, JSON.stringify({ radius: col && col.radius, token: bubbleRadius }));
       }
     }
   }
@@ -13468,8 +13475,19 @@ async function runRowPair(cdp, url) {
   const gapsOf = (rows) => rows.slice(1).map((r, i) => +(r.colTop - rows[i].bottom).toFixed(1));
   /** 观感上的整段空档（含下一组的身份行）：只打印，不参与判定。 */
   const bubbleGapsOf = (rows) => rows.slice(1).map((r, i) => +(r.top - rows[i].bottom).toFixed(1));
-  const tight = (v) => typeof v === "number" && v >= 5 && v <= 8;
-  const full = (v) => typeof v === "number" && v >= 17 && v <= 19;
+  // ⚠️ 圆角断言**跟着令牌走**，不要写死区间：`--gosslan-bubble-radius` 现在是 20px，
+  // 写死 17~19 会在令牌合法调整后恒红（2026-11-22 实测 radii=[20,20,6,6]）。
+  // 令牌本身由 designGuards 钉着，这一格只该判"渲染结果 == 令牌值"。
+  const radiusTokens = await cdp.eval(`(() => {
+    const cs = getComputedStyle(document.documentElement);
+    return {
+      full: parseFloat(cs.getPropertyValue('--gosslan-bubble-radius')) || 0,
+      tight: parseFloat(cs.getPropertyValue('--gosslan-bubble-radius-tight')) || 0,
+    };
+  })()`);
+  const nearPx = (v, want) => typeof v === "number" && want > 0 && Math.abs(v - want) <= 0.6;
+  const tight = (v) => nearPx(v, radiusTokens.tight);
+  const full = (v) => nearPx(v, radiusTokens.full);
 
   const msgsMixed = stackMsgs(STACK.map((s) => s.sender));
   const sidesMixed = await stackSides(msgsMixed);
@@ -13504,12 +13522,12 @@ async function runRowPair(cdp, url) {
     && (wantBottom ? tight(row.radii[2]) && tight(row.radii[3])
       : full(row.radii[2]) && full(row.radii[3]));
   check("连续消息组：组首上圆角=胶囊、下圆角（接下一条）=小角",
-    radiusOk(mixed.rows[0], false, true), "上 17~19 / 下 5~8", JSON.stringify(mixed.rows[0] && mixed.rows[0].radii));
+    radiusOk(mixed.rows[0], false, true), `上 ${radiusTokens.full} / 下 ${radiusTokens.tight}`, JSON.stringify(mixed.rows[0] && mixed.rows[0].radii));
   check("连续消息组：组中上下都压成小角",
     radiusOk(mixed.rows[1], true, true) && radiusOk(mixed.rows[2], true, true),
-    "四角 5~8", JSON.stringify([mixed.rows[1] && mixed.rows[1].radii, mixed.rows[2] && mixed.rows[2].radii]));
+    `四角 ${radiusTokens.tight}`, JSON.stringify([mixed.rows[1] && mixed.rows[1].radii, mixed.rows[2] && mixed.rows[2].radii]));
   check("连续消息组：组尾上小角、下胶囊",
-    radiusOk(mixed.rows[3], true, false), "上 5~8 / 下 17~19", JSON.stringify(mixed.rows[3] && mixed.rows[3].radii));
+    radiusOk(mixed.rows[3], true, false), `上 ${radiusTokens.tight} / 下 ${radiusTokens.full}`, JSON.stringify(mixed.rows[3] && mixed.rows[3].radii));
   check("连续消息组：换发送者那条（独占一组）四角都是胶囊",
     radiusOk(mixed.rows[4], false, false), "四角 17~19", JSON.stringify(mixed.rows[4] && mixed.rows[4].radii));
   // 身份信息只在组首出现：4 条同一人 + 1 条换人 ⇒ 头像与昵称各 2，不是 5。
