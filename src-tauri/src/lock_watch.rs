@@ -590,8 +590,10 @@ mod tests {
                 );
             } else {
                 assert!(
-                    state.contains("with_name_prefix(\"group_file_receivers\")"),
-                    "群分片表的前缀必须仍是 group_file_receivers"
+                    state.contains("ReceiverTable::with_name_prefix(")
+                        && state.contains("\"group_file_receivers\""),
+                    "群分片表的前缀必须仍是 group_file_receivers（构造调用与字符串字面量分开钉，\
+                     因为 rustfmt 会把实参折行）"
                 );
             }
         }
