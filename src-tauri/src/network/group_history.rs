@@ -947,6 +947,34 @@ impl Drop for GroupHistoryActiveGuard {
 /// 为什么要有这一格而不是"谁想起来就 spawn"：入群钩子、群消息顺手建群那一路、清扫任务
 /// 三处都会喊一声。没有在飞闸，同一个群会同时排两三趟，每趟都在用同一批帧要同一份历史
 /// —— 链路与 db 锁的开销翻倍，而落库结果一字不差。
+/// **取消窗口的裁决**（STB-06，纯函数）：`spawn_sync` 抢不到名额时怎么处置这次触发。
+///
+/// 歧义的来源：insert 失败只说明「有人在飞」，但有两种完全不同的在飞——
+/// · 正常在飞：这趟会把活干完，触发方确实不用做什么 ⇒ 丢弃是对的；
+/// · **取消已点亮**：这趟马上要在页间停下、状态会写 `stopped`（清扫任务刻意不接手）⇒
+///   窗口内（一页传输时间，上限 20s）挤进来的新触发会被静默丢掉，而丢掉的可能是
+///   入群钩子那种「新成员真的需要历史」的请求 —— 用户不手动点同步就再也没人跑。
+/// 裁决：取消已点亮 ⇒ 这次触发**排队**（等守卫归还后补跑）；否则丢弃。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlockedSpawnVerdict {
+    /// 名额抢到了，直接起跑。
+    Spawned,
+    /// 在飞且没有取消标志 ⇒ 丢弃（这趟会干完活）。
+    DroppedInFlight,
+    /// 在飞且取消已点亮 ⇒ 这次触发被排队，等守卫归还后补跑一次。
+    QueuedBehindCancel,
+}
+
+pub(crate) fn blocked_spawn_verdict(in_flight: bool, cancel_lit: bool) -> BlockedSpawnVerdict {
+    if !in_flight {
+        BlockedSpawnVerdict::Spawned
+    } else if cancel_lit {
+        BlockedSpawnVerdict::QueuedBehindCancel
+    } else {
+        BlockedSpawnVerdict::DroppedInFlight
+    }
+}
+
 pub fn spawn_sync(state: &Arc<AppState>, group_id: &str) -> bool {
     if !state
         .group_history_active
@@ -954,7 +982,25 @@ pub fn spawn_sync(state: &Arc<AppState>, group_id: &str) -> bool {
         .unwrap_or_else(|e| e.into_inner())
         .insert(group_id.to_string())
     {
-        return false;
+        // STB-06：抢不到名额先裁决——取消已点亮 ⇒ 排队补跑，别把入群钩子那种
+        // 真需求丢在窗口里（丢掉后状态停在 stopped，清扫不接手，只能用户手动救）。
+        let cancel_lit = state
+            .group_history_cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(group_id);
+        if blocked_spawn_verdict(true, cancel_lit) != BlockedSpawnVerdict::QueuedBehindCancel {
+            return false;
+        }
+        state.logger.info(
+            "group",
+            format!(
+                "code=GROUP_HISTORY_SYNC_QUEUED 群历史触发落在取消窗口里 group={group_id} \
+                 —— 排队等这一趟收尾后补跑（STB-06）"
+            ),
+        );
+        spawn_cancel_window_follower(state, group_id);
+        return true;
     }
     let st = state.clone();
     let gid = group_id.to_string();
@@ -974,6 +1020,36 @@ pub fn spawn_sync(state: &Arc<AppState>, group_id: &str) -> bool {
         );
     });
     true
+}
+
+/// **取消窗口的补跑守望**（STB-06，一次性）：排队的那次触发在这里等守卫归还后补跑。
+///
+/// 等待有界（120×500ms = 60s > 取消窗口上限 20s）：排队是补跑一次的机会，
+/// 不是无界等待的承诺；超时放弃并留日志。守卫归还时取消标志已被 Drop 清掉
+/// ⇒ 补跑是干净的一趟，不会刚起跑就停。
+pub fn spawn_cancel_window_follower(state: &Arc<AppState>, group_id: &str) {
+    let st = state.clone();
+    let gid = group_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..120 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if !st
+                .group_history_active
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&gid)
+            {
+                spawn_sync(&st, &gid);
+                return;
+            }
+        }
+        st.logger.warn(
+            "group",
+            format!(
+                "code=GROUP_HISTORY_SYNC_QUEUE_TIMEOUT group={gid} —— 取消窗口的补跑排队超时放弃"
+            ),
+        );
+    });
 }
 
 /// 后台清扫：定期看哪几个群还挂着"待同步"，为它们喊一声 `spawn_sync`。
@@ -2220,6 +2296,56 @@ mod group_history_engine_tests {
                 .count(),
             2,
             "两处补发（Hello / 心跳）都还在：补拉是加了一条，不是替换"
+        );
+    }
+}
+
+#[cfg(test)]
+mod blocked_spawn_tests {
+    use super::{blocked_spawn_verdict, BlockedSpawnVerdict};
+
+    /// STB-06 裁决表逐格：正常在飞丢弃、取消已点亮排队、没人抢直接起跑。
+    #[test]
+    fn blocked_spawn_verdict_table() {
+        assert_eq!(
+            blocked_spawn_verdict(false, false),
+            BlockedSpawnVerdict::Spawned
+        );
+        assert_eq!(
+            blocked_spawn_verdict(false, true),
+            BlockedSpawnVerdict::Spawned
+        );
+        assert_eq!(
+            blocked_spawn_verdict(true, false),
+            BlockedSpawnVerdict::DroppedInFlight
+        );
+        assert_eq!(
+            blocked_spawn_verdict(true, true),
+            BlockedSpawnVerdict::QueuedBehindCancel,
+            "取消已点亮时的触发不许静默丢——那是入群钩子的真需求（STB-06）"
+        );
+    }
+
+    /// 接线形状：spawn_sync 必须真的走「裁决 → 排队 → 补跑」这条路径，
+    /// 且排队等待有界（120×500ms=60s，不许无界等）。
+    #[test]
+    fn cancel_window_queue_is_wired() {
+        let src = include_str!("group_history.rs");
+        let flat = src
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        assert!(
+            flat.contains("spawn_verdict(true,cancel_lit)"),
+            "spawn_sync 抢不到名额必须先过裁决表（STB-06 的歧义就是没分这两种在飞）"
+        );
+        assert!(
+            flat.contains("GROUP_HISTORY_SYNC_QUEUED"),
+            "排队必须留日志（否则丢触发还是不可见）"
+        );
+        assert!(
+            flat.contains("for_in0..120{"),
+            "排队等待必须有界（60s）——无界等待的承诺谁也守不住"
         );
     }
 }
