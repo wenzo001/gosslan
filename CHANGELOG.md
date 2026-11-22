@@ -27,6 +27,8 @@
 - 判据：新行为用例「异片临界区必须并行」（一片长持锁 300ms，另一片 200ms 内必须完成
   —— 全局锁时代必然超时）；lock_watch 接线守卫锚点搬迁（8 片逐片 NamedLock）；
   finish_receive 形状守卫同步（摘出仍块内、慢活仍锁外）。Rust 1779 全绿、clippy/fmt 干净。
+- 依赖安全：`url` 2.5.8 → 2.5.9（RUSTSEC-2026-0592，嵌套 `blob:` URL 栈溢出；经
+  tauri/wry/reqwest 传递引入）。两批 Verify 被该 advisory 拦红，升级后本地 cargo deny 全绿。
 
 ## [7.2.0] - 2026-11-22
 
