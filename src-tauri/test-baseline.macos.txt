@@ -902,6 +902,9 @@ network::ble::tests::rotated_ble_address_does_not_inherit_the_old_no_dial_record
 network::ble::tests::scan_ledger_is_silent_in_steady_state_but_nothing_important_is_dropped
 network::ble::tests::throughput_estimate_matches_real_mtu_budgets
 network::discovery::tests::adaptive_interval_thresholds_and_jitter_bounds
+network::discovery::tests::announce_arm_gates_the_dial_with_sec07_checks
+network::discovery::tests::announce_dial_budget_caps_rotating_forgeries
+network::discovery::tests::announce_port_plausible_rejects_wellknown_ports
 network::discovery::tests::broadcast_diag_event_reflects_send_result
 network::discovery::tests::broadcast_streak_counts_only_full_silence
 network::discovery::tests::discovery_failure_paths_carry_named_codes
@@ -1074,6 +1077,8 @@ network::file::tests::unique_path_never_returns_existing_path
 network::file::tests::unknown_attempt_count_is_not_a_death_sentence
 network::file::tests::wire_ledger_is_reclaimed_on_every_exit_path
 network::file::tests::wire_progress_is_counted_per_recipient_within_one_group_transfer
+network::group_history::blocked_spawn_tests::blocked_spawn_verdict_table
+network::group_history::blocked_spawn_tests::cancel_window_queue_is_wired
 network::group_history::group_history_engine_tests::a_full_tie_is_broken_deterministically_by_id
 network::group_history::group_history_engine_tests::a_history_page_is_classified_low_so_chat_is_never_starved
 network::group_history::group_history_engine_tests::a_key_that_has_not_arrived_is_not_reported_as_a_failure
@@ -1372,6 +1377,7 @@ protocol::tests::message_json_roundtrip
 protocol::tests::msg_kind_mapping
 protocol::tests::normalize_render_lang_is_lenient_and_never_panics
 protocol::tests::old_todo_payload_without_related_on_parses_to_none
+protocol::tests::one_on_one_kind_is_passthrough_on_both_record_paths
 protocol::tests::only_is_known_kind_can_tell_unrecognized_apart
 protocol::tests::opaque_external_round_trips_through_wire_format
 protocol::tests::opaque_external_validation_bounds
