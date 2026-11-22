@@ -478,9 +478,13 @@ CASES: list[Case] = [
         #   整步报「恢复源码之后测试仍然失败 ⇒ 源码或环境已被破坏」，而归因指错了地方：
         #   本用例守的是「范围来源」那一格，不是「这批提交合不合预算」（那是第 14 步的活）。
         #   与上一条 [88/89] 同属接缝病：那条修的是 fixture 接缝，这条修的是历史接缝。
-        #   钉 `73d9e20`（一条 docs 单提交 ⇒ 三道判据恒绿 ⇒ 注入态只会因为被守的那格红）。
-        #   这段历史若日后被 force push 改写掉，`git log` 当场报错 ⇒ 用例响亮地红，不会静默空转。
-        cmd=["node", "scripts/check-change-budget.mjs", "--range", "73d9e20~1..73d9e20"],
+        #   钉 `de142dca`（2026-09-09 一条 docs 单提交 ⇒ 三道判据恒绿 ⇒ 注入态只会因为被守的那格红）。
+        #   ⚠️ 锚点必须是 **origin/main 的祖先**（2026-11-22 的教训）：旧锚 `73d9e20` 在 10 月的
+        #   一次 amend 重提中被改写出主历史，只靠 reflog 活着 —— reflog 过期后被 gc 清掉
+        #   （本地与远端同时消失），这条用例立刻以「恢复源码之后测试仍然失败」的形状红掉，
+        #   而归因指向的是环境破坏，其实是锚点没了。选锚时先 `git merge-base --is-ancestor
+        #   <sha> origin/main` 验过，gc 才永远够不着它。
+        cmd=["node", "scripts/check-change-budget.mjs", "--range", "de142dca~1..de142dca"],
         cwd=ROOT,
         expect_fail_hint="受检范围",
         env={
