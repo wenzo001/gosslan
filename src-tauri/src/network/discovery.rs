@@ -573,10 +573,12 @@ fn diag_event_from_send_result(
 
 // ---------------- SEC-07：announce 自报端口的回拨闸（纯函数 + 每源 IP 预算） ----------------
 
-/// 每源 IP 的 announce 拨号预算窗口（秒）：合法 announce 周期 5s ⇒ 每 IP 12 次/分；
-/// 预算给到 24/min = 允许两台合法节点共享同一源 IP（NAT 场景），伪造旋转超出即被限。
+/// 每源 IP 的 announce 拨号预算窗口（秒）。
+/// 预算 60/min：真机实测（2026-11-23，4 对端 LAN）合法 announce 经多接口重复到达后
+/// 单源 IP 实际 ≈36 次/分——当初的 24/min 是按「5s 周期单份」推的，把正常流量也限了。
+/// 60 给足余量；伪造旋转要 >60/min/IP 才被限，风暴防护仍在。
 pub const ANNOUNCE_DIAL_BUDGET_WINDOW_MS: i64 = 60_000;
-pub const ANNOUNCE_DIAL_BUDGET_MAX: u32 = 24;
+pub const ANNOUNCE_DIAL_BUDGET_MAX: u32 = 60;
 
 /// 固定窗口计数的预算格子。锁外只算、锁内只读写这一格（与 discovery 其余状态同风格）。
 #[derive(Default)]
@@ -635,42 +637,6 @@ async fn handle_datagram(
     }
     match pkt.kind.as_str() {
         "announce" => {
-            // ===== SEC-07（审计）：自报 tcp_port 参与回拨的两道闸 =====
-            //
-            // announce 的 `pkt.tcp_port` 是**发送方自报**的，而 `src` 是网络栈给的源地址。
-            // 伪造源 IP（ingress filtering 缺失的网络）+ 自己签名（verify_announce 拦不住——
-            // 签名只保证「这份包是我签的」，端口是自由字段）⇒ 全网节点都会去拨
-            // 「受害者 IP : 任意端口」——同时构成拨号风暴与第三方端口扫描器。
-            //
-            // 审计给的修复方向是「忽略自报端口 / 只接受已知值」，但本机端口空间含**用户自配值**
-            // （tcp_port 设置 + 多开偏移），硬白名单会断自定义端口用户的首连。等价收口：
-            // ① 拨号预算（每源 IP 限速）——封旋转 device_id 的伪造风暴；
-            // ② 知名端口拒绝——应用监听端口永不 <1024，掐掉「拿全网当扫描器」的主要用途。
-            // 合法用户（5s 周期 announce、真实监听端口）完全无感。
-            if !announce_dial_budget_allowed(
-                &state.announce_dial_budgets,
-                src.ip(),
-                crate::db::now_ms(),
-            ) {
-                state.push_diag_event(
-                    "announce_dial_throttled",
-                    &format!(
-                        "from={} port={} —— 每源 IP 拨号预算用尽（SEC-07）",
-                        pkt.device_id, pkt.tcp_port
-                    ),
-                );
-                return;
-            }
-            if !announce_port_plausible(pkt.tcp_port) {
-                state.push_diag_event(
-                    "announce_port_rejected",
-                    &format!(
-                        "port={} —— 知名端口不拨（SEC-07：应用监听端口永不 <1024）",
-                        pkt.tcp_port
-                    ),
-                );
-                return;
-            }
             // 自签名校验：带签名却验不过 = 篡改或伪造，**在它影响任何状态之前**丢掉。
             // 无签名（旧端）放行 —— 它只能驱动拨号，身份绑定一律由 Hello 验签决定
             // （announce 来的公钥恒为 keys_verified=false，见 upsert_peer）。
@@ -707,6 +673,44 @@ async fn handle_datagram(
                 None,
             )
             .await;
+            // ===== SEC-07（审计）：自报 tcp_port 参与回拨的两道闸 =====
+            //
+            // announce 的 `pkt.tcp_port` 是**发送方自报**的，而 `src` 是网络栈给的源地址。
+            // 伪造源 IP（ingress filtering 缺失的网络）+ 自己签名（verify_announce 拦不住——
+            // 签名只保证「这份包是我签的」，端口是自由字段）⇒ 全网节点都会去拨
+            // 「受害者 IP : 任意端口」——同时构成拨号风暴与第三方端口扫描器。
+            //
+            // ⚠️ 两道闸必须在 **upsert_peer 之后**（2026-11-23 真机教训）：7.2.1/7.2.2 曾把闸
+            // 放在臂头，限速命中时连 `upsert_peer`（在线状态/昵称/端口在册）一起跳过——
+            // 实测这台机器 4 个对端每个 ~36 次/分（多接口重复到达），24/min 的预算被打爆，
+            // 在线状态更新成批丢失。闸只挡**昂贵的拨号**，不挡在册。
+            //
+            // 预算 60/min：实测合法速率 ~36/min（多接口重复到达 ⇒ 单一 announce 周期被放大
+            // 2~3 份），60 给足余量；伪造旋转要超 60/min/IP（=每秒 1 次）才被限，风暴挡得住。
+            if !announce_dial_budget_allowed(
+                &state.announce_dial_budgets,
+                src.ip(),
+                crate::db::now_ms(),
+            ) {
+                state.push_diag_event(
+                    "announce_dial_throttled",
+                    &format!(
+                        "from={} port={} —— 每源 IP 拨号预算用尽（SEC-07；在册已更新，仅跳过拨号）",
+                        pkt.device_id, pkt.tcp_port
+                    ),
+                );
+                return;
+            }
+            if !announce_port_plausible(pkt.tcp_port) {
+                state.push_diag_event(
+                    "announce_port_rejected",
+                    &format!(
+                        "port={} —— 知名端口不拨（SEC-07：应用监听端口永不 <1024）",
+                        pkt.tcp_port
+                    ),
+                );
+                return;
+            }
             // ⚠️ **必须 spawn**：`ensure_link` 内部会做 connect + 握手，
             // 最坏阻塞 = CONNECT_TIMEOUT(5s) + HANDSHAKE_TIMEOUT(5s) ≈ 10s。
             // 而 announce 周期只有 5s ⇒ 串行 await 会让收包循环**永远落后**：
@@ -1077,23 +1081,24 @@ fn sweep_peers(state: &AppState) {
 mod tests {
     use super::*;
 
-    /// **SEC-07 行为判据（预算）**：合法节奏（5s/次 = 12/min）放行；
-    /// 旋转伪造（>24/min）在第 25 次被拒；跨窗口重置。
+    /// **SEC-07 行为判据（预算）**：合法速率（实测 ~36/min，多接口重复到达）必须放行；
+    /// 旋转伪造（>60/min）在第 61 次被拒；跨窗口重置。
     #[test]
     fn announce_dial_budget_caps_rotating_forgeries() {
         let b = AnnounceDialBudgets::default();
         let ip = std::net::IpAddr::V4(Ipv4Addr::new(192, 168, 31, 99));
         let t0 = 1_700_000_000_000i64;
-        // 24 次全部压进同一个 60s 窗口（2s 间隔 = 48s < 60s）：全放行。
-        for i in 0..24u32 {
+        // 60 次全部压进同一个 60s 窗口（0.5s 间隔 = 30s < 60s）：全放行——
+        // 预算 60/min 要覆盖真机实测的合法速率（~36/min，多接口重复到达）。
+        for i in 0..60u32 {
             assert!(
-                announce_dial_budget_allowed(&b, ip, t0 + (i as i64) * 2_000),
-                "窗口内第 {i} 次必须放行"
+                announce_dial_budget_allowed(&b, ip, t0 + (i as i64) * 500),
+                "窗口内第 {i} 次必须放行（合法流量不许被限——真机教训：预算 24 时 4 对端被打爆）"
             );
         }
         assert!(
-            !announce_dial_budget_allowed(&b, ip, t0 + 50_000),
-            "窗口内第 25 次必须拒（伪造旋转 device_id 也绕不开——预算按源 IP 计）"
+            !announce_dial_budget_allowed(&b, ip, t0 + 31_000),
+            "窗口内第 61 次必须拒（伪造旋转 device_id 也绕不开——预算按源 IP 计）"
         );
         // 跨窗口重置：60s 后放行。
         assert!(
@@ -1152,6 +1157,15 @@ mod tests {
                     .find("ensure_link(&state,&device_id,&ip,port,shutdown)")
                     .expect("回拨不在臂里"),
             "端口闸必须排在 ensure_link 之前"
+        );
+        // 2026-11-23 真机教训：闸曾在臂头（verify/upsert 之前）——限速命中时在线状态
+        // 更新成批丢失。闸必须晚于 upsert_peer（只挡拨号、不挡在册）。
+        assert!(
+            arm.find("upsert_peer(").expect("upsert_peer 不在臂里")
+                < arm
+                    .find("announce_dial_budget_allowed")
+                    .expect("预算闸不在臂里"),
+            "预算闸必须排在 upsert_peer 之后——限速不许吞在线状态更新（7.2.1/7.2.2 的真机回归）"
         );
     }
 
