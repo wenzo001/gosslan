@@ -73,8 +73,9 @@ Users do not need the `.sig` files: they are for the desktop updater's signature
   image and file content in the local storage folder (their records in SQLite). No cloud backup,
   no telemetry.
 - Storage cleanup (retention / size limit) frees space by deleting media files only — chat text is
-  kept, and cleaned-up items remain in history without their content. "Clear Chat Data" wipes local
-  chats, file-transfer records and media, and leaves all groups; friends and device identity stay.
+  kept, and cleaned-up items remain in history without their content. Outgoing images get their own
+  usage view with an opt-in cleanup (30 / 180 / 360 days). "Clear Chat Data" wipes local chats,
+  file-transfer records and media, and removes you from every group; friends and device identity stay.
 - The network is the local link: same LAN, or Bluetooth LE at short range. There is no default
   cross-subnet reachability; for CGNAT-to-CGNAT cases you can run the optional
   [blind relay](https://github.com/wenzo001/gosslan-relay-server), which forwards ciphertext bytes
