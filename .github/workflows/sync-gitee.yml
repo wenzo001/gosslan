@@ -166,9 +166,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 分片 5→8：主因是单文件体积（不可再分），但并发 5 路大文件更容易被 Gitee 侧限速；
-        # 8 路摊薄每轮的并发上传数。
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        # 分片 5→8→12：单文件不可再分，分片只摊薄「每个 job 要串行传几个文件」——
+        # 12 片时每片最多 2 个文件，配 60 分钟/文件的上限仍落在 180 分钟 job 预算内。
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
       - name: Mask Gitee token
         env:
@@ -218,7 +218,7 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/sync-gitee.mjs --tag "$TAG" --assets-dir assets --repo "$GITEE_REPO" \
-            --keep "$KEEP" --mode upload --shard "${{ matrix.shard }}" --shards 8
+            --keep "$KEEP" --mode upload --shard "${{ matrix.shard }}" --shards 12
 
   finalize:
     needs: upload

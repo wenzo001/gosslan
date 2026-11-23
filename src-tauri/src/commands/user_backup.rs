@@ -115,25 +115,31 @@ pub async fn export_user_backup(
                 rusqlite::params![tmp.path().to_string_lossy().as_ref()],
             )
             .map_err(|e| {
-                error_codes::coded(
-                    error_codes::RP_KEY_BACKUP_IO,
-                    format!("生成快照失败（目标目录可写？）: {e}"),
-                )
+                let msg = format!("生成快照失败（数据目录所在磁盘可写？空间够？）: {e}");
+                s.logger.error("backup", format!("code={} {msg}", error_codes::USER_BACKUP_SNAPSHOT_FAILED));
+                error_codes::coded(error_codes::USER_BACKUP_SNAPSHOT_FAILED, msg)
             })?;
         }
         // ② 副本上的信封明文化（主库不动 —— 用户拍板「私钥进备份」，明文只活在
         //    密文层内；恢复端启动时按既有逻辑重新封）。
         let (binding_rows, bindings_kept_sealed) = {
-            let snap = rusqlite::Connection::open(tmp.path())
-                .map_err(|e| error_codes::coded(error_codes::RP_KEY_BACKUP_IO, format!("打开快照失败: {e}")))?;
+            let snap = rusqlite::Connection::open(tmp.path()).map_err(|e| {
+                let msg = format!("打开快照失败: {e}");
+                s.logger.error("backup", format!("code={} {msg}", error_codes::USER_BACKUP_SNAPSHOT_FAILED));
+                error_codes::coded(error_codes::USER_BACKUP_SNAPSHOT_FAILED, msg)
+            })?;
             unseal_bindings_in_snapshot(&snap).map_err(|e| {
-                error_codes::coded(error_codes::RP_KEY_BACKUP_IO, format!("信封明文化失败: {e}"))
+                let msg = format!("信封明文化失败: {e}");
+                s.logger.error("backup", format!("code={} {msg}", error_codes::USER_BACKUP_SNAPSHOT_FAILED));
+                error_codes::coded(error_codes::USER_BACKUP_SNAPSHOT_FAILED, msg)
             })?
         };
         // ③ 读快照字节 → 加密外壳 → 写目的地。临时文件由守卫在离开作用域时删除
         //    （原来那行显式 `remove_file` 只覆盖成功路径）。
         let db_bytes = std::fs::read(tmp.path()).map_err(|e| {
-            error_codes::coded(error_codes::RP_KEY_BACKUP_IO, format!("读快照失败: {e}"))
+            let msg = format!("读快照失败: {e}");
+            s.logger.error("backup", format!("code={} {msg}", error_codes::USER_BACKUP_SNAPSHOT_FAILED));
+            error_codes::coded(error_codes::USER_BACKUP_SNAPSHOT_FAILED, msg)
         })?;
         drop(tmp);
         let sealed = user_backup::seal_snapshot(
@@ -142,12 +148,18 @@ pub async fn export_user_backup(
             KdfParams::default(),
             rand_salt(),
             rand_nonce(),
-        )?;
+        )
+        .map_err(|e| {
+            // seal_snapshot 自带 RP_KEY_BACKUP_IO 码（"加密失败"）；这里换成备份专属码，
+            // 让界面给「重试/换口令」而不是「查磁盘」。
+            let msg = format!("加密失败: {e}");
+            s.logger.error("backup", format!("code={} {msg}", error_codes::USER_BACKUP_SEAL_FAILED));
+            error_codes::coded(error_codes::USER_BACKUP_SEAL_FAILED, msg)
+        })?;
         std::fs::write(&dest, &sealed).map_err(|e| {
-            error_codes::coded(
-                error_codes::RP_KEY_BACKUP_IO,
-                format!("写备份文件失败（目标可写？空间够？）: {e}"),
-            )
+            let msg = format!("写备份文件失败（导出目标可写？空间够？）: {e}");
+            s.logger.error("backup", format!("code={} {msg}", error_codes::USER_BACKUP_WRITE_FAILED));
+            error_codes::coded(error_codes::USER_BACKUP_WRITE_FAILED, msg)
         })?;
         s.logger.info(
             "backup",

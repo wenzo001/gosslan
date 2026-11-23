@@ -265,6 +265,11 @@ const CODE_RULES: Record<string, string> = {
   RP_KEY_BACKUP_NOTHING_TO_EXPORT: "errors.rule.rpKeyBackupNothingToExport",
   RP_KEY_BACKUP_KEYSTORE_UNAVAILABLE: "errors.rule.rpKeyBackupKeystore",
   RP_KEY_BACKUP_STORE_READ_FAILED: "errors.rule.rpKeyBackupStoreRead",
+  // 整库备份导出（2026-11-23 拆分）：快照 / 加密 / 写目的地三个步骤各占一格——原先共用
+  // `RP_KEY_BACKUP_IO` ⇒ 界面只说"查磁盘"，真机那次（数据目录在系统盘空间紧）真因查不到。
+  USER_BACKUP_SNAPSHOT_FAILED: "errors.rule.userBackupSnapshot",
+  USER_BACKUP_SEAL_FAILED: "errors.rule.userBackupSeal",
+  USER_BACKUP_WRITE_FAILED: "errors.rule.userBackupWrite",
   FAVORITE_DELETE_BATCH_TOO_LARGE: "errors.rule.favoriteDeleteBatchTooLarge",
   // B6 第十三批：群管理 reject 族。
   GROUP_TODO_ASSIGNEE_NOT_MEMBER: "errors.rule.groupTodoAssigneeNotMember",

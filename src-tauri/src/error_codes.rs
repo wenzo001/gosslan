@@ -457,6 +457,17 @@ pub const RP_KEY_BACKUP_TOO_LARGE: &str = "RP_KEY_BACKUP_TOO_LARGE";
 /// 那条空态被塞进本码 ⇒ 界面显示「请检查文件与磁盘空间」，用户去清磁盘（磁盘是满的），
 /// 而真正的原因是「还没有可导出的应用」。**空态、密钥库、文件 IO 三者必须各占一格。**
 pub const RP_KEY_BACKUP_IO: &str = "RP_KEY_BACKUP_IO";
+/// 整库备份导出：**生成/读取临时快照**失败（数据目录所在磁盘空间不足 / 不可写 / 库被锁）。
+///
+/// 为什么要独立成码（2026-11-23 真机："导出备份失败·读写密钥包失败，请检查文件与磁盘空间"
+/// 而用户确认磁盘充足）：整库导出有 5 个步骤（快照→明文化→读字节→加密→写目的地），
+/// 原先全塞进 `RP_KEY_BACKUP_IO` 一个码 ⇒ 界面永远只说"查磁盘"，真因与下一步都丢了。
+/// 本码的下一步是**数据目录所在磁盘**（通常系统盘），不是导出目标盘。
+pub const USER_BACKUP_SNAPSHOT_FAILED: &str = "USER_BACKUP_SNAPSHOT_FAILED";
+/// 整库备份导出：加密外壳失败（argon2/密钥派生异常）。下一步是重试/换口令。
+pub const USER_BACKUP_SEAL_FAILED: &str = "USER_BACKUP_SEAL_FAILED";
+/// 整库备份导出：写**导出目标**失败（目标盘空间/权限/路径）。下一步才是查导出位置。
+pub const USER_BACKUP_WRITE_FAILED: &str = "USER_BACKUP_WRITE_FAILED";
 /// 导出：没有可导出的已授权应用（库里没有 active/revoked 的绑定）。
 ///
 /// 下一步是「先去绑定一个应用」，不是「去清磁盘」—— 与 `RP_KEY_BACKUP_IO` 分开的理由。

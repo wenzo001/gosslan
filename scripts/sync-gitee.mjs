@@ -329,10 +329,13 @@ async function uploadAsset(repo, releaseId, name, file) {
     [
       "-sS",
       "--fail-with-body",
-      // 单个文件最长 30 分钟；远端 5xx/连接中断时重试 3 次（同一次重试可能留下重名附件，
-      // 下一次运行开头的“同名旧附件先删”会收敛，不会累加）。
-      "--max-time", "1800",
-      "--retry", "3",
+      // 单个文件最长 60 分钟（2026-11-23：88MB 的 AppImage 在 ~50KB/s 的链路上正好撞
+      // 原先 30 分钟的上限 —— curl (28) 30 分钟 0 字节响应，看起来像"被拒"其实是"没传完"）。
+      // 死链快速判死：连续 120 秒低于 1KB/s 才放弃，别把整个窗口耗在一个假死的连接上。
+      "--max-time", "3600",
+      "--speed-limit", "1024",
+      "--speed-time", "120",
+      "--retry", "2",
       "--retry-delay", "10",
       "--retry-all-errors",
       "-X", "POST",
