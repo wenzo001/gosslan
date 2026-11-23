@@ -211,14 +211,24 @@ test("面板：取消必须先报 cancelled 回执再 dismiss（RP 页面在等�
   );
 });
 
-test("面板：列表宿主有显式上界（flex 链之外的双保险，7.2.4 只靠 flex 仍滚不动）", () => {
+test("面板：定高根 + 列表独占滚动（外层永不滚，2026-11-23 重设计的契约）", () => {
   const panel = read("src/components/SharePanel.vue");
-  // 2026-11-23 线上 7.2.4 复现：只写 flex-1 时宿主拿不到确定高度，OS 视口不溢出、
-  // 滚轮被吞。必须同时有 max-h 上界（与 EmojiPicker 的「高度必须留在宿主上」同一条纪律）。
+  // 7.2.4/7.2.5 两轮实测的收敛形状：**弹窗自己给高度**（h-[min(560px,calc(100vh-200px))]），
+  // 不靠祖先链推导；200px 预留给标题/底栏/内边距 ⇒ 卡片恒 ≤ 视口、外层无滚动条。
   assert.match(
     panel,
-    /OverlayScroll[\s\S]{0,400}?max-h-\[min\(52vh,560px\)\]/,
-    "列表宿主缺显式 max-h ⇒ 祖先链一断就退化成整页滚、滚轮悬在列表上无效",
+    /h-\[min\(560px,calc\(100vh-200px\)\)\]/,
+    "根节点缺定高 ⇒ 又回退成外层整页滚",
+  );
+  // 列表必须是**唯一**滚动区：flex-1 min-h-0（吃满剩余高度）、宿主不再自己写 max-h。
+  assert.match(
+    panel,
+    /OverlayScroll[\s\S]{0,300}?class="min-h-0 flex-1/,
+    "列表宿主必须是 min-h-0 flex-1（唯一滚动区）",
+  );
+  assert.ok(
+    !/OverlayScroll[\s\S]{0,300}?max-h-\[/.test(panel),
+    "列表宿主不许再写 max-h——定高根已经接管，两个上界会互相打架",
   );
 });
 
@@ -230,15 +240,15 @@ test("面板：列表行头像与左栏会话列表同源（单聊 AvatarBox / �
   assert.match(panel, /groupMembersOf\(c\)/, "群聊行必须解析成员簇");
 });
 
-test("面板：滚动域走 flex 分配，不依赖百分比高度（列表在自己那一格滚）", () => {
+test("面板：内容根是 flex 列且高度由定高类接管（不再依赖百分比 h-full）", () => {
   const panel = read("src/components/SharePanel.vue");
   assert.match(
     panel,
-    /class="flex min-h-0 flex-1 flex-col gap-3 px-1"/,
-    "内容区根节点必须是 flex-1 min-h-0（h-full 百分比在 auto+max-h 卡片里解析失败 ⇒ 列表失去上界、整页滚）",
+    /class="flex min-h-0 flex-col gap-2 px-1"/,
+    "内容根必须是 flex 列 + min-h-0（滚动契约见上面「定高根」那条）",
   );
   assert.ok(
-    !/class="flex h-full min-h-0 flex-col/.test(panel),
-    "内容区不许再用 h-full——百分比高度在 BaseModal 的 auto+max-h 卡片里不可解析",
+    !/class="[^"]*\bh-full\b[^"]*"/.test(panel.split(":class=")[0] ?? ""),
+    "静态 class 里不许再出现 h-full——桌面高度由定高类显式给，移动端才走动态 h-full",
   );
 });

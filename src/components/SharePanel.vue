@@ -219,80 +219,78 @@ async function onClose() {
     :open="store.visible"
     :title="t('shareToChat.title')"
     :fullscreen="app.isMobile"
-    :width="app.isMobile ? undefined : 'max-w-lg'"
+    :width="app.isMobile ? undefined : 'max-w-2xl'"
     @close="onClose"
   >
-    <!-- ⚠️ 这里必须是 `flex-1 min-h-0` 而不是 `h-full`（用户 2026-11-23：「分享滚动区域
-         应该是底下的消息列表滚动，而不是全局滚动」）：`h-full` 是百分比高度，解析要求
-         父级**定高**，而 BaseModal 卡片的高度是 auto 被 max-h 夹住 ⇒ 百分比解析失败，
-         会话列表那层 `flex-1` 失去上界、整块内容撑破卡片，滚动落到整页的 overlay 上。
-         `flex-1 min-h-0` 走 flex 分配，不依赖百分比，列表在任何窗口高度下都在自己那一格滚。 -->
-    <div class="flex min-h-0 flex-1 flex-col gap-3 px-1">
-      <!-- 来源线索：调用方自称的站点，只用于让用户判断"这是不是我以为的那一页"。 -->
-      <div class="flex items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
+    <!-- ⚠️ **定高根**（用户 2026-11-23 重设计）：桌面 `h-[min(560px,calc(100vh-200px))]`
+         —— 弹窗自己给高度，不靠祖先链推导；200px 预留给「标题行 + 底栏 + 卡片内边距」，
+        保证整张卡片恒 ≤ 视口 ⇒ **外层永远没有滚动条**。移动端整屏（h-full）。
+         内部：上部信息全 `shrink-0`（紧凑、固定），列表 `flex-1 min-h-0` **独占滚动**。 -->
+    <div
+      class="flex min-h-0 flex-col gap-2 px-1"
+      :class="app.isMobile ? 'h-full' : 'h-[min(560px,calc(100vh-200px))]'"
+    >
+      <!-- 顶部第 1 行（固定、单行）：来源 + 链接 + 字数。原来链接独占一行、编辑提示独占
+           一行、计数独占一行 —— 三行压缩成一行，信息一条不少、高度省两行。 -->
+      <div class="flex shrink-0 items-center gap-1.5 text-caption text-[var(--gosslan-text-2)]">
         <Icon name="link2" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-        <span class="truncate" :title="originHost ?? t('shareToChat.fromUnknown')">
+        <span class="shrink-0">
           {{ originHost ? t("shareToChat.from", { host: originHost }) : t("shareToChat.fromUnknown") }}
         </span>
+        <a
+          v-if="store.pending?.payload.url"
+          :href="store.pending.payload.url"
+          target="_blank"
+          rel="noreferrer noopener"
+          class="min-w-0 flex-1 truncate text-[var(--gosslan-accent-ink)] underline decoration-dotted"
+          :title="store.pending.payload.url"
+        >{{ store.pending.payload.url }}</a>
+        <span
+          v-else
+          class="min-w-0 flex-1"
+        ></span>
+        <span
+          class="shrink-0 tabular-nums"
+          :class="textError === 'tooLong' ? 'text-[var(--gosslan-danger-ink)]' : ''"
+        >{{ used }}/{{ MAX_SHARE_TEXT_CHARS }}</span>
       </div>
 
-      <!-- 链接（只读）：用户可以在这里确认分享的到底是哪一页。 -->
-      <a
-        v-if="store.pending?.payload.url"
-        :href="store.pending.payload.url"
-        target="_blank"
-        rel="noreferrer noopener"
-        class="block truncate rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] px-2.5 py-2 text-xs text-[var(--gosslan-accent-ink)] underline decoration-dotted"
-        :title="store.pending.payload.url"
-      >
-        {{ store.pending.payload.url }}
-      </a>
+      <!-- 编辑器（固定，紧凑 5 行）：内容可改；编辑提示降级为 aria-label，不再占一行。 -->
+      <textarea
+        v-model="draft"
+        class="h-20 w-full shrink-0 resize-none rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-app-bg)] p-2.5 text-sm text-[var(--gosslan-text)] focus:border-[var(--gosslan-primary)] focus:outline-none"
+        :aria-label="t('shareToChat.editHint')"
+        :maxlength="MAX_SHARE_TEXT_CHARS + 1"
+      ></textarea>
 
-      <!-- 要发送的内容：可编辑（很多站点给的原文带一堆尾巴，用户得能删）。 -->
-      <label class="flex min-h-0 flex-col gap-1">
-        <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("shareToChat.editHint") }}</span>
-        <textarea
-          v-model="draft"
-          class="h-28 w-full resize-none rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-app-bg)] p-2.5 text-sm text-[var(--gosslan-text)] focus:border-[var(--gosslan-primary)] focus:outline-none"
-          :aria-label="t('shareToChat.editHint')"
-          :maxlength="MAX_SHARE_TEXT_CHARS + 1"
-        ></textarea>
-        <span
-          class="self-end text-caption"
-          :class="textError === 'tooLong' ? 'text-[var(--gosslan-danger-ink)]' : 'text-[var(--gosslan-text-2)]'"
-        >
-          {{ used }}/{{ MAX_SHARE_TEXT_CHARS }}
-        </span>
-      </label>
+      <p v-if="textError === 'tooLong'" class="shrink-0 text-caption text-[var(--gosslan-danger-ink)]">
+        {{ t("shareToChat.tooLong", { max: MAX_SHARE_TEXT_CHARS }) }}
+      </p>
 
-      <!-- 会话检索：几十个会话时直接打字比滚动快。 -->
-      <div class="relative">
+      <!-- 搜索（固定，紧凑 h-9） -->
+      <div class="relative shrink-0">
         <Icon
           name="search"
-          class="pointer-events-none absolute left-2.5 top-3 h-4 w-4 text-[var(--gosslan-text-2)]"
+          class="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-[var(--gosslan-text-2)]"
           aria-hidden="true"
         />
         <input
           v-model="query"
           type="search"
-          class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-app-bg)] pl-8 pr-2.5 text-sm text-[var(--gosslan-text)] focus:border-[var(--gosslan-primary)] focus:outline-none"
+          class="h-9 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-app-bg)] pl-8 pr-2.5 text-sm text-[var(--gosslan-text)] focus:border-[var(--gosslan-primary)] focus:outline-none"
           :placeholder="t('shareToChat.searchPlaceholder')"
           :aria-label="t('shareToChat.searchPlaceholder')"
         />
       </div>
 
-      <!-- 会话列表：逐项勾选（可多选），必须显式点；不预选（预选 + 回车就是一路点确定）。 -->
-      <!-- ⚠️ 宿主必须拿到**确定高度**（OverlayScroll 的硬纪律，见 EmojiPicker 那段注释）：
-           仅靠祖先 flex 链在「auto 高度 + max-h 夹住」的弹窗卡片里不可靠——7.2.4 只改成
-           flex-1 后用户仍复现「鼠标悬在列表上滚不动、必须移到外面才滚」（OS 视口没溢出、
-           滚轮被吞）。这里再加**显式上界** max-h：无论祖先链怎么解，列表区超出就在自己
-           这一格滚。上界取 min(52vh, 560px)：矮窗不会挤掉上方编辑区，高窗不无限拉长。 -->
+      <!-- 会话列表：**唯一的滚动区**，吃满剩余高度。选中态：左侧方形勾选 + 底色 + 加粗，
+           一眼能看出"要发给谁"（用户 2026-11-23：最重要的是分享列表的选择）。 -->
       <OverlayScroll
         role="group"
         :aria-label="t('shareToChat.pickHint')"
-        class="min-h-0 max-h-[min(52vh,560px)] flex-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-divider)]"
+        class="min-h-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-divider)]"
       >
-        <p v-if="!targets.length" class="px-3 py-4 text-center text-xs text-[var(--gosslan-text-2)]">
+        <p v-if="!targets.length" class="px-3 py-4 text-center text-caption text-[var(--gosslan-text-2)]">
           {{ t("shareToChat.noTargets") }}
         </p>
         <button
@@ -301,10 +299,19 @@ async function onClose() {
           type="button"
           role="checkbox"
           :aria-checked="selected.includes(c.id)"
-          class="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-[var(--gosslan-hover)]"
+          class="flex w-full items-center gap-2.5 px-3 py-2 text-left transition hover:bg-[var(--gosslan-hover)]"
           :class="selected.includes(c.id) ? 'bg-[var(--gosslan-list-active)]' : ''"
           @click="toggleTarget(c.id)"
         >
+          <span
+            class="flex h-4 w-4 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-xs)] border"
+            :class="selected.includes(c.id)
+              ? 'border-[var(--gosslan-primary)] bg-[var(--gosslan-primary)] text-[var(--gosslan-on-primary)]'
+              : 'border-[var(--gosslan-field-border)]'"
+            aria-hidden="true"
+          >
+            <Icon v-if="selected.includes(c.id)" name="check" class="h-3 w-3" />
+          </span>
           <!-- 头像与左栏列表同源：群聊=成员簇（GroupAvatar），单聊=会话头像（AvatarBox）。 -->
           <GroupAvatar
             v-if="c.kind === 'group' && groupMembersOf(c).length"
@@ -317,20 +324,13 @@ async function onClose() {
             :id="c.id"
             :src="c.avatar"
           />
-          <span class="min-w-0 flex-1 truncate text-sm text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
-          <Icon
-            v-if="selected.includes(c.id)"
-            name="check"
-            class="h-4 w-4 shrink-0 text-[var(--gosslan-accent-ink)]"
-            aria-hidden="true"
-          />
+          <span
+            class="min-w-0 flex-1 truncate text-sm text-[var(--gosslan-text)]"
+            :class="selected.includes(c.id) ? 'font-medium' : ''"
+            :title="c.name"
+          >{{ c.name }}</span>
         </button>
       </OverlayScroll>
-
-      <p v-if="textError === 'tooLong'" class="text-xs text-[var(--gosslan-danger-ink)]">
-        {{ t("shareToChat.tooLong", { max: MAX_SHARE_TEXT_CHARS }) }}
-      </p>
-
     </div>
 
     <!-- 操作按钮走 BaseModal 的 **footer 插槽**：它在内容滚动区**之外**，
