@@ -54,13 +54,13 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
+          # 2026-11-23 首跑实测：deb 打包步调 xdg-mime（xdg-utils），缺它
+          # 「failed to bundle project: xdg-mime binary not found」⇒ 编完 8 分钟才炸。
+          # ⚠️ 注释不许放进续行列表里——`#` 行尾的 \ 会把注释续下去，后面的包名全被吞。
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
-            libdbus-1-dev patchelf \
-            # 2026-11-23 首跑实测：deb 打包步调 xdg-mime（xdg-utils），缺它
-            # 「failed to bundle project: xdg-mime binary not found」⇒ 编完 8 分钟才炸。
-            xdg-utils desktop-file-utils
+            libdbus-1-dev patchelf xdg-utils desktop-file-utils
 
       - name: Install frontend dependencies
         run: npm ci
