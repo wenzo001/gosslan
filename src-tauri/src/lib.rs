@@ -760,6 +760,12 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+        // 跟随系统开机启动（用户 2026-11-23）：注册即可，enable/disable 由设置页开关显式调。
+        // MacosLauncher::LaunchAgent = 写 ~/Library/LaunchAgents；args 空向量 = 正常启动（非静默）。
+        builder = builder.plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ));
         // dev 里**既不保存也不恢复**几何（负责人 2026-10-26：「dev 起来默认就该是电脑端，
         // 我拖到移动端才是移动端」）。旧写法在 dev 与安装包之间共用同一个数据目录
         // （identifier `com.gosslan.app` ⇒ 同一份 `.window-state.json`），于是"把窗口拖窄测移动端"

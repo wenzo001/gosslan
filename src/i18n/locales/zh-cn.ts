@@ -1360,6 +1360,9 @@ export const zhCN: MessageDict = {
   "todo.linkedTo": "派生",
   "todo.noLinked": "还没有关联任务",
   // 外部应用设备认证（2026-11-13，Phase 2）
+"settings.autostart.title": "跟随系统开机启动",
+"settings.autostart.desc": "登录系统时自动启动小院儿。默认关闭；随时可在此关闭。",
+"settings.autostart.fail": "开机启动设置失败，请重试",
 "deviceAuth.autoApproved": "已自动授权 {name}（24 小时内批准过；可在 设置 → 已授权应用 撤销）",
   "deviceAuth.title": "设备授权确认",
   "deviceAuth.linkAction": "绑定此设备到该应用",

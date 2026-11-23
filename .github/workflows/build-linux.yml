@@ -1,0 +1,190 @@
+name: Build Linux (x86_64 + aarch64)
+
+# Linux 包（用户 2026-11-23：「流水线生成添加 linux 版本的包 x86 和 arm64 版本 最新通用版的」）。
+# 通用档 = AppImage（免安装、单文件，跨发行版）；deb 给 Debian/Ubuntu 系一并顺手出。
+# 两条腿都**原生构建**（GitHub 公共仓库 2025-01 起免费提供 ubuntu-24.04-arm 原生 arm64 runner），
+# 不走交叉编译——webkit2gtk 的 C 依赖交叉编译要整套 sysroot，原生腿便宜且稳。
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            label: x86_64
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            label: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Tauri v2 Linux 的系统依赖（官方清单）+ 本仓两个额外项：
+      # · libdbus-1-dev：btleplug（蓝牙）在 Linux 走 BlueZ over D-Bus，编译期要 dbus 头；
+      # · patchelf：AppImage 打包步（linuxdeploy）会用它改 rpath。
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            libdbus-1-dev patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # 只在 tag 上跑：main 的日常构建不生成 updater 产物、不需要私钥（与 build-macos.yml 同名步骤同理由）。
+      - name: Preflight updater signing secrets (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PASS: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEY:-}" ]; then
+            echo "::error title=tag 构建缺 TAURI_SIGNING_PRIVATE_KEY::Linux AppImage 的 updater 产物需要签名（与 Windows/macOS 共用同一把密钥）。"
+            exit 1
+          fi
+          key_norm="$(printf '%s' "$KEY" | tr -d '[:space:]')"
+          if ! decoded="$(printf '%s' "$key_norm" | base64 --decode 2>/dev/null)"; then
+            echo "::error title=TAURI_SIGNING_PRIVATE_KEY 不是合法 base64::多半是粘成了文件路径或被截断。"
+            exit 1
+          fi
+          case "$decoded" in
+            untrusted\ comment:*) echo "签名私钥可解码为 minisign 私钥" ;;
+            *) echo "::error title=TAURI_SIGNING_PRIVATE_KEY 不是 minisign 私钥::解出来不是以 'untrusted comment:' 开头。"
+               exit 1 ;;
+          esac
+          echo "签名私钥已配置（长度 ${#KEY}）"
+
+      - name: Build AppImage + deb (${{ matrix.label }})
+        env:
+          TARGET: ${{ matrix.target }}
+          LABEL: ${{ matrix.label }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # 行尾空白统一去掉（与 build-macos.yml 同一处理，别让签名在编完之后才炸）。
+          TAURI_SIGNING_PRIVATE_KEY="$(printf '%s' "${TAURI_SIGNING_PRIVATE_KEY:-}" | tr -d '[:space:]')"
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(printf '%s' "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" | tr -d '\r\n')"
+          export TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          rel="src-tauri/target/$TARGET/release"
+          # 只有 tag 构建生成/签名 updater 产物：main 的日常构建不需要私钥。
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            npm run tauri -- build --target "$TARGET" --features bluetooth \
+              --bundles appimage deb --config src-tauri/tauri.updater.conf.json
+          else
+            npm run tauri -- build --target "$TARGET" --features bluetooth --bundles appimage deb
+          fi
+          ls -l "$rel/bundle/appimage" "$rel/bundle/deb"
+
+      - name: Upload installers artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosslan-linux-${{ matrix.label }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+      # updater 的 Linux 产物是 .AppImage + .sig（createUpdaterArtifacts 在 tag 构建下生成）。
+      # 两腿同名，按 label 改名（与 build-macos.yml 同一处理），否则后一腿覆盖前一腿。
+      - name: Prepare updater artifacts (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TARGET: ${{ matrix.target }}
+          LABEL: ${{ matrix.label }}
+        run: |
+          set -euo pipefail
+          mkdir -p updater-assets
+          shopt -s nullglob
+          n=0
+          for f in "src-tauri/target/$TARGET/release/bundle/appimage/"*.AppImage; do
+            case "$(basename "$f")" in
+              *"$LABEL"*) cp "$f" "updater-assets/$(basename "$f")" ;;
+              *) cp "$f" "updater-assets/gosslan-$LABEL.AppImage" ;;
+            esac
+            if [ ! -f "$f.sig" ]; then
+              echo "缺少 $f.sig ⇒ 签名没有生成（检查 TAURI_SIGNING_PRIVATE_KEY）" >&2
+              exit 1
+            fi
+            sig_dst="updater-assets/$(basename "$f").sig"
+            cp "$f.sig" "$sig_dst"
+            n=$((n + 1))
+          done
+          if [ "$n" -eq 0 ]; then
+            echo "没有 .AppImage ⇒ updater 产物没有生成（检查 --config 与 createUpdaterArtifacts）" >&2
+            exit 1
+          fi
+          ls -l updater-assets
+
+      - name: Upload updater artifacts (tag only)
+        uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: gosslan-linux-updater-${{ matrix.label }}
+          path: updater-assets/*
+          if-no-files-found: error
+          retention-days: 14
+
+  # 收尾发布 job：与 build-macos.yml 同一形状（单一任务挂 Release、并发组带 workflow 名、
+  # publish-release-assets.sh 是唯一发布逻辑——不在这里抄第二份）。
+  release:
+    name: 挂到 GitHub Release（单一任务·带重试）
+    needs: build-linux
+    if: startsWith(github.ref, 'refs/tags/v')
+    concurrency:
+      group: publish-release-${{ github.ref_name }}-${{ github.workflow }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 取出发布脚本（发布逻辑只在 scripts/ 那一处）
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/publish-release-assets.sh
+          fetch-depth: 1
+      - name: 取回本次构建的产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gosslan-linux-*
+          merge-multiple: true
+          path: assets
+      - name: 挂到 Release（创建幂等 + 上传退避重试）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/publish-release-assets.sh --assets assets --label base

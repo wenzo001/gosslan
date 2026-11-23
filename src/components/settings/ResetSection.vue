@@ -209,7 +209,9 @@ async function onCancelBackupRestore() {
     </SettingsGroup>
     <!-- J1-4b：用户数据全量备份 / 恢复（加密整库，含设备身份私钥） -->
     <SettingsGroup :title="t('backup.title')">
-      <div class="space-y-3">
+      <!-- 用户 2026-11-23：这块此前没有任何内边距，字段顶着卡片边——与其它设置卡
+           不一致。补上唯一来源的卡片内嵌档（settings-card-inset，8px 四边）。 -->
+      <div class="settings-card-inset space-y-3">
         <p class="text-caption leading-relaxed text-[var(--gosslan-text-2)]">
           {{ t("backup.export.hint") }}
         </p>

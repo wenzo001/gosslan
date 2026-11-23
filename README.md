@@ -34,6 +34,7 @@ TCP. Messages are end-to-end encrypted and stored only on the devices that sent 
 | Windows x64 / ARM64 | `*_x64-setup.exe`, `*_arm64-setup.exe` | Uses the system WebView2; `*-setup-webview2-bundled.exe` embeds a fixed WebView2 for offline or old machines |
 | macOS Apple Silicon / Intel | `*_aarch64.dmg`, `*_x64.dmg` | In-app updates use the signed `.app.tar.gz` from the same release |
 | Android arm64 / armeabi-v7a | `*-arm64-v8a-release.apk`, `*-armeabi-v7a-release.apk` | No in-app updater; install the new APK over the old one |
+| Linux x86_64 / aarch64 | `*_${arch}.AppImage`, `*_${arch}.deb` | Generic single-file AppImage runs on most distros; `deb` for Debian/Ubuntu. No in-app updater |
 
 Bluetooth LE is included in the official builds on all three platforms.
 

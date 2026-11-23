@@ -88,6 +88,21 @@ export const isIOS =
     : false;
 
 /**
+ * 桌面 UA（纯函数）：Windows / macOS / Linux 都算桌面，Android / iOS 不算。
+ *
+ * 用途：桌面专属的系统能力开关（如「跟随系统开机启动」）在移动端要**整个隐藏**——
+ * 不只是禁用：移动端没有这个概念，行都不该出现。
+ */
+export function isDesktopUA(ua: string): boolean {
+  return !isAndroidUA(ua) && !isIOSUA(ua);
+}
+
+export const isDesktop =
+  typeof navigator !== "undefined" && typeof navigator.userAgent === "string"
+    ? isDesktopUA(navigator.userAgent)
+    : false;
+
+/**
  * 布局要不要走"移动端"（纯函数，便于单测）。
  *
  * ⚠️ **平台优先，宽度兜底** —— 这个顺序是事故换来的：

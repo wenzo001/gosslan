@@ -17,14 +17,48 @@
  * 抽出独立组件的原因：设置内容要在**三种外壳**里复用（独立窗口 / 移动端整页 / 旧弹窗），
  * 三份重复标记必然漂移，所以「长什么样」只写在这里，外壳只负责怎么摆。
  */
-import { computed } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
+import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import SegmentedControl from "@/components/ui/SegmentedControl.vue";
+import { isDesktop } from "@/utils/platform";
+import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { t, type LanguagePreference } from "@/i18n";
 
 const app = useAppStore();
+
+/**
+ * 跟随系统开机启动（用户 2026-11-23，**默认关闭**）：桌面专属行，移动端整行隐藏。
+ *
+ * 状态以**插件在系统里的真实状态**为准（Windows 注册表 Run 键 / macOS LaunchAgent /
+ * Linux XDG autostart），不另存一份应用内设置——那是第二份事实来源，两边漂了就是
+ * 「开关显示关、实际开机自启」这种说不清的状态。读失败折叠为 false：读不到就当没开，
+ * 用户再点一次 enable 是幂等的。
+ */
+const autostart = ref(false);
+async function loadAutostart(): Promise<void> {
+  if (!isDesktop) return;
+  try {
+    autostart.value = await isEnabled();
+  } catch (e) {
+    console.warn("[settings] 读取开机启动状态失败，按未开启处理", e);
+    autostart.value = false;
+  }
+}
+async function setAutostart(v: boolean): Promise<void> {
+  try {
+    if (v) await enable();
+    else await disable();
+    autostart.value = v;
+  } catch (e) {
+    app.toastError(e, t("settings.autostart.fail"));
+    // 失败回读真实状态，别让开关停在假值上。
+    void loadAutostart();
+  }
+}
+onMounted(() => void loadAutostart());
 
 /**
  * 语言切换三态。语言名（简体中文 / English）按国际惯例**不自翻译**，任何语言下都认得；
@@ -39,6 +73,17 @@ const languageOptions = computed<{ value: LanguagePreference; label: string }[]>
 
 <template>
   <SettingsGroup :title="t('settings.group.language')" :footer="t('settings.language.desc')">
+    <SettingsRow
+      v-if="isDesktop"
+      :label="t('settings.autostart.title')"
+      :description="t('settings.autostart.desc')"
+    >
+      <SettingsToggle
+        :label="t('settings.autostart.title')"
+        :model-value="autostart"
+        @update:model-value="setAutostart"
+      />
+    </SettingsRow>
     <SettingsRow :label="t('settings.language.title')" last>
       <!-- flex-wrap + whitespace-nowrap：英文「Follow System」较长，放不下时换行而不是溢出/挤压 -->
       <SegmentedControl

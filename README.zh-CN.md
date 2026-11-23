@@ -33,6 +33,7 @@
 | Windows x64 / ARM64 | `*_x64-setup.exe`、`*_arm64-setup.exe` | 使用系统 WebView2；`*-setup-webview2-bundled.exe` 内嵌固定版 WebView2，供老机器/离线环境 |
 | macOS Apple 芯片 / Intel | `*_aarch64.dmg`、`*_x64.dmg` | 应用内更新读取同一次发布里的签名 `.app.tar.gz` |
 | Android arm64 / armeabi-v7a | `*-arm64-v8a-release.apk`、`*-armeabi-v7a-release.apk` | 不走应用内更新；新版直接覆盖安装 APK |
+| Linux x86_64 / aarch64 | `*_${arch}.AppImage`, `*_${arch}.deb` | AppImage 单文件免安装、跨发行版通用；`deb` 给 Debian/Ubuntu 系。无应用内更新 |
 
 官方构建在三个平台都带蓝牙 LE。
 

@@ -1318,6 +1318,9 @@ export const enUS: MessageDict = {
   "todo.linkedTo": "Derived",
   "todo.noLinked": "No linked tasks",
   // External app device auth (2026-11-13, Phase 2)
+"settings.autostart.title": "Launch at system startup",
+"settings.autostart.desc": "Start Gosslan automatically when you log in. Off by default; toggle here anytime.",
+"settings.autostart.fail": "Failed to update launch-at-startup",
 "deviceAuth.autoApproved": "Auto-approved \"{name}\" (approved within 24h — revoke anytime in Settings → Authorized apps)",
   "deviceAuth.title": "Device authorization",
   "deviceAuth.linkAction": "Link this device to the app",

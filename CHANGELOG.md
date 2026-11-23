@@ -14,6 +14,18 @@
 
 ## [Unreleased]
 
+### 三件（用户 2026-11-23）
+- **备份与恢复区补卡片内距**：这块此前没有任何内边距，字段顶着卡片边（截图实测）——
+  补上唯一来源的内嵌档 `settings-card-inset`，与其它设置卡一条线。
+- **跟随系统开机启动**（桌面，**默认关闭**）：设置 → 通用 新增开关（移动端整行隐藏）。
+  官方插件 `tauri-plugin-autostart` 三端一个实现（Windows 注册表 Run 键 / macOS
+  LaunchAgent / Linux XDG autostart）；开关状态以**插件在系统里的真实状态**为准（不另存
+  应用内设置——避免两份事实来源漂移），读写失败具名回退并回读真实状态。
+- **Linux 包进流水线**：新增 `build-linux.yml`——x86_64（ubuntu-latest）+ aarch64
+  （ubuntu-24.04-arm **原生** arm64 runner，不走交叉编译），通用档 AppImage + deb 双格式
+  （tag 构建带 updater 签名产物），发布腿与 macOS 同形状（单一任务挂 Release）。
+  README 双语平台表补 Linux 行。
+
 ## [7.2.4] - 2026-11-23
 
 ### 快捷授权：同应用 24h 内再次授权不再逐次点击（用户 2026-11-23）
