@@ -63,7 +63,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: sync-gitee-${{ inputs.tag || github.event.release.tag_name }}
+  # 2026-11-23：组名**不带 tag**——Gitee 是 per-IP 限速，v7.2.5 补同步与 v7.2.6 的同步
+  # 同时跑会互相抢带宽（两个大 AppImage 分片跑了近两小时未完成）。串行化到一条。
+  group: sync-gitee-serial
   cancel-in-progress: false
 
 env:
