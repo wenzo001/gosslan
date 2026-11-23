@@ -133,11 +133,12 @@ jobs:
           mkdir -p updater-assets
           shopt -s nullglob
           n=0
+          # ⚠️ 保持原文件名（`Gosslan_<ver>_amd64/aarch64.AppImage`）：Tauri 生成的
+          # `.sig` 是按这个文件名配对的，改名会让 AppImage 与 sig 对不上（2026-11-23 实测
+          # 出过一份 `gosslan-x86_64.AppImage` 配 `Gosslan_..._amd64.AppImage.sig` 的错位）。
+          # 两腿本来就不重名（amd64 / aarch64），无需改名。
           for f in "src-tauri/target/$TARGET/release/bundle/appimage/"*.AppImage; do
-            case "$(basename "$f")" in
-              *"$LABEL"*) cp "$f" "updater-assets/$(basename "$f")" ;;
-              *) cp "$f" "updater-assets/gosslan-$LABEL.AppImage" ;;
-            esac
+            cp "$f" "updater-assets/$(basename "$f")"
             if [ ! -f "$f.sig" ]; then
               echo "缺少 $f.sig ⇒ 签名没有生成（检查 TAURI_SIGNING_PRIVATE_KEY）" >&2
               exit 1
