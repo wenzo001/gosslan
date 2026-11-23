@@ -565,6 +565,11 @@ pub async fn handle_device_auth_link(app: &tauri::AppHandle, url: String) -> Res
             }
         }
     };
+    // 快捷授权要用请求范围做「是否 ⊆ 上次授权」的判定；req/meta 马上被 move 进 pending，先拷。
+    let requested_scopes = req.requested_scopes.clone();
+    let request_id_owned = req.request_id.clone();
+    let client_id_owned = meta.client_id.clone();
+    let rp_origin_owned = link.rp_origin.clone();
     let pending = da::PendingDeviceAuth {
         meta,
         request: req,
@@ -596,6 +601,80 @@ pub async fn handle_device_auth_link(app: &tauri::AppHandle, url: String) -> Res
             (true, fresh_prompt)
         }
     };
+    // ===== 快捷授权（2026-11-23）：同设备同 RP 24h 内批准过且范围没变大 ⇒ 自动批准 =====
+    //
+    // 用户诉求：同一应用短期内再次授权不要每次都点确认。裁决是纯函数（quick_auth_verdict），
+    // 走的批准路径与用户手点**同一个家**（approve_device_auth_core）——台账/幂等/绑定激活
+    // 一字不差。失败（RP 没起来等）⇒ 回退确认页，绝不静默吞。
+    // ⚠️ 自动路径**不弹确认窗、不抢焦点**（用户可能正在别的应用里操作），只发一条 toast；
+    // 也不再 emit device-auth-request（prompt.auto_approved=true 让粘贴入口那条链路同样不弹）。
+    let auto_verdict = if emit {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        match crate::db::get_binding(&dbc, &rp_origin_owned, &client_id_owned) {
+            Ok(binding) => {
+                let granted = binding
+                    .as_ref()
+                    .and_then(|b| serde_json::from_str::<Vec<String>>(&b.scopes).ok())
+                    .unwrap_or_default();
+                Some(da::quick_auth_verdict(
+                    binding.as_ref().map(|b| b.status.as_str()),
+                    &granted,
+                    &requested_scopes,
+                    binding.as_ref().and_then(|b| b.last_used_at),
+                    now_ms,
+                ))
+            }
+            // 读失败 ⇒ 按确认页处理（授权裁决宁保守，**不折叠成自动批准**），但具名留痕。
+            Err(e) => {
+                eprintln!("[device-auth] code=DEVICE_AUTH_QUICK_VERDICT_READ_FAILED 读绑定失败，回退确认页：{e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if emit && auto_verdict == Some(da::QuickAuthVerdict::Auto) {
+        // granted 范围用绑定的（自动批准交付的就是上次批的那份）。
+        let granted = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            match crate::db::get_binding(&dbc, &rp_origin_owned, &client_id_owned) {
+                Ok(Some(b)) => serde_json::from_str::<Vec<String>>(&b.scopes).unwrap_or_default(),
+                Ok(None) => Vec::new(),
+                Err(e) => {
+                    eprintln!("[device-auth] code=DEVICE_AUTH_QUICK_GRANT_READ_FAILED 批准时读绑定失败：{e}");
+                    Vec::new()
+                }
+            }
+        };
+        match approve_device_auth_core(
+            s.clone(),
+            rp_origin_owned.clone(),
+            client_id_owned.clone(),
+            request_id_owned.clone(),
+            remembered_nickname,
+            granted,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                let _ = s.app.emit(
+                    "device-auth-auto-approved",
+                    &serde_json::json!({
+                        "display_name": outcome.display_name,
+                        "rp_origin": outcome.rp_origin,
+                    }),
+                );
+                // 返回值只被「粘贴入口」的 store.handleLink 用；auto_approved=true 让它不 setPending。
+                let mut p = prompt;
+                p.auto_approved = true;
+                return Ok(p);
+            }
+            Err(e) => {
+                // 自动批准失败（RP 离线等）⇒ 回退确认页，让用户手点（可重试可见）。
+                eprintln!("[device-auth] code=DEVICE_AUTH_QUICK_APPROVE_FAILED 自动批准失败，回退确认页：{e}");
+            }
+        }
+    }
     if let Some(w) = s.app.get_webview_window(crate::WINDOW_MAIN) {
         let _ = w.show();
         let _ = w.set_focus();
@@ -605,6 +684,7 @@ pub async fn handle_device_auth_link(app: &tauri::AppHandle, url: String) -> Res
     }
     Ok(prompt)
 }
+
 
 /// 重复深链判定（**纯函数**，可单测）：同 key 已有一条未过期、同 request_id 的待确认事务
 /// ⇒ 视为系统/浏览器重试，**不再重复 emit**。
@@ -828,8 +908,22 @@ pub async fn device_auth_approve(
     allowed_scopes: Option<Vec<String>>,
 ) -> Result<da::DeviceAuthOutcome, String> {
     let s = state.inner().clone();
-    let my_device_id = s.device_id.clone();
     let granted_scopes = allowed_scopes.unwrap_or_default();
+    approve_device_auth_core(s, rp_origin, client_id, request_id, allow_nickname, granted_scopes).await
+}
+
+/// 批准的**核心**（命令壳与快捷授权共用）：签名断言 → 回写 RP → 落绑定 → 记昵称。
+/// 抽出来是因为快捷授权（2026-11-23）要走**同一条批准路径**——自动批准与用户手点
+/// 必须一字不差（台账/幂等/绑定激活全在同一处），否则就是两套语义。
+async fn approve_device_auth_core(
+    s: Arc<crate::state::AppState>,
+    rp_origin: String,
+    client_id: String,
+    request_id: String,
+    allow_nickname: bool,
+    granted_scopes: Vec<String>,
+) -> Result<da::DeviceAuthOutcome, String> {
+    let my_device_id = s.device_id.clone();
     let key = da::pending_key(&rp_origin, &client_id, &request_id);
     let queue_key = da::rp_queue_key(&rp_origin, &client_id);
     // 先读一次（不消费，顺带清理过期）：拿代际 / meta / 幂等键。真正的消费在 RP 2xx 之后。

@@ -626,6 +626,11 @@ device_auth::device_auth_tests::parse_share_link_accepts_https_and_custom_scheme
 device_auth::device_auth_tests::parse_share_link_rejects_downgrade_userinfo_missing_origin_bad_path_empty_ref
 device_auth::device_auth_tests::pending_key_is_composite_and_queue_key_groups_by_rp
 device_auth::device_auth_tests::prompt_carries_requested_scopes
+device_auth::device_auth_tests::quick_auth_auto_when_same_device_recent_and_scope_subset
+device_auth::device_auth_tests::quick_auth_confirm_on_scope_growth
+device_auth::device_auth_tests::quick_auth_confirm_when_stale_or_unknown
+device_auth::device_auth_tests::quick_auth_confirm_without_active_binding
+device_auth::device_auth_tests::quick_auth_is_wired_into_the_link_handler
 device_auth::device_auth_tests::request_validation_expiry_claims_challenge
 device_auth::device_auth_tests::revoke_idempotency_key_is_deterministic_and_scoped
 device_auth::device_auth_tests::rp_keys_are_distinct_and_kid_is_sha256_of_public
@@ -1683,6 +1688,7 @@ transport::relay_seal::tests::channel_hex_roundtrip
 transport::relay_seal::tests::gap_in_counter_is_rejected
 transport::relay_seal::tests::record_size_is_predictable
 transport::relay_seal::tests::records_roundtrip_in_both_directions
+transport::relay_seal::tests::relay_record_over_global_budget_is_rejected
 transport::relay_seal::tests::relay_wire_matches_shared_fixtures
 transport::relay_seal::tests::replayed_record_is_rejected
 transport::relay_seal::tests::role_is_ordered_and_symmetric

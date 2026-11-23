@@ -1018,6 +1018,14 @@ export const api = {
   /** 深链到达时后端 emit 的确认页数据（主窗订阅，弹出强制确认 UI）。 */
   onDeviceAuthRequest: (cb: (p: DeviceAuthPrompt) => void) =>
     listen<DeviceAuthPrompt>("device-auth-request", (e) => cb(e.payload)),
+  // 快捷授权：后端自动批准了一笔（同设备 24h 内批准过且范围没变大）⇒ 只发 toast，不出确认页。
+  onDeviceAuthAutoApproved: (
+    cb: (p: { display_name: string; rp_origin: string }) => void,
+  ) =>
+    listen<{ display_name: string; rp_origin: string }>(
+      "device-auth-auto-approved",
+      (e) => cb(e.payload),
+    ),
 
   /** 冷启动补拉：进程起来**之前**到达的分享，`share-request` 那一刻的事件已经发过了。 */
   shareGetPending: () => invoke<SharePrompt | null>("share_get_pending"),

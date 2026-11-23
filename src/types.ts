@@ -1100,6 +1100,8 @@ export interface DeviceAuthPrompt {
   requested_scopes: string[];
   expires_at_ms: number;
   nickname_default: boolean;
+  /** 快捷授权：true = 已自动批准（24h 内批准过且范围没变大），前端不弹确认页。 */
+  auto_approved?: boolean;
 }
 
 /**

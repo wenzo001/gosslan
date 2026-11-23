@@ -595,3 +595,162 @@ fn http_issuer_accepts_same_origin_http_endpoints_but_rejects_upgrade_or_cross_o
     // issuer 是 http 但期望来源是 https ⇒ 不一致，拒。
     assert!(validate_metadata(&m, "https://127.0.0.1:59995").is_err());
 }
+
+// ---------------- 快捷授权裁决（2026-11-23，纯函数真值表） ----------------
+
+use crate::device_auth::{quick_auth_verdict, QuickAuthVerdict};
+
+fn scopes<const N: usize>(list: [&str; N]) -> Vec<String> {
+    list.iter().map(|s| s.to_string()).collect()
+}
+
+/// 活绑定 + 24h 内用过 + 范围 ⊆ 上次授权 ⇒ 自动批准（用户诉求的主路径）。
+#[test]
+fn quick_auth_auto_when_same_device_recent_and_scope_subset() {
+    let now = 1_700_000_000_000i64;
+    assert_eq!(
+        quick_auth_verdict(
+            Some("active"),
+            &scopes(["friends.read", "events.metadata"]),
+            &scopes(["events.metadata"]),
+            Some(now - 60_000),
+            now
+        ),
+        QuickAuthVerdict::Auto
+    );
+    // 空范围请求（纯登录）也在上次授权的并集里 ⇒ 自动。
+    assert_eq!(
+        quick_auth_verdict(
+            Some("active"),
+            &scopes(["friends.read"]),
+            &scopes([]),
+            Some(now),
+            now
+        ),
+        QuickAuthVerdict::Auto
+    );
+}
+
+/// **范围闸**：请求里任何一项上次没给过 ⇒ 一律回确认页（scope creep 不许静默通过）。
+#[test]
+fn quick_auth_confirm_on_scope_growth() {
+    let now = 1_700_000_000_000i64;
+    assert_eq!(
+        quick_auth_verdict(
+            Some("active"),
+            &scopes(["friends.read"]),
+            &scopes(["friends.read", "events.metadata"]),
+            Some(now - 60_000),
+            now
+        ),
+        QuickAuthVerdict::Confirm
+    );
+    // 首次（绑定存在但 scopes 空）请求任何数据交付 ⇒ 确认页。
+    assert_eq!(
+        quick_auth_verdict(
+            Some("active"),
+            &scopes([]),
+            &scopes(["friends.read"]),
+            Some(now),
+            now
+        ),
+        QuickAuthVerdict::Confirm
+    );
+}
+
+/// **时间闸**：超过 24h（或从未记过 last_used_at）⇒ 回确认页。
+#[test]
+fn quick_auth_confirm_when_stale_or_unknown() {
+    let now = 1_700_000_000_000i64;
+    let window = crate::device_auth::QUICK_AUTH_WINDOW_MS;
+    // 恰好压线（now - last == WINDOW）算过期：窗口是开区间。
+    assert_eq!(
+        quick_auth_verdict(
+            Some("active"),
+            &scopes([]),
+            &scopes([]),
+            Some(now - window),
+            now
+        ),
+        QuickAuthVerdict::Confirm
+    );
+    // 窗口内 1ms ⇒ 自动。
+    assert_eq!(
+        quick_auth_verdict(
+            Some("active"),
+            &scopes([]),
+            &scopes([]),
+            Some(now - window + 1),
+            now
+        ),
+        QuickAuthVerdict::Auto
+    );
+    // 没记过 last_used_at（老绑定）⇒ 按很久没用处理，宁保守。
+    assert_eq!(
+        quick_auth_verdict(Some("active"), &scopes([]), &scopes([]), None, now),
+        QuickAuthVerdict::Confirm
+    );
+    // last_used_at 在未来（时钟回拨）⇒ 不自动。
+    assert_eq!(
+        quick_auth_verdict(
+            Some("active"),
+            &scopes([]),
+            &scopes([]),
+            Some(now + 1_000),
+            now
+        ),
+        QuickAuthVerdict::Confirm
+    );
+}
+
+/// **状态闸**：无绑定 / 已撤销（revoked）⇒ 一律确认页。
+#[test]
+fn quick_auth_confirm_without_active_binding() {
+    let now = 1_700_000_000_000i64;
+    assert_eq!(
+        quick_auth_verdict(None, &scopes([]), &scopes([]), Some(now), now),
+        QuickAuthVerdict::Confirm
+    );
+    assert_eq!(
+        quick_auth_verdict(
+            Some("revoked"),
+            &scopes(["friends.read"]),
+            &scopes([]),
+            Some(now),
+            now
+        ),
+        QuickAuthVerdict::Confirm
+    );
+}
+
+/// **快捷授权接线形状**：深链处理必须真的走「裁决 → 同一个批准核心 → 专用事件」，
+/// 且确认页事件在自动路径上不 emit。形状断言（本仓对跨层接线的常规口径）。
+#[test]
+fn quick_auth_is_wired_into_the_link_handler() {
+    let cmd = include_str!("../commands/device_auth.rs");
+    let flat = cmd
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>();
+    assert!(
+        flat.contains("da::quick_auth_verdict("),
+        "深链处理必须先过快捷授权裁决表——没有它，快捷授权就是没接上"
+    );
+    assert!(
+        flat.contains("approve_device_auth_core("),
+        "自动批准必须走与用户手点**同一个**批准核心——两套批准语义迟早漂移"
+    );
+    assert!(
+        flat.contains("device-auth-auto-approved"),
+        "自动批准必须有专用事件（前端 toast 的唯一来源）"
+    );
+    assert!(
+        flat.contains("p.auto_approved=true;") || flat.contains("auto_approved=true;"),
+        "自动路径返回的 prompt 必须带 auto_approved=true——粘贴入口据此不弹确认页"
+    );
+    // 自动批准失败必须回退确认页（可见、可重试），不许静默吞。
+    assert!(
+        flat.contains("DEVICE_AUTH_QUICK_APPROVE_FAILED"),
+        "自动批准失败要有具名留痕并回退确认页——静默吞等于用户以为授权了实际没有"
+    );
+}

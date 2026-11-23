@@ -131,6 +131,10 @@ pub struct DeviceAuthPrompt {
     /// 昵称开关默认值：**同一 RP 上次的选择**（2026-11-17 起缓存）；
     /// 首次仍是 false（最小披露），用户可改。
     pub nickname_default: bool,
+    /// **快捷授权**（2026-11-23）：true = 这笔事务已被自动批准（同设备同 RP 在 24h 内
+    /// 批准过且请求范围 ⊆ 上次授权）——前端**不许**再弹确认页，只会收到一条 toast。
+    #[serde(default)]
+    pub auto_approved: bool,
 }
 
 /// 「已授权应用」清单条目（**只公钥面**，无 secret_key，INV-P18 判据 A）。
@@ -217,8 +221,57 @@ impl PendingDeviceAuth {
             requested_scopes: self.request.requested_scopes.clone(),
             expires_at_ms: self.expires_at_ms,
             nickname_default: self.remembered_nickname,
+            auto_approved: false,
         }
     }
+}
+
+/// **快捷授权的裁决**（2026-11-23，纯函数、逐格可测）。
+///
+/// 同一设备 + 同一 client_id 的绑定还活着、24h 内用过、且本次请求的交付范围
+/// **不超出**上次授权的并集 ⇒ 自动批准（不弹确认页，用户收到一条 toast）。
+/// 参考口径：OAuth 的「记住此决定」、OS 权限对话框的「不再询问」——都是「同一主体
+/// 最近批准过 ⇒ 不再逐次点击」，但都保留「权限变大 ⇒ 重新询问」的闸，这里同样：
+/// 请求里出现任何上次没给过的 scope ⇒ 一律回确认页（scope creep 不许静默通过）。
+///
+/// 时间窗取 **24 小时**：与「信任此设备 24h」一类的常见档位对齐（Google 二次验证、
+/// 各浏览器「记住此决定」）；太短等于没做（登录频率高于窗口就每次都弹），太长则
+/// 「用户以为每笔都要点头」的预期被打破得越久。撤销绑定（设置页）立即回到确认页。
+pub const QUICK_AUTH_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickAuthVerdict {
+    /// 自动批准：沿用绑定里记的授权范围与上次的昵称选择。
+    Auto,
+    /// 走确认页（无绑定 / 已撤销 / 范围变大 / 超过 24h）。
+    Confirm,
+}
+
+pub fn quick_auth_verdict(
+    binding_status: Option<&str>,
+    granted_scopes: &[String],
+    requested_scopes: &[String],
+    last_used_at: Option<i64>,
+    now_ms: i64,
+) -> QuickAuthVerdict {
+    let Some(status) = binding_status else {
+        return QuickAuthVerdict::Confirm;
+    };
+    if status != "active" {
+        return QuickAuthVerdict::Confirm;
+    }
+    // 范围闸：请求里任何一项不在上次授权的并集里 ⇒ 回确认页（不许静默扩权）。
+    let fresh = requested_scopes.iter().all(|r| granted_scopes.contains(r));
+    if !fresh {
+        return QuickAuthVerdict::Confirm;
+    }
+    // 时间闸：绑定的**最近一次成功使用**必须在窗口内。没记录（老绑定升级前创建）
+    // 一律回确认页——「不知道多久没用」按「很久没用」处理，宁保守。
+    match last_used_at {
+        Some(t) if now_ms >= t && now_ms - t < QUICK_AUTH_WINDOW_MS => {}
+        _ => return QuickAuthVerdict::Confirm,
+    }
+    QuickAuthVerdict::Auto
 }
 
 /// 规范化 RP 来源：接受 **HTTPS 或 HTTP**（用户 2026-11-17 明确要求支持 http IP:端口 /

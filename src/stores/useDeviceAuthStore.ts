@@ -46,6 +46,9 @@ export const useDeviceAuthStore = defineStore("deviceAuth", () => {
   /** 手动粘贴授权链接（深链未交接时的兜底入口）：后端校验并 emit 确认页。 */
   async function handleLink(url: string): Promise<void> {
     const p = await api.deviceAuthHandleLink(url);
+    // 快捷授权（2026-11-23）：这笔已被后端自动批准（24h 内批准过且范围没变大），
+    // 只发 toast——**不许**把确认页顶出来（用户一个字都不用点）。
+    if (p.auto_approved) return;
     setPending(p);
   }
 

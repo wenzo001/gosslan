@@ -1360,6 +1360,7 @@ export const zhCN: MessageDict = {
   "todo.linkedTo": "派生",
   "todo.noLinked": "还没有关联任务",
   // 外部应用设备认证（2026-11-13，Phase 2）
+"deviceAuth.autoApproved": "已自动授权 {name}（24 小时内批准过；可在 设置 → 已授权应用 撤销）",
   "deviceAuth.title": "设备授权确认",
   "deviceAuth.linkAction": "绑定此设备到该应用",
   "deviceAuth.authAction": "登录到此站点",

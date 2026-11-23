@@ -57,6 +57,13 @@ onMounted(() => {
   // 清数据（clearAllData / resetAfterDataCleared 经后端广播 data-cleared）一并清掉确认页（#8）：
   // 后端已清待确认事务与绑定，前端若留着旧确认页，用户会以为还能批准一个已不存在的事务。
   void api.onDataCleared(() => store.clear()).then((un) => scope.onDispose(un));
+  // 快捷授权（2026-11-23）：同设备同应用 24h 内批准过且范围没变大 ⇒ 后端自动批准，
+  // 不出确认页，只在这里给一条 toast（用户能看到「刚才那次不用点」是设计不是丢事件）。
+  void api
+    .onDeviceAuthAutoApproved((info) => {
+      app.toast(t("deviceAuth.autoApproved", { name: info.display_name }), "success");
+    })
+    .then((un) => scope.onDispose(un));
   const timer = window.setInterval(() => {
     now.value = Date.now();
   }, 1000);

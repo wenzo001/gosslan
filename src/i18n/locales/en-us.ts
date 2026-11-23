@@ -1318,6 +1318,7 @@ export const enUS: MessageDict = {
   "todo.linkedTo": "Derived",
   "todo.noLinked": "No linked tasks",
   // External app device auth (2026-11-13, Phase 2)
+"deviceAuth.autoApproved": "Auto-approved \"{name}\" (approved within 24h — revoke anytime in Settings → Authorized apps)",
   "deviceAuth.title": "Device authorization",
   "deviceAuth.linkAction": "Link this device to the app",
   "deviceAuth.authAction": "Sign in to this site",
