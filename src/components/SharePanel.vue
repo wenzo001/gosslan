@@ -189,6 +189,13 @@ async function reportReceipt(sent: number, failed: number, status: string) {
 
 async function onClose() {
   if (sending.value) return;
+  // 取消也要给 RP 一条回执（用户 2026-11-23：三方页面还在等 Gosslan 回执）——
+  // 静默关面板 = 对端要干等到条目 TTL（10 分钟）才超时。status="cancelled"、
+  // sent/failed 都是 0；Idempotency-Key 仍是 share_id（已报过发送回执的这条，
+  // RP 侧按幂等键合并，不会出现两条）。
+  // ⚠️ 必须**先报再 dismiss**：dismiss 清掉队列项后端点就取不到了（与 onSend 的
+  // 2026-11-20 竞争修复同一形状）。
+  await reportReceipt(0, 0, "cancelled");
   await store.dismiss();
 }
 </script>
@@ -201,9 +208,12 @@ async function onClose() {
     :width="app.isMobile ? undefined : 'max-w-lg'"
     @close="onClose"
   >
-    <!-- `h-full`：把弹窗内容区的高度**接到底**，会话列表那层 `flex-1` 才有确定高度可分 ——
-         否则最外层会自己长出一根滚动条（用户 2026-11-20：「最外层应该没有滚动条」）。 -->
-    <div class="flex h-full min-h-0 flex-col gap-3 px-1">
+    <!-- ⚠️ 这里必须是 `flex-1 min-h-0` 而不是 `h-full`（用户 2026-11-23：「分享滚动区域
+         应该是底下的消息列表滚动，而不是全局滚动」）：`h-full` 是百分比高度，解析要求
+         父级**定高**，而 BaseModal 卡片的高度是 auto 被 max-h 夹住 ⇒ 百分比解析失败，
+         会话列表那层 `flex-1` 失去上界、整块内容撑破卡片，滚动落到整页的 overlay 上。
+         `flex-1 min-h-0` 走 flex 分配，不依赖百分比，列表在任何窗口高度下都在自己那一格滚。 -->
+    <div class="flex min-h-0 flex-1 flex-col gap-3 px-1">
       <!-- 来源线索：调用方自称的站点，只用于让用户判断"这是不是我以为的那一页"。 -->
       <div class="flex items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
         <Icon name="link2" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />

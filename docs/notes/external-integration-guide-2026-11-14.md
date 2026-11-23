@@ -469,6 +469,12 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
 5. **回执是可选的**：加 `receipt=<地址>`（必须与 `origin` 同协议同源），
    用户点完发送后客户端会 `POST` 一次 `{ share_id, status, sent, failed }`。
    回执**不含会话名、不含分享内容**。不写 `receipt` ⇒ 不回执（不是错误）。
+   - `status` 有三种：`sent`（全部成功）/ `partial`（部分成功）/ `cancelled`
+     （**用户取消**，2026-11-23 起：`sent=0 failed=0`——你方页面不要在用户取消后干等）。
+   - `Idempotency-Key` 就是 `share_id`：同一笔分享的多条回执（如先 `partial` 后 `cancelled`）
+     你方按此键合并成一条。
+   - **你方必须自带超时**：客户端对回执请求本身有超时、待处理条目 10 分钟后过期；
+     超时内没等到回执就视为用户放弃，不要无限等待（用户 2026-11-23）。
 
 ## 3. 版本化与兼容
 
@@ -524,6 +530,8 @@ gosslan://share?url=…&to=gosslan-<设备 id>&to_kind=peer&origin=https://your-
 - [ ] 带 `receipt=`（http 或 https，**与 `origin` 同协议同源**，且必须同时带 `origin`）：
       发送后你收到一次 `POST`，体是 `{ share_id, status, sent, failed }`，**没有会话名与内容**。
 - [ ] 带 `receipt=` 但**不带 `origin`**：整笔拒（2026-11-20 SSRF 加固，无来源无从校验回执归属）。
+- [ ] 打开面板后点**取消**：`receipt` 端点收到 `status=cancelled`（`sent=0 failed=0`，
+      2026-11-23 起）；不点取消就 TTL 过期 ⇒ 无回执（你方按超时兜底）。
 - [ ] 带 `receipt=`（跨协议 / 跨源 / 非 http(s) scheme，如 `file:`）：整笔拒。
 
 ## 5. 验收状态（诚实边界）

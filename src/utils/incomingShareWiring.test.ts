@@ -191,3 +191,35 @@ test("三端一致：格式版本 v=1 与 id 必须与文件名同源", () => {
   assert.match(cs, /\bid,\s*$/m, "C# 内容里的 id 不是那个变量");
   assert.match(cs, /incoming-\{id\}\.json/, "C# 文件名里的 id 不是那个变量");
 });
+
+test("面板：取消必须先报 cancelled 回执再 dismiss（RP 页面在等，静默关 = 对端干等到 TTL）", () => {
+  const panel = read("src/components/SharePanel.vue");
+  // onClose 内：reportReceipt(..., "cancelled") 必须存在，且排在 store.dismiss 之前
+  const onCloseIdx = panel.indexOf("async function onClose()");
+  assert.ok(onCloseIdx > 0, "onClose 不见了 ⇒ 判据锚点要跟着改");
+  const body = panel.slice(onCloseIdx, panel.indexOf("}</script>", onCloseIdx));
+  assert.match(
+    body,
+    /reportReceipt\(0, 0, "cancelled"\)/,
+    "取消没有回执 ⇒ RP 页面干等到 TTL（用户 2026-11-23）",
+  );
+  const receiptIdx = body.indexOf("reportReceipt");
+  const dismissIdx = body.indexOf("store.dismiss()");
+  assert.ok(
+    receiptIdx > -1 && dismissIdx > -1 && receiptIdx < dismissIdx,
+    "回执必须先于 dismiss——dismiss 清掉队列项后端点就取不到（2026-11-20 竞争修复同形状）",
+  );
+});
+
+test("面板：滚动域走 flex 分配，不依赖百分比高度（列表在自己那一格滚）", () => {
+  const panel = read("src/components/SharePanel.vue");
+  assert.match(
+    panel,
+    /class="flex min-h-0 flex-1 flex-col gap-3 px-1"/,
+    "内容区根节点必须是 flex-1 min-h-0（h-full 百分比在 auto+max-h 卡片里解析失败 ⇒ 列表失去上界、整页滚）",
+  );
+  assert.ok(
+    !/class="flex h-full min-h-0 flex-col/.test(panel),
+    "内容区不许再用 h-full——百分比高度在 BaseModal 的 auto+max-h 卡片里不可解析",
+  );
+});
