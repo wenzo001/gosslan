@@ -352,6 +352,10 @@ function findChrome() {
       if (!/^chromium-/.test(dir)) continue;
       cands.push(path.join(base, dir, "chrome-mac-arm64", "Google Chrome for Testing.app",
         "Contents", "MacOS", "Google Chrome for Testing"));
+      // playwright ≥1.49 的 macOS 布局换了名（chrome-mac/Chromium.app）——2026-11-23
+      // 实测：缓存里只有新布局时旧候选全落空 ⇒ 回退系统 Brave 而它的 renderer 当场崩
+      // （Inspector.targetCrashed）。两档布局都要认。
+      cands.push(path.join(base, dir, "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"));
       cands.push(path.join(base, dir, "chrome-linux64", "chrome"));
       // Windows 播放wright 缓存布局（新旧两档：chrome-win / chrome-win64）
       cands.push(path.join(base, dir, "chrome-win", "chrome.exe"));
