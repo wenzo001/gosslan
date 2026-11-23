@@ -211,6 +211,25 @@ test("面板：取消必须先报 cancelled 回执再 dismiss（RP 页面在等�
   );
 });
 
+test("面板：列表宿主有显式上界（flex 链之外的双保险，7.2.4 只靠 flex 仍滚不动）", () => {
+  const panel = read("src/components/SharePanel.vue");
+  // 2026-11-23 线上 7.2.4 复现：只写 flex-1 时宿主拿不到确定高度，OS 视口不溢出、
+  // 滚轮被吞。必须同时有 max-h 上界（与 EmojiPicker 的「高度必须留在宿主上」同一条纪律）。
+  assert.match(
+    panel,
+    /OverlayScroll[\s\S]{0,400}?max-h-\[min\(52vh,560px\)\]/,
+    "列表宿主缺显式 max-h ⇒ 祖先链一断就退化成整页滚、滚轮悬在列表上无效",
+  );
+});
+
+test("面板：列表行头像与左栏会话列表同源（单聊 AvatarBox / 群聊 GroupAvatar）", () => {
+  const panel = read("src/components/SharePanel.vue");
+  assert.ok(panel.includes('import AvatarBox from "@/components/ui/AvatarBox.vue"'), "缺 AvatarBox");
+  assert.ok(panel.includes('import GroupAvatar from "@/components/ui/GroupAvatar.vue"'), "缺 GroupAvatar");
+  assert.match(panel, /:id="c\.id"[\s\S]{0,80}?:src="c\.avatar"/, "单聊行必须传会话头像（与列表同源）");
+  assert.match(panel, /groupMembersOf\(c\)/, "群聊行必须解析成员簇");
+});
+
 test("面板：滚动域走 flex 分配，不依赖百分比高度（列表在自己那一格滚）", () => {
   const panel = read("src/components/SharePanel.vue");
   assert.match(

@@ -16,6 +16,9 @@
  */
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import OverlayScroll from "@/components/ui/OverlayScroll.vue";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
+import GroupAvatar from "@/components/ui/GroupAvatar.vue";
+import { useMemberProfile } from "@/composables/useMemberProfile";
 import BaseModal from "@/components/BaseModal.vue";
 import Icon from "@/components/ui/Icon.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
@@ -26,6 +29,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { useAppStore } from "@/stores/useAppStore";
 import { createInitScope } from "@/utils/initScope";
 import { charCount } from "@/utils/text";
+import type { Conversation } from "@/types";
 import {
   MAX_SHARE_TEXT_CHARS,
   composeShareText,
@@ -38,6 +42,16 @@ import { t } from "@/i18n";
 
 const store = useShareStore();
 const chat = useChatStore();
+// 头像与左栏会话列表**同源**（用户 2026-11-23：「用户头像还有群头像应该跟消息列表同步」）：
+// 单聊走 AvatarBox(conv.avatar)，群聊走 GroupAvatar 的成员簇；成员资料解析统一走
+// useMemberProfile（本机/好友/节点，离线好友照常显示）——与 ConversationListItem 逐字同款。
+const { memberProfile } = useMemberProfile();
+function groupMembersOf(c: Conversation): { id: string; avatar: string | null }[] {
+  if (c.kind !== "group") return [];
+  const groupId = c.id.replace(/^group:/, "");
+  const memberIds = chat.groups.find((g) => g.id === groupId)?.members ?? [];
+  return memberIds.map((id) => ({ id, avatar: memberProfile(id).avatar }));
+}
 const app = useAppStore();
 
 const scope = createInitScope();
@@ -268,10 +282,15 @@ async function onClose() {
       </div>
 
       <!-- 会话列表：逐项勾选（可多选），必须显式点；不预选（预选 + 回车就是一路点确定）。 -->
+      <!-- ⚠️ 宿主必须拿到**确定高度**（OverlayScroll 的硬纪律，见 EmojiPicker 那段注释）：
+           仅靠祖先 flex 链在「auto 高度 + max-h 夹住」的弹窗卡片里不可靠——7.2.4 只改成
+           flex-1 后用户仍复现「鼠标悬在列表上滚不动、必须移到外面才滚」（OS 视口没溢出、
+           滚轮被吞）。这里再加**显式上界** max-h：无论祖先链怎么解，列表区超出就在自己
+           这一格滚。上界取 min(52vh, 560px)：矮窗不会挤掉上方编辑区，高窗不无限拉长。 -->
       <OverlayScroll
         role="group"
         :aria-label="t('shareToChat.pickHint')"
-        class="min-h-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-divider)]"
+        class="min-h-0 max-h-[min(52vh,560px)] flex-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-divider)]"
       >
         <p v-if="!targets.length" class="px-3 py-4 text-center text-xs text-[var(--gosslan-text-2)]">
           {{ t("shareToChat.noTargets") }}
@@ -286,10 +305,17 @@ async function onClose() {
           :class="selected.includes(c.id) ? 'bg-[var(--gosslan-list-active)]' : ''"
           @click="toggleTarget(c.id)"
         >
-          <Icon
-            :name="c.kind === 'group' ? 'users' : 'user-round'"
-            class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]"
-            aria-hidden="true"
+          <!-- 头像与左栏列表同源：群聊=成员簇（GroupAvatar），单聊=会话头像（AvatarBox）。 -->
+          <GroupAvatar
+            v-if="c.kind === 'group' && groupMembersOf(c).length"
+            :members="groupMembersOf(c)"
+            class="shrink-0"
+          />
+          <AvatarBox
+            v-else
+            class="h-7 w-7 shrink-0"
+            :id="c.id"
+            :src="c.avatar"
           />
           <span class="min-w-0 flex-1 truncate text-sm text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
           <Icon
