@@ -627,6 +627,7 @@ mod tests {
     /// ——只看声明长度，不依赖密钥正确性。
     #[test]
     fn relay_record_over_global_budget_is_rejected() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let budget = crate::mem_diag::INBOUND_FRAME_BUDGET_BYTES;
         // 把全局在途占用顶到预算 -1 字节：任何新记录都必然超限。
         let _hog = crate::mem_diag::FrameReadGauge::new(budget - 1);
@@ -663,6 +664,7 @@ mod tests {
     /// 而且这个失败在两端日志里都看起来"正常"。
     #[test]
     fn channel_hash_is_symmetric() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let (_, pa) = ident();
         let (_, pb) = ident();
         let day = 20_000u64;
@@ -688,6 +690,7 @@ mod tests {
 
     #[test]
     fn channel_hash_separates_fields() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let (_, pk) = ident();
         let x = channel_hash(&pk, &pk, "ab", "c", 1);
         let y = channel_hash(&pk, &pk, "a", "bc", 1);
@@ -696,6 +699,7 @@ mod tests {
 
     #[test]
     fn role_is_ordered_and_symmetric() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         assert_eq!(wrap_role("aaa", "bbb"), "A");
         assert_eq!(wrap_role("bbb", "aaa"), "B");
         assert_eq!(wrap_role("x", "x"), "A");
@@ -703,6 +707,7 @@ mod tests {
 
     #[test]
     fn channel_hex_roundtrip() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let (_, pk) = ident();
         let ch = channel_hash(&pk, &pk, "a", "b", 7);
         let hex = channel_hex(&ch);
@@ -715,6 +720,7 @@ mod tests {
     /// 完整协商往返：双方各自得到**互换**的方向密钥。
     #[test]
     fn wrap_handshake_produces_swapped_direction_keys() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let (sk_a, pk_a) = ident();
         let (sk_b, pk_b) = ident();
         let (id_a, id_b) = ("gosslan-aaa", "gosslan-bbb");
@@ -736,6 +742,7 @@ mod tests {
 
     #[test]
     fn wrap_line_roundtrip_and_syntax_gate() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let (sk, pk) = ident();
         let kp = generate_eph_keypair();
         let off = build_wrap_offer("gosslan-a", "gosslan-b", "aabb", &sk, &kp);
@@ -760,6 +767,7 @@ mod tests {
     /// 冒充检测：来线公钥 ≠ friends 绑定值 ⇒ 必须失败。这条是本层存在的全部理由。
     #[test]
     fn wrap_rejects_unbound_peer_key() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let (_, pk_bound) = ident();
         let (sk_evil, _) = ident();
         let (id_a, id_b) = ("gosslan-aaa", "gosslan-bbb");
@@ -774,6 +782,7 @@ mod tests {
 
     #[test]
     fn wrap_rejects_foreign_channel() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let (_sk_a, pk_a) = ident();
         let (sk_b, pk_b) = ident();
         let (id_a, id_b) = ("gosslan-aaa", "gosslan-bbb");
@@ -790,6 +799,7 @@ mod tests {
 
     #[test]
     fn wrap_rejects_swapped_role() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let (_sk_a, pk_a) = ident();
         let (sk_b, pk_b) = ident();
         let (id_a, id_b) = ("gosslan-aaa", "gosslan-bbb");
@@ -803,6 +813,7 @@ mod tests {
 
     #[test]
     fn records_roundtrip_in_both_directions() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let (sk_a, pk_a) = ident();
         let (sk_b, pk_b) = ident();
         let (id_a, id_b) = ("gosslan-aaa", "gosslan-bbb");
@@ -835,6 +846,7 @@ mod tests {
 
     #[test]
     fn replayed_record_is_rejected() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let key = [5u8; 32];
         let mut seal = RecordSeal::new(key);
         let mut open = RecordOpen::new(key);
@@ -845,6 +857,7 @@ mod tests {
 
     #[test]
     fn gap_in_counter_is_rejected() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let key = [7u8; 32];
         let mut seal = RecordSeal::new(key);
         let mut open = RecordOpen::new(key);
@@ -855,6 +868,7 @@ mod tests {
 
     #[test]
     fn tampered_record_is_rejected() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let key = [9u8; 32];
         let mut seal = RecordSeal::new(key);
         let mut open = RecordOpen::new(key);
@@ -873,6 +887,7 @@ mod tests {
     /// 只在这里现形，宽缓冲的测试永远抓不到。
     #[tokio::test]
     async fn sealed_halves_carry_frames_byte_identically() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         async fn roundtrip(socket_buf: usize, frames: usize) {
             let key = [11u8; 32];
             let (a, b) = tokio::io::duplex(socket_buf);
@@ -916,6 +931,7 @@ mod tests {
     /// 对端密钥不同 ⇒ 一条都解不开（不是"解出错乱内容"，而是立刻报错断链）。
     #[tokio::test]
     async fn sealed_reader_rejects_other_key() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let (a, b) = tokio::io::duplex(4096);
         let (_a_read, a_write) = tokio::io::split(a);
         let (b_read, _b_write) = tokio::io::split(b);
@@ -934,6 +950,7 @@ mod tests {
     /// 半条记录后断开不得被当成"正常读完"。
     #[tokio::test]
     async fn truncated_record_is_an_error_not_a_clean_eof() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let key = [3u8; 32];
         let (mut a, b) = tokio::io::duplex(4096);
         let mut seal = RecordSeal::new(key);
@@ -959,6 +976,7 @@ mod tests {
     /// 内层长度前缀仍是唯一判据，外层只多 `RECORD_OVERHEAD + 计数器`。
     #[test]
     fn record_size_is_predictable() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let mut seal = RecordSeal::new([4u8; 32]);
         let frame = vec![9u8; 100];
         let rec = seal.seal_frame(&frame).unwrap();
@@ -984,6 +1002,7 @@ mod tests {
 
     #[test]
     fn relay_wire_matches_shared_fixtures() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_blocking();
         let fx = shared_fixtures();
         assert_eq!(
             fx["meta"]["name"].as_str().unwrap(),

@@ -428,6 +428,7 @@ mod tests {
     /// 两次小写会被 Nagle + 延迟 ACK 卡住最多 ~40ms，而这条链路上全是心跳/回执。
     #[tokio::test]
     async fn small_frames_are_written_in_a_single_poll() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let payload = vec![9u8; 100];
         let mut w = CountingWriter::default();
         write_bytes(&mut w, &payload).await.unwrap();
@@ -443,6 +444,7 @@ mod tests {
     /// 线上字节仍必须与合并路径完全一致。
     #[tokio::test]
     async fn large_frames_keep_two_polls_and_the_same_bytes() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let payload = vec![3u8; COALESCE_MAX + 1];
         let mut w = CountingWriter::default();
         write_bytes(&mut w, &payload).await.unwrap();
@@ -457,6 +459,7 @@ mod tests {
     /// 帧头必须是 4 字节大端长度。
     #[tokio::test]
     async fn write_then_read_roundtrip() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let payload = b"hello gosslan";
         let mut buf = Vec::new();
         write_bytes(&mut buf, payload).await.unwrap();
@@ -471,6 +474,7 @@ mod tests {
     /// "声明 64MiB" 就能让本机先拿到一大块内存）。
     #[tokio::test]
     async fn capped_read_rejects_oversized_length_prefix() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let cap = 1024usize;
         // 只给 4 字节长度前缀（声明 1MiB），后面没有数据 —— 正确实现应当在分配前就返回 Err
         let mut reader = &(1u32 << 20).to_be_bytes()[..];
@@ -498,6 +502,7 @@ mod tests {
     /// 大载荷（接近 MAX_FRAME 上限）也要能往返。
     #[tokio::test]
     async fn roundtrip_large_payload() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let payload = vec![7u8; 1 << 20]; // 1 MiB
         let mut buf = Vec::new();
         write_bytes(&mut buf, &payload).await.unwrap();
@@ -509,6 +514,7 @@ mod tests {
     /// 声明很大、实际只来一点点就 EOF：必须报 `UnexpectedEof`，不能把半帧当成功。
     #[tokio::test]
     async fn truncated_payload_is_rejected_not_returned_as_a_short_frame() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let mut data = Vec::new();
         data.extend_from_slice(&(1u32 << 20).to_be_bytes());
         data.extend_from_slice(&[9u8; 1024]);
@@ -519,12 +525,14 @@ mod tests {
 
     #[tokio::test]
     async fn empty_payload_is_rejected_on_write() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let mut buf = Vec::new();
         assert!(write_bytes(&mut buf, b"").await.is_err());
     }
 
     #[tokio::test]
     async fn oversized_payload_is_rejected_on_write() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let big = vec![0u8; MAX_FRAME + 1];
         let mut buf = Vec::new();
         assert!(write_bytes(&mut buf, &big).await.is_err());
@@ -533,6 +541,7 @@ mod tests {
     /// 读侧同样要拒绝非法长度（防止恶意对端用巨大长度前缀打爆内存）。
     #[tokio::test]
     async fn illegal_length_is_rejected_on_read() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let zero = 0u32.to_be_bytes();
         let mut r = &zero[..];
         assert!(read_bytes(&mut r).await.is_err());
@@ -550,6 +559,7 @@ mod tests {
     /// 或改动了 payload 的摆放，这里立刻失败（那属于协议语义变更）。
     #[tokio::test]
     async fn wire_format_is_length_prefixed_big_endian() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let msg = Message::Heartbeat {
             device_id: "dev-1".into(),
         };
@@ -571,6 +581,7 @@ mod tests {
     /// 真实回环 TCP 上验证 send/receive_bytes（不需要业务协议）。
     #[tokio::test]
     async fn tcp_transport_roundtrip_over_loopback() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -597,6 +608,7 @@ mod tests {
     /// 只换类型、分帧逻辑不动，因此行为等价。
     #[tokio::test]
     async fn split_halves_work_with_legacy_frame_helpers() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -643,6 +655,7 @@ mod tests {
     /// 拆半后 bytes 层接口（send_bytes / receive_bytes）同样可用。
     #[tokio::test]
     async fn split_halves_send_receive_raw_bytes() {
+        let _budget_gate = crate::mem_diag::budget_test_gate_async().await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 

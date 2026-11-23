@@ -277,6 +277,27 @@ pub fn cached_line() -> String {
 /// **还没有接进来** —— 它是流式解析器，守卫得挂在结构体字段上，记进了下一批。
 /// 所以 `frame_read` 是**下限**：它涨了说明一定有人在读大帧；它不涨不证明聚合不存在。
 static FRAME_READ_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// **测试专用**：帧预算行为的互斥闸（`#[cfg(test)]`，生产零影响）。
+///
+/// 为什么必须有：全局预算是**整个测试进程共享**的一个原子量。预算行为用例要把它顶满
+/// （或改小）才能测「超限拒收」，而并行测试里的帧读取（64MiB 往返那几条）会撞上被占满
+/// 的预算集体误炸——Windows 上 2026-11-23 实测四条 tcp/relay 用例因此假红。
+/// 预算用例先拿闸 ⇒ 独占计数器；其它帧读取用例也先拿闸 ⇒ 排队等它归还，两不干扰。
+#[cfg(test)]
+pub static BUDGET_TEST_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 拿帧预算测试闸（异步测试用）：整段测试持有，跨 await 也安全（tokio 闸就是为此）。
+#[cfg(test)]
+pub async fn budget_test_gate_async() -> tokio::sync::MutexGuard<'static, ()> {
+    BUDGET_TEST_GATE.lock().await
+}
+
+/// 拿帧预算测试闸（同步测试用）：`#[test]` 里不在异步上下文，blocking_lock 合法。
+#[cfg(test)]
+pub fn budget_test_gate_blocking() -> tokio::sync::MutexGuard<'static, ()> {
+    BUDGET_TEST_GATE.blocking_lock()
+}
 static FRAME_READ_PEAK: AtomicU64 = AtomicU64::new(0);
 /// 同时在被读着的**帧数** —— 聚合字节 = 这一格 × 各帧声明长度的那个乘数，缺了它
 /// `frame_read` 一个数分不清"一条大帧"与"一百条中帧"。
