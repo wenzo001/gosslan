@@ -440,6 +440,41 @@ async function verifyPublic({ repo, tag, manifest, assetsDir }) {
   throw new Error(`公开清单不可用：${lastErr?.message ?? "未知原因"}`);
 }
 
+/**
+ * **两仓逐个文件对齐**（2026-11-23，用户口径：「所有的更新一定要两个仓库都要同步」）。
+ *
+ * `verifyAssets` 只看 manifest 里列出的平台（windows/mac/android）——Linux 包**不在
+ * 清单里**，某个分片取消导致它们没传上去也照样绿。这里按「GitHub 上有哪些资产」逐个
+ * 对 Gitee 的同名附件点名：缺一个就红，大小不一致也红（上传截断最常见的形状）。
+ * 清单 `latest.json` 在 Gitee 是 commit 不是附件，跳过。
+ */
+async function verifyAllAssetsMirrored(repo, tag, filesByName) {
+  const releases = await listAll(`/repos/${repo}/releases`);
+  const rel = releases.find((r) => r.tag_name === tag);
+  if (!rel) throw new Error(`Gitee 上没有 ${tag}（镜像未建）`);
+  const attach = await listAll(`/repos/${repo}/releases/${rel.id}/attach_files`);
+  const byName = new Map(attach.map((a) => [a.name, a]));
+  const problems = [];
+  let checked = 0;
+  for (const [name, f] of filesByName) {
+    if (name === "latest.json") continue;
+    const a = byName.get(name);
+    if (!a) {
+      problems.push(`${name}：Gitee 缺`);
+      continue;
+    }
+    checked += 1;
+    // Gitee attach_files 的 size 字段在新旧版本里都有；缺了就只核存在性。
+    if (typeof a.size === "number" && typeof f.size === "number" && a.size !== f.size) {
+      problems.push(`${name}：大小 Gitee ${a.size} / GitHub ${f.size}`);
+    }
+  }
+  if (problems.length) {
+    throw new Error(`两仓资产不一致（${problems.length} 项，已核 ${checked} 个一致）：\n  ${problems.join("\n  ")}`);
+  }
+  console.log(`  两仓逐个文件对齐：${checked} 个资产在 Gitee 全部存在且大小一致`);
+}
+
 async function verifyAssets(manifest, assetsDir, filesByName) {
   for (const [platform, entry] of Object.entries(manifest.platforms)) {
     const name = basenameFromUrl(entry.url);
@@ -600,6 +635,7 @@ async function main(argv) {
   console.log("匿名校验固定清单与附件：");
   const publicManifest = await verifyPublic({ repo, tag, manifest, assetsDir });
   await verifyAssets(publicManifest, assetsDir, filesByName);
+  await verifyAllAssetsMirrored(repo, tag, filesByName);
 
   const releases = await listAll(`/repos/${repo}/releases`);
   const plan = prunePlan(releases, tag, keep);

@@ -155,11 +155,16 @@ jobs:
   upload:
     needs: prepare
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    # 2026-11-23（v7.2.5 实测）：50 分钟不够——Linux 包（两个 ~100MB AppImage + 两个 deb）
+    # 进场后，承运大文件的分片 2/4 跑到 50 分整被取消、finalize 随之跳过，Gitee 停在半套。
+    # Gitee 单文件上传本来就慢（整轮历史 30~35 分钟），给足 100 分钟。
+    timeout-minutes: 100
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4]
+        # 分片 5→8：主因是单文件体积（不可再分），但并发 5 路大文件更容易被 Gitee 侧限速；
+        # 8 路摊薄每轮的并发上传数。
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - name: Mask Gitee token
         env:
@@ -209,10 +214,14 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/sync-gitee.mjs --tag "$TAG" --assets-dir assets --repo "$GITEE_REPO" \
-            --keep "$KEEP" --mode upload --shard "${{ matrix.shard }}" --shards 5
+            --keep "$KEEP" --mode upload --shard "${{ matrix.shard }}" --shards 8
 
   finalize:
     needs: upload
+    # 分片失败/取消也**必须**跑：它是「两仓逐个文件对齐」的最后一关（缺文件在这里红，
+    # 而不是静默留在半套状态）。2026-11-23 v7.2.5 就是分片被取消 ⇒ finalize 直接跳过 ⇒
+    # 整轮只显示 cancelled、没人核对 Gitee 是否齐。
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
