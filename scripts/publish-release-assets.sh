@@ -185,6 +185,44 @@ else
   fi
 fi
 
+# ★ 2026-11-23：**同名同大小直接跳过**（v7.2.5/v7.2.6 两次 rerun 实测）——
+#   `--clobber` 的"先删再传"在资产已存在时会把删/传拆成两个 404 竞态（删一个刚被别的
+#   重试传好的、或传的时候同名刚被删），4~5 次重试全红而资产其实齐全。这里先按名字+大小
+#   对账：一致就不碰它；只有大小不同（半截上传）才 --clobber 重传。全部一致 ⇒ 直接成功。
+skip_count=0
+remaining=()
+if existing_json=$("$gh_bin" api "repos/$repo/releases?per_page=100" \
+     --jq ".[] | select(.tag_name == \"$tag\") | .assets[] | {name, size}" 2>/dev/null); then
+  for f in "${files[@]}"; do
+    base=$(basename "$f")
+    size=$(wc -c < "$f" | tr -d ' ')
+    # 用 python 做 JSON 匹配：jq 逐行对象不好按名字精确匹配（名字里有点/横线）。
+    if printf '%s' "$existing_json" | python3 -c "
+import json,sys
+name=sys.argv[1]; size=int(sys.argv[2])
+for line in sys.stdin.read().split("\n"):
+    line=line.strip()
+    if not line: continue
+    try: o=json.loads(line)
+    except Exception: continue
+    if o.get("name")==name and int(o.get("size") or -1)==size:
+        sys.exit(0)
+sys.exit(1)
+" "$base" "$size"; then
+      echo "已存在且大小一致，跳过 $base（$size 字节）"
+      skip_count=$((skip_count + 1))
+    else
+      remaining+=("$f")
+    fi
+  done
+else
+  remaining=("${files[@]}")
+fi
+
+if [ "${#remaining[@]}" -eq 0 ]; then
+  echo "全部 ${#files[@]} 个文件都已在 Release 上且大小一致 ⇒ 无需上传"
+else
+files=("${remaining[@]}")
 attempt=0
 upload_err=""          # set -u 之下先给个初值：失败分支里那句"把原因贴出来"不许自己变成 unbound
 while :; do
@@ -200,6 +238,7 @@ while :; do
   echo "第 $attempt 次上传失败（${upload_err}），等 $((attempt * sleep_base))s 再试"
   sleep $((attempt * sleep_base))
 done
+fi
 
 echo "已把 ${#files[@]} 个文件挂到 ${tag}："
 printf '  %s\n' "${files[@]}"
