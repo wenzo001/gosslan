@@ -27,7 +27,6 @@
     "notification:default",
     "dialog:allow-open",
     "dialog:allow-save",
-    "opener:default",
-    "autostart:default"
+    "opener:default"
   ]
 }

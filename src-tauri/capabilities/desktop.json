@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop-caps",
+  "description": "桌面专属插件权限（跟随系统开机启动）。Android/iOS 构建里 autostart 插件不在依赖树（Cargo.toml 桌面 target 段），权限解析不到会整笔构建红（2026-11-23 实测 2 分钟即死）——所以独立成文件并按 platforms 限定。",
+  "windows": [
+    "main",
+    "settings",
+    "logs",
+    "preview",
+    "startup-error",
+    "*"
+  ],
+  "platforms": [
+    "macOS",
+    "windows",
+    "linux"
+  ],
+  "permissions": [
+    "autostart:default"
+  ]
+}

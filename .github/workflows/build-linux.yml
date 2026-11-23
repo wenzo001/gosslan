@@ -57,7 +57,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
-            libdbus-1-dev patchelf
+            libdbus-1-dev patchelf \
+            # 2026-11-23 首跑实测：deb 打包步调 xdg-mime（xdg-utils），缺它
+            # 「failed to bundle project: xdg-mime binary not found」⇒ 编完 8 分钟才炸。
+            xdg-utils desktop-file-utils
 
       - name: Install frontend dependencies
         run: npm ci
