@@ -4060,3 +4060,89 @@ mod content_pull_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod restore_swap_tests {
+    use super::*;
+
+    // ---------------- 恢复换库（启动段唯一会动主库的代码，2026-11-24 补判据） ----------------
+
+    /// 换库：现库（含 -wal/-shm）→ `.pre-restore-*.bak`，pending 顶成主库。
+    /// 用户 2026-11-24 的验收口径是「按导出的文件完全恢复」——这一步就是最后一公里：
+    /// 换完之后主库必须**就是**备份里那份（不行就得把旧库原样还回去）。
+    #[test]
+    fn swap_in_pending_replaces_db_and_keeps_old_as_bak() {
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-swap-{}-{}",
+            std::process::id(),
+            crate::db::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("gosslan.db");
+        let pending = dir.join("gosslan.restore-pending");
+        // 旧库 + 伴生文件（WAL 未 checkpoint 的真实现场就是这三件）
+        std::fs::write(&db, b"OLD-DB").unwrap();
+        std::fs::write(dir.join("gosslan.db-wal"), b"OLD-WAL").unwrap();
+        std::fs::write(dir.join("gosslan.db-shm"), b"OLD-SHM").unwrap();
+        std::fs::write(&pending, b"RESTORED-DB").unwrap();
+
+        let bak = swap_in_pending_restore(&db, &pending).expect("换库不许失败");
+
+        assert_eq!(
+            std::fs::read(&db).unwrap(),
+            b"RESTORED-DB",
+            "主库不是备份里那份 ⇒ 「完全恢复」不成立"
+        );
+        assert!(!pending.exists(), "pending 应已被顶掉");
+        assert_eq!(
+            std::fs::read(&bak).unwrap(),
+            b"OLD-DB",
+            "旧库必须留 .bak（回滚用）"
+        );
+        assert_eq!(
+            std::fs::read(bak.with_extension("bak-wal")).unwrap_or_default(),
+            b"OLD-WAL"
+        );
+        assert_eq!(
+            std::fs::read(bak.with_extension("bak-shm")).unwrap_or_default(),
+            b"OLD-SHM"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 版本闸：比本机新的备份**必须拒**（陈旧备份放行——启动会跑迁移升级它）。
+    #[test]
+    fn restore_pending_trust_rejects_newer_and_accepts_older() {
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-trust-{}-{}",
+            std::process::id(),
+            crate::db::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, uv: i64| -> std::path::PathBuf {
+            let p = dir.join(name);
+            let c = rusqlite::Connection::open(&p).unwrap();
+            c.execute_batch(&format!("PRAGMA user_version = {uv};"))
+                .unwrap();
+            drop(c);
+            p
+        };
+        let older = make("older.db", db::DB_VERSION as i64 - 1);
+        assert!(
+            restore_pending_is_trustworthy(&older).is_ok(),
+            "旧版本备份应放行（启动迁移会升级它）"
+        );
+        let newer = make("newer.db", db::DB_VERSION as i64 + 1);
+        assert!(
+            restore_pending_is_trustworthy(&newer).is_err(),
+            "比本机新的备份必须拒"
+        );
+        let broken = dir.join("broken.db");
+        std::fs::write(&broken, b"not a sqlite file").unwrap();
+        assert!(
+            restore_pending_is_trustworthy(&broken).is_err(),
+            "坏文件必须拒"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

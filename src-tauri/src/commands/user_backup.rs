@@ -427,6 +427,94 @@ mod unseal_snapshot_tests {
         assert_eq!(got, "plain-secret", "明文没写回副本");
     }
 
+    /// **导出 → 导入 全链路**（用户 2026-11-24：「导出之后导入要能按导出的文件完全恢复」）。
+    ///
+    /// 走的是与命令**同一批函数**：VACUUM INTO 快照 → 副本明文化 → seal_snapshot →
+    /// open_snapshot → validate_sqlite_bytes → 打开恢复库做 integrity_check 与逐项比对。
+    /// 覆盖三个真机关心点：①行数一字不差；②已授权用的私钥明文原样回来；
+    /// ③口令错必须**拒绝**（不是解出垃圾字节）。
+    #[test]
+    fn export_then_import_round_trip_restores_everything() {
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-backup-rt-{}-{}",
+            std::process::id(),
+            crate::db::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.db");
+        // 源库：真 DDL（绑定表）+ 两行消息（最小自建表，只为验"内容随备份回来"）。
+        {
+            let conn = rusqlite::Connection::open(&src).unwrap();
+            create_real_table(&conn);
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS messages (msg_id TEXT PRIMARY KEY, body TEXT NOT NULL);
+                 PRAGMA user_version = 7;",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO rp_device_bindings
+                 (rp_origin, client_id, display_name, kid, public_key, secret_key,
+                  pairwise_subject, scopes, status, created_at)
+                 VALUES ('https://a.example', 'c1', 'A', 'k1', 'pk', 'secret-plain',
+                         'sub-1', '[\"friends.read\"]', 'active', 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO messages (msg_id, body) VALUES ('m1', '你好'), ('m2', 'backup')",
+                [],
+            )
+            .unwrap();
+        }
+        // ① 快照（与命令同一句 SQL）+ 明文化
+        let snapshot = dir.join("snapshot.db");
+        {
+            let conn = rusqlite::Connection::open(&src).unwrap();
+            conn.execute("VACUUM INTO ?1", rusqlite::params![snapshot.to_string_lossy()])
+                .unwrap();
+            let snap = rusqlite::Connection::open(&snapshot).unwrap();
+            assert_eq!(unseal_bindings_in_snapshot(&snap).unwrap(), (1, 0));
+        }
+        // ② 封装 → 解封（口令往返）
+        let raw = std::fs::read(&snapshot).unwrap();
+        let pass = "correct horse battery";
+        let sealed = crate::user_backup::seal_snapshot(
+            &raw,
+            pass,
+            crate::user_backup::KdfParams::default(),
+            [7u8; crate::user_backup::SALT_LEN],
+            [9u8; crate::user_backup::NONCE_LEN],
+        )
+        .unwrap();
+        // ③ 口令错必须拒绝
+        assert!(
+            crate::user_backup::open_snapshot(&sealed, "wrong passphrase!!").is_err(),
+            "错误口令竟然解开了"
+        );
+        let restored_bytes = crate::user_backup::open_snapshot(&sealed, pass).unwrap();
+        crate::user_backup::validate_sqlite_bytes(&restored_bytes).unwrap();
+        // ④ 恢复库逐项比对
+        let restored = dir.join("restored.db");
+        std::fs::write(&restored, &restored_bytes).unwrap();
+        let r = rusqlite::Connection::open(&restored).unwrap();
+        let integrity: String = r.query_row("PRAGMA integrity_check", [], |x| x.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+        let msgs: i64 = r
+            .query_row("SELECT COUNT(*) FROM messages", [], |x| x.get(0))
+            .unwrap();
+        assert_eq!(msgs, 2, "消息没随备份回来");
+        let (origin, secret): (String, String) = r
+            .query_row(
+                "SELECT rp_origin, secret_key FROM rp_device_bindings",
+                [],
+                |x| Ok((x.get(0)?, x.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(origin, "https://a.example");
+        assert_eq!(secret, "secret-plain", "已授权应用的私钥没恢复成明文（恢复后第三方登录会失效）");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 空表也必须**不报错**（空态是"没有可导出的应用"而不是磁盘问题——2026-11-19 教训）。
     #[test]
     fn unseal_on_empty_table_is_ok() {
