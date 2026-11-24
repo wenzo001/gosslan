@@ -74,8 +74,30 @@ case "$1 $2" in
     esac ;;
 esac
 case "$1 $2" in
+  # 显式删资产（脚本自己删，不再让 gh 的 --clobber 黑盒删）：只记录，不代表真删成功。
+  "api -X" ) exit 0 ;;
+esac
+case "$1 $2" in
   "api "* )
     case "$FAKE_SCENARIO" in
+      # ★ 2026-11-24：资产表的三种真实形状（线上四次 404 的现场）。
+      #   already_there —— 并发腿已传好（同名同大小）⇒ 脚本必须一个 upload 都不发；
+      #   stale_asset   —— 同名但大小不同（半截上传）⇒ 脚本必须自己删再传；
+      #   upload_404_but_present —— 第一次查表还没有（该传），传挂了，回查时居然已在
+      #                    （另一个腿/之前的重试补上了）⇒ 必须判绿而不是红。
+      already_there|stale_asset)
+        case "$*" in
+          *"releases?per_page"*) printf '%s\n' "$FAKE_ASSET_TABLE" ;;
+          *) exit 1 ;;
+        esac ;;
+      upload_404_but_present)
+        # 上传**尝试过之后**查表才看得到（模拟"另一个腿刚传好"）——不能靠调用次数，
+        # 因为查列表的调用里还夹着 Release 存在性检查。
+        case "$*" in
+          *"releases?per_page"*)
+            if [ -f "$FAKE_GH_STATE/upload_tried" ]; then printf '%s\n' "$FAKE_ASSET_TABLE_LATE"; else printf ''; fi ;;
+          *) exit 1 ;;
+        esac ;;
       race)
         # 被抢先：tags API 对草稿永远 404；列表 API 只有"另一条已经建好"之后才查得到。
         case "$*" in
@@ -102,6 +124,7 @@ case "$1 $2" in
     case "$FAKE_SCENARIO" in
       retry_upload) n=$(bump up); [ "$n" -le 2 ] && { echo "server said no" >&2; exit 1; }; exit 0 ;;
       upload_dies) echo "always 502" >&2; exit 1 ;;
+      upload_404_but_present) : > "$FAKE_GH_STATE/upload_tried"; echo "HTTP 404: Not Found" >&2; exit 1 ;;
       *) exit 0 ;;
     esac ;;
 esac
@@ -246,6 +269,51 @@ test("上传抖两下：三次之内成功 ⇒ 绿，且确实重试了三次", 
   assert.equal(r.code, 0, r.out);
   assert.equal(r.calls.filter((c) => c.startsWith("release upload")).length, 3);
   assert.match(r.out, /第 2 次上传失败/);
+});
+
+test("并发腿已传好（同名同大小）：一个 upload 都不许发（--clobber 的删/传竞态正是线上四连红的根因）", () => {
+  // v7.2.5/v7.2.6/v7.2.7/v7.2.8 四次同签名：CI 报 404×5 判红，而 Release 上资产其实齐全
+  // （2026-11-24 用户报「远程 CI 有报错」的现场）。判据：同大小就别碰它。
+  const r = run("already_there", {
+    env: { FAKE_ASSET_TABLE: "Gosslan_0.dmg 111 1\nGosslan_1.dmg 112 1" },
+  });
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(
+    r.calls.filter((c) => c.startsWith("release upload")),
+    [],
+    "已存在且大小一致还去 upload ⇒ 又回到 gh --clobber 的删/传 404 竞态",
+  );
+  assert.match(r.out, /已存在且大小一致，跳过/);
+});
+
+test("半截资产（同名不同大小）：脚本自己 DELETE 再传，且**不用 --clobber**", () => {
+  const r = run("stale_asset", {
+    env: { FAKE_ASSET_TABLE: "Gosslan_0.dmg 111 2\nGosslan_1.dmg 112 2" },
+  });
+  assert.equal(r.code, 0, r.out);
+  assert.equal(
+    r.calls.filter((c) => c.startsWith("api -X DELETE")).length,
+    2,
+    "半截资产要先删（只删它，不删同大小的），否则会留下两份同名",
+  );
+  const ups = r.calls.filter((c) => c.startsWith("release upload"));
+  assert.equal(ups.length, 1);
+  assert.ok(
+    !ups[0].includes("--clobber"),
+    "还在用 --clobber ⇒ 它内部的删/传会把并发下的 404 当致命（四次线上红就是这么来的）",
+  );
+});
+
+test("上传报 404 但回查发现资产其实已齐：判绿（不信上传命令的退出码，只信名字+大小对账）", () => {
+  const r = run("upload_404_but_present", {
+    attempts: 2,
+    env: {
+      FAKE_ASSET_TABLE: "",
+      FAKE_ASSET_TABLE_LATE: "Gosslan_0.dmg 111 1\nGosslan_1.dmg 112 1",
+    },
+  });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /回查通过/);
 });
 
 test("上传一直失败：到上限就红（绝不 continue-on-error）", () => {

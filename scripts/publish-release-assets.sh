@@ -185,27 +185,50 @@ else
   fi
 fi
 
-# ★ 2026-11-23：**同名同大小直接跳过**（v7.2.5/v7.2.6 两次 rerun 实测）——
-#   `--clobber` 的"先删再传"在资产已存在时会把删/传拆成两个 404 竞态（删一个刚被别的
-#   重试传好的、或传的时候同名刚被删），4~5 次重试全红而资产其实齐全。这里先按名字+大小
-#   对账：一致就不碰它；只有大小不同（半截上传）才 --clobber 重传。全部一致 ⇒ 直接成功。
+# ★ 2026-11-23/24：**自己按「名字+大小」对账，删也用自己删**。
+#
+# 为什么不用 `gh release upload --clobber`：它的 `--clobber` 是黑盒「先 DELETE 再 POST」，
+# 在**并发腿**（本 tag 同时有 mac/win/x86_64/aarch64/android 五条在传）与**幽灵资产**
+# （列表里看得到、DELETE 时 404）面前会把 404 当致命 ⇒ 连挂 5 次判红，而资产其实齐全
+# （v7.2.5/v7.2.6/v7.2.7/v7.2.8 四次同签名，2026-11-24 用户报「远程 CI 有报错」）。
+#
+# 现在：
+# 1. 先取资产表「名字 资产id 大小」（**不用 TAB/awk -F**：mawk/gawk/BSD awk 对 -F'\t' 的
+#    处理不一致，默认空白分隔最稳；Tauri 产物名不含空格）；
+# 2. 同名同大小 ⇒ 跳过（并发腿已经传好，不碰它）；
+# 3. 同名不同大小（半截上传）⇒ **自己 DELETE，且容忍 404**（别人刚删掉的正常情形）；
+# 4. 剩下的**不带 --clobber** 批量传；
+# 5. 传挂了也不立刻判红：**回查资产表**，本轮要传的每个文件都在且大小一致 ⇒ 判成功
+#    （并发腿/重试已传好）；只有真缺/真不一致才红。
 skip_count=0
 remaining=()
-# 先取该 tag 的资产表（含草稿；JSON 数组，纯 jq 消费——不嵌解释器，shellcheck 才干净）。
-# 「名字<TAB>大小」表（gh 的 --jq 自带 jq，不依赖宿主机的 jq 二进制）。
-asset_sizes=$("$gh_bin" api "repos/$repo/releases?per_page=100" \
-  --jq ".[] | select(.tag_name == \"$tag\") | .assets[] | \"\(.name)\t\(.size)\"" 2>/dev/null || true)
-if [ -n "$asset_sizes" ]; then
+asset_table=$("$gh_bin" api "repos/$repo/releases?per_page=100" \
+  --jq ".[] | select(.tag_name == \"$tag\") | .assets[] | \"\(.name) \(.id) \(.size)\"" 2>/dev/null || true)
+
+# 名字 ⇒ 字段（$2=id，$3=size）；查不到就输出空。用默认 FS（空白）避开 awk 的 \t 方言差异。
+remote_field() {
+  [ -n "$asset_table" ] || { printf ''; return 0; }
+  printf '%s\n' "$asset_table" | awk -v n="$1" -v c="$2" '$1 == n { print $c; exit }'
+}
+
+if [ -n "$asset_table" ]; then
   for f in "${files[@]}"; do
     base=$(basename "$f")
     size=$(wc -c < "$f" | tr -d ' ')
-    remote_size=$(printf '%s\n' "$asset_sizes" | awk -F'\t' -v n="$base" '$1 == n { print $2; exit }')
-    if [ -n "$remote_size" ] && [ "$remote_size" = "$size" ]; then
+    rid=$(remote_field "$base" 2)
+    rsize=$(remote_field "$base" 3)
+    if [ -n "$rsize" ] && [ "$rsize" = "$size" ]; then
       echo "已存在且大小一致，跳过 ${base}（${size} 字节）"
       skip_count=$((skip_count + 1))
-    else
-      remaining+=("$f")
+      continue
     fi
+    if [ -n "$rid" ]; then
+      # 半截/旧资产：显式删，**404 容忍**（并发腿刚删掉是正常情形，删失败不该整步红）。
+      echo "同名资产大小不一致（远端 ${rsize:-未知} / 本地 ${size}）⇒ 先删再传：${base}"
+      "$gh_bin" api -X DELETE "repos/$repo/releases/assets/${rid}" >/dev/null 2>&1 || \
+        echo "删旧资产失败（多半是并发腿已删），继续上传：${base}"
+    fi
+    remaining+=("$f")
   done
 else
   remaining=("${files[@]}")
@@ -214,22 +237,40 @@ fi
 if [ "${#remaining[@]}" -eq 0 ]; then
   echo "全部 ${#files[@]} 个文件都已在 Release 上且大小一致 ⇒ 无需上传"
 else
-files=("${remaining[@]}")
-attempt=0
-upload_err=""          # set -u 之下先给个初值：失败分支里那句"把原因贴出来"不许自己变成 unbound
-while :; do
-  if upload_err=$("$gh_bin" release upload "$tag" --repo "$repo" "${files[@]}" --clobber 2>&1); then
-    break
-  fi
-  attempt=$((attempt + 1))
-  if [ "$attempt" -ge "$max_attempts" ]; then
-    echo "挂了 $max_attempts 次仍失败 ⇒ 不假装成功" >&2
-    echo "$upload_err" >&2
-    exit 1
-  fi
-  echo "第 $attempt 次上传失败（${upload_err}），等 $((attempt * sleep_base))s 再试"
-  sleep $((attempt * sleep_base))
-done
+  files=("${remaining[@]}")
+  attempt=0
+  upload_err=""          # set -u 之下先给个初值：失败分支里那句"把原因贴出来"不许自己变成 unbound
+  while :; do
+    if upload_err=$("$gh_bin" release upload "$tag" --repo "$repo" "${files[@]}" 2>&1); then
+      break
+    fi
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      # 最后一公里：**回查**。线上四次 404 的实情是"上传通道说没有、资产其实在"，
+      # 判据不能只信上传命令的退出码——按名字+大小对账才是事实。
+      echo "挂了 ${max_attempts} 次仍失败 ⇒ 回查资产表确认是否其实已挂上…" >&2
+      echo "$upload_err" >&2
+      asset_table=$("$gh_bin" api "repos/$repo/releases?per_page=100" \
+        --jq ".[] | select(.tag_name == \"$tag\") | .assets[] | \"\(.name) \(.id) \(.size)\"" 2>/dev/null || true)
+      missing=()
+      for f in "${files[@]}"; do
+        base=$(basename "$f")
+        size=$(wc -c < "$f" | tr -d ' ')
+        rsize=$(remote_field "$base" 3)
+        if [ -z "$rsize" ] || [ "$rsize" != "$size" ]; then
+          missing+=("$base")
+        fi
+      done
+      if [ "${#missing[@]}" -eq 0 ]; then
+        echo "回查通过：本轮要传的 ${#files[@]} 个文件都已在 Release 上且大小一致（上传通道报错，资产是齐的）"
+        break
+      fi
+      echo "回查不通过 ⇒ 仍缺 ${#missing[@]} 个：${missing[*]}" >&2
+      exit 1
+    fi
+    echo "第 $attempt 次上传失败（${upload_err}），等 $((attempt * sleep_base))s 再试"
+    sleep $((attempt * sleep_base))
+  done
 fi
 
 echo "已把 ${#files[@]} 个文件挂到 ${tag}："
