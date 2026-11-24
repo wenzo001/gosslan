@@ -191,24 +191,16 @@ fi
 #   对账：一致就不碰它；只有大小不同（半截上传）才 --clobber 重传。全部一致 ⇒ 直接成功。
 skip_count=0
 remaining=()
-if existing_json=$("$gh_bin" api "repos/$repo/releases?per_page=100" \
-     --jq ".[] | select(.tag_name == \"$tag\") | .assets[] | {name, size}" 2>/dev/null); then
+# 先取该 tag 的资产表（含草稿；JSON 数组，纯 jq 消费——不嵌解释器，shellcheck 才干净）。
+# 「名字<TAB>大小」表（gh 的 --jq 自带 jq，不依赖宿主机的 jq 二进制）。
+asset_sizes=$("$gh_bin" api "repos/$repo/releases?per_page=100" \
+  --jq ".[] | select(.tag_name == \"$tag\") | .assets[] | \"\(.name)\t\(.size)\"" 2>/dev/null || true)
+if [ -n "$asset_sizes" ]; then
   for f in "${files[@]}"; do
     base=$(basename "$f")
     size=$(wc -c < "$f" | tr -d ' ')
-    # 用 python 做 JSON 匹配：jq 逐行对象不好按名字精确匹配（名字里有点/横线）。
-    if printf '%s' "$existing_json" | python3 -c "
-import json,sys
-name=sys.argv[1]; size=int(sys.argv[2])
-for line in sys.stdin.read().split("\n"):
-    line=line.strip()
-    if not line: continue
-    try: o=json.loads(line)
-    except Exception: continue
-    if o.get("name")==name and int(o.get("size") or -1)==size:
-        sys.exit(0)
-sys.exit(1)
-" "$base" "$size"; then
+    remote_size=$(printf '%s\n' "$asset_sizes" | awk -F'\t' -v n="$base" '$1 == n { print $2; exit }')
+    if [ -n "$remote_size" ] && [ "$remote_size" = "$size" ]; then
       echo "已存在且大小一致，跳过 ${base}（${size} 字节）"
       skip_count=$((skip_count + 1))
     else
