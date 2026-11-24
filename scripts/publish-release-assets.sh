@@ -209,7 +209,7 @@ for line in sys.stdin.read().split("\n"):
         sys.exit(0)
 sys.exit(1)
 " "$base" "$size"; then
-      echo "已存在且大小一致，跳过 $base（$size 字节）"
+      echo "已存在且大小一致，跳过 ${base}（${size} 字节）"
       skip_count=$((skip_count + 1))
     else
       remaining+=("$f")
