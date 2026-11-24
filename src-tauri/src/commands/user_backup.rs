@@ -54,29 +54,34 @@ pub struct ImportPreview {
 /// 异机信封）：那一行原样保留信封字节 —— 恢复端同样解不开，但其它行不受影响。
 /// **不是静默**：行数在导出报告里报给界面（`bindingsKeptSealed`）。
 fn unseal_bindings_in_snapshot(conn: &rusqlite::Connection) -> Result<(usize, usize), rusqlite::Error> {
-    let rows: Vec<(String, String, String, String)> = {
+    let rows: Vec<(String, String, String)> = {
         let mut stmt = conn.prepare(
-            "SELECT rp_origin, client_id, device_id, secret_key FROM rp_device_bindings",
+            // ⚠️ 主键是 (rp_origin, client_id)——**没有 device_id 列**。2026-11-21 的 J1-4b
+            // 曾经在这里写了 device_id：SELECT 一编译就报
+            // "no such column: device_id" ⇒ 从那天的版本起整库导出**在任何机器上都必然失败**，
+            // 而当时共用 RP_KEY_BACKUP_IO ⇒ 界面显示"请检查磁盘空间"，把所有人引去查磁盘
+            // （2026-11-23 Windows 用户 + 2026-11-24 macOS dev 两次真机）。列名以
+            // `db.rs` 的 CREATE TABLE 为准，别再凭记忆写。
+            "SELECT rp_origin, client_id, secret_key FROM rp_device_bindings",
         )?;
         let it = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
             ))
         })?;
         it.collect::<Result<_, _>>()?
     };
     let total = rows.len();
     let mut kept = 0usize;
-    for (rp_origin, client_id, device_id, sealed) in rows {
+    for (rp_origin, client_id, sealed) in rows {
         match crate::rp_key_store::open_secret(&sealed) {
             Ok(plain) => {
                 conn.execute(
-                    "UPDATE rp_device_bindings SET secret_key = ?4
-                     WHERE rp_origin = ?1 AND client_id = ?2 AND device_id = ?3",
-                    rusqlite::params![rp_origin, client_id, device_id, plain],
+                    "UPDATE rp_device_bindings SET secret_key = ?3
+                     WHERE rp_origin = ?1 AND client_id = ?2",
+                    rusqlite::params![rp_origin, client_id, plain],
                 )?;
             }
             Err(_) => {
@@ -377,4 +382,56 @@ pub async fn cancel_user_backup_restore(state: State<'_, Arc<AppState>>) -> Resu
     })
     .await
     .unwrap_or(Ok(()))
+}
+
+#[cfg(test)]
+mod unseal_snapshot_tests {
+    use super::*;
+
+    /// **真 DDL 建表**（从 `db.rs` 现读，不手抄列名）——2026-11-21 的 J1-4b 就是凭记忆
+    /// 写了不存在的 `device_id` 列，SELECT 一编译就失败、整库导出从此不可能成功，
+    /// 而界面把原因说成"磁盘空间不足"（两次真机都栽在这）。这条判据直接执行真 DDL，
+    /// 列名再漂必然红。
+    fn create_real_table(conn: &rusqlite::Connection) {
+        let ddl_src = include_str!("../db.rs");
+        let start = ddl_src
+            .find("CREATE TABLE IF NOT EXISTS rp_device_bindings")
+            .expect("db.rs 里找不到 rp_device_bindings 的 DDL");
+        let rest = &ddl_src[start..];
+        let end = rest.find(");").expect("DDL 没有闭合的 );") + 2;
+        conn.execute_batch(&rest[..end]).expect("真 DDL 执行失败");
+    }
+
+    #[test]
+    fn unseal_uses_real_columns_and_rewrites_plaintext() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_real_table(&conn);
+        conn.execute(
+            "INSERT INTO rp_device_bindings
+             (rp_origin, client_id, display_name, kid, public_key, secret_key,
+              pairwise_subject, scopes, status, created_at)
+             VALUES ('https://a.example', 'c1', 'A', 'k1', 'pk', 'plain-secret',
+                     'sub', '[]', 'active', 0)",
+            [],
+        )
+        .unwrap();
+        let (total, kept) = unseal_bindings_in_snapshot(&conn).expect("明文化不许失败");
+        assert_eq!((total, kept), (1, 0));
+        let got: String = conn
+            .query_row(
+                "SELECT secret_key FROM rp_device_bindings WHERE rp_origin='https://a.example'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(got, "plain-secret", "明文没写回副本");
+    }
+
+    /// 空表也必须**不报错**（空态是"没有可导出的应用"而不是磁盘问题——2026-11-19 教训）。
+    #[test]
+    fn unseal_on_empty_table_is_ok() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_real_table(&conn);
+        assert_eq!(unseal_bindings_in_snapshot(&conn).unwrap(), (0, 0));
+    }
 }

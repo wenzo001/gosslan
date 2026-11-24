@@ -16,6 +16,16 @@
 
 ## [7.2.7] - 2026-11-24
 
+### 修复：整库备份导出**必然失败**的真因——`SELECT` 写了不存在的 `device_id` 列
+- 2026-11-21 的 J1-4b 在 `unseal_bindings_in_snapshot` 里写了
+  `SELECT rp_origin, client_id, device_id, secret_key FROM rp_device_bindings`，而这张表
+  的主键是 `(rp_origin, client_id)`、**没有 device_id 列** ⇒ SQL 一编译就报
+  `no such column: device_id` ⇒ **从那天起整库导出在任何机器上都必然失败**（Windows 用户
+  与 macOS dev 两次真机），界面却显示"请检查文件与磁盘空间"。
+- 修：SELECT/UPDATE 一律按真实主键；新增两条判据——**用 `db.rs` 的真 DDL 建表**跑明文化
+  （手抄列名就会漂，判据直接执行真 DDL），空表也必须无害。变异检验：把列改回 device_id
+  判据立刻红在 `no such column`。
+
 ### 修复：整库备份导出失败的分诊与留痕（用户 2026-11-23 真机："检查磁盘空间"但磁盘充足）
 - 根因与 2026-11-19 RP 导出事故同款：整库导出 5 个步骤（快照→明文化→读字节→加密→写
   目的地）原先**共用 `RP_KEY_BACKUP_IO` 一个码**，界面永远只说「检查文件与磁盘空间」，
