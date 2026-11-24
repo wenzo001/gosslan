@@ -613,7 +613,7 @@ export interface HangDetail {
  */
 export interface PreviousRunReport {
   /**
-   * panic | abort | silent_kill | startup_failed | sigterm | updater | single_instance |
+   * panic | abort | silent_kill | commit_exhausted | startup_failed | sigterm | updater | single_instance |
    * early_exit | clean | no_history
    */
   kind: string;

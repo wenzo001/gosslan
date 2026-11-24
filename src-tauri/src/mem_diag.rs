@@ -600,6 +600,52 @@ pub fn child_webview_tree() -> Option<(u32, u64, Option<u64>)> {
 /// 低于它就意味着"下一次像样的分配随时会失败"——那正是 10-21 那次 318 KB 失败的前夜。
 pub const COMMIT_PRESSURE_BYTES: u64 = 512 * 1024 * 1024;
 
+/// **危险水位**：1 GiB（2026-11-24 真机定标）。
+///
+/// 为什么要比 `COMMIT_PRESSURE_BYTES`(512MiB) 早一档预报：Win-lhcz-f 那次（7.2.9，
+/// 05:13→07:48）**最后一格是 `avail_commit=569MiB`** —— 高于 512 所以一条压力行都没留，
+/// 五分钟后进程就没了；下一轮只能笼统判 `silent_kill`，报告里写"关机/强杀/断电/内存耗尽
+/// 都会长成这样"，等于没归因。569MiB 在 Windows 上已经是"下一次像样的分配随时会失败"
+/// 的水位（本仓库最大的合法单块就在百 MB 量级），该预报却没预报。
+///
+/// 第二层用处：低于这条线时采样周期从 5 分钟收到 60 秒（`state::COMMIT_LOW_DIAG_SECS`）——
+/// "被外部拿走"那种死法在进程内留不下任何东西，死前那几分钟的走势是唯一还查得到的证据。
+pub const COMMIT_LOW_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// 这一格算不算「危险水位」（纯函数，读不到就是 false —— 与压力判定同一条口径：
+/// 宁可漏一次预报，也不要把"这台机器读不到"说成"这台机器快死了"）。
+pub fn under_commit_low(sample: &MemSample) -> bool {
+    match sample.sys_avail_commit {
+        Some(avail) => avail < COMMIT_LOW_BYTES,
+        None => false,
+    }
+}
+
+/// 从现场行里取**最后一条** commit 读数（`avail_commit=NNNMiB`），返回字节数。
+///
+/// 用途只有一个：上一轮死得没留下任何路标时，用它把死因从"不知道"缩小到
+/// "提交内存已经低到这个数"。读不到（`avail_commit=-`，或整份现场里没有诊断行）返回
+/// `None` —— 不许折成 0（0 会被读成"内存彻底用光"，那是另一种断言）。
+pub fn last_avail_commit<S: AsRef<str>>(lines: &[S]) -> Option<u64> {
+    lines.iter().rev().find_map(|raw| {
+        let line = raw.as_ref();
+        // 只认**周期诊断**那三族。`HANG` 行同样带 `avail_commit`，但那是"卡死那一刻"的
+        // 读数，不是"消失前最后的状态"；而且 HANG 已经有独立字段（`report.hang`）表达，
+        // 拿它去解释死因会把一条已有现场的死法盖成内存问题。
+        let head = line.trim_start_matches('>').trim_start();
+        if !(head.starts_with("code=RUNTIME_MEM ")
+            || head.starts_with("code=COMMIT_LOW ")
+            || head.starts_with("code=COMMIT_PRESSURE "))
+        {
+            return None;
+        }
+        let at = line.find("avail_commit=")?;
+        let rest = &line[at + "avail_commit=".len()..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        digits.parse::<u64>().ok().map(|mib| mib * 1024 * 1024)
+    })
+}
+
 /// 这一格要不要报警（纯函数 ⇒ 阈值与"读不到"两种情况都有真值表）。
 pub fn under_commit_pressure(sample: &MemSample) -> bool {
     match sample.sys_avail_commit {
@@ -1172,5 +1218,51 @@ mod tests {
             None,
             "一个进程没问到就把整格标成未知：当 0 算会让每次卡死都被读成挂起"
         );
+    }
+
+    /// **危险水位与末尾读数**（2026-11-24 真机定标）：
+    /// Win-lhcz-f 那轮最后一格是 `avail_commit=569MiB`，高于 512MiB 的压力阈值 ⇒
+    /// 一条预报都没留，五分钟后进程消失，归因只剩最笼统的 silent_kill。
+    #[test]
+    fn commit_low_is_earlier_than_pressure_and_parses_last_reading() {
+        let mb = 1024 * 1024;
+        // 阈值关系用**行为**验证（直接比常量会被 clippy 判成"断言常量值"）：
+        // 危险线（1GiB）晚于"还在正常"、早于压力线（512MiB）。
+        let low = MemSample {
+            sys_avail_commit: Some(569 * mb),
+            ..Default::default()
+        };
+        assert!(
+            under_commit_low(&low),
+            "569MiB 必须算危险水位（真机就死在这一档）"
+        );
+        assert!(
+            !under_commit_pressure(&low),
+            "569MiB 不该触发 512MiB 的压力码 —— 正是这个空档让上次没留痕"
+        );
+        let ok = MemSample {
+            sys_avail_commit: Some(2 * 1024 * mb),
+            ..Default::default()
+        };
+        assert!(!under_commit_low(&ok));
+        // 读不到就是 false（与压力判定同一条口径：不许把"读不到"说成"快死了"）。
+        let unknown = MemSample::default();
+        assert!(!under_commit_low(&unknown));
+        assert!(last_avail_commit::<String>(&[]).is_none());
+
+        let lines = vec![
+            "----- 启动 a".to_string(),
+            ">>> code=RUNTIME_MEM ws=80MiB avail_commit=1367MiB total_commit=40711MiB".to_string(),
+            ">>> code=RUNTIME_MEM ws=81MiB avail_commit=569MiB total_commit=40711MiB".to_string(),
+            ">>> 启动尝试".to_string(),
+        ];
+        assert_eq!(
+            last_avail_commit(&lines),
+            Some(569 * mb),
+            "必须取最后一条读数"
+        );
+        // `-`（读不到）不许折成 0：0 会被读成"内存彻底用光"，那是另一种断言。
+        let dash = vec![">>> code=RUNTIME_MEM avail_commit=-".to_string()];
+        assert_eq!(last_avail_commit(&dash), None);
     }
 }

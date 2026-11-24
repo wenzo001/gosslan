@@ -3273,10 +3273,16 @@ impl AppState {
     ) -> tauri::async_runtime::JoinHandle<()> {
         let st = state.clone();
         tauri::async_runtime::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(RUNTIME_DIAG_SECS));
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // 采样节拍：稳态 5 分钟一格；**危险水位时收到 60 秒**（2026-11-24 真机定标）。
+            // 那一轮最后一格是 `avail_commit=569MiB`，之后 5 分钟内进程就没了 —— 5 分钟
+            // 一格意味着"死前那段时间一条读数都没有"，下一轮只能判最笼统的 silent_kill。
+            // 越接近死线，越要留下走势（这是被外部拿走那种死法唯一还查得到的证据）。
+            let mut wait_secs = 0u64; // 首拍立即采（保持原来 interval 首 tick 立即的语义）
+            let mut low_water;
             loop {
-                tick.tick().await;
+                if wait_secs > 0 {
+                    tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                }
                 let windows: Vec<(String, bool)> = st
                     .app
                     .webview_windows()
@@ -3316,6 +3322,7 @@ impl AppState {
                 //   采样只在这 5 分钟一格，热路径一律不采；读数拿不到就写 `-`，不折 0。
                 let mem = crate::mem_diag::sample();
                 crate::mem_diag::remember(&mem);
+                low_water = crate::mem_diag::under_commit_low(&mem);
                 // 快线：系统还能提交的量真的低于阈值时，**当场**在现场文件里留一行。
                 // 为什么不等 5 分钟那一格：10-21 那次的签名是"下一个 318 KB 都拿不到"，
                 // 而临界的几分钟里没有任何留痕 ⇒ 回头看只有"崩了"。这条上界 = 每格一条
@@ -3329,6 +3336,12 @@ impl AppState {
                     st.logger
                         .warn("runtime", format!("code=COMMIT_PRESSURE {}", mem.line()));
                     crate::logging::crash_note(&format!(">>> code=COMMIT_PRESSURE {}", mem.line()));
+                } else if low_water {
+                    // 危险水位（<1GiB），但还没到 512MiB 那一档。**必须留痕**：真机那次
+                    // 569MiB 因为"没到阈值"一条都没留，五分钟后进程消失、归因只能写"不知道"。
+                    st.logger
+                        .warn("runtime", format!("code=COMMIT_LOW {}", mem.line()));
+                    crate::logging::crash_note(&format!(">>> code=COMMIT_LOW {}", mem.line()));
                 }
                 // 蓝牙台账降噪后（2026-11-04）稳态不再逐轮写日志 ⇒ "当时在不在扫、扫了多久"
                 // 必须由这一格携带：`ble_scan_age_ms` = 距上一轮扫描完成多少毫秒（明显大于
@@ -3365,6 +3378,11 @@ impl AppState {
                         mem.line()
                     ),
                 );
+                wait_secs = if low_water {
+                    COMMIT_LOW_DIAG_SECS
+                } else {
+                    RUNTIME_DIAG_SECS
+                };
             }
         })
     }
@@ -3496,6 +3514,14 @@ const OUTBOX_RELAY_INTERVAL_SECS: u64 = 15;
 
 /// 运行态快照周期（秒）。5 分钟一行，日志轮转上界（512 KiB）下可保留数天趋势。
 const RUNTIME_DIAG_SECS: u64 = 300;
+
+/// **危险水位**下的采样周期（秒）：1 分钟一格。
+///
+/// 只在 `mem_diag::under_commit_low` 为真（系统还能提交 < 1GiB）时启用。代价可控：
+/// 一条 ≈ 200 字节，一分钟一格 ⇒ 现场文件（2 MiB 上限）约 4 小时才写满一整轮；
+/// 收益是"死前那几分钟"有连续读数 —— 2026-11-24 Win-lhcz-f 那次 5 分钟一格，
+/// 最后一个样本（569MiB）之后什么都没留下。
+const COMMIT_LOW_DIAG_SECS: u64 = 60;
 
 /// 队列与在途计数（见 `AppState::runtime_counts`）。
 ///

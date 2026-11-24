@@ -19,6 +19,12 @@ const report: PreviousRunReport = {
   logDir: "/tmp/logs",
 };
 
+test("提交内存耗尽（commit_exhausted）必须提示：它不是崩溃，但用户需要知道下一步", () => {
+  // 2026-11-24 真机：最后一格 avail_commit=569MiB，5 分钟后进程消失。旧口径归进
+  // silent_kill，提示里写"关机/强杀/断电/内存耗尽都会这样" —— 用户拿不到任何动作。
+  assert.equal(shouldShowCrashNotice("commit_exhausted"), true);
+});
+
 test("复制文本带 code/位置/版本/现场路径", () => {
   const s = formatCrashReport(report);
   assert.match(s, /code: BOOT_PREV_PANIC/);

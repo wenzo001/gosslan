@@ -29,7 +29,9 @@ const isEnvFailure = computed(() => props.report.reason === "ENV_WEBVIEW_CREATE_
 const isExternal = computed(
   () =>
     !isEnvFailure.value &&
-    (props.report.kind === "silent_kill" || props.report.kind === "early_exit"),
+    (props.report.kind === "silent_kill" ||
+      props.report.kind === "commit_exhausted" ||
+      props.report.kind === "early_exit"),
 );
 
 const title = computed(() =>
@@ -44,6 +46,7 @@ const body = computed(() => {
   const r = props.report;
   if (isEnvFailure.value) return t("crash.envWebviewTimeout");
   if (r.kind === "silent_kill") return t("crash.silentKill");
+  if (r.kind === "commit_exhausted") return t("crash.commitExhausted");
   if (r.kind === "early_exit") return t("crash.earlyExit");
   if (r.kind === "startup_failed") return t("crash.startupFailed");
   if (r.kind === "abort") return t("crash.abort");

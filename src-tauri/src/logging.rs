@@ -842,6 +842,18 @@ pub enum PreviousExit {
     /// 只有"启动"、没有退出、也没有崩溃块 ⇒ **按异常终止处理**
     /// （强杀 / OOM / 原生代码 abort / 掉电 —— 这一类无法再细分，也不许假装能细分）
     SilentKill,
+    /// **提交内存耗尽**（2026-11-24 真机定标）：上一轮末尾系统可提交量已低于
+    /// [`crate::mem_diag::COMMIT_LOW_BYTES`]，而进程又没留下退出/崩溃/分配失败任何痕迹。
+    ///
+    /// 为什么必须与 `SilentKill` 分开：`SilentKill` 把"关机、任务管理器、安全软件、断电、
+    /// 内存耗尽"五类混成一句"只能按缺席归类"，用户拿到的报告等于没归因（2026-11-24
+    /// Win-lhcz-f 就是这样：最后一格 569MiB → 5 分钟后消失 → 报告说不清）。这一类的
+    /// **证据就在现场**（最后一条 RUNTIME_MEM/COMMIT_LOW 的 avail_commit），而且下一步
+    /// 是明确的（关掉别的吃内存的程序 / 调大页面文件），不该藏在"无法判断"里。
+    ///
+    /// 判据是**必要条件**不是充分条件：commit 见底也可能是关机前的那一分钟，所以文案
+    /// 说"最可能与提交内存耗尽一致"，不把它说成铁证。
+    CommitExhausted,
     /// 分配器自己的 abort：`>>> {分配|重分配|分配(清零)}失败：… 分配器即将 abort`
     /// （前缀清单见 [`ALLOC_FAIL_KINDS`]，写侧读侧共用）。
     /// 与 `SilentKill` 分开：这一条**有现场**（请求字节数写在行里），只是
@@ -873,8 +885,8 @@ pub enum PreviousExit {
 #[derive(Clone, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviousRunReport {
-    /// `panic` | `silent_kill` | `startup_failed` | `abort` | `sigterm` | `updater` |
-    /// `single_instance` | `early_exit` | `clean` | `no_history`
+    /// `panic` | `silent_kill` | `commit_exhausted` | `startup_failed` | `abort` |
+    /// `sigterm` | `updater` | `single_instance` | `early_exit` | `clean` | `no_history`
     pub kind: String,
     /// 机器码（`BOOT_PREV_*`），用于检索/口述。
     pub code: String,
@@ -1198,6 +1210,7 @@ pub fn build_previous_run_report_with(
     let (kind_s, code) = match kind {
         PreviousExit::Panic => ("panic", "BOOT_PREV_PANIC"),
         PreviousExit::StartupFailed => ("startup_failed", "BOOT_PREV_STARTUP_FAILED"),
+        PreviousExit::CommitExhausted => ("commit_exhausted", "BOOT_PREV_COMMIT_EXHAUSTED"),
         PreviousExit::SilentKill => ("silent_kill", "BOOT_PREV_SILENT_KILL"),
         PreviousExit::Abort => ("abort", "BOOT_PREV_ABORT"),
         PreviousExit::Sigterm => ("sigterm", "BOOT_PREV_SIGTERM"),
@@ -1280,13 +1293,14 @@ pub fn effective_previous_exit(
     // 也没有崩溃块。只给 `SilentKill` 做免税会让这一形状继续弹「上次运行早期结束」。
     // 仍然要求同一条证明：**上一轮有启动时刻、且早于安装路标**（`run_started_before_install`）。
     // 缺启动行 ⇒ 判否 ⇒ 保持 EarlyExit（失败关闭：宁可多弹一次，也不把真失败说成安装）。
-    if matches!(kind, PreviousExit::SilentKill | PreviousExit::EarlyExit)
-        && installer.is_some_and(|ev| {
-            installer_is_fresh(ev, now_ms)
-                && (run_started_before_install(native_lines, ev)
-                    || slice_ended_before_install(native_lines, ev))
-        })
-    {
+    if matches!(
+        kind,
+        PreviousExit::SilentKill | PreviousExit::EarlyExit | PreviousExit::CommitExhausted
+    ) && installer.is_some_and(|ev| {
+        installer_is_fresh(ev, now_ms)
+            && (run_started_before_install(native_lines, ev)
+                || slice_ended_before_install(native_lines, ev))
+    }) {
         return PreviousExit::Updater;
     }
     kind
@@ -1343,11 +1357,11 @@ fn run_started_before_install(native_lines: &[String], ev: &InstallerEvidence) -
 
 /// 按现场文件的原生路标序列判定上一轮的结束方式。输入应是**已剔掉本轮"启动"行**
 /// 的那一段（见 [`Logger::seed_previous_run`]）。
-pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
+pub fn classify_previous_exit(raw_lines: &[String]) -> PreviousExit {
     // 卡死记录（`code=HANG` / `HANG_END`）与周期诊断（`RUNTIME_MEM` / `COMMIT_PRESSURE`）
     // 不参与"怎么结束"的判定：它们是正交事实，`HANG` 由 `PreviousRunReport.hang` 单独表达；
     // 留在序列里会让最后一条变成它们 ⇒ NoHistory（静默死亡于是永远判不出来）。
-    let lines: Vec<&String> = native_lines
+    let lines: Vec<&String> = raw_lines
         .iter()
         .filter(|l| !is_hang_native_line(l) && !is_periodic_diag_native_line(l))
         .collect();
@@ -1445,6 +1459,17 @@ pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
         })
     {
         return PreviousExit::Updater;
+    }
+    // **提交内存耗尽**（2026-11-24 真机定标，Win-lhcz-f 7.2.9）：末尾水位已经低于危险线，
+    // 而上面所有"有现场"的死法（panic / 分配失败 / SIGTERM / updater）都没命中 ⇒ 这一轮
+    // 是被系统连坐拿走的。判据只用现场里已有的读数（`mem_diag::last_avail_commit`），
+    // 读不到就退回落后的 `SilentKill`（宁少说，不乱归因）。
+    // `Clean` 必须先于它：正常退出路标在手时，水位再低也是"走完了才退"。
+    if !matches!(native_lines.last(), Some(l) if l.starts_with("----- 正常退出 "))
+        && crate::mem_diag::last_avail_commit(raw_lines)
+            .is_some_and(|bytes| bytes < crate::mem_diag::COMMIT_LOW_BYTES)
+    {
+        return PreviousExit::CommitExhausted;
     }
     match native_lines.last() {
         Some(l) if l.starts_with("----- 正常退出 ") => PreviousExit::Clean,
@@ -2220,6 +2245,13 @@ impl Logger {
                 PreviousExit::StartupFailed => {
                     "上次收尾判定：启动被安全中止（身份/数据库校验失败；数据库未被修改）".to_string()
                 }
+                PreviousExit::CommitExhausted => concat!(
+                    "上次收尾判定：提交内存见底后消失 —— 上一轮最后一格诊断里，系统还能提交的量已低于 ",
+                    "1 GiB（随后无退出路标、无崩溃现场、无分配失败）。这一档最可能与本机提交内存",
+                    "（物理内存 + 页面文件）被吃满一致：程序自己只占几百 MB，被拿走的是它申请不到",
+                    "下一块的时候。建议关闭其它占用大的程序，或调大系统页面文件后重启"
+                )
+                .to_string(),
                 PreviousExit::SilentKill => concat!(
                     "上次收尾判定：没有留下退出记录 —— 既无正常退出路标，也无崩溃现场。",
                     "系统关机、任务管理器/安全软件强制结束、断电、内存耗尽都会长成这样；",
@@ -2261,6 +2293,7 @@ impl Logger {
                 verdict_kind,
                 PreviousExit::Panic
                     | PreviousExit::SilentKill
+                    | PreviousExit::CommitExhausted
                     | PreviousExit::EarlyExit
                     | PreviousExit::Abort
             ) {
@@ -2272,6 +2305,7 @@ impl Logger {
                 PreviousExit::Clean => "BOOT_PREV_CLEAN",
                 PreviousExit::Panic => "BOOT_PREV_PANIC",
                 PreviousExit::StartupFailed => "BOOT_PREV_STARTUP_FAILED",
+                PreviousExit::CommitExhausted => "BOOT_PREV_COMMIT_EXHAUSTED",
                 PreviousExit::SilentKill => "BOOT_PREV_SILENT_KILL",
                 PreviousExit::Abort => "BOOT_PREV_ABORT",
                 PreviousExit::Sigterm => "BOOT_PREV_SIGTERM",
@@ -2832,6 +2866,53 @@ mod tests {
         assert_eq!(format_utc(ms), "2026-09-11 13:20:54");
         // 一个带毫秒的：秒以下被截断，不影响 HH:MM:SS
         assert_eq!(format_utc(999), "1970-01-01 00:00:00");
+    }
+
+    /// **提交内存耗尽**从 `silent_kill` 里拆出来（2026-11-24 真机定标）。
+    ///
+    /// 那轮（Win-lhcz-f / 7.2.9）的现场只有三样东西：启动行、`BOOT_WINDOW_BUILD_START`、
+    /// 最后一格 `avail_commit=569MiB`；没有退出路标、没有崩溃块、没有分配失败。
+    /// 旧口径只能判 `silent_kill` ⇒ 报告写"关机/强杀/断电/内存耗尽都会长成这样"，
+    /// 用户拿不到任何下一步。这条判据钉住三件事：低水位要单独归因、高水位不许攀咬、
+    /// 正常退出永远优先。
+    #[test]
+    fn commit_exhausted_is_split_out_from_silent_kill() {
+        let mk = |s: &[&str]| -> Vec<String> { s.iter().map(|x| x.to_string()).collect() };
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 2026-11-24 05:13:39 版本 7.2.9 · windows-x86_64",
+                ">>> >>> code=BOOT_WINDOW_BUILD_START 事件循环启动",
+                ">>> code=RUNTIME_MEM ws=81MiB avail_commit=569MiB total_commit=40711MiB",
+            ])),
+            PreviousExit::CommitExhausted,
+            "末尾水位低于 1GiB 且无任何退出路标 ⇒ 必须报「提交内存耗尽」，不许混进 silent_kill"
+        );
+        // 水位充足 ⇒ 仍是最笼统一档：不许把"正常水位下的外部终止"说成内存耗尽。
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> >>> code=BOOT_WINDOW_BUILD_START",
+                ">>> code=RUNTIME_MEM ws=81MiB avail_commit=2048MiB",
+            ])),
+            PreviousExit::SilentKill
+        );
+        // 正常退出路标优先：水位再低也是"走完了才退"。
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> code=RUNTIME_MEM avail_commit=300MiB",
+                "----- 正常退出 2026-11-24 07:00:00",
+            ])),
+            PreviousExit::Clean
+        );
+        // 读不到水位（`-`）⇒ 不许归因（回到 silent_kill）。
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> code=RUNTIME_MEM avail_commit=- total_commit=-",
+            ])),
+            PreviousExit::SilentKill
+        );
     }
 
     #[test]

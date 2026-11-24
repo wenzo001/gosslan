@@ -408,6 +408,8 @@ export const enUS: MessageDict = {
   "crash.panicCount": "This is the {n}th abnormal exit recently.",
   "crash.bleHeld":
     "The crash happened in the Bluetooth module. Auto-start is paused for this launch; you can enable it manually in Settings → Network.",
+  "crash.commitExhausted":
+    "The last run vanished after the system ran out of committable memory: the final diagnostic showed less than 1 GiB of commit available, then no exit record and no crash site. The app itself usually holds only a few hundred MB — it disappeared at the moment it could not commit its next block, so there is no crash and no location to report. Close other memory-heavy programs (browsers, VMs, large apps) or raise the system page file, then restart. Your chat history and local data are unaffected.",
   "crash.silentKill":
     "The last run left no exit record — system shutdown, Task Manager or security software force-quit, power loss, or running out of memory all look like this — so no crash location was recorded. Your chat history and local data are unaffected.",
   "crash.earlyExit":

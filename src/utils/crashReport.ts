@@ -42,12 +42,15 @@ export function formatCrashReport(r: PreviousRunReport): string {
  * - `updater`（更新安装器接管）/ `single_instance`（单实例交接）/ `sigterm`（外部发的
  *   正常终止信号）都是**正常路径**，也不打扰 —— 2026-11-08 用户要求："我们主动结束"
  *   不能和"被外部杀死"混成一个提示；
- * - `early_exit`（进了事件循环却没到 logger）是真实异常，要提示。
+ * - `early_exit`（进了事件循环却没到 logger）是真实异常，要提示；
+ * - `commit_exhausted`（提交内存见底后消失）也要提示：它不是崩溃，但用户需要知道
+ *   "该关掉别的吃内存的程序 / 调大页面文件"，藏起来等于让他下次再撞一遍。
  */
 export function shouldShowCrashNotice(kind: string): boolean {
   return (
     kind === "panic" ||
     kind === "silent_kill" ||
+    kind === "commit_exhausted" ||
     kind === "startup_failed" ||
     kind === "abort" ||
     kind === "early_exit"

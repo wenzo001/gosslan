@@ -702,6 +702,7 @@ logging::tests::allocator_abort_is_its_own_kind_not_no_history
 logging::tests::allocator_abort_reads_every_prefix_the_writer_can_emit
 logging::tests::bootstrap_and_logger_point_at_the_same_crash_file
 logging::tests::clock_jump_marker_does_not_change_exit_classification
+logging::tests::commit_exhausted_is_split_out_from_silent_kill
 logging::tests::crash_block_survives_rotation_and_carries_version_and_context
 logging::tests::crash_file_is_capped_by_reopening_not_growing_forever
 logging::tests::crash_note_writes_without_a_logger_and_survives_the_reentry_guard
@@ -764,6 +765,7 @@ logging::tests::updater_taking_over_is_its_own_kind
 logging::tests::utc_format_and_parse_roundtrip_across_eras
 mem_diag::tests::big_alloc_ring_keeps_the_newest_and_renders_age
 mem_diag::tests::cache_marks_its_own_age_and_only_overwrites_with_a_reading
+mem_diag::tests::commit_low_is_earlier_than_pressure_and_parses_last_reading
 mem_diag::tests::commit_pressure_only_fires_on_a_real_reading
 mem_diag::tests::frame_gauge_returns_on_every_exit_and_peaks_on_the_aggregate
 mem_diag::tests::inbound_frame_budget_boundaries
