@@ -20,6 +20,7 @@
     "lint:sh": "uvx --from shellcheck-py shellcheck -S warning --exclude=SC2034 $(git ls-files '*.sh')",
     "lint:md": "npx --yes markdownlint-cli2@0.18.1",
     "lint": "npm run lint:py && npm run lint:sh && npm run lint:md",
+    "gitee:backfill": "node scripts/gitee-backfill.mjs",
     "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning \"src/**/*.test.ts\" \"scripts/*.test.ts\"",
     "cargo:clean": "node scripts/cargo-clean.mjs",
     "test:ui-runtime": "node scripts/check-ui-runtime.mjs",

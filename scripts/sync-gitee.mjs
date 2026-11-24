@@ -315,6 +315,18 @@ async function ensureRelease(repo, tag, branch, body) {
 }
 
 /**
+ * **CI 只传这个体积以下的附件**（2026-11-24 实测定的口径）。
+ *
+ * GitHub 托管 runner → Gitee 是跨境慢链路（20–90 KB/s），而且几 MB 的 body 会被 Gitee
+ * 网关直接 400：v7.2.8 的 `upload (0)` 里，104 字节的 sha256 一次成功，而 6.4/8.5/8.8/13.8MB
+ * 四个文件各重试 3 次全是 `HTTP 400`。这不是重试能解决的（同一份包从国内直连是秒级）。
+ *
+ * 所以分工：**CI 保证小文件与清单自动同步；大包用本机 `scripts/gitee-backfill.mjs` 补**。
+ * 大包缺失在 finalize 只打 ⚠️ 与补传命令，不判红（判红会让每次发版都挂着一条永远修不了的红）。
+ */
+export const CI_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
  * 附件上传走 `curl`，不走 `fetch`。
  *
  * 现场（2026-11-07 演练 v5.18.78）：7MB 的 `Gosslan-arm64.app.tar.gz` 在 GitHub
@@ -462,11 +474,18 @@ async function verifyAllAssetsMirrored(repo, tag, filesByName) {
   const attach = await listAll(`/repos/${repo}/releases/${rel.id}/attach_files`);
   const byName = new Map(attach.map((a) => [a.name, a]));
   const problems = [];
+  const localOnly = [];
   let checked = 0;
   for (const [name, f] of filesByName) {
     if (name === "latest.json") continue;
     const a = byName.get(name);
     if (!a) {
+      // 大包不判红：CI 那条跨境链路传不动（见 CI_UPLOAD_MAX_BYTES 注释），
+      // 由本机补传；这里只记账，最后统一打印命令。
+      if (f.size > CI_UPLOAD_MAX_BYTES) {
+        localOnly.push(`${name}（${Math.round(f.size / 1048576)}MB）`);
+        continue;
+      }
       problems.push(`${name}：Gitee 缺`);
       continue;
     }
@@ -480,6 +499,11 @@ async function verifyAllAssetsMirrored(repo, tag, filesByName) {
     throw new Error(`两仓资产不一致（${problems.length} 项，已核 ${checked} 个一致）：\n  ${problems.join("\n  ")}`);
   }
   console.log(`  两仓逐个文件对齐：${checked} 个资产在 Gitee 全部存在且大小一致`);
+  if (localOnly.length > 0) {
+    console.log(`  ⚠️ ${localOnly.length} 个大包不在 Gitee（CI 链路传不动），请在本机补传：`);
+    console.log(`     ${localOnly.join("\n     ")}`);
+    console.log(`     GITEE_TOKEN=*** node scripts/gitee-backfill.mjs --tag ${tag}`);
+  }
 }
 
 async function verifyAssets(manifest, assetsDir, filesByName) {
@@ -665,8 +689,16 @@ async function main(argv) {
 
     // **单片尽量传完**：一个文件挂了不打断后面的（原先直接抛 ⇒ 该片剩下的一律不传，
     // 一次 run 的产出最少化）。缺口由 finalize 的 verifyAllAssetsMirrored 逐个点名。
+    const tooBigForCi = mine.filter((f) => f.size > CI_UPLOAD_MAX_BYTES);
+    const mineCi = mine.filter((f) => f.size <= CI_UPLOAD_MAX_BYTES);
+    if (tooBigForCi.length > 0) {
+      console.log(
+        `本片 ${tooBigForCi.length} 个文件超过 CI 上传阈值（${CI_UPLOAD_MAX_BYTES / 1048576}MB），` +
+          `跳过、交给本机补传：${tooBigForCi.map((f) => f.name).join("、")}`,
+      );
+    }
     const failures = [];
-    for (const f of mine) {
+    for (const f of mineCi) {
       try {
         await uploadOne(f, release.id);
       } catch (e) {

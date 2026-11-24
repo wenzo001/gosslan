@@ -233,3 +233,21 @@ test("上传调度：分片按字节装箱、每片串行、失败分类重试�
     "失败判定必须看 HTTP 状态码，不能只看 curl 退出码",
   );
 });
+
+test("大包不走 CI：超过阈值的附件不上传，finalize 只打补传命令（不判红）", () => {
+  // 2026-11-24 实测：GitHub runner → Gitee 跨境链路 20–90KB/s，几 MB 的 body 会被网关 400
+  // （104 字节成功、4 个 ≥6MB 全 400）。所以 CI 只保证小文件与清单，大包交给本机秒传。
+  const src = readFileSync(new URL("./sync-gitee.mjs", import.meta.url), "utf8");
+  assert.match(src, /export const CI_UPLOAD_MAX_BYTES = 5 \* 1024 \* 1024;/, "缺 CI 上传阈值常量");
+  assert.match(
+    src,
+    /mineCi = mine\.filter\(\(f\) => f\.size <= CI_UPLOAD_MAX_BYTES\)/,
+    "上传循环必须只处理小文件——否则每次发版都挂一条注定 400 的红",
+  );
+  assert.match(src, /localOnly\.push\(/, "finalize 必须把大包缺口记账（不能静默）");
+  assert.match(
+    src,
+    /node scripts\/gitee-backfill\.mjs --tag/,
+    "必须把补传命令打出来——只说「缺」而不给怎么办等于没说",
+  );
+});
