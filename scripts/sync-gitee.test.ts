@@ -2,6 +2,7 @@
 // 跑法：node --test scripts/sync-gitee.test.ts
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   androidPlatformFor,
@@ -205,4 +206,30 @@ test("checkAnonymous：404 不重试（文件真不在，重试只是把失败�
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("上传调度：分片按字节装箱、每片串行、失败分类重试（2026-11-24 实测收敛的形状）", () => {
+  // 现场：12 片 × 3 并发 = 36 路打 Gitee ⇒ 单连接 ~2KB/s，7.8MB 传 56 分钟后 HTTP 400；
+  // v7.2.8 的 12 片里 5 片失败。这三条是那次之后必须保持的形状，拆掉任何一条都会退回原样。
+  const src = readFileSync(new URL("./sync-gitee.mjs", import.meta.url), "utf8");
+  assert.match(
+    src,
+    /buckets\.sort\(\(a, b\) => a\.bytes - b\.bytes\)/,
+    "分片必须按字节数装箱——回到 `i % shards` 轮询就会把两个大包塞进同一片",
+  );
+  assert.ok(
+    !src.includes("Promise.all(\n      Array.from({ length: Math.min(CONCURRENCY"),
+    "上传必须每片串行——并发是被 Gitee 限速惩罚的那一项",
+  );
+  assert.match(src, /const ATTEMPTS = 3;/, "单文件必须有业务层重试（curl 的 --retry 对 400 无用）");
+  assert.match(
+    src,
+    /\[400, 409, 422\]\.includes\(r\.code\)/,
+    "400/409/422 必须按「同名附件已存在」分类处理（核远端大小 / 删同名）",
+  );
+  assert.match(
+    src,
+    /if \(res\.status === 0 && \(code === 200 \|\| code === 201\)\)/,
+    "失败判定必须看 HTTP 状态码，不能只看 curl 退出码",
+  );
 });

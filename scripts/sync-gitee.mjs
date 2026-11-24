@@ -322,22 +322,21 @@ async function ensureRelease(repo, tag, branch, body) {
  * 不是 Gitee 拒绝。Node 内置 fetch 不暴露 dispatcher，改不了这个上限；curl 没有
  * body 超时，慢链路上也能把包传完。令牌只放在 URL 查询串里，失败信息统一打码。
  */
-async function uploadAsset(repo, releaseId, name, file) {
+function uploadAssetOnce(repo, releaseId, name, file) {
   const url = `${API}/repos/${repo}/releases/${releaseId}/attach_files?access_token=${encodeURIComponent(TOKEN)}`;
   const res = spawnSync(
     "curl",
     [
       "-sS",
       "--fail-with-body",
-      // 单个文件最长 60 分钟（2026-11-23：88MB 的 AppImage 在 ~50KB/s 的链路上正好撞
-      // 原先 30 分钟的上限 —— curl (28) 30 分钟 0 字节响应，看起来像"被拒"其实是"没传完"）。
-      // 死链快速判死：连续 120 秒低于 1KB/s 才放弃，别把整个窗口耗在一个假死的连接上。
-      "--max-time", "3600",
-      "--speed-limit", "1024",
-      "--speed-time", "120",
-      "--retry", "2",
-      "--retry-delay", "10",
-      "--retry-all-errors",
+      // 诊断用：把最终 HTTP 状态码写在 body 之后（2026-11-24 那次只有 "curl: (22) ... 400"，
+      // 响应体是空的，没人知道 Gitee 为什么不收）。
+      "--write-out", "\n__HTTP__%{http_code}",
+      // 单个文件最长 90 分钟：100MB 的 AppImage 在 ~20KB/s 的链路上要 ~85 分钟。
+      // 死链快速判死：连续 180 秒低于 512B/s 才放弃（原先 120s/1KB/s 太急，慢链路上会误杀）。
+      "--max-time", "5400",
+      "--speed-limit", "512",
+      "--speed-time", "180",
       "-X", "POST",
       url,
       "-F", `file=@${file};filename=${name}`,
@@ -345,12 +344,17 @@ async function uploadAsset(repo, releaseId, name, file) {
     { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
   );
   if (res.error) {
-    throw new Error(redact(`上传 ${name} 启动 curl 失败：${res.error.message}`));
+    return { ok: false, code: 0, detail: redact(`启动 curl 失败：${res.error.message}`) };
   }
-  if (res.status !== 0) {
-    const detail = (res.stderr || res.stdout || "").trim().slice(0, 300);
-    throw new Error(redact(`上传 ${name} 失败（curl exit ${res.status}）：${detail}`));
-  }
+  const raw = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+  const m = /__HTTP__(\d+)\s*$/.exec(res.stdout ?? "");
+  const code = m ? Number(m[1]) : 0;
+  if (res.status === 0 && (code === 200 || code === 201)) return { ok: true, code };
+  const body = (res.stdout ?? "").replace(/\n__HTTP__\d+\s*$/, "").trim();
+  const detail = redact(
+    `${(res.stderr ?? "").trim() || body || "无输出"}`.replace(/\s+/g, " ").slice(0, 300),
+  );
+  return { ok: false, code, detail };
 }
 
 async function commitManifest(repo, branch, content, message) {
@@ -593,34 +597,89 @@ async function main(argv) {
   // 现场（2026-11-07）：GitHub runner 直连 Gitee 上传只有 ~10KB/s，74MB 串行要两个多小时。
   // 单个进程 4 路并发只提到 ~15KB/s，判断是 per-IP 限速 ⇒ workflow 用多个 job（不同 runner IP）
   // 分片，每个分片再并发 3 路。`--shard i/n` 只上传 i % n 的文件，其它文件由别的分片负责。
-  const mine = uploads.filter((_, i) => i % shards === shard);
-  if (shards > 1) console.log(`分片 ${shard}/${shards}：本片 ${mine.length} 个文件`);
+  // 分片按**字节数装箱**（2026-11-24 实测修正）：原先 `i % shards` 轮询会把两个 ~100MB 的
+  // AppImage 分进同一片、另一片只拿一堆小文件 ⇒ 关键路径永远是"两个大文件串行"。
+  // 现在按大小降序贪心装进当前最空的一片，让每个大文件各占一片。
+  const buckets = Array.from({ length: Math.max(1, shards) }, () => ({ files: [], bytes: 0 }));
+  for (const f of [...uploads].sort((a, b) => b.size - a.size)) {
+    buckets.sort((a, b) => a.bytes - b.bytes);
+    buckets[0].files.push(f);
+    buckets[0].bytes += f.size;
+  }
+  const mine = buckets[shard]?.files ?? [];
+  if (shards > 1) {
+    console.log(
+      `分片 ${shard}/${shards}：本片 ${mine.length} 个文件、共 ${buckets[shard]?.bytes ?? 0} 字节`,
+    );
+  }
 
   if (mode !== "finalize") {
-    const existing = await listAll(`/repos/${repo}/releases/${release.id}/attach_files`);
-    const CONCURRENCY = shards > 1 ? 3 : 4;
-    const queue = [...mine];
-    async function uploadWorker() {
-      while (queue.length > 0) {
-        const f = queue.shift();
-        const old = existing.find((a) => a.name === f.name);
-        if (old) {
-          const remoteSize = publicAssetSize(repo, tag, f.name);
-          if (remoteSize === f.size) {
-            console.log(`  已存在且大小一致，跳过 ${f.name}（${f.size} 字节）`);
-            continue;
-          }
-          await api("DELETE", `/repos/${repo}/releases/${release.id}/attach_files/${old.id}`);
-          console.log(`  删除同名旧附件 ${f.name}`);
+    /**
+     * 传一个文件。三道关（2026-11-24 实测重写）：
+     *
+     * 1. **先看远端**：同大小直接跳过（并发的另一片/上一次 run 已经传好，不重复传）；
+     * 2. **每片串行**：原先 12 片 × 3 并发 = 36 路，把 Gitee 单连接压到 ~2KB/s
+     *    （7.8MB 传 56 分钟最后 HTTP 400）。并发越高越慢 ⇒ 每片串行拿满带宽；
+     * 3. **失败分类重试**：400/409/422 多半是「同名附件已存在」（并发腿刚传好，或半截残留）
+     *    —— 先核远端大小：一致就认，不一致就删同名再试；5xx/超时按退避重试。
+     */
+    async function uploadOne(f, releaseId) {
+      const remote = publicAssetSize(repo, tag, f.name);
+      if (remote === f.size) {
+        console.log(`  已存在且大小一致，跳过 ${f.name}（${f.size} 字节）`);
+        return;
+      }
+      const ATTEMPTS = 3;
+      let last = "";
+      for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+        console.log(`  开始上传 ${f.name}（${f.size} 字节，第 ${attempt}/${ATTEMPTS} 次）`);
+        const r = uploadAssetOnce(repo, releaseId, f.name, f.path);
+        if (r.ok) {
+          console.log(`  已上传 ${f.name}（${f.size} 字节）`);
+          return;
         }
-        console.log(`  开始上传 ${f.name}（${f.size} 字节）`);
-        await uploadAsset(repo, release.id, f.name, f.path);
-        console.log(`  已上传 ${f.name}（${f.size} 字节）`);
+        last = `HTTP ${r.code || "-"}：${r.detail}`;
+        if ([400, 409, 422].includes(r.code)) {
+          const now = publicAssetSize(repo, tag, f.name);
+          if (now === f.size) {
+            console.log(`  远端已有同大小附件，认它：${f.name}`);
+            return;
+          }
+          const list = await listAll(`/repos/${repo}/releases/${releaseId}/attach_files`);
+          const old = list.find((a) => a.name === f.name);
+          if (old) {
+            await api("DELETE", `/repos/${repo}/releases/${releaseId}/attach_files/${old.id}`).catch(
+              () => {},
+            );
+            console.log(`  删除同名旧附件后重试：${f.name}`);
+          }
+        }
+        if (attempt < ATTEMPTS) {
+          const waitMs = 20000 * attempt;
+          console.log(`  等 ${waitMs / 1000}s 后重试：${f.name}`);
+          await new Promise((r2) => setTimeout(r2, waitMs));
+        }
+      }
+      throw new Error(`上传 ${f.name} 失败（${ATTEMPTS} 次）：${last}`);
+    }
+
+    // **单片尽量传完**：一个文件挂了不打断后面的（原先直接抛 ⇒ 该片剩下的一律不传，
+    // 一次 run 的产出最少化）。缺口由 finalize 的 verifyAllAssetsMirrored 逐个点名。
+    const failures = [];
+    for (const f of mine) {
+      try {
+        await uploadOne(f, release.id);
+      } catch (e) {
+        failures.push(e.message);
+        console.error(`✗ ${e.message}`);
       }
     }
-    await Promise.all(
-      Array.from({ length: Math.min(CONCURRENCY, queue.length) }, () => uploadWorker()),
-    );
+    if (failures.length > 0) {
+      console.error(
+        `分片 ${shard}/${shards}：${failures.length} 个文件失败（其余已传完；缺口由 finalize 逐个点名）`,
+      );
+      process.exitCode = 1;
+    }
 
     if (mode === "upload") {
       console.log(`upload 分片 ${shard}/${shards} 完成`);

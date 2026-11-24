@@ -166,9 +166,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 分片 5→8→12：单文件不可再分，分片只摊薄「每个 job 要串行传几个文件」——
-        # 12 片时每片最多 2 个文件，配 60 分钟/文件的上限仍落在 180 分钟 job 预算内。
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        # ★ 分片 12 → 4（2026-11-24 实测）：分片不是越多越好。12 片 × 每片 3 并发 = 36 路
+        # 同时打 Gitee，单连接被压到 ~2KB/s（7.8MB 传 56 分钟后 HTTP 400），总带宽反而崩了；
+        # v7.2.8 的 12 片里 5 片失败。现在 4 片、每片**串行**（并发固定 1），并且脚本按
+        # **字节数装箱**分支——两个 ~100MB 的 AppImage 各占一片，不再挤在同一片里串行。
+        shard: [0, 1, 2, 3]
     steps:
       - name: Mask Gitee token
         env:
@@ -218,7 +220,7 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/sync-gitee.mjs --tag "$TAG" --assets-dir assets --repo "$GITEE_REPO" \
-            --keep "$KEEP" --mode upload --shard "${{ matrix.shard }}" --shards 12
+            --keep "$KEEP" --mode upload --shard "${{ matrix.shard }}" --shards 4
 
   finalize:
     needs: upload
