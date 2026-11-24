@@ -289,7 +289,13 @@ CASES: list[Case] = [
         "挤进一个新的 FileOffer（同一 transfer_id 重建接收器、`fed_at_ms` 就是现在），"
         "于是按 id 收尾会把一条**正在收**的传输判死。护栏钉的是「清扫器里只准调 take_*，"
         "不许自己算 stale」。",
-        file=TAURI / "src" / "network" / "transport.rs",
+        # ⚠️ 2026-11-24：`sweep_stalled_receives` 已搬到 `transport/group_file.rs`，
+        # `state.file_receivers` 也从 `Mutex<HashMap>` 换成分片 `file::ReceiverTable`
+        # （8 片 NamedLock，只有 `keys_snapshot`/`lock_shard` 这类 API）。旧注入写的是
+        # `.lock()` 快照 ⇒ 注入后**编译不过**（E0599），而判据要求的是"断言失败并打出
+        # 关键词" ⇒ 这条 case 一直红（main 04:19 那条就是它，而 tag 那次没跑到它）。
+        # 现在注入换成**合法 API 的退化形状**：判据搬回清扫器里重算 stale。
+        file=TAURI / "src" / "network" / "transport" / "group_file.rs",
         injections=[(
             "pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {\n"
             "    const REASON: &str = crate::logging::FAIL_CODE_FILE_RECEIVE_STALLED;\n"
@@ -297,13 +303,13 @@ CASES: list[Case] = [
             "pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {\n"
             "    const REASON: &str = crate::logging::FAIL_CODE_FILE_RECEIVE_STALLED;\n"
             "    let now = db::now_ms();\n"
-            "    let _snap: Vec<String> = state\n"
-            "        .file_receivers\n"
-            "        .lock()\n"
-            "        .unwrap_or_else(|e| e.into_inner())\n"
+            "    let _snap: Vec<String> = state.file_receivers.keys_snapshot();\n"
+            "    let _stale: Vec<&String> = _snap\n"
             "        .iter()\n"
-            "        .filter(|(_, x)| file::receive_is_stale(now - x.fed_at_ms))\n"
-            "        .map(|(k, _)| k.clone())\n"
+            "        .filter(|k| {\n"
+            "            let _ = k;\n"
+            "            file::receive_is_stale(now)\n"
+            "        })\n"
             "        .collect();",
         )],
         cmd=cargo(
