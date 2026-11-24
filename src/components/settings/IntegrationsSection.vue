@@ -13,7 +13,6 @@ import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import Icon from "@/components/ui/Icon.vue";
 import AuthorizedAppsSection from "@/components/settings/AuthorizedAppsSection.vue";
 import ExternalShareSection from "@/components/settings/ExternalShareSection.vue";
-import RpKeyBackupSection from "@/components/settings/RpKeyBackupSection.vue";
 import { t } from "@/i18n";
 
 /** 外部应用接入指南（设备快捷认证 + 分享到会话）。 */
@@ -67,6 +66,5 @@ const BOT_DOC_URL =
   <div class="mt-[var(--gosslan-section-gap)] space-y-[var(--gosslan-section-gap)]">
     <AuthorizedAppsSection />
     <ExternalShareSection />
-    <RpKeyBackupSection />
   </div>
 </template>

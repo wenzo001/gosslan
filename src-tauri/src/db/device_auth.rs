@@ -118,7 +118,7 @@ use crate::rp_key_store;
 ///
 /// ⚠️ `secret_key` 这一格**有两种可能的形态**，取决于取行用的是哪个函数。
 ///
-/// - `get_binding` / `list_bindings_with_secrets` ⇒ **明文**（已从平台密钥库解开）；
+/// - `get_binding` ⇒ **明文**（已从平台密钥库解开）；
 /// - `list_bindings` ⇒ **库里的原样值**（在有密钥库的机器上就是信封 `gsk1.…`）。
 ///
 /// 需要私钥的路径一律走前两个；只需要公钥面的（清单展示）走 `list_bindings`，
@@ -301,64 +301,14 @@ pub fn get_binding(conn: &Connection, rp_origin: &str, client_id: &str) -> Resul
 ///
 /// ⚠️ 这里的 `secret_key` 是**库里的原样值**（可能是密钥库信封）：这个函数服务
 /// 「只要公钥面」的清单展示，不去碰密钥库 —— 免得「密钥库打不开」把整个设置页顶掉。
-/// 要私钥的路径用 `get_binding` 或 `list_bindings_with_secrets`。
+/// 要私钥的路径用 `get_binding`（2026-11-24：`list_bindings_with_secrets` 随第三方
+/// 密钥导出一起删除——整库备份自己在副本上明文化，不再需要第二个解私钥入口）。
 pub fn list_bindings(conn: &Connection) -> Result<Vec<RpBindingRow>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {BINDING_COLS} FROM rp_device_bindings ORDER BY created_at DESC"
     ))?;
     let rows = stmt.query_map([], map_binding_row)?;
     rows.collect()
-}
-
-/// 读「带明文私钥」的绑定清单时的失败：**读库**与**解密钥库**必须可分。
-///
-/// 为什么以前分不开：密钥库错误被塞进 `rusqlite::Error::ToSqlConversionFailure` 里，
-/// 到了命令层只剩一个 `Err(...)` ⇒ 命令层只能把所有失败都报成「读写密钥包失败，
-/// 请检查文件与磁盘空间」。真机后果（2026-11-19）：**密钥库打不开**（DPAPI 绑机器，
-/// 这份密钥不是本机封的）与**磁盘满**在界面上是同一句话 ⇒ 用户去查磁盘，真因查不到。
-///
-/// 现在两类各走各的码（`RP_KEY_BACKUP_KEYSTORE_UNAVAILABLE` / `RP_KEY_BACKUP_STORE_READ_FAILED`），
-/// 用户看到的是「该做什么」而不是「去查哪里」。
-#[derive(Debug)]
-pub enum ReadSecretsError {
-    /// 读库失败（表不存在 / 库被锁 / 行坏了）。
-    Db(rusqlite::Error),
-    /// 平台密钥库解不开这份信封（不是本机封的 / 密钥库不可用 / 信封损坏）。
-    KeyStore(rp_key_store::KeyStoreError),
-}
-
-impl std::fmt::Display for ReadSecretsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ReadSecretsError::Db(e) => write!(f, "{e}"),
-            ReadSecretsError::KeyStore(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-impl std::error::Error for ReadSecretsError {}
-
-/// 全部绑定，**私钥已解密**。导出用。
-///
-/// 为什么导出要明文：导出包自己用**用户口令**加密（Argon2id + XChaCha20-Poly1305），
-/// 它的卖点就是「换机/重装能迁移」⇒ 里面装的是这台机器的密钥库信封就废了
-/// （DPAPI 绑机器、Keystore 绑设备，换台机器根本解不开）。
-///
-/// 失败分两类返回（见 [`ReadSecretsError`]）：调用方要能分别报「读库失败」与「密钥库打不开」。
-pub fn list_bindings_with_secrets(
-    conn: &Connection,
-) -> std::result::Result<Vec<RpBindingRow>, ReadSecretsError> {
-    let rows = list_bindings(conn).map_err(ReadSecretsError::Db)?;
-    let mut out = Vec::with_capacity(rows.len());
-    for mut r in rows {
-        // ⚠️ 这里**直接调 `rp_key_store::open_secret`**而不是 `opened_secret`：
-        // 后者把密钥库错误塞进 `rusqlite::Error::ToSqlConversionFailure` ⇒ 调用方
-        // 分不出「读库失败」与「密钥库打不开」（见 [`ReadSecretsError`]）。
-        // 语义等价：非信封（旧格式明文）原样返回；信封解不开则报错。
-        r.secret_key = rp_key_store::open_secret(&r.secret_key).map_err(ReadSecretsError::KeyStore)?;
-        out.push(r);
-    }
-    Ok(out)
 }
 
 /// 记一次最近使用（authenticate 成功后）。

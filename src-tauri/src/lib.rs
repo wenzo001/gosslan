@@ -82,7 +82,6 @@ mod private_fs;
 pub mod protocol;
 mod restart;
 /// RP 绑定密钥导出/恢复的协议核心（格式 + Argon2id + 冲突判定），见该文件注释。
-mod rp_key_backup;
 /// RP 绑定私钥的平台密钥库存放（Windows DPAPI / Android Keystore；macOS 暂缓）。
 /// 跨平台纯逻辑 + 平台后端各占一个子模块，见该文件头。
 mod rp_key_store;
@@ -1103,9 +1102,6 @@ pub fn run() {
             commands::device_auth_list_bindings,
             commands::device_auth_revoke,
             commands::device_auth_remove_binding,
-            commands::device_auth_export_bindings,
-            commands::device_auth_preview_import,
-            commands::device_auth_apply_import,
             commands::share_get_pending,
             commands::share_report_receipt,
             commands::share_dismiss,

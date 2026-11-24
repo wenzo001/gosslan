@@ -468,17 +468,8 @@ pub const USER_BACKUP_SNAPSHOT_FAILED: &str = "USER_BACKUP_SNAPSHOT_FAILED";
 pub const USER_BACKUP_SEAL_FAILED: &str = "USER_BACKUP_SEAL_FAILED";
 /// 整库备份导出：写**导出目标**失败（目标盘空间/权限/路径）。下一步才是查导出位置。
 pub const USER_BACKUP_WRITE_FAILED: &str = "USER_BACKUP_WRITE_FAILED";
-/// 导出：没有可导出的已授权应用（库里没有 active/revoked 的绑定）。
-///
-/// 下一步是「先去绑定一个应用」，不是「去清磁盘」—— 与 `RP_KEY_BACKUP_IO` 分开的理由。
-pub const RP_KEY_BACKUP_NOTHING_TO_EXPORT: &str = "RP_KEY_BACKUP_NOTHING_TO_EXPORT";
 /// 导出/恢复：平台密钥库打不开（Windows DPAPI / Android Keystore 解不开这份信封）。
 ///
-/// 典型形状：这份密钥是**别的机器/别的系统**封的（DPAPI 绑机器、Keystore 绑设备）。
-/// 下一步是「在本机重新绑定该应用」，与「文件坏了」是两回事。
-pub const RP_KEY_BACKUP_KEYSTORE_UNAVAILABLE: &str = "RP_KEY_BACKUP_KEYSTORE_UNAVAILABLE";
-/// 导出/恢复：读本机授权清单失败（数据库层，不是文件层）。
-pub const RP_KEY_BACKUP_STORE_READ_FAILED: &str = "RP_KEY_BACKUP_STORE_READ_FAILED";
 /// 共享目录：路径不存在 / 不是目录。
 pub const SHARE_DIR_MISSING: &str = "SHARE_DIR_MISSING";
 /// 共享目录：打开接收目录的阻塞任务失败（human 带底层原因）。

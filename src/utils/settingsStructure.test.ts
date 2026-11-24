@@ -104,7 +104,8 @@ test("每个设置分区组件都被两个外壳引用（没有孤儿分区）",
   const integrations = read("components/settings/IntegrationsSection.vue");
   // 2026-11-17：第三方三块被 IntegrationsSection 聚合成独立 tab —— 外壳只引用聚合组件，
   // 判据改为查「聚合组件确实聚合了它们」，否则把一块漏掉仍会绿（非空转）。
-  const aggregated = ["AuthorizedAppsSection", "ExternalShareSection", "RpKeyBackupSection"];
+  // 2026-11-24：RpKeyBackupSection 已删除（第三方密钥导出/导入并入整库备份）。
+  const aggregated = ["AuthorizedAppsSection", "ExternalShareSection"];
   const files = readdirSync(join(srcDir, "components", "settings")).filter((f) => f.endsWith("Section.vue"));
   for (const f of files) {
     const name = f.replace(".vue", "");

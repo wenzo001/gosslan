@@ -262,9 +262,6 @@ const CODE_RULES: Record<string, string> = {
   // ⚠️ 下面三格是 2026-11-19 从 `RP_KEY_BACKUP_IO` 里**拆出来**的：那一格原来同时装着
   // 「空态」「密钥库打不开」「真·文件 IO」三件事 ⇒ 界面一律说「检查文件与磁盘空间」，
   // 而真机那次（库里一条绑定都没有）磁盘是满的。三种原因给三种下一步，必须分开。
-  RP_KEY_BACKUP_NOTHING_TO_EXPORT: "errors.rule.rpKeyBackupNothingToExport",
-  RP_KEY_BACKUP_KEYSTORE_UNAVAILABLE: "errors.rule.rpKeyBackupKeystore",
-  RP_KEY_BACKUP_STORE_READ_FAILED: "errors.rule.rpKeyBackupStoreRead",
   // 整库备份导出（2026-11-23 拆分）：快照 / 加密 / 写目的地三个步骤各占一格——原先共用
   // `RP_KEY_BACKUP_IO` ⇒ 界面只说"查磁盘"，真机那次（数据目录在系统盘空间紧）真因查不到。
   USER_BACKUP_SNAPSHOT_FAILED: "errors.rule.userBackupSnapshot",

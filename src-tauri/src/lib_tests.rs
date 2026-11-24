@@ -87,7 +87,6 @@ mod tests {
             // （P2P 共享目录）不是一件事，两个分册都要在册。
             include_str!("commands/external_share.rs"),
             // RP 绑定密钥导出/恢复（口令加密的 .gosslankey）。
-            include_str!("commands/rp_key_backup.rs"),
             include_str!("commands/user_backup.rs"),
         )
     }

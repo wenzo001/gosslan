@@ -2,7 +2,7 @@
 
 import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, BotCreatedView, BotPullOutcome, BotView,CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, DeviceAuthRevokeOutcome, RpBindingInfo, RpKeyExportSummary, RpKeyImportReport, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, SharePrompt, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo, SentUsage } from "@/types";
+import type { AppSettings, BotCreatedView, BotPullOutcome, BotView,CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, DeviceAuthRevokeOutcome, RpBindingInfo, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, SharePrompt, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo, SentUsage } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -1005,15 +1005,8 @@ export const api = {
    */
   shareReportReceipt: (shareId: string, status: string, sent: number, failed: number) =>
     invoke<boolean>("share_report_receipt", { shareId, status, sent, failed }),
-  /** 导出已授权应用（口令加密的单文件；落点由界面保存对话框给）。 */
-  deviceAuthExportBindings: (destination: string, passphrase: string) =>
-    invoke<RpKeyExportSummary>("device_auth_export_bindings", { destination, passphrase }),
-  /** 预览导入：解密 + 逐条判定，**不写库**。 */
-  deviceAuthPreviewImport: (source: string, passphrase: string) =>
-    invoke<RpKeyImportReport>("device_auth_preview_import", { source, passphrase }),
-  /** 执行导入：重新解密并单事务写入（只写 Add 的那些）。 */
-  deviceAuthApplyImport: (source: string, passphrase: string) =>
-    invoke<RpKeyImportReport>("device_auth_apply_import", { source, passphrase }),
+  // 第三方密钥导出/导入已并入整库备份（2026-11-24 用户拍板：恢复全量备份即保留已授权
+  // 应用与其密钥，第三方仍以原账号登录；不再单独导出/导入，减少重复入口）。
 
   /** 深链到达时后端 emit 的确认页数据（主窗订阅，弹出强制确认 UI）。 */
   onDeviceAuthRequest: (cb: (p: DeviceAuthPrompt) => void) =>

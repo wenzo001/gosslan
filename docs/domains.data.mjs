@@ -152,12 +152,13 @@ export default {
       // 「外部调用方递东西进本机」的入口，且共用同一条红线（不得变成网页可静默调用本机的桥）。
       // 两者的信任模型不同（分享没有 RP 断言、不联网、必须由用户选会话并显式发送），
       // 所以实现分文件、错误码分族（DEVICE_AUTH_* / EXTERNAL_SHARE_*），只是领域归属相同。
-      // `rp_key_backup.rs`（导出包的格式与加解密纯逻辑）与 `commands/rp_key_backup.rs` 也归这里：
+      // （2026-11-24：独立的第三方密钥导出/导入已移除——整库备份已含绑定私钥，
+      //  恢复后第三方以原账号登录；本域只剩整库备份这一族。）
       // 它们直接持/搬 RP 私钥（导出包就是私钥的容器），属同一条红线。
       // `incoming_share.rs`（系统分享目标的落地区协议：文件格式 + 校验）也归这里：
       // 它是「外部调用方递东西进本机」的又一条入口，与 `share.rs` 同一条红线。
       // `rp_key_store.rs`（RP 绑定私钥的**平台密钥库**：Windows DPAPI / Android Keystore）
-      // 也归这里：它直接持/搬 RP 私钥（信封就是私钥的容器），与 `rp_key_backup.rs` 同一族。
+      // 也归这里：它直接持/搬 RP 私钥（信封就是私钥的容器）。
       // `commands/bots.rs`（通知机器人的注册/取件/投递命令层）也归这里：通知机器人是
       // **第三类**「外部调用方递东西进本机」的入口（设备认证=外部登录、分享=外部内容、
       // 机器人=外部通知），与前两者同一条红线（外部来的东西必须经用户可见的路径，
@@ -166,9 +167,8 @@ export default {
       //    目录下，而 `src-tauri/src/db` 已由 persistence 域整目录认领 ⇒ 同一个文件
       //    不能被两个域认领（判据 B/C）。
       paths: ["src-tauri/src/device_auth.rs", "src-tauri/src/device_auth", "src-tauri/src/share.rs",
-        "src-tauri/src/rp_key_backup.rs", "src-tauri/src/commands/rp_key_backup.rs",
         // J1-4b（2026-11-21）：用户数据全量备份——加密外壳（user_backup.rs）与命令层
-        // （VACUUM INTO + 信封明文化 + pending 替换）。与 rp_key_backup 同族：备份里
+        // （VACUUM INTO + 信封明文化 + pending 替换）。备份里
         // 直接持/搬 RP 私钥（导出时解信封）与身份私钥（整库快照天然含 settings 两行）。
         "src-tauri/src/user_backup.rs", "src-tauri/src/commands/user_backup.rs",
         "src-tauri/src/incoming_share.rs", "src-tauri/src/rp_key_store.rs", "src-tauri/src/rp_key_store",
@@ -176,7 +176,7 @@ export default {
       invariants: [],
       activeHome: "src-tauri/src/device_auth.rs", // 单家：协议核心；命令在装配层、绑定表在 persistence、UI 在 presentation
       enforce: false,
-      consumes: ["observability", "identity", "persistence", "platform"], // observability: error_codes；identity: RP 私钥能力封装（crypto::RpKey）；persistence: 导出/恢复要读写 rp_device_bindings（commands/rp_key_backup.rs 用 use 声明，不再内联全路径）；platform: 2026-11-15 平台密钥库的 Android 后端走 JNI 桥（jni_method::kotlin_method，platform 域）
+      consumes: ["observability", "identity", "persistence", "platform"], // observability: error_codes；identity: RP 私钥能力封装（crypto::RpKey）；persistence: 导出/恢复要读写 rp_device_bindings；platform: 2026-11-15 平台密钥库的 Android 后端走 JNI 桥（jni_method::kotlin_method，platform 域）
       notes:
         "外部分享入口（2026-11-14）：`gosslan://share?…` 内联内容 → 内存排队 → 面板选会话后由用户显式发送；不联网、不落库、不发消息。外部应用（RP）把本安装绑定为可信设备：RP 专属 Ed25519 密钥（**不复用 P2P 身份钥**，避免跨站关联）+ pairwise subject + 强制确认 UI。与核心 P2P 身份隔离，不触好友/传输/身份锚点。Phase 2 客户端最小绑定；RP 后端在外部，契约 mock 驱动。私钥不过 UI 边界（INV-P18 延伸）。真机深链唤起与系统协议注册 NOT RUN。",
     },
