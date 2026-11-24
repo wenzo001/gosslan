@@ -467,14 +467,13 @@ async function verifyPublic({ repo, tag, manifest, assetsDir }) {
  * 对 Gitee 的同名附件点名：缺一个就红，大小不一致也红（上传截断最常见的形状）。
  * 清单 `latest.json` 在 Gitee 是 commit 不是附件，跳过。
  */
-async function verifyAllAssetsMirrored(repo, tag, filesByName) {
+async function verifyAllAssetsMirrored(repo, tag, filesByName, localOnly) {
   const releases = await listAll(`/repos/${repo}/releases`);
   const rel = releases.find((r) => r.tag_name === tag);
   if (!rel) throw new Error(`Gitee 上没有 ${tag}（镜像未建）`);
   const attach = await listAll(`/repos/${repo}/releases/${rel.id}/attach_files`);
   const byName = new Map(attach.map((a) => [a.name, a]));
   const problems = [];
-  const localOnly = [];
   let checked = 0;
   for (const [name, f] of filesByName) {
     if (name === "latest.json") continue;
@@ -499,18 +498,31 @@ async function verifyAllAssetsMirrored(repo, tag, filesByName) {
     throw new Error(`两仓资产不一致（${problems.length} 项，已核 ${checked} 个一致）：\n  ${problems.join("\n  ")}`);
   }
   console.log(`  两仓逐个文件对齐：${checked} 个资产在 Gitee 全部存在且大小一致`);
-  if (localOnly.length > 0) {
-    console.log(`  ⚠️ ${localOnly.length} 个大包不在 Gitee（CI 链路传不动），请在本机补传：`);
-    console.log(`     ${localOnly.join("\n     ")}`);
+  const uniq = [...new Set(localOnly)];
+  if (uniq.length > 0) {
+    console.log(`  ⚠️ ${uniq.length} 个大包不在 Gitee（CI 跨境链路传不动），请在本机补传：`);
+    console.log(`     ${uniq.join("\n     ")}`);
     console.log(`     GITEE_TOKEN=*** node scripts/gitee-backfill.mjs --tag ${tag}`);
   }
 }
 
-async function verifyAssets(manifest, assetsDir, filesByName) {
+async function verifyAssets(manifest, assetsDir, filesByName, localOnly) {
   for (const [platform, entry] of Object.entries(manifest.platforms)) {
     const name = basenameFromUrl(entry.url);
     const local = filesByName.get(name);
-    const head = await checkAnonymous(entry.url, { minBytes: 1 });
+    let head;
+    try {
+      head = await checkAnonymous(entry.url, { minBytes: 1 });
+    } catch (e) {
+      // 大包在 CI 那条跨境链路上传不动（见 CI_UPLOAD_MAX_BYTES），匿名 404 是预期的：
+      // 记账交给本机补传，不判红（否则每次发版都挂一条永远修不了的红）。
+      if (local && local.size > CI_UPLOAD_MAX_BYTES) {
+        localOnly.push(`${name}（${Math.round(local.size / 1048576)}MB）`);
+        console.log(`  ${platform}: 待本机补传（${String(e?.message ?? e).slice(0, 80)}）${name}`);
+        continue;
+      }
+      throw e;
+    }
     console.log(`  ${platform}: 匿名可达（HTTP ${head.status}，${head.type}）${name}`);
     if (!local) continue;
     // 至少完整下载一个桌面产物与一个 APK，字节级对齐本地（证明匿名下载拿到的是真文件）。
@@ -727,9 +739,10 @@ async function main(argv) {
   );
 
   console.log("匿名校验固定清单与附件：");
+  const localOnly = [];
   const publicManifest = await verifyPublic({ repo, tag, manifest, assetsDir });
-  await verifyAssets(publicManifest, assetsDir, filesByName);
-  await verifyAllAssetsMirrored(repo, tag, filesByName);
+  await verifyAssets(publicManifest, assetsDir, filesByName, localOnly);
+  await verifyAllAssetsMirrored(repo, tag, filesByName, localOnly);
 
   const releases = await listAll(`/repos/${repo}/releases`);
   const plan = prunePlan(releases, tag, keep);

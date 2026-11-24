@@ -251,3 +251,15 @@ test("大包不走 CI：超过阈值的附件不上传，finalize 只打补传�
     "必须把补传命令打出来——只说「缺」而不给怎么办等于没说",
   );
 });
+
+test("finalize 的匿名校验对大包同样降级（manifest 里的桌面 url 指向 7MB 包，CI 传不动）", () => {
+  // v7.2.8 的 finalize 红在：`✗ 匿名访问 …/Gosslan-arm64.app.tar.gz 返回 HTTP 404`
+  // —— 那是 7MB 的包，本来就走本机补传。匿名校验必须用同一把尺子（CI_UPLOAD_MAX_BYTES）。
+  const src = readFileSync(new URL("./sync-gitee.mjs", import.meta.url), "utf8");
+  assert.match(
+    src,
+    /if \(local && local\.size > CI_UPLOAD_MAX_BYTES\) \{\s*\n\s*localOnly\.push/,
+    "manifest 平台的匿名 404 遇到大包必须记账降级，否则每次发版都红",
+  );
+  assert.match(src, /verifyAssets\(publicManifest, assetsDir, filesByName, localOnly\)/, "localOnly 必须跨两个校验共享");
+});
