@@ -9889,3 +9889,23 @@ test("群文件面板：localPaths 必须声明在它读的 files 之后（setup
     "把 localPaths 提前之后仍然没有变红 ⇒ 这条判据在空集上恒绿",
   );
 });
+
+test("文案只描述功能，不替用户写用途（离线局域网产品，尤其不许引导「粘贴给 AI」）", () => {
+  const dict = (p: string) => readFileSync(join(import.meta.dirname, "..", p), "utf8");
+  const zh = dict("i18n/locales/zh-cn.ts");
+  const en = dict("i18n/locales/en-us.ts");
+  // 用户 2026-11-24（任务卡「复制」的 tooltip 写着「可直接粘贴给 AI」）：本产品跑在
+  // **离线局域网**里，替用户指定去处既没有那个服务、也不该由我们替他决定做什么。
+  // 口径：提示只描述「这个动作做了什么」（复制了什么、生成了什么），不写「拿去干什么」。
+  const offenders = [/粘贴给\s*AI/, /发给\s*AI/, /ready to paste into an AI/i, /paste (it )?into (an? )?AI/i];
+  for (const re of offenders) {
+    assert.ok(!re.test(zh), `中文文案里还有替用户写用途的句子：${re}`);
+    assert.ok(!re.test(en), `英文文案里还有替用户写用途的句子：${re}`);
+  }
+  // 两条具体回归点（这两条当初都写了"粘到哪儿"）。
+  assert.ok(!zh.includes("可直接粘贴给 AI"), "todo.copyTaskHint 不许再引导「粘贴给 AI」");
+  assert.ok(
+    !/"msg\.fileCopied": "[^"]*粘贴/.test(zh),
+    "「已复制文件」只陈述事实，不许再教用户粘到聊天框还是资源管理器",
+  );
+});
