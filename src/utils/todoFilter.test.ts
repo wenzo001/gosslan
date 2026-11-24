@@ -55,6 +55,27 @@ test("反例自证：漏掉「身份已知」这个前提，身份未到 + 「�
   assert.notEqual(naive(late), decideDefaultFilter(late));
 });
 
+test("从任务栏 / ⌘Tab 唤回窗口 = 激活而非重开 ⇒ 不许重判页签（用户 2026-11-24 实测）", () => {
+  const root = join(import.meta.dirname, "..", "..");
+  const win = readFileSync(join(root, "src/components/GroupTodosWindow.vue"), "utf8");
+  // 现场：手动切到「已归档」→ 任务栏点该窗口 → 被打回「我的」。机制是 focus 回调走了
+  // 「算一次新打开」的那条路（resetSeq++）⇒ 看板重判默认页签。
+  const focusIdx = win.indexOf("onFocusChanged");
+  assert.ok(focusIdx > 0, "找不到焦点兜底（从任务栏唤回时不再重读数据也不是本意）");
+  const focusBlock = win.slice(focusIdx, focusIdx + 500);
+  assert.match(
+    focusBlock,
+    /applyTarget\(groupId\.value,\s*\{\s*reopened:\s*false\s*\}\)/,
+    "焦点唤回必须显式声明 reopened:false——否则每次从任务栏点回来都把用户选的页签打回默认",
+  );
+  // 重判信号只在 reopened 不为 false 时才递增（这条是上面那条的机制侧）。
+  assert.match(
+    win,
+    /if \(opts\.reopened !== false\) resetSeq\.value \+= 1/,
+    "resetSeq 必须在 reopened:false 时保持不动",
+  );
+});
+
 test("常驻群任务窗口：每次打开都要重判默认页签（否则停在上一轮的页签）", () => {
   const root = join(import.meta.dirname, "..", "..");
   const win = readFileSync(join(root, "src/components/GroupTodosWindow.vue"), "utf8");

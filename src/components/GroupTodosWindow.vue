@@ -99,10 +99,21 @@ async function deliverFocus(focus: TodoFocus) {
 /** 每次「被打开」的序号：同群重开时 `:key` 不变、看板不重挂，靠它让看板重判默认页签。 */
 const resetSeq = ref(0);
 
-async function applyTarget(next: string | null) {
+/**
+ * 切到某个群 / 把当前群重读一遍。
+ *
+ * `reopened`（默认 true）= 这次算「一次新的打开」⇒ 递增 `resetSeq`，看板按当前「我的」
+ * 是否为空重判默认页签（用户 2026-11-08 的规则）。
+ *
+ * ⚠️ **从任务栏 / ⌘Tab 唤回窗口必须传 `reopened: false`**（用户 2026-11-24 实测）：
+ * 那只是**激活**已经打开的窗口，不是重新打开。此前一律当"新打开"处理 ⇒ 用户手动切到
+ * 「已归档」后，在任务栏点一下窗口就又被打回「我的」，等于每次唤回都丢掉他刚选的视角。
+ * 唤回真正要的只是"把离开期间的新任务读回来"（自愈兜底），不该动页签。
+ */
+async function applyTarget(next: string | null, opts: { reopened?: boolean } = {}) {
   if (!next) return;
   // 同一群再打开也算一次「新的打开」：常驻窗口不会因此重挂看板（用户 2026-11-18）。
-  resetSeq.value += 1;
+  if (opts.reopened !== false) resetSeq.value += 1;
   const switched = groupId.value !== next;
   groupId.value = next;
   loadError.value = "";
@@ -166,10 +177,12 @@ onMounted(() => {
   // 没人点 ⇒ 列表停在离开那一刻（别人完成了任务、新加了任务，这里全都看不见）。
   // 刻意复用 `applyTarget`：它正是点卡片走的那条路（含换群时的订阅切换与待展开投递），
   // 不另写一份取数逻辑 ⇒ 不会再长出第二个家。
+  // ⚠️ 但必须 `reopened: false`：唤回 = 激活**同一扇**窗口，不是重新打开 ⇒ 不重判页签
+  //   （用户 2026-11-24：切到「已归档」后从任务栏点回来被打回「我的」）。
   void (async () => {
     try {
       const fn = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-        if (focused && groupId.value) void applyTarget(groupId.value);
+        if (focused && groupId.value) void applyTarget(groupId.value, { reopened: false });
       });
       // 与上面同一条理由：窗口被秒关时 onUnmounted 可能已经跑完
       listenerScope.onDispose(fn);
