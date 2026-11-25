@@ -2162,6 +2162,23 @@ html.is-mobile {
   overscroll-behavior: contain;
 }
 
+/* ★ 2026-11-25（用户 Win 截图）：把 OS viewport 上的**原生滚动条彻底关掉**。
+   现象：同一份代码，Windows 上是一条贴边、带灰轨道、无圆角的系统条；macOS 上是
+   OS 画的圆角浮条。根因是 Chromium（Windows WebView2）会照上面那条全局
+   `::-webkit-scrollbar` 把原生条**画出来**，盖在 OS 的 overlay 带旁边；而 macOS 的
+   WKWebView 对 `::-webkit-scrollbar` 支持有限、不会画，于是两端看到两种滚动条。
+   这里用更高的特异性（`[data-overlayscrollbars-viewport]::-webkit-scrollbar`）把
+   原生条归零 —— 只留 OS 自己画的那一条，两端才一致。
+   ⚠️ 只在 OS 容器上关：尚未迁移的容器（少数弹层）仍走全局那套 8px 细条。 */
+.gosslan-os [data-overlayscrollbars-viewport]::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+.gosslan-os [data-overlayscrollbars-viewport] {
+  scrollbar-width: none;
+}
+
 /* 虚拟列表关掉浏览器原生滚动锚定：高度变化由 VirtualList 同帧显式补偿。
    锚定属性必须落在**真正滚动的元素**上（viewport），挂在 host 上不生效。 */
 .vlist-no-anchor [data-overlayscrollbars-viewport] {
