@@ -498,7 +498,16 @@ async function verifyAllAssetsMirrored(repo, tag, filesByName, localOnly) {
     }
   }
   if (problems.length) {
-    throw new Error(`两仓资产不一致（${problems.length} 项，已核 ${checked} 个一致）：\n  ${problems.join("\n  ")}`);
+    throw new Error(
+      `两仓资产不一致（${problems.length} 项，已核 ${checked} 个一致）：\n  ${problems.join("\n  ")}\n` +
+        // 2026-11-25 v7.2.11 现场：Linux 腿的「挂资产」因发布门禁只等 10 分钟被拒（Verify 要 24 分钟），
+        // 重跑后才把 2 个 AppImage + 2 个 .sig + 2 个 deb 补上；而本次同步的 prepare 早在 11:41
+        // 就取过资产快照（14 个），这 6 个它从没见过 ⇒ 现象是"分片全绿、finalize 说缺"。
+        // 门禁上限已抬到 30 分钟，但这条兜底提示留着：看到"缺的正好是某一个平台的全套"，
+        // 先去看那个平台的 Build 运行有没有重跑过，再重跑一次本 workflow 即可（已存在的不重传）。
+        "提示：若缺口正好是某个平台的全套（例如 Linux 的 AppImage/deb），多半是该平台的" +
+        "「挂资产」步骤刚重跑过、资产晚于本工作流的快照才挂上 —— 再跑一次本 workflow 补齐即可。",
+    );
   }
   console.log(`  两仓逐个文件对齐：${checked} 个资产在 Gitee 全部存在且大小一致`);
   const uniq = [...new Set(localOnly)];

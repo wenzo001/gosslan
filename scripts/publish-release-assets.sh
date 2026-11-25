@@ -122,7 +122,15 @@ elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   # 打 tag 时 Verify 与构建是**并发**起来的：构建要十几分钟，通常门禁早就绿了；
   # 但刚推完就发版（或重跑）时它可能还在 queued/in_progress —— 这时**等**，不是立刻拒，
   # 否则"门禁还没跑完"会被读成"门禁失败"。等不到才拒（fail closed）。
-  gate_attempts="${GOSSLAN_VERIFY_GATE_ATTEMPTS:-20}"   # 20 × 30s = 10min 上限
+  #
+  # ⚠️ 2026-11-25 实测：上限原来只有 10 分钟（20×30s），而 Verify 现在要 **24 分钟**
+  # （前端 13m36s / 护栏 15m20s 并行，整体 24m）—— v7.2.11 的 Linux 腿就卡在这条：
+  # 它 11:29 开始等，11:38:54 判「仍是 in_progress」拒发，Verify 实际 11:39 才绿，
+  # **差一分半**。后果不是"Linux 没出包"（编译产物都在），而是这次运行的资产要重跑一次
+  # 才挂上 Release，而 Gitee 同步已经在 11:41 取过资产快照（只看到 14 个文件、缺 Linux 的
+  # 6 个：2 个 AppImage + 2 个 .sig + 2 个 deb），于是 finalize 对账判红、又得再跑一遍同步。
+  # 30 分钟（60×30s）给 Verify 留 6 分钟余量；job 本身的 timeout 是 60 分钟，够。
+  gate_attempts="${GOSSLAN_VERIFY_GATE_ATTEMPTS:-60}"   # 60 × 30s = 30min 上限
   gate_sleep="${GOSSLAN_VERIFY_GATE_SLEEP:-30}"
   attempt=0
   while :; do
