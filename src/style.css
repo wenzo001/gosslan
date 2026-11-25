@@ -516,7 +516,11 @@
      此前标题/页脚 16px、header 插槽 12px，同一张弹窗里出现两种节奏。
      守卫：designGuards `MD-01`。 */
   --gosslan-modal-gap: 1rem;
-  /* thumb 三态浓度（`color-mix` 的百分比；对比度读数见下面"滚动条规范"）： */
+  /* thumb 三态浓度（`color-mix` 的百分比；对比度读数见下面"滚动条规范"）：
+     第四档 `-idle` 只给**常驻**滚动条用（Windows 口径，见 `OverlayScroll.vue`）：
+     常驻的条必须比"hover 时才冒出来"的条淡一截，否则一条 72% 的深竖线整天压在
+     内容右缘上；鼠标靠近时仍会升到 72% / 88%。 */
+  --gosslan-scrollbar-thumb-idle: 42%;
   --gosslan-scrollbar-thumb: 72%;
   --gosslan-scrollbar-thumb-active: 88%;
   --gosslan-scrollbar-track: 12%;
@@ -2212,6 +2216,19 @@ html.is-mobile {
 .os-theme-gosslan .os-scrollbar-handle:hover,
 .os-theme-gosslan .os-scrollbar-handle:active {
   background: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-thumb-active), transparent);
+}
+
+/* 常驻档（Windows，见 `OverlayScroll.vue` 的 `gosslan-os--persistent`）：
+   条一直在，所以空闲态要**更淡**（`-idle` 42%），鼠标靠近/拖动时才升到 72% / 88%。
+   特异性比上面那条多一个类 ⇒ 不需要 `!important`。
+   ⚠️ 只挂在 `.gosslan-os--persistent` 上：hover 才显的容器在"正在显示"时类名同样是
+   `os-scrollbar-auto-hide`（只少了 `-hidden`），靠类名分不出平台，必须由宿主标记。 */
+.gosslan-os--persistent .os-scrollbar-handle {
+  background: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-thumb-idle), transparent);
+}
+.gosslan-os--persistent .os-scrollbar-handle:hover,
+.gosslan-os--persistent .os-scrollbar-handle:active {
+  background: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-thumb), transparent);
 }
 
 /* 滑块粗细分档（写在主题规则之后 ⇒ 同特异性时以本段为准）。

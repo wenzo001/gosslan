@@ -11,6 +11,7 @@ import {
   isWindowsUA,
   prefersReducedMotionByMedia,
   resolveMobileLayout,
+  scrollbarAutoHideForUA,
 } from "./platform.ts";
 
 const SRC_DIR = join(import.meta.dirname, "..");
@@ -363,5 +364,50 @@ test("移动布局宽度档只有一个家：JS 不许裸抄、CSS 与 Tailwind 
     mod.NARROW_LAYOUT_QUERY,
     `(max-width: ${NARROW}px)`,
     "运行时读到的查询串与从家现算的值不一致",
+  );
+});
+
+// ---------------- 滚动条口径：Windows 常驻、其余 hover 才显 ----------------
+//
+// 2026-11-25 用户实报「Windows 上滚动条直接没了」。这条判据钉的是**决策本身**：
+// 一旦有人把 Windows 也改回 `move`（或两边都写死 `never`），这里必须红 ——
+// 前者会让 Windows 静止时完全没有滚动条（原生条已归零、自绘条不动不显），
+// 后者会让 mac 上多出一条本不该常驻的深色竖线。
+
+test("scrollbarAutoHideForUA：Windows 常驻，mac / 安卓走 hover 才显", () => {
+  const win =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36 Edg/130.0";
+  const mac =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+  const android =
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36";
+
+  assert.equal(scrollbarAutoHideForUA(win), "never", "Windows 必须常驻：原生条已归零，再 hover 才显就等于没有");
+  assert.equal(scrollbarAutoHideForUA(mac), "move", "mac 保持 hover/滚动才出现（系统惯例也是 overlay）");
+  assert.equal(scrollbarAutoHideForUA(android), "move", "移动端没有 hover，常驻条只会挡住内容");
+
+  // 判据非空转：这两个平台必须给出**不同**的答案 —— 否则恒返回一个值也能"通过"。
+  assert.notEqual(scrollbarAutoHideForUA(win), scrollbarAutoHideForUA(mac));
+});
+
+test("OverlayScroll 真的接在这个口径上（不是自己又写死一个值）", () => {
+  const vue = readFileSync(join(SRC_DIR, "components/ui/OverlayScroll.vue"), "utf8");
+  assert.ok(
+    vue.includes("props.autoHide ?? scrollbarAutoHide"),
+    "组件必须「显式传入优先、否则用平台口径」，直接写死 autoHide 会让 Windows 又变成静止无条",
+  );
+  assert.ok(
+    vue.includes("gosslan-os--persistent"),
+    "常驻时宿主必须带上 persistent 标记 —— 滑块颜色分档（idle 更淡）挂在它上面",
+  );
+  // 常驻档的颜色必须在样式里真的存在，否则常驻条会用 72% 的深色整天压在内容上。
+  const css = readFileSync(join(SRC_DIR, "style.css"), "utf8");
+  assert.ok(
+    css.includes("--gosslan-scrollbar-thumb-idle"),
+    "缺常驻档浓度令牌：常驻条会跟 hover 条一样深",
+  );
+  assert.ok(
+    css.includes(".gosslan-os--persistent .os-scrollbar-handle"),
+    "缺常驻档的滑块样式：令牌定义了也没人用",
   );
 });

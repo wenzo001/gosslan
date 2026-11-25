@@ -28,6 +28,7 @@
  */
 import { onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 import { ClickScrollPlugin, OverlayScrollbars, type PartialOptions } from "overlayscrollbars";
+import { scrollbarAutoHide } from "@/utils/platform";
 
 /**
  * 「点轨道翻页」由 `ClickScrollPlugin` 提供 —— `clickScroll: true` 只是它的**配置**，
@@ -42,13 +43,19 @@ const props = withDefaults(
     /** 只在需要时滚动（默认 y）。x 轴一律 hidden：横向滚动条在这个产品里从来不该出现。 */
     axis?: "y" | "both";
     /**
-     * 何时显示滚动条。
-     * · `move`（默认）：**滚动或指针在容器内移动**时出现，停手 `hideDelay` 后淡出
+     * 何时显示滚动条。**不传时按平台给默认值**（`utils/platform.ts` 的
+     * `scrollbarAutoHide`）：
+     *
+     * · Windows 默认 `never`（**常驻**）—— 2026-11-25 用户实报「Windows 上滚动条直接
+     *   没了」：原生条被归零、自绘条又要指针移动才出现 ⇒ 静止时两条都没有。Windows 的
+     *   惯例本来就是常驻（资源管理器 / VS Code），常驻态用更淡的 `-idle` 令牌；
+     * · 其余平台默认 `move`：**滚动或指针在容器内移动**时出现，停手 `hideDelay` 后淡出
      *   —— 同时满足"hover 才显"和"idle 隐藏"（v2 文档原文：hidden unless the pointer
      *   moves in the host element **or** the user scrolls）；
      * · `leave`：指针停在容器里就一直显示（macOS 原生那种，长时间阅读会常驻）；
      * · `scroll`：只有滚动才显示（微信 PC 的旧口径，hover 不出）；
-     * · `never`：常显（只在辅助/调试口径下用）。
+     *
+     * 显式传值一律优先于平台默认（例如某个面板就是要常驻/就是要更安静）。
      */
     autoHide?: "move" | "scroll" | "leave" | "never";
     /**
@@ -72,7 +79,7 @@ const props = withDefaults(
     ariaLive?: string;
     ariaRelevant?: string;
   }>(),
-  { axis: "y", autoHide: "move", size: "normal", hideDelay: 1200 },
+  { axis: "y", size: "normal", hideDelay: 1200 },
 );
 
 const emit = defineEmits<{ (e: "scroll"): void }>();
@@ -82,10 +89,17 @@ const instance = shallowRef<ReturnType<typeof OverlayScrollbars> | null>(null);
 /** 原生 scroll 监听器要能解绑，且 scroll **不冒泡** ⇒ 只能挂在 viewport 上自己转发。 */
 let detachScroll: (() => void) | null = null;
 
+/**
+ * 显式传入优先，否则用平台默认（Windows 常驻 / 其余 hover 才显）。
+ * 为什么要一个变量而不是直接写进 options：模板也要用它决定 `gosslan-os--persistent`，
+ * 而那个类名决定滑块用哪一档颜色（常驻必须更淡，见 `style.css`）。
+ */
+const effectiveAutoHide = props.autoHide ?? scrollbarAutoHide;
+
 const options: PartialOptions = {
   scrollbars: {
     theme: "os-theme-gosslan",
-    autoHide: props.autoHide,
+    autoHide: effectiveAutoHide,
     autoHideDelay: props.hideDelay,
     // 默认 true 时"第一次滚动之前不让出现"，会把 hover 显现也一起压掉。
     autoHideSuspend: false,
@@ -135,7 +149,11 @@ defineExpose({ scrollElement, scrollToBottom, isAtBottom });
 </script>
 
 <template>
-  <div ref="host" class="gosslan-os min-h-0" :class="`gosslan-os--${size}`">
+  <div
+    ref="host"
+    class="gosslan-os min-h-0"
+    :class="[`gosslan-os--${size}`, { 'gosslan-os--persistent': effectiveAutoHide === 'never' }]"
+  >
     <div class="gosslan-os-wrap">
       <slot />
     </div>

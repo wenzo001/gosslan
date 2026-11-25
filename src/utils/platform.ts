@@ -184,3 +184,33 @@ export function prefersReducedMotion(): boolean {
     ? prefersReducedMotionByMedia((q) => window.matchMedia(q))
     : false;
 }
+
+/**
+ * 滚动条「什么时候出现」的平台口径（纯函数，便于单测）。
+ *
+ * 2026-11-25 用户实报：**Windows 上滚动条直接没了**。
+ *
+ * 根因不是样式没生效，是两件事叠在一起：
+ * 1. 我们的滚动条是 OverlayScrollbars 自绘的 overlay 条（`autoHide: "move"`）——
+ *    只有指针在容器里移动或正在滚动时才出现（Chromium 实测：静止时 `.os-scrollbar`
+ *    同时带 `os-scrollbar-visible` 与 `os-scrollbar-auto-hide-hidden`，`opacity: 0`）；
+ * 2. 为了消掉 Windows 多画的那层原生条（Chromium 会照全局 `::-webkit-scrollbar`
+ *    画一条，macOS 的 WKWebView 不画），2026-11-25 把 OS 视口的原生条归零了。
+ *
+ * 于是 Windows 上"原生条没了 + 自绘条静止不显" = 看起来完全没有滚动条。macOS 本来
+ * 就没有那层原生条，所以那边没变化 —— 用户看到的"两端不一致"其实是这个差值。
+ *
+ * 口径：**Windows 常驻（`never`），其余平台 hover/滚动才显（`move`）**。
+ * - Windows 桌面应用的惯例就是常驻（资源管理器、VS Code 都是），用户靠它判断"还能不能往下"；
+ * - macOS 的惯例是 overlay（系统自己也是滚动时才出现），常驻反而突兀。
+ * 视觉仍是同一套（同宽、同圆角、同色令牌），常驻态用更淡的 `--gosslan-scrollbar-thumb-idle`。
+ */
+export function scrollbarAutoHideForUA(ua: string): "never" | "move" {
+  return isWindowsUA(ua) ? "never" : "move";
+}
+
+/** 运行时读数（与 `isMac` / `isWindows` 同一套 navigator 守卫）。 */
+export const scrollbarAutoHide: "never" | "move" =
+  typeof navigator !== "undefined" && typeof navigator.userAgent === "string"
+    ? scrollbarAutoHideForUA(navigator.userAgent)
+    : "move";

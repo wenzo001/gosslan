@@ -14,6 +14,22 @@
 
 ## [Unreleased]
 
+### 修复：Windows 上滚动条「直接没了」（原生条归零后没人接手）
+- **现场**（用户 2026-11-25 第二轮）：上一版把 OS 视口的原生条归零后，Windows 上滚动条彻底看不见。
+- **根因是两层叠加，不是样式没生效**：① 我们的条是 OverlayScrollbars 自绘的 overlay 条，
+  `autoHide: "move"` —— 只有指针在容器内移动或正在滚动时才出现（Chromium 实测：静止时
+  `.os-scrollbar` 同时带 `os-scrollbar-visible` 与 `os-scrollbar-auto-hide-hidden`，`opacity: 0`）；
+  ② 上一版为了消掉 Windows 多画的那层原生条，把它归零了。于是 Windows = 原生条没了 +
+  自绘条静止不显 = **一条都没有**；macOS 本来就没那层原生条，所以那边没变化。
+- **口径改成按平台**：**Windows 常驻（`never`）**，其余平台仍是 hover/滚动才显（`move`）。
+  Windows 桌面惯例就是常驻（资源管理器 / VS Code 都靠它提示"还能往下"），macOS 惯例是
+  overlay ⇒ 视觉同一套（同宽 / 同圆角 / 同色令牌），出现时机随平台习惯。调用点显式传
+  `autoHide` 仍优先（某个面板要更安静时有出口）。
+- 常驻条比 hover 条**淡一截**（新增 `--gosslan-scrollbar-thumb-idle: 42%`，hover/拖动升到
+  72% / 88%），避免一条 72% 的深竖线整天压在内容右缘。
+- 判据：`platform.test.ts` 2 条（平台口径真值表 + 「组件真的接在这个口径上」的形状判据），
+  变异检验两头都咬得住（把函数改成恒 `move` / 把组件写死 `move` 各精确红一条）。
+
 ### 修复：发布门禁只等 Verify 10 分钟，而 Verify 现在要 24 分钟
 - **v7.2.11 现场**：Linux 腿的「挂资产」11:29 开始等 Verify 结论，11:38:54 判「仍是
   in_progress」拒发，而 Verify 实际 11:39 才绿 —— **差一分半**。后果不是缺包（两个架构的
