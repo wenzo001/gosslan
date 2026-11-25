@@ -1,11 +1,11 @@
 name: Probe Gitee upload
 
-# 临时探针（不合并 main）：验证 GitHub runner 上传大文件到 Gitee 时，
-# `Expect: 100-continue` 是不是 HTTP 400 的原因。
+# 临时探针（不合并 main）：验证「N 路并发上传」会不会重演 v7.2.8 的 HTTP 400。
 #
-# 背景：v7.2.8 同步时 104 字节的 sha256 一次成功，而 6.4/8.5/8.8/13.8MB 四个包
-# 各重试 3 次全是 400（响应体为空）。curl 对 >1KB 的 multipart 会带
-# `Expect: 100-continue`，小文件不带 —— 这是唯一与体积强相关的差异。
+# 已排除的假设（2026-11-25 实跑）：
+#   · `Expect: 100-continue` 不是原因 —— 带/不带这个头，同一个 7.8MB 包都是 HTTP 201；
+#   · 单连接容量不是原因 —— 单路 12.7~18KB/s 能传完。
+# 待验证：v7.2.8 失败时是 12 分片 × 3 并发 = 36 路；新脚本是 4 分片 ⇒ 4 路并发。
 on:
   workflow_dispatch:
     inputs:
@@ -13,15 +13,10 @@ on:
         description: "已发布的 GitHub tag"
         required: true
         default: "v7.2.10"
-      asset:
-        description: "要试传的 GitHub 资产名（>5MB 才有意义）"
+      assets:
+        description: "要试传的资产（逗号分隔，选 4 个 6–10MB 的）"
         required: true
-        default: "Gosslan-arm64.app.tar.gz"
-      disable_expect:
-        description: "禁用 Expect: 100-continue（curl -H 'Expect:'）"
-        required: true
-        type: boolean
-        default: true
+        default: "Gosslan-arm64.app.tar.gz,Gosslan-x86_64.app.tar.gz,Gosslan_7.2.10_amd64.deb,Gosslan_7.2.10_arm64.deb"
 
 permissions:
   contents: read
@@ -30,89 +25,97 @@ env:
   GITEE_REPO: fwdq/gosslan-releases
   GITHUB_REPO: ${{ github.repository }}
   TAG: ${{ inputs.tag }}
-  ASSET: ${{ inputs.asset }}
-  DISABLE_EXPECT: ${{ inputs.disable_expect }}
+  ASSETS: ${{ inputs.assets }}
 
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 120
     steps:
       - name: Mask Gitee token
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: echo "::add-mask::$GITEE_TOKEN"
 
-      - name: Download asset from GitHub
+      - name: Download assets from GitHub
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p assets
-          id=$(gh api "repos/$GITHUB_REPO/releases/tags/$TAG" --jq ".assets[] | select(.name == \"$ASSET\") | .id")
-          size=$(gh api "repos/$GITHUB_REPO/releases/tags/$TAG" --jq ".assets[] | select(.name == \"$ASSET\") | .size")
-          echo "asset=$ASSET size=$size id=$id"
-          test -n "$id"
-          gh api "repos/$GITHUB_REPO/releases/assets/$id" \
-            -H "Accept: application/octet-stream" > "assets/$ASSET"
-          ls -l "assets/$ASSET"
+          IFS=',' read -ra list <<< "$ASSETS"
+          for name in "${list[@]}"; do
+            id=$(gh api "repos/$GITHUB_REPO/releases/tags/$TAG" --jq ".assets[] | select(.name == \"$name\") | .id")
+            test -n "$id" || { echo "找不到资产 $name"; exit 1; }
+            gh api "repos/$GITHUB_REPO/releases/assets/$id" \
+              -H "Accept: application/octet-stream" > "assets/$name"
+          done
+          ls -l assets
 
       - name: Resolve Gitee release id
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -euo pipefail
+          enc=$(printf '%s' "$GITEE_TOKEN" | jq -sRr @uri)
           curl -sS --max-time 60 \
-            "https://gitee.com/api/v5/repos/$GITEE_REPO/releases?access_token=$(printf '%s' "$GITEE_TOKEN" | jq -sRr @uri)&per_page=100" \
+            "https://gitee.com/api/v5/repos/$GITEE_REPO/releases?access_token=$enc&per_page=100" \
             -o /tmp/releases.json
           rid=$(jq -r --arg t "$TAG" '.[] | select(.tag_name == $t) | .id' /tmp/releases.json | head -1)
-          echo "gitee release id=$rid"
           test -n "$rid" && test "$rid" != "null"
           echo "RID=$rid" >> "$GITHUB_ENV"
 
-      - name: Upload with curl (and report timing)
+      - name: Upload N files concurrently
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
-          set -euo pipefail
-          probe="probe-${ASSET}"
-          # 与 scripts/sync-gitee.mjs 的 uploadAssetOnce 同一形状；唯一变量是 Expect 头。
-          extra=()
-          if [ "$DISABLE_EXPECT" = "true" ]; then extra+=(-H "Expect:"); fi
-          set +e
-          curl -sS --fail-with-body \
-            --write-out "\n__HTTP__%{http_code} up=%{size_upload} speed=%{speed_upload}B/s time=%{time_total}s\n" \
-            --max-time 3600 --speed-limit 512 --speed-time 180 \
-            -X POST \
-            "https://gitee.com/api/v5/repos/$GITEE_REPO/releases/$RID/attach_files?access_token=$(printf '%s' "$GITEE_TOKEN" | jq -sRr @uri)" \
-            "${extra[@]}" \
-            -F "file=@assets/$ASSET;filename=$probe" \
-            > /tmp/upload.out 2>/tmp/upload.err
-          rc=$?
-          set -e
-          echo "curl exit=$rc"
-          echo "--- stdout ---"; cat /tmp/upload.out
-          echo "--- stderr ---"; cat /tmp/upload.err
-          # 成功/失败都留一条摘要，便于在 Actions 摘要里直接看
-          {
-            echo "### Probe result"
-            echo "- asset: $ASSET"
-            echo "- disable_expect: $DISABLE_EXPECT"
-            echo "- curl exit: $rc"
-            echo "- $(grep -o '__HTTP__[0-9]*' /tmp/upload.out | tail -1)"
-          } >> "$GITHUB_STEP_SUMMARY"
+          set -uo pipefail
+          enc=$(printf '%s' "$GITEE_TOKEN" | jq -sRr @uri)
+          url="https://gitee.com/api/v5/repos/$GITEE_REPO/releases/$RID/attach_files?access_token=$enc"
+          IFS=',' read -ra list <<< "$ASSETS"
+          pids=()
+          for name in "${list[@]}"; do
+            probe="probe-${name}"
+            (
+              curl -sS --fail-with-body \
+                --write-out "\n__HTTP__%{http_code} up=%{size_upload} speed=%{speed_upload}B/s time=%{time_total}s\n" \
+                --max-time 3600 --speed-limit 256 --speed-time 300 \
+                -X POST "$url" -F "file=@assets/$name;filename=$probe" \
+                > "/tmp/up-${name}.out" 2>"/tmp/up-${name}.err"
+              echo "$?" > "/tmp/rc-${name}"
+            ) &
+            pids+=($!)
+            echo "启动：$name（pid $!）"
+          done
+          for p in "${pids[@]}"; do wait "$p" || true; done
 
-      - name: Cleanup probe attachment
+          echo "### 并发上传结果（${{ inputs.assets }}）" >> "$GITHUB_STEP_SUMMARY"
+          fail=0
+          for name in "${list[@]}"; do
+            rc=$(cat "/tmp/rc-${name}" 2>/dev/null || echo "?")
+            http=$(grep -o '__HTTP__[0-9]*' "/tmp/up-${name}.out" 2>/dev/null | tail -1)
+            line=$(grep -o 'up=.*' "/tmp/up-${name}.out" 2>/dev/null | tail -1)
+            echo "$name: rc=$rc ${http} ${line}"
+            echo "- $name: rc=$rc ${http} ${line}" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$rc" != "0" ]; then
+              fail=1
+              echo "--- stderr $name ---"; tail -5 "/tmp/up-${name}.err" || true
+            fi
+          done
+          exit $fail
+
+      - name: Cleanup probe attachments
         if: always()
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          enc=$(printf '%s' "$GITEE_TOKEN" | jq -sRr @uri)
           curl -sS --max-time 120 \
-            "https://gitee.com/api/v5/repos/$GITEE_REPO/releases/$RID/attach_files?access_token=$(printf '%s' "$GITEE_TOKEN" | jq -sRr @uri)&per_page=100" \
+            "https://gitee.com/api/v5/repos/$GITEE_REPO/releases/$RID/attach_files?access_token=$enc&per_page=100" \
             -o /tmp/attaches.json || true
           jq -r '.[] | select(.name | startswith("probe-")) | "\(.id)\t\(.name)"' /tmp/attaches.json 2>/dev/null | while IFS=$'\t' read -r id name; do
             echo "删除探针附件 $name (id $id)"
             curl -sS -X DELETE --max-time 120 \
-              "https://gitee.com/api/v5/repos/$GITEE_REPO/releases/$RID/attach_files/$id?access_token=$(printf '%s' "$GITEE_TOKEN" | jq -sRr @uri)" || true
+              "https://gitee.com/api/v5/repos/$GITEE_REPO/releases/$RID/attach_files/$id?access_token=$enc" || true
           done
