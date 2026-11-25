@@ -1206,7 +1206,7 @@ export const enUS: MessageDict = {
   "todo.attrUnset": "No date",
   "todo.attrNoTags": "No tags",
   "todo.copyTask": "Copy task",
-  "todo.copyTaskHint": "Copy the title and description (title only when there is none)",
+  "todo.copyTaskHint": "Copy the title and description (title only when there is none or it repeats the title)",
   "todo.unreadReplies": "{n} new replies",
   "todo.category.task": "Task",
   "todo.category.requirement": "Requirement",

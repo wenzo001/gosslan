@@ -10,6 +10,7 @@ import { computed } from "vue";
 import { isTodoTerminalStatus, type TodoItem } from "@/utils/todos";
 import { t } from "@/i18n";
 import { useCopyToast } from "@/composables/useCopyToast";
+import { todoCopyText } from "@/utils/todoCopy";
 
 const props = defineProps<{
   item: TodoItem;
@@ -36,15 +37,14 @@ const copyWithToast = useCopyToast();
 /**
  * 一键复制（用户 2026-11-20）：任务越来越多是交给 AI 去做的，需要一段能直接粘贴的文本。
  *
- * 规则只有两条，别加字段名/前缀（那些是给人看的标签，粘进 AI 反而成了噪声）：
- *   · 有描述 ⇒ 标题 + 空行 + 描述；
- *   · 没描述 ⇒ 只有标题。
- * 详情里"没描述时回填标题"是**展示层**的事（见 `TodoDetailFields`），这里读的仍是真值，
- * 否则标题会被复制两遍。
+ * 口径住在 `utils/todoCopy`，别在这里拼：
+ *   · 有描述且与标题不同 ⇒ 标题 + 空行 + 描述；
+ *   · 没描述、或描述与标题一模一样（用户 2026-11-25）⇒ 只有标题。
+ * 不加字段名/前缀（那些是给人看的标签，粘出去反而成了噪声）。
+ * 详情里"没描述时回填标题"是**展示层**的事（见 `TodoDetailFields`），这里读的仍是真值。
  */
 function copyTask() {
-  const desc = (props.item.description ?? "").trim();
-  void copyWithToast(desc ? `${props.item.title}\n\n${desc}` : props.item.title);
+  void copyWithToast(todoCopyText(props.item.title, props.item.description));
 }
 </script>
 

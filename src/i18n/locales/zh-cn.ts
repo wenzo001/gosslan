@@ -1245,7 +1245,7 @@ export const zhCN: MessageDict = {
   "todo.attrUnset": "未设时间",
   "todo.attrNoTags": "无标签",
   "todo.copyTask": "复制任务",
-  "todo.copyTaskHint": "复制标题与描述（没有描述时只复制标题）",
+  "todo.copyTaskHint": "复制标题与描述（没有描述或两者相同时只复制标题）",
   "todo.unreadReplies": "{n} 条新回复",
   "todo.category.task": "任务",
   "todo.category.requirement": "需求",
