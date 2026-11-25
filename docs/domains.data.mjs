@@ -522,7 +522,7 @@ export default {
       ],
       activeHome: "src-tauri/src/menu.rs",
       enforce: false,
-      consumes: ["persistence"], // user_dirs.rs 用 db；notifications.rs 仅引用 state(装配)；android_open/jni_method 互引(同域)
+      consumes: ["persistence", "messaging"], // user_dirs.rs 用 db；tray.rs 取协议里的版本号做 tooltip（与「关于」页同一份 current_app_version）；notifications.rs 仅引用 state(装配)；android_open/jni_method 互引(同域)
       notes:
         "按平台分：menu / macos_bookmark / macos_window 是 macOS 专属（模块级 `#[cfg(target_os = \"macos\")]`）；win_shortcut 是 Windows 专属（`reconcile_once` 走 `#[cfg(windows)]`，纯解析/判据在测试构建下跨平台）；android_open / jni_method 是 Android 专属（整个模块 cfg 掉）；android_background 也只做 Android 的桥，但**模块本身不加 cfg** —— 它给非 Android 目标留了三个空实现，好让 network/ 与 commands/ 的调用点一处 cfg 都不写（见该文件头第 3 条与 ADR-0022）。这些平台差异正是 Phase 2/4 两条腿存在的原因。",
     },

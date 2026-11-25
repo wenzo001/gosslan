@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use crate::protocol::current_app_version;
 use tauri::{
     menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -60,7 +61,7 @@ fn tray_labels(zh: bool) -> TrayMenuLabels {
 ///
 /// 版本号取 `CARGO_PKG_VERSION`（与「关于」页 `get_app_version` 同一份），不读配置。
 fn tray_tooltip(zh: bool, unread: u32, who: &str) -> String {
-    tray_tooltip_with(zh, unread, who, crate::protocol::current_app_version())
+    tray_tooltip_with(zh, unread, who, current_app_version())
 }
 
 /// 纯函数版本（版本号显式传入，测试不必依赖当前 crate 版本）。
