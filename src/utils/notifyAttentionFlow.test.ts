@@ -92,9 +92,12 @@ test("macOS 菜单栏数字由未读总数驱动，0 条时清空", () => {
     trayRs.includes("tray.set_title(tray_title(unread).as_deref())"),
     "set_unread_badge 里必须真的改标题（只写 tooltip = 菜单栏上没有数字）",
   );
-  assert.ok(
-    trayRs.includes("tray.set_tooltip(Some(tray_tooltip(zh, unread)))"),
-    "tooltip 那条不能因为新增数字而被删掉（Windows 侧靠它报条数）",
+  // 2026-11-25：tooltip 增加了用户名（`tray_tooltip(zh, unread, &who)`），
+  // 判据跟着放宽到「仍带 zh + unread」—— 不能因为加名字把条数丢掉。
+  assert.match(
+    trayRs,
+    /tray\.set_tooltip\(Some\(tray_tooltip\(zh, unread,/,
+    "tooltip 那条不能因为新增数字/用户名而被删掉（Windows 侧靠它报条数）",
   );
   // 纯函数那一半：0 → None（清空），不是 Some("0")
   assert.match(trayRs, /0 => None,/);
