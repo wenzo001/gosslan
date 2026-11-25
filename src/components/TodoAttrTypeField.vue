@@ -41,6 +41,9 @@ const ime = useImeEnterGuard();
 watch(
   () => props.modelValue,
   () => {
+    // 用户正在「自定义…」里打名字（2026-11-25）：别人同时改了这条任务的类型时，
+    // 面板不该被收掉、更不能把打了一半的名字一起吞了 —— 保住草稿，等他确认。
+    if (customOpen.value && customDraft.value.trim()) return;
     customOpen.value = false;
   },
 );

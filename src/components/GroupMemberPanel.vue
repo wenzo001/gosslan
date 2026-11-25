@@ -11,6 +11,7 @@ import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
+import { adoptRemoteDraft } from "@/utils/draftGuard";
 import { DropdownMenuItem } from "reka-ui";
 import ContextMenu from "@/components/ContextMenu.vue";
 import {
@@ -144,14 +145,43 @@ watch(
 
 /** 编辑中的群名（打开面板时预填当前名）。 */
 const nameDraft = ref("");
+/**
+ * 草稿的**基线**：上一次与远端对齐时的名字。
+ * `nameDraft !== nameBaseline` 就意味着"用户正在改、还没保存"（用户 2026-11-25）。
+ */
+const nameBaseline = ref("");
 const renaming = ref(false);
 
+// 打开面板 / 换一个群：无条件预填（上一次没保存的草稿不带到别的群）。
+//
+// ⚠️ 不能把 `group.name` 放进同一个 watch 的源（原来就是 `[props.open, group.name]`）：
+// 这样的 getter **每次都返回一个新数组**，而 `watch` 判的是引用 ⇒ 群列表只要刷新一次
+// （有人在线上线、有人加群、`groups_updated` 广播）回调就执行，把用户正在输入的内容
+// 写回远端旧值 —— 用户实测：加了个 emoji 还没保存，群里有人在线就变回原名。
 watch(
-  () => [props.open, group.value?.name] as const,
-  ([open, name]) => {
-    if (open) nameDraft.value = name ?? "";
+  () => [props.open, props.groupId] as const,
+  ([open]) => {
+    if (!open) return;
+    const name = group.value?.name ?? "";
+    nameDraft.value = name;
+    nameBaseline.value = name;
   },
   { immediate: true },
+);
+
+// 远端名字真的变了（别人改名 / 群列表刷新收敛）：只跟随"用户没动过"的草稿。
+watch(
+  () => group.value?.name,
+  (name) => {
+    if (!props.open) return;
+    const r = adoptRemoteDraft({
+      draft: nameDraft.value,
+      baseline: nameBaseline.value,
+      remote: name ?? "",
+    });
+    nameDraft.value = r.draft;
+    nameBaseline.value = r.baseline;
+  },
 );
 
 const ime = useImeEnterGuard();
@@ -163,6 +193,10 @@ async function saveName() {
   renaming.value = true;
   try {
     await chat.renameGroup(gid, name);
+    // 保存成功 = 这一轮编辑结束：草稿与基线一起收敛到刚提交的值。
+    // （后端若做了规整/截断，随后那次 refreshGroups 会让远端 watch 再对齐一次。）
+    nameDraft.value = name;
+    nameBaseline.value = name;
     app.toast(t("chat.toast.groupRenamed"), "success");
   } catch (e) {
     app.toastError(e, t("chat.toast.renameFail"));
@@ -175,18 +209,39 @@ async function saveName() {
 // 横幅只在**有公告**时出现；没有公告时聊天区不再常驻一条空横幅，发布入口收进这里。
 
 const announceDraft = ref("");
+/** 公告草稿的基线（与群名同理：编辑中不许被公告列表刷新覆盖）。 */
+const announceBaseline = ref("");
 const publishing = ref(false);
 /** 当前生效的公告（后端全量折叠，store 缓存成 map）。 */
 const currentAnnouncement = computed(() =>
   props.groupId ? (chat.activeAnnouncements.get(props.groupId) ?? null) : null,
 );
 
+// 打开面板 / 换群：预填当前公告（与群名同一口径，force 语义）。
 watch(
-  () => [props.open, currentAnnouncement.value?.text] as const,
-  ([open, text]) => {
-    if (open) announceDraft.value = text ?? "";
+  () => [props.open, props.groupId] as const,
+  ([open]) => {
+    if (!open) return;
+    const text = currentAnnouncement.value?.text ?? "";
+    announceDraft.value = text;
+    announceBaseline.value = text;
   },
   { immediate: true },
+);
+
+// 公告真的变了（别人发布/修改）：用户没动过就跟随，动过就保住他写的正文。
+watch(
+  () => currentAnnouncement.value?.text,
+  (text) => {
+    if (!props.open) return;
+    const r = adoptRemoteDraft({
+      draft: announceDraft.value,
+      baseline: announceBaseline.value,
+      remote: text ?? "",
+    });
+    announceDraft.value = r.draft;
+    announceBaseline.value = r.baseline;
+  },
 );
 
 async function publishAnnouncement() {
@@ -196,6 +251,8 @@ async function publishAnnouncement() {
   publishing.value = true;
   try {
     await chat.publishAnnouncement(gid, text);
+    announceDraft.value = text;
+    announceBaseline.value = text;
     app.toast(t("group.announceDone"), "success");
   } catch (e) {
     app.toastError(e, t("group.announceFail"));

@@ -69,13 +69,24 @@ const editAvatar = ref<string | null>(null);
 const editServerUrl = ref("");
 const avatarDialogOpen = ref(false);
 const savingProfile = ref(false);
+/** 上一次看到的机器人 id（用户 2026-11-25：编辑中同一台机器人的后台刷新不许清草稿）。 */
+let lastBotId: string | null = null;
 watch(
   () => props.bot,
   (b) => {
-    editing.value = false;
-    editName.value = b?.name ?? "";
-    editAvatar.value = b?.avatar ?? null;
-    editServerUrl.value = b?.serverUrl ?? "";
+    const sameBot = (b?.botId ?? null) === lastBotId;
+    lastBotId = b?.botId ?? null;
+    // 正在改这台机器人的名字/头像/地址时，父级列表重拉只会换掉 `props.bot` 的引用：
+    // 那不该把用户打了一半的字清掉、更不该替他退出编辑态。换了对象（另开一台机器人）才重置。
+    // 只跳过**编辑字段**的回填；发送链接这类只读信息该更新还更新。
+    const keepDraft = editing.value && sameBot;
+    if (!keepDraft) {
+      editing.value = false;
+      editName.value = b?.name ?? "";
+      editAvatar.value = b?.avatar ?? null;
+      editServerUrl.value = b?.serverUrl ?? "";
+    }
+    fetchedUrl.value = "";
     fetchedUrl.value = "";
     if (b && !b.publishUrl) {
       void api.botGetPublishUrl(b.botId).then((u) => { fetchedUrl.value = u; }).catch((e) => {

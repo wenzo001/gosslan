@@ -13,6 +13,7 @@ import { useSubmitGuard } from "@/composables/useSubmitGuard";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { nicknameSchema, MAX_NICKNAME_CHARS } from "@/utils/validation";
 import CharCounter from "@/components/ui/CharCounter.vue";
+import { adoptRemoteDraft } from "@/utils/draftGuard";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
@@ -23,6 +24,9 @@ const { busy: savingProfile, run: runProfileSave } = useSubmitGuard();
 
 const nickname = ref("");
 const avatar = ref<string | null>(null);
+/** 两个草稿的基线：`draft !== baseline` = 用户改过还没保存（用户 2026-11-25）。 */
+const nicknameBaseline = ref("");
+const avatarBaseline = ref<string | null>(null);
 const avatarInput = ref<HTMLInputElement | null>(null);
 const presetOpen = ref(false);
 
@@ -34,18 +38,37 @@ const presetInitial = computed<AvatarSeed>(
     AVATAR_PAIRS[0]!,
 );
 
-function syncFromDevice() {
-  nickname.value = app.device?.nickname ?? "";
-  avatar.value = app.device?.avatar ?? null;
+function syncFromDevice(force = false) {
+  // 草稿闸门（用户 2026-11-25）：设备资料是**异步**到位的（`app.init()` /
+  // `updateProfile()` / 「恢复默认」都会改它），而 `device` 对象在某些刷新路径上
+  // 会被整体替换。用户正在打昵称时，那些刷新不许把输入吞掉 —— 只跟随"没被动过"的草稿。
+  const n = adoptRemoteDraft({
+    draft: nickname.value,
+    baseline: nicknameBaseline.value,
+    remote: app.device?.nickname ?? "",
+    force,
+  });
+  nickname.value = n.draft;
+  nicknameBaseline.value = n.baseline;
+  const a = adoptRemoteDraft({
+    draft: avatar.value,
+    baseline: avatarBaseline.value,
+    remote: app.device?.avatar ?? null,
+    force,
+  });
+  avatar.value = a.draft;
+  avatarBaseline.value = a.baseline;
 }
 watch(() => [props.active, props.reloadToken], () => {
-  if (props.active) syncFromDevice();
+  // 切到本分区 / 设置窗口重载：无条件从设备资料预填（上一次的草稿不带走）
+  if (props.active) syncFromDevice(true);
 }, { immediate: true });
 /**
  * 设备信息是**异步**到位的（`app.init()` / `updateProfile()` / 「恢复默认」都会改它），
  * 只在 active/reloadToken 变化时同步会漏掉这些时刻 —— 独立设置窗口一开场
  * 就会把空昵称、null 头像写进 ref，之后再不更新（用户看到"名字和头像不对劲"）。
- * 用户**正在输入**时 device 不会变（保存后才变），因此这里不会覆盖未保存的编辑。
+ * 但这里**不能无条件覆盖**：用户可能正在输入昵称 —— 交给 `adoptRemoteDraft`
+ * 判「草稿动过没有」，动过就保留用户输入。
  */
 watch(() => [app.device?.nickname, app.device?.avatar], () => {
   if (props.active) syncFromDevice();
@@ -60,6 +83,9 @@ async function persistProfile(name: string) {
   if (name === app.device?.nickname && avatar.value === app.device?.avatar) return;
   await runProfileSave(async () => {
     await app.updateProfile(name, avatar.value);
+    // 后端可能做过规整/截断：把"确认过的值"强制灌回两个 ref，用户看到的必须是真的存下去的那份。
+    // 这一步同时把基线推到新值，之后 device 再刷新不会把输入框判成"编辑中"。
+    syncFromDevice(true);
     await chat.refreshFriends();
     app.toast(t("settings.profile.toast.saved"), "success");
   });
@@ -75,6 +101,9 @@ async function saveProfileNow() {
       "error",
     );
     nickname.value = app.device?.nickname ?? "";
+    // 回滚也要把基线一起对齐，否则这份"已还原"的草稿会被一直判成 dirty
+    // （下一次 device 刷新就再也跟不上了）。头像不动：那是另一格的未保存改动。
+    nicknameBaseline.value = nickname.value;
     return;
   }
   await persistProfile(parsed.data);
