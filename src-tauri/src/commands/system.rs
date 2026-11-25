@@ -91,6 +91,8 @@ pub async fn update_profile(
     *s.avatar.lock().unwrap_or_else(|e| e.into_inner()) = avatar.clone();
     // 托盘 hover 里带着用户名与版本号（用户 2026-11-25）：改完名立刻刷新，
     // 否则要等下一次未读数变化才更新那个名字。
+    // `mod tray` 只在桌面编译（`lib.rs` 里是 `#[cfg(desktop)]`），移动端没有这条路径。
+    #[cfg(desktop)]
     crate::tray::refresh_tooltip(window.app_handle());
 
     let msg = Message::UserInfo {
