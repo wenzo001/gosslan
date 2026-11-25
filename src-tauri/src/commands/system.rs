@@ -89,6 +89,9 @@ pub async fn update_profile(
     }
     *s.nickname.lock().unwrap_or_else(|e| e.into_inner()) = nickname.clone();
     *s.avatar.lock().unwrap_or_else(|e| e.into_inner()) = avatar.clone();
+    // 托盘 hover 里带着用户名与版本号（用户 2026-11-25）：改完名立刻刷新，
+    // 否则要等下一次未读数变化才更新那个名字。
+    crate::tray::refresh_tooltip(window.app_handle());
 
     let msg = Message::UserInfo {
         device_id: s.device_id.clone(),

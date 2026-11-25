@@ -49,21 +49,51 @@ fn tray_labels(zh: bool) -> TrayMenuLabels {
     }
 }
 
-/// 托盘 tooltip 文案。`unread > 0` 时带上条数 —— 红点只能表达"有"，条数只有文字能给。
-fn tray_tooltip(zh: bool, unread: u32) -> String {
-    let base = if zh {
-        "小院儿 · 局域网即时通讯"
+/// 托盘 tooltip 文案（用户 2026-11-25：把**用户名与版本号**也拼进来）。
+///
+/// 形如 `小院儿 · 阿东 · v7.2.10`；没起名时中间那段回落到副标题
+/// （`局域网即时通讯`）。`unread > 0` 时再带条数 —— 红点只能表达"有"，
+/// 条数只有文字能给。
+///
+/// 为什么把用户名放这里：托盘图标在系统里和一堆别的应用挤在一起，hover 是最短的
+/// "这是哪个账号/哪个版本"确认路径；出问题时用户第一眼要能报出版本号。
+///
+/// 版本号取 `CARGO_PKG_VERSION`（与「关于」页 `get_app_version` 同一份），不读配置。
+fn tray_tooltip(zh: bool, unread: u32, who: &str) -> String {
+    tray_tooltip_with(zh, unread, who, crate::protocol::current_app_version())
+}
+
+/// 纯函数版本（版本号显式传入，测试不必依赖当前 crate 版本）。
+fn tray_tooltip_with(zh: bool, unread: u32, who: &str, version: &str) -> String {
+    let app_name = if zh { "小院儿" } else { "Gosslan" };
+    let subtitle = if zh {
+        "局域网即时通讯"
     } else {
-        "Gosslan · LAN Messenger"
+        "LAN Messenger"
     };
+    let who = who.trim();
+    let middle = if who.is_empty() { subtitle } else { who };
+    let base = format!("{app_name} · {middle} · v{version}");
     if unread == 0 {
-        return base.to_string();
+        return base;
     }
     if zh {
         format!("{base}（{unread} 条未读）")
     } else {
         format!("{base} ({unread} unread)")
     }
+}
+
+/// tooltip 里的用户名：内存里的**原始昵称**（空 = 还没起名，交给副标题）。
+///
+/// 不用 `self_display_name()`：那个在空昵称时会回落到「我 / Me」，
+/// 托盘 hover 显示「小院儿 · 我 · v7.2.10」比副标题还费解。
+fn tray_who(state: &crate::state::AppState) -> String {
+    state
+        .nickname
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// macOS **菜单栏（状态项）**上的未读数字（用户 2026-09-29 需求汇总五：
@@ -325,9 +355,11 @@ pub fn set_unread_badge<R: tauri::Runtime>(app: &tauri::AppHandle<R>, unread: u3
     if unread == 0 {
         FLASH_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
-    let zh = app.state::<Arc<crate::state::AppState>>().is_zh();
+    let st = app.state::<Arc<crate::state::AppState>>();
+    let zh = st.is_zh();
+    let who = tray_who(st.inner().as_ref());
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_tooltip(Some(tray_tooltip(zh, unread)));
+        let _ = tray.set_tooltip(Some(tray_tooltip(zh, unread, &who)));
         // macOS：菜单栏直接印数字（托盘图标本身保持原样，那侧的红点不符合平台习惯）。
         #[cfg(target_os = "macos")]
         {
@@ -398,11 +430,17 @@ pub fn set_watchdog_tooltip<R: tauri::Runtime>(app: &tauri::AppHandle<R>, stalle
             let _ = tray.set_tooltip(Some(text));
         }
         None => {
-            let zh = app
-                .try_state::<Arc<crate::state::AppState>>()
-                .map(|s| s.is_zh())
-                .unwrap_or(true);
-            let text = tray_tooltip(zh, LAST_UNREAD.load(std::sync::atomic::Ordering::Relaxed));
+            let st = app.try_state::<Arc<crate::state::AppState>>();
+            let zh = st.as_ref().map(|s| s.is_zh()).unwrap_or(true);
+            let who = st
+                .as_ref()
+                .map(|s| tray_who(s.inner().as_ref()))
+                .unwrap_or_default();
+            let text = tray_tooltip(
+                zh,
+                LAST_UNREAD.load(std::sync::atomic::Ordering::Relaxed),
+                &who,
+            );
             let _ = tray.set_tooltip(Some(text));
         }
     }
@@ -618,13 +656,33 @@ pub fn refresh_for_language<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    let _ = tray.set_tooltip(Some(tray_tooltip(zh, unread)));
+    let _ = tray.set_tooltip(Some(tray_tooltip(
+        zh,
+        unread,
+        &tray_who(state.inner().as_ref()),
+    )));
     match build_menu(app, &tray_labels(zh), dnd_on) {
         Ok(menu) => {
             let _ = tray.set_menu(Some(menu));
         }
         Err(e) => eprintln!("[tray] 语言切换后重建托盘菜单失败：{e}"),
     }
+}
+
+/// 资料变化（改昵称）后重刷 tooltip：未读数沿用 [`LAST_UNREAD`]，不清零。
+///
+/// 不重建菜单 —— 菜单里没有用户名的位置；改一次名字没必要动整个托盘。
+/// 托盘不存在（移动端 / `setup` 还没跑）时静默返回。
+pub fn refresh_tooltip<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    let Some(state) = app.try_state::<Arc<crate::state::AppState>>() else {
+        return;
+    };
+    let unread = LAST_UNREAD.load(std::sync::atomic::Ordering::Relaxed);
+    let who = tray_who(state.inner().as_ref());
+    let _ = tray.set_tooltip(Some(tray_tooltip(state.is_zh(), unread, &who)));
 }
 
 /// 构建托盘图标与菜单。
@@ -643,7 +701,7 @@ fn build_tray<R: tauri::Runtime>(
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
-        .tooltip(tray_tooltip(state.is_zh(), 0))
+        .tooltip(tray_tooltip(state.is_zh(), 0, &tray_who(state.as_ref())))
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main_window(app),
             "dnd" => {
@@ -792,7 +850,7 @@ fn install_close_to_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{flash_plan, tray_labels, tray_tooltip, FLASH_ROUNDS};
+    use super::{flash_plan, tray_labels, tray_tooltip, tray_tooltip_with, FLASH_ROUNDS};
 
     /// 托盘菜单的显示文案必须跟界面语言走，且中英两套不能混用。
     /// 菜单项 id（show/dnd/restart/quit）不在这里判 —— 它们不在结构体里，改不动。
@@ -848,15 +906,54 @@ mod tests {
         );
     }
 
-    /// tooltip 必须带上条数：红点只表达"有未读"，**有几条**只有文字能给。
-    /// 中英两种界面都要有，且 0 条时不能留下"（0 条未读）"这种噪音。
+    /// tooltip 必须带**用户名 + 版本号 + 未读条数**（用户 2026-11-25）。
+    /// 没起名时中间那段回落副标题（不出现空段 / 「我」这种内部代称）。
     #[test]
-    fn tooltip_carries_unread_count_only_when_positive() {
-        assert_eq!(tray_tooltip(true, 0), "小院儿 · 局域网即时通讯");
-        assert_eq!(tray_tooltip(false, 0), "Gosslan · LAN Messenger");
-        assert!(tray_tooltip(true, 3).contains("3 条未读"));
-        assert!(tray_tooltip(false, 3).contains("3 unread"));
-        assert!(!tray_tooltip(true, 0).contains('0'));
+    fn tooltip_carries_user_version_and_unread_count() {
+        assert_eq!(
+            tray_tooltip_with(true, 0, "阿东", "7.2.10"),
+            "小院儿 · 阿东 · v7.2.10"
+        );
+        assert_eq!(
+            tray_tooltip_with(false, 0, "Dong", "7.2.10"),
+            "Gosslan · Dong · v7.2.10"
+        );
+        // 空昵称 / 纯空白：回落副标题，绝不留「 ·  · 」这种空段
+        assert_eq!(
+            tray_tooltip_with(true, 0, "", "7.2.10"),
+            "小院儿 · 局域网即时通讯 · v7.2.10"
+        );
+        assert_eq!(
+            tray_tooltip_with(true, 0, "   ", "7.2.10"),
+            "小院儿 · 局域网即时通讯 · v7.2.10"
+        );
+        // 未读只加在末尾；0 条不许留「（0 条未读）」
+        let t = tray_tooltip_with(true, 3, "阿东", "7.2.10");
+        assert!(
+            t.starts_with("小院儿 · 阿东 · v7.2.10"),
+            "前缀顺序漂了：{t}"
+        );
+        assert!(t.ends_with("（3 条未读）"), "未读条数没接在末尾：{t}");
+        assert!(
+            !tray_tooltip_with(true, 0, "阿东", "7.2.10").contains("条未读"),
+            "0 条未读不该在提示里留「0 条未读」（版本号里的数字不算）"
+        );
+        assert!(tray_tooltip_with(false, 3, "Dong", "7.2.10").contains("3 unread"));
+        // 正控：版本号取的是 crate 版本（与「关于」页同一份），不是写死字符串
+        assert_eq!(
+            tray_tooltip(true, 0, "阿东"),
+            format!("小院儿 · 阿东 · v{}", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    /// 接线判据：改昵称后必须重刷 tooltip，否则 hover 里一直是旧名字。
+    #[test]
+    fn profile_update_refreshes_tray_tooltip() {
+        let src = include_str!("commands/system.rs");
+        assert!(
+            src.contains("crate::tray::refresh_tooltip("),
+            "update_profile 改完昵称没有刷新托盘 tooltip —— hover 里会一直显示旧名字"
+        );
     }
 
     /// 菜单栏数字：0 条必须**清空**（不能留着上一次的数字），超过 99 只写 `99+`。

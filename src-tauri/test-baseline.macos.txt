@@ -1736,7 +1736,8 @@ transport::tcp::tests::wire_format_is_length_prefixed_big_endian
 transport::tcp::tests::write_then_read_roundtrip
 tray::tests::flash_plan_is_whole_rounds_starting_lit_and_ending_dark
 tray::tests::menu_bar_number_clears_at_zero_and_caps_at_99
-tray::tests::tooltip_carries_unread_count_only_when_positive
+tray::tests::profile_update_refreshes_tray_tooltip
+tray::tests::tooltip_carries_user_version_and_unread_count
 tray::tests::tray_icon_redrawn_only_on_has_or_hasnt_transition
 tray::tests::tray_menu_labels_follow_language
 tray::tests::unread_flood_reapplies_icon_three_times_not_once_per_message

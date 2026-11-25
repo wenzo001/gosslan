@@ -1711,7 +1711,8 @@ tray::dot::tests::unread_dot_edges_are_antialiased
 tray::dot::tests::unread_dot_is_small_and_lands_top_right
 tray::dot::tests::unread_dot_is_the_app_badge_red
 tray::tests::flash_plan_is_whole_rounds_starting_lit_and_ending_dark
-tray::tests::tooltip_carries_unread_count_only_when_positive
+tray::tests::profile_update_refreshes_tray_tooltip
+tray::tests::tooltip_carries_user_version_and_unread_count
 tray::tests::tray_icon_redrawn_only_on_has_or_hasnt_transition
 tray::tests::tray_menu_labels_follow_language
 tray::tests::unread_flood_reapplies_icon_three_times_not_once_per_message
