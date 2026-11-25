@@ -234,32 +234,55 @@ test("上传调度：分片按字节装箱、每片串行、失败分类重试�
   );
 });
 
-test("大包不走 CI：超过阈值的附件不上传，finalize 只打补传命令（不判红）", () => {
-  // 2026-11-24 实测：GitHub runner → Gitee 跨境链路 20–90KB/s，几 MB 的 body 会被网关 400
-  // （104 字节成功、4 个 ≥6MB 全 400）。所以 CI 只保证小文件与清单，大包交给本机秒传。
+test("大包也由 CI 传：上限与 Gitee 单附件配额一致（100MB），只有 WebView2 内置包跳过", () => {
+  // 2026-11-25 探针推翻了 2026-11-24 的「几 MB 必 400」结论：同一台 runner 上，
+  // 单路 7.8MB（带/不带 Expect）= 201；4 路并发 4 个 7.4–8.4MB 包 = 全部 201。
+  // v7.2.8 失败那次是 12 分片 × 3 并发 = 36 路，把 per-IP 限速打到拒绝。
   const src = readFileSync(new URL("./sync-gitee.mjs", import.meta.url), "utf8");
-  assert.match(src, /export const CI_UPLOAD_MAX_BYTES = 5 \* 1024 \* 1024;/, "缺 CI 上传阈值常量");
+  assert.match(
+    src,
+    /export const CI_UPLOAD_MAX_BYTES = 100 \* 1024 \* 1024;/,
+    "CI 上传上限必须回到 Gitee 单附件配额（100MB），否则大包又要靠人补",
+  );
   assert.match(
     src,
     /mineCi = mine\.filter\(\(f\) => f\.size <= CI_UPLOAD_MAX_BYTES\)/,
-    "上传循环必须只处理小文件——否则每次发版都挂一条注定 400 的红",
+    "超过 Gitee 硬上限的文件才该跳过",
   );
-  assert.match(src, /localOnly\.push\(/, "finalize 必须把大包缺口记账（不能静默）");
   assert.match(
     src,
-    /node scripts\/gitee-backfill\.mjs --tag/,
-    "必须把补传命令打出来——只说「缺」而不给怎么办等于没说",
+    /超过 Gitee 单附件 100MB 上限，镜像里不提供/,
+    "超限包必须明说只能从 GitHub 下载",
+  );
+  assert.equal(
+    /node scripts\/gitee-backfill\.mjs --tag/.test(src),
+    false,
+    "超过 100MB 的包给「本机补传」是假出路：本机同样传不上去",
+  );
+  assert.match(src, /localOnly\.push\(/, "超限包缺口仍要记账（不能静默）");
+});
+
+test("上传并发固定 4 路（36 路并发是 400 的真因）", () => {
+  const wf = readFileSync(
+    new URL("../.github/workflows/sync-gitee.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(wf, /shard: \[0, 1, 2, 3\]/, "分片必须是 4 路（探针验证过 4 路全部 201）");
+  assert.equal(
+    /shard: \[[^\]]*\b([4-9]|[1-9][0-9])\b/.test(wf),
+    false,
+    "分片又调大了——v7.2.8 就是被 36 路并发打到 400 的",
   );
 });
 
-test("finalize 的匿名校验对大包同样降级（manifest 里的桌面 url 指向 7MB 包，CI 传不动）", () => {
+test("finalize 的匿名校验对超限大包降级（与上传用同一把尺子）", () => {
   // v7.2.8 的 finalize 红在：`✗ 匿名访问 …/Gosslan-arm64.app.tar.gz 返回 HTTP 404`
-  // —— 那是 7MB 的包，本来就走本机补传。匿名校验必须用同一把尺子（CI_UPLOAD_MAX_BYTES）。
+  // —— 那是 7MB 的包，当时被误判成"CI 传不动"。现在只有 >100MB 的 WebView2 包会缺。
   const src = readFileSync(new URL("./sync-gitee.mjs", import.meta.url), "utf8");
   assert.match(
     src,
     /if \(local && local\.size > CI_UPLOAD_MAX_BYTES\) \{\s*\n\s*localOnly\.push/,
-    "manifest 平台的匿名 404 遇到大包必须记账降级，否则每次发版都红",
+    "manifest 平台的匿名 404 遇到超限包必须记账降级，否则每次发版都红",
   );
   assert.match(src, /verifyAssets\(publicManifest, assetsDir, filesByName, localOnly\)/, "localOnly 必须跨两个校验共享");
 });

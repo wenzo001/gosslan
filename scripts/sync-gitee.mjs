@@ -315,16 +315,19 @@ async function ensureRelease(repo, tag, branch, body) {
 }
 
 /**
- * **CI 只传这个体积以下的附件**（2026-11-24 实测定的口径）。
+ * **CI 能传的附件上限 = Gitee 单附件配额 100MB**（2026-11-25 探针推翻旧结论）。
  *
- * GitHub 托管 runner → Gitee 是跨境慢链路（20–90 KB/s），而且几 MB 的 body 会被 Gitee
- * 网关直接 400：v7.2.8 的 `upload (0)` 里，104 字节的 sha256 一次成功，而 6.4/8.5/8.8/13.8MB
- * 四个文件各重试 3 次全是 `HTTP 400`。这不是重试能解决的（同一份包从国内直连是秒级）。
- *
- * 所以分工：**CI 保证小文件与清单自动同步；大包用本机 `scripts/gitee-backfill.mjs` 补**。
- * 大包缺失在 finalize 只打 ⚠️ 与补传命令，不判红（判红会让每次发版都挂着一条永远修不了的红）。
+ * 旧结论（2026-11-24）：几 MB 的 body 会被 Gitee 网关直接 400 ⇒ CI 只传 ≤5MB、
+ * 大包交本机补传。**「大小」这个归因是错的**。同一台 GitHub runner 上的三次实测：
+ *   · 单路 7.8MB，带 `Expect: 100-continue` ⇒ 201，18.0KB/s；
+ *   · 单路 7.8MB，关掉这个头           ⇒ 201，12.7KB/s（不是它，已排除）；
+ *   · **4 路并发**（4 个 7.4–8.4MB 包同时传）⇒ 全部 201，13.5–20.3KB/s/路。
+ * 而 v7.2.8 失败那次是 **12 分片 × 3 并发 = 36 路**同时打一个 IP：单连接被压到
+ * ~2KB/s、7.8MB 传 56 分钟后 400 —— 真因是并发数把 Gitee 的 per-IP 限速打到拒绝，
+ * 不是文件体积。所以现在：**CI 自己传全部 ≤100MB 的附件**，并发固定 4 路
+ * （4 分片 × 每片串行）；本机 `gitee-backfill.mjs` 只作为应急兜底。
  */
-export const CI_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+export const CI_UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
 
 /**
  * 附件上传走 `curl`，不走 `fetch`。
@@ -479,8 +482,8 @@ async function verifyAllAssetsMirrored(repo, tag, filesByName, localOnly) {
     if (name === "latest.json") continue;
     const a = byName.get(name);
     if (!a) {
-      // 大包不判红：CI 那条跨境链路传不动（见 CI_UPLOAD_MAX_BYTES 注释），
-      // 由本机补传；这里只记账，最后统一打印命令。
+      // 超过 Gitee 单附件 100MB 上限的包（目前只有 WebView2 内置安装包）永远传不上去：
+      // 只记账、不判红（判红等于每次发版都挂一条无法修复的红）。其余缺口一律判红。
       if (f.size > CI_UPLOAD_MAX_BYTES) {
         localOnly.push(`${name}（${Math.round(f.size / 1048576)}MB）`);
         continue;
@@ -500,9 +503,8 @@ async function verifyAllAssetsMirrored(repo, tag, filesByName, localOnly) {
   console.log(`  两仓逐个文件对齐：${checked} 个资产在 Gitee 全部存在且大小一致`);
   const uniq = [...new Set(localOnly)];
   if (uniq.length > 0) {
-    console.log(`  ⚠️ ${uniq.length} 个大包不在 Gitee（CI 跨境链路传不动），请在本机补传：`);
+    console.log(`  ⚠️ ${uniq.length} 个附件超过 Gitee 单附件 100MB 上限，镜像里不提供（请从 GitHub Release 下载）：`);
     console.log(`     ${uniq.join("\n     ")}`);
-    console.log(`     GITEE_TOKEN=*** node scripts/gitee-backfill.mjs --tag ${tag}`);
   }
 }
 
@@ -514,11 +516,11 @@ async function verifyAssets(manifest, assetsDir, filesByName, localOnly) {
     try {
       head = await checkAnonymous(entry.url, { minBytes: 1 });
     } catch (e) {
-      // 大包在 CI 那条跨境链路上传不动（见 CI_UPLOAD_MAX_BYTES），匿名 404 是预期的：
-      // 记账交给本机补传，不判红（否则每次发版都挂一条永远修不了的红）。
+      // 超过 Gitee 单附件 100MB 上限的包（WebView2 内置）匿名访问必然 404：
+      // 记账、不判红；其余匿名不可达就是真的没传上去，照旧抛错。
       if (local && local.size > CI_UPLOAD_MAX_BYTES) {
         localOnly.push(`${name}（${Math.round(local.size / 1048576)}MB）`);
-        console.log(`  ${platform}: 待本机补传（${String(e?.message ?? e).slice(0, 80)}）${name}`);
+        console.log(`  ${platform}: 超过 Gitee 单附件上限，镜像不提供（${String(e?.message ?? e).slice(0, 80)}）${name}`);
         continue;
       }
       throw e;
@@ -705,8 +707,8 @@ async function main(argv) {
     const mineCi = mine.filter((f) => f.size <= CI_UPLOAD_MAX_BYTES);
     if (tooBigForCi.length > 0) {
       console.log(
-        `本片 ${tooBigForCi.length} 个文件超过 CI 上传阈值（${CI_UPLOAD_MAX_BYTES / 1048576}MB），` +
-          `跳过、交给本机补传：${tooBigForCi.map((f) => f.name).join("、")}`,
+        `本片 ${tooBigForCi.length} 个文件超过 Gitee 单附件上限（${CI_UPLOAD_MAX_BYTES / 1048576}MB），` +
+          `镜像里不提供：${tooBigForCi.map((f) => f.name).join("、")}`,
       );
     }
     const failures = [];
