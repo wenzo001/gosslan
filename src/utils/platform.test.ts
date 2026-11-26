@@ -377,7 +377,9 @@ test("移动布局宽度档只有一个家：JS 不许裸抄、CSS 与 Tailwind 
 //     CSS 条件负责出现，滚动停手 1s 由组件撤标记。
 // 内边距必须由组件搬到 content：宿主是 height:100%，padding 会让滚动区比轨道矮一截，
 // 滑块长度/位置就跟内容对不上（用户报的「错乱」正是这一类）。
-function findScrollbarIssues(css, vue) {
+function findScrollbarIssues(cssRaw, vue) {
+  // 只看真规则：注释里为了说明「故意不这么写」会引完整语法，不剥离就会误报。
+  const css = stripCssComments(cssRaw);
   const issues = [];
   if (!vue.includes("NScrollbar")) issues.push("缺 NScrollbar 内核（滚动与几何的唯一来源）");
   if (!/trigger="none"/.test(vue)) issues.push("必须是 trigger=\"none\" —— 交回 naive 的 hover 状态机，滚动时就不会显示");
@@ -403,12 +405,27 @@ function findScrollbarIssues(css, vue) {
   const thumbDefs = [...css.matchAll(/--gosslan-os-thumb:\s*([^;]+);/g)].map((m) => m[1].trim());
   if (thumbDefs.length < 2) issues.push("滑块颜色必须亮/暗各一档（:root 与 .dark 都要定义 --gosslan-os-thumb）");
   else if (thumbDefs[0] === thumbDefs[1]) issues.push("亮/暗两档不能是同一个值（暗底上会看不见）");
-  if (!/@media \(hover: none\)[\s\S]{0,220}?\.n-scrollbar-rail\s*\{/.test(css))
-    issues.push("触屏必须隐藏滚动条（能力分档，不是平台分档）");
   if (!css.includes(".gosslan-os .n-scrollbar-container::-webkit-scrollbar"))
     issues.push("原生条没关：naive 的滑块会和原生条同时出现");
   if (css.includes("gosslan-os-bar-thumb")) issues.push("旧的自绘滑块节点必须删干净（两套条会叠在一起）");
+  // 2026-11-26 线上教训：`hover: none` 是**输入能力**，不是平台身份。远程桌面（RDP）与
+  // 触摸屏笔记本的 WebView2 都报 none ⇒ 桌面用户被当成手机，条被整块 display:none 掉。
+  for (const block of hoverNoneBlocks(css)) {
+    if (block.includes("n-scrollbar") && /display:\s*none/.test(block)) {
+      issues.push("不许在 @media (hover: none) 里隐藏滚动条 —— 远程桌面/触摸屏桌面会命中，条就永远没了");
+    }
+  }
   return issues;
+}
+
+/** 取出 style.css 里每个 `@media (hover: none)` 块的正文（扁平块足够，本仓没有嵌套）。 */
+function hoverNoneBlocks(css) {
+  return [...css.matchAll(/@media\s*\(\s*hover:\s*none\s*\)\s*\{([\s\S]*?)\n\}/g)].map((m) => m[1]);
+}
+
+/** 剥掉 CSS 注释：判据只对真规则生效。 */
+function stripCssComments(css) {
+  return css.replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
 test("滚动条走 naive 内核、显隐由本仓控制、内边距搬到 content", () => {
@@ -449,4 +466,105 @@ test("滚动条判据反例自证：退回旧内核 / 去掉默认隐藏 / 去�
     findScrollbarIssues(css0, mut(vue0, /NScrollbar/g, "LegacyScroll")).length > 0,
     "拿掉 naive 内核必须命中",
   );
+  // 把 2026-11-26 线上那条「触屏隐藏滚动条」加回去，必须变红。
+  const withHoverHide = `${css0}\n@media (hover: none) {\n  .gosslan-os .n-scrollbar-rail {\n    display: none;\n  }\n}\n`;
+  assert.ok(
+    findScrollbarIssues(withHoverHide, vue0).length > 0,
+    "用 @media (hover: none) 隐藏滚动条必须命中（远程桌面/触摸屏桌面也会命中，条就永远没了）",
+  );
+});
+
+/**
+ * naive Scrollbar 的几何必须在**外部 CSS** 里齐全 —— 生产包里这是唯一生效的样式来源。
+ *
+ * naive 的 CSS 由 css-render 运行时注入（`document.createElement("style")`，属于 inline
+ * style），而生产 CSP 是严格策略（`style-src 'self'`）⇒ 必然被拒。**放宽 CSP 是假解**：
+ * Tauri 打包时会给构建产物里的 `<style>` 注入 nonce，CSP3 规定一旦有 nonce，
+ * `'unsafe-inline'` 就被忽略（见 `docs/notes/csp-candidate-2026-10-16.md` §五）。
+ * ⇒ naive 只当滚动内核（测量 / thumb 尺寸 / 拖拽），几何全由本仓提供。
+ * 「少抄一条」= 线上少一块几何，而 dev 不施加 CSP、肉眼完全看不出来 —— 这条判据补这个盲区。
+ */
+function findVendoredGeometryIssues(cssRaw) {
+  const css = stripCssComments(cssRaw);
+  const issues = [];
+  const flat = (x) => x.replace(/\s+/g, " ");
+
+  /** 同名规则可能分在多条里（级联），合并后再判 —— 但一条都没有就必须报。 */
+  const need = (sel, decls, label) => {
+    const blocks = [...css.matchAll(new RegExp(escapeRe(sel) + "\\s*\\{([^}]*)\\}", "g"))].map((m) => m[1]);
+    if (blocks.length === 0) {
+      issues.push(`缺 ${sel} 的几何（${label}）`);
+      return;
+    }
+    const body = flat(blocks.join(" "));
+    for (const d of decls) {
+      if (!body.includes(flat(d))) issues.push(`${sel} 缺 ${d}（${label}）`);
+    }
+  };
+
+  need(
+    ".gosslan-os.n-scrollbar",
+    ["height: 100%", "overflow: hidden", "position: relative"],
+    "宿主：占满高度 / 裁掉溢出 / 给 rail 当定位参照系",
+  );
+  need(
+    ".gosslan-os .n-scrollbar-container",
+    ["height: 100%", "overflow: scroll", "max-height: inherit"],
+    "真正滚动的那一层（少 overflow 就是滚不动）",
+  );
+  need(
+    ".gosslan-os .n-scrollbar-content",
+    ["box-sizing: border-box", "min-width: 100%"],
+    "内容盒宽度口径",
+  );
+  need(".gosslan-os .n-scrollbar-rail", ["position: absolute"], "轨道必须脱离文档流（否则被裁掉）");
+  need(
+    ".gosslan-os .n-scrollbar-rail--vertical",
+    ["width: var(--n-scrollbar-width)"],
+    "轨道带宽",
+  );
+  need(
+    ".gosslan-os .n-scrollbar-rail--vertical--right",
+    [
+      "top: var(--n-scrollbar-rail-top-vertical-right)",
+      "right: var(--n-scrollbar-rail-right-vertical-right)",
+      "bottom: var(--n-scrollbar-rail-bottom-vertical-right)",
+      "left: var(--n-scrollbar-rail-left-vertical-right)",
+    ],
+    "轨道贴右缘的四边（缺一条就飞到别处）",
+  );
+  need(
+    ".gosslan-os .n-scrollbar-rail--vertical .n-scrollbar-rail__scrollbar",
+    ["position: absolute", "width: var(--n-scrollbar-width)"],
+    "滑块本体",
+  );
+  return issues;
+}
+
+test("naive Scrollbar 的几何全部写在外部 CSS 里（生产包只有这份生效）", () => {
+  const css = readFileSync(join(SRC_DIR, "style.css"), "utf8");
+  const issues = findVendoredGeometryIssues(css);
+  assert.deepEqual(issues, [], issues.join("\n"));
+});
+
+test("几何 vendor 判据反例自证：少任何一条都必须红", () => {
+  const css0 = readFileSync(join(SRC_DIR, "style.css"), "utf8");
+  // 删掉**全部**同名规则（单条可能只是 overscroll 这类补充），少一块几何就要红。
+  const dropAll = (sel) => {
+    const out = css0.replace(new RegExp(escapeRe(sel) + "\\s*\\{[^}]*\\}", "g"), "");
+    assert.notEqual(out, css0, `锚点漂了：${sel}`);
+    return out;
+  };
+  for (const [sel, why] of [
+    [".gosslan-os.n-scrollbar", "宿主不占满高 / 不裁溢出 ⇒ 列表盖住输入框"],
+    [".gosslan-os .n-scrollbar-container", "滚动元素没有 overflow ⇒ 滚不动"],
+    [".gosslan-os .n-scrollbar-rail", "轨道不脱离文档流 ⇒ 被 overflow:hidden 裁掉，看不到条"],
+    [".gosslan-os .n-scrollbar-rail--vertical--right", "轨道没有四边 ⇒ 位置算不出来"],
+    [".gosslan-os .n-scrollbar-rail--vertical .n-scrollbar-rail__scrollbar", "滑块没有定位/宽度 ⇒ 不可见"],
+  ]) {
+    assert.ok(
+      findVendoredGeometryIssues(dropAll(sel)).length > 0,
+      `删掉 ${sel} 必须判红（${why}）`,
+    );
+  }
 });

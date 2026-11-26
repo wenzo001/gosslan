@@ -65,11 +65,27 @@ JS 状态机（一串类名）决定；同一份代码在 WKWebView 有、在 Wi
   `--gosslan-panel`、`--gosslan-os-thumb` …），亮/暗跟随 `html.dark`（`NaiveRoot.ts`），
   **不存在第二套色板**。
 
+> ⚠️ **前提：naive 的样式在生产包里不生效，几何全部由本仓提供。**
+> naive 的组件样式是 css-render 在渲染时用 `document.createElement("style")` 注入的
+> （inline style），而生产包 CSP 是严格策略（`style-src 'self'`）⇒ **必然被拒**。
+> 放宽 CSP 也不行：Tauri 打包时给构建产物里的 `<style>` 注入 nonce，CSP3 规定一旦有
+> nonce `'unsafe-inline'` 就被忽略（`docs/notes/csp-candidate-2026-10-16.md` §五）。
+> ⇒ 定位是「naive 当滚动内核（测量 / thumb 尺寸 / 拖拽），样式归本仓」：`style.css`
+> 里有完整的几何（宿主 `height/overflow/position`、滚动元素 `overflow`、
+> rail 的 `absolute` + 四边 inset、滑块宽度），每一行与 naive 同值。
+> 2026-11-26 线上 7.3 的 Windows 就是漏了这一层（宿主被内容撑开、滚动元素没 overflow、
+> rail 变成被裁掉的静态块）；而 `devCsp` 是 null（dev 不施加 CSP）⇒ 本地永远测不出来。
+> 判据：`platform.test.ts` 的「naive Scrollbar 的几何全部写在外部 CSS 里」（少一条就红）。
+
 1. **不占内容**：滑块是 `absolute`，**不占布局宽度** ⇒ 内容盒宽度与滚动条在不在**逐像素相等**。
 2. **默认看不见**：`opacity: 0` 且 `pointer-events: none`；**轨道完全透明**
    （`--n-scrollbar-rail-color: transparent`），只画滑块。
 3. **hover / 滚动才出现**：滚动开始即显，停手一秒后淡出；hover 容器期间常显（微信桌面端口径）。
-   **触屏不显示**（`@media (hover: none)`；naive 在 iOS 本来就不渲染滑块）。
+   **不用 `@media (hover: none)` 隐藏**（2026-11-26 纠正）：`hover` 描述的是**输入能力**，
+   不是平台身份 —— 远程桌面（RDP）与触摸屏笔记本的 WebView2 都报 `none`，桌面用户会被
+   当成手机、条被整块 `display:none` 掉（线上 7.3.1 的症状就是"能滚但没条"）。
+   触屏没有 hover 也有 `is-scrolling`（滚动事件驱动），所以照样看得到；iOS 由 naive
+   自己不渲染 rail，不需要媒体查询兜底。
 4. **粗细分档**：`thin` 8px / `normal` 10px / `thick` 12px（`--n-scrollbar-width`）。
    naive 的滑块**最小长度**是 `1.5 × 主题宽度`，主题宽度固定 16px ⇒ 长列表滑块不小于 24px，
    视觉宽度仍按档位（两者解耦）。
@@ -84,7 +100,7 @@ JS 状态机（一串类名）决定；同一份代码在 WKWebView 有、在 Wi
 7. **一页一层**：同一屏只留一层滚动条；子列表随内容展开或折叠，不再自套
    `max-h-* + overflow-y-auto`（2026-11-08 诊断页四处子列表已按此收口，判据 `PG-03`）。
 8. **例外**：输入框编辑器（textarea）、代码块的**横向**滚动、移动端整屏对话框
-   （触屏本来就不显示条）不套统一容器。
+   （触屏上由 `is-scrolling` 驱动显隐，不常驻）不套统一容器。
 
 ## 5. 验收表（逐面板）
 

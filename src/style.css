@@ -2150,7 +2150,20 @@ html.is-mobile {
      ② 默认隐藏，hover 或滚动时淡入，停手 1s 淡出（`is-scrolling` 由组件加，见下）；
      ③ true overlay：不写 `scrollbar-gutter`、不吃内容宽度 ⇒ 三边距才可能相等；
      ④ 出现时不挤压内容：滑块是 absolute，内容盒宽度逐像素不变。
-   颜色用实色 rgba（亮 #4d4f51 / 暗 #cdced1 手算），不依赖 `color-mix()` 的引擎支持。 */
+   颜色用实色 rgba（亮 #4d4f51 / 暗 #cdced1 手算），不依赖 `color-mix()` 的引擎支持。
+
+   ⚠️ **关键前提：naive 的样式在生产包里一定不生效** —— 它的 CSS 是 css-render 运行时
+   用 `document.createElement("style")` 注入的（inline style），而生产 CSP 是严格策略
+   （`style-src 'self'`）⇒ 整块被拒。放宽 CSP 也不行：Tauri 会给构建产物里的 `<style>`
+   注入 nonce，CSP3 下一旦有 nonce，`'unsafe-inline'` 就被忽略
+   （见 `docs/notes/csp-candidate-2026-10-16.md` §五）。
+   ⇒ 所以 naive 只当**滚动内核**（测量 / thumb 尺寸 / 拖拽），**几何全部由本仓外部 CSS 提供**
+   （下面「naive Scrollbar 的几何：本仓唯一来源」那一节），主题色与显隐本来就是我们的规则。
+   2026-11-26 线上 7.3 的 Windows 整块崩掉，就是因为当时以为"注入是可靠的"：
+   宿主没有 `height:100%`（被内容撑开 ⇒ "列表穿到输入框下面"）、滚动元素没有 `overflow`
+   （滚不动）、rail 没有 `position:absolute`（退化成被裁掉的静态块 ⇒ "能滚但看不到条"）。
+   **dev 环境 `devCsp` 是 null（不施加 CSP），所以本地怎么测都正常** —— 差异是
+   「开发 vs 安装包」，不是「macOS vs Windows」。 */
 
 /* 短内容也撑满视口（空态居中依赖 `flex-1`），与旧包裹层语义一致。
    ⚠️ `flex-shrink: 0`：虚拟列表的 sizer 是普通块，不能让 flex 容器把它压缩。 */
@@ -2158,6 +2171,10 @@ html.is-mobile {
   display: flex;
   flex-direction: column;
   min-height: 100%;
+  /* 与 naive 同值（生产包里只有这两条在）：`border-box` 让内容盒宽度按 padding 内缩，
+     `min-width: 100%` 保证短内容也占满视口宽（否则居中/右对齐的元素会贴左）。 */
+  box-sizing: border-box;
+  min-width: 100%;
 }
 
 .gosslan-os .n-scrollbar-content > * {
@@ -2174,26 +2191,68 @@ html.is-mobile {
   overscroll-behavior: contain;
 }
 
-/* ---------------- 防御：naive 关键布局规则的本地副本（2026-11-26 线上 7.3 反馈） ----------------
-   naive 的基础样式（宿主 `height:100%; overflow:hidden`、滚动元素 `overflow:scroll;
-   height:100%`）是**运行时注入**的（css-render 在组件首次渲染时往 head 里写 <style>），
-   **不进构建产物的 .css**。一旦这次注入被推迟或没生效，滚动容器就退化成一个普通 div：
-     · 宿主高度被内容撑开 ⇒ 消息列表盖住宿主的 `padding-bottom`（用户看到的"穿到输入框下面"）；
-     · 滚动元素没有 overflow ⇒ 不能滚；
-     · 虚拟列表按错误的 `clientHeight` 算可见范围 ⇒ 长群聊整块空白。
-   下面四条与 naive 同值（同值不会改变正常路径），只在注入缺失时接管。
-   ⚠️ 特异性要比 naive 高（0,2,0 vs 0,1,0），否则同值时会被后注入的 naive 覆盖 ——
-   这不是"抢样式"，是为了在注入失效时仍有一份在。 */
+/* ---------------- naive Scrollbar 的几何：本仓**唯一来源**（2026-11-26 线上 7.3）
+   ⚠️ 先读这段再改：这不是"兜底副本"，生产包里它就是**唯一**生效的那份。
+   naive 的组件样式由 css-render 在渲染时用 `document.createElement("style")` 注入，
+   属于 inline style；生产包 CSP 是严格策略（`style-src 'self'`），**必然拒绝**它。
+   而"放宽 CSP"是假解：Tauri 打包时会给构建产物里的 `<style>` 注入 nonce
+   （`tauri-utils` 的 `inject_nonce_token`），CSP3 规定**一旦有 nonce，`'unsafe-inline'`
+   就被忽略** ⇒ 加 `'unsafe-inline'` 既不放宽、还把配置写得不诚实
+   （见 `docs/notes/csp-candidate-2026-10-16.md` §五，Rust 侧有守卫钉着）。
+   ⇒ 唯一与严格 CSP 兼容的路：**把用到的几何自己写在外部 .css 里**，
+   naive 只当滚动内核（测量 / thumb 尺寸计算 / 拖拽），样式归本仓。
+   dev 环境不施加 CSP，两份会同时存在；下面每一行都与 naive 同值，所以逐像素一致。
+   ⚠️ 特异性要比 naive 高（0,2,0 vs 0,1,0）：同值时后注入的 naive 会赢，而生产里它根本
+   不存在 —— 保持高特异性是为了 dev 与生产看起来是同一个东西。
+   ⚠️ 升级 naive 版本时要对照它的 `_internal/scrollbar/src/styles/index.cssr.mjs` 重核本段，
+   判据在 `platform.test.ts`（少一条就红）。 */
 .gosslan-os.n-scrollbar {
   height: 100%;
+  width: 100%;
   min-height: 0;
   overflow: hidden;
+  /* rail 的定位参照系：缺了它，absolute 的 rail 会飞到最近的定位祖先上（通常看不见）。 */
+  position: relative;
 }
 
 .gosslan-os .n-scrollbar-container {
   height: 100%;
-  min-height: 0;
-  overflow-y: auto;
+  width: 100%;
+  min-height: inherit;
+  /* `max-height: inherit` 是 `max-h-72` 那类容器能滚的前提（宿主被限高，滚动元素要跟着）。 */
+  max-height: inherit;
+  /* 与 naive 同值（`scroll` 而非 `auto`）：`auto` 会在"内容刚好不满"时改变
+     overflow-x 的计算值，代码块那种横向溢出会多出一条原生横条。 */
+  overflow: scroll;
+  scrollbar-width: none;
+}
+
+/* rail：naive 只在 needYBar 时才渲染它，渲染出来就必须有确定的盒子。 */
+.gosslan-os .n-scrollbar-rail {
+  position: absolute;
+  pointer-events: none;
+  user-select: none;
+}
+
+.gosslan-os .n-scrollbar-rail--vertical {
+  width: var(--n-scrollbar-width);
+}
+
+.gosslan-os .n-scrollbar-rail--vertical--right {
+  top: var(--n-scrollbar-rail-top-vertical-right);
+  right: var(--n-scrollbar-rail-right-vertical-right);
+  bottom: var(--n-scrollbar-rail-bottom-vertical-right);
+  left: var(--n-scrollbar-rail-left-vertical-right);
+}
+
+/* 滑块：height / top 由 naive 用内联 style 写（不受 CSP 的 style-src 影响），
+   位置与尺寸的"容器"由下面三条钉住。 */
+.gosslan-os .n-scrollbar-rail--vertical .n-scrollbar-rail__scrollbar {
+  position: absolute;
+  z-index: 1;
+  width: var(--n-scrollbar-width);
+  border-radius: var(--n-scrollbar-border-radius);
+  bottom: 0;
 }
 
 /* 原生条兜底：naive 已生成同义规则（width/height 0 + display:none），
@@ -2241,12 +2300,13 @@ html.is-mobile {
   pointer-events: auto !important;
 }
 
-/* 触屏不显示滚动条（naive 在 iOS 本来就不渲染；Android 由这条兜底）。 */
-@media (hover: none) {
-  .gosslan-os .n-scrollbar-rail {
-    display: none;
-  }
-}
+/* ⚠️ 这里**故意没有** `@media (hover: none) { .n-scrollbar-rail { display: none } }`。
+   2026-11-26 的教训：`hover: none` 描述的是**输入能力**，不是**平台身份**。远程桌面（RDP）
+   与触摸屏笔记本的 WebView2 都会把主指针报成 `none` ⇒ 桌面用户被当成手机，滚动条被整块
+   `display: none` 掉，怎么 hover 都没有（用户实测："能滚动了，但滚动条还是没有"）。
+   正确口径：可见性只由**交互状态**驱动 —— 默认 0，`:hover` / `.is-scrolling` / `:active`
+   时 1。触屏没有 hover 也有 `is-scrolling`（滚动事件驱动），所以照样能看到条；
+   iOS 由 naive 自己不渲染 rail，不需要媒体查询兜底。 */
 
 /* 档位：一档 = 一条视觉重量。`--n-scrollbar-width` 是整条带宽；
    `--gosslan-os-lane` 是给宿主预留的"车道"（内容要让开滑块，见下）。两者同源。 */

@@ -14,6 +14,41 @@
 
 ## [Unreleased]
 
+## [7.4.0] - 2026-11-26
+
+### 修复（线上 7.3 的 Windows）：滚动条不见了、长列表空白、列表盖住输入框
+- **现场**（用户 2026-11-26，Windows 安装 7.3 后）：长群聊点进去"刷一下就空白"；单聊列表
+  "穿到输入框下面、无法滚动"；7.3.1 之后"能滚了，但滚动条还是没有"。
+- **根因（一条，不是三条）**：naive-ui 的组件样式不是外部 .css，而是 css-render 在渲染时用
+  `document.createElement("style")` 注入的 —— 属于 inline style，**生产包的严格 CSP
+  （`style-src 'self'`）必然拒绝**。于是 naive 的规则一条都不在：宿主没有 `height:100%`
+  （被内容撑开 ⇒ 盖住输入框）、滚动元素没有 `overflow`（滚不动）、rail 没有
+  `position:absolute`（退化成被裁掉的静态块 ⇒ 能滚但看不到条）、虚拟列表按错误
+  `clientHeight` 算可见行（长列表空白）。
+  **dev 环境 `devCsp` 是 null（不施加 CSP），所以本地怎么测都正常** —— 差异是
+  「开发 vs 安装包」，不是「macOS vs Windows」。
+- **为什么不能靠放宽 CSP**：Tauri 打包时会给构建产物里的 `<style>` 注入 nonce，CSP3 规定
+  一旦存在 nonce，`'unsafe-inline'` 就被忽略（`docs/notes/csp-candidate-2026-10-16.md` §五，
+  Rust 侧有守卫钉着）。加它既不放宽、还把配置写得不诚实。
+- **修法（三层，缺一层都会复发）**：
+  1. 定位改为「**naive 当滚动内核，样式归本仓**」：`style.css` 补齐 Scrollbar 的**全部**
+     几何 —— 宿主 `height/overflow/position`、滚动元素 `overflow: scroll` + `max-height:
+     inherit`、内容盒 `box-sizing/min-width`、rail 的 `absolute` + 四边 inset、
+     滑块 `position/width`。每行与 naive 同值，dev 里两份并存逐像素一致。
+     ⇒ 「条存在」不再依赖任何运行时行为。
+  2. 删掉 `@media (hover: none) { .n-scrollbar-rail { display:none } }`：`hover` 是
+     **输入能力**，不是平台身份 —— 远程桌面（RDP）与触摸屏笔记本都报 `none`，桌面用户被
+     当成手机、条被整块隐藏。这是 7.3.1 "能滚但没条"的直接原因。
+  3. 保留 7.3.1 的整列揭示兜底（1.2s 无条件揭示），rAF 在 WebView2 节流时不再永久空白。
+- **判据**：`platform.test.ts` 新增「naive Scrollbar 的几何全部写在外部 CSS 里」
+  （7 个选择器逐条断言 + 删任一条必须红的反例自证）；「不许用 `@media (hover: none)`
+  隐藏滚动条」；删除旧判据「触屏必须隐藏滚动条」（前提本身是错的）。
+- **验证**：生产构建 + 生产包同款 CSP，三组对照 ——
+  改前：注入被拒 4~7 条、`sheetsWithScrollbar: 0`、宿主 `static`/2582px、rail 高 0、
+  滑块不渲染（复现用户全部症状）；改后：严格 CSP 下几何完整（宿主 360×420、
+  rail 8×416 贴右缘、滑块 89px），放宽 CSP 时两套样式并存且几何一致（滑块 94px）。
+  滚动运行时探针 74 绿 / 0 FAIL。
+
 ### 新增：按电源与锁屏状态自适应降档（插电全速 / 电池降一档 / 锁屏只保活）
 - **现场**（用户 2026-11-26）：长期挂机的桌面端在电池上掉电快、机器温热；人不在跟前时
   仍在全速广播/扫描/打洞。要求"无感知、不影响收发消息"。
