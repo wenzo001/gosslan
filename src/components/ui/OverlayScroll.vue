@@ -42,24 +42,12 @@ const props = withDefaults(
     /** 只在需要时滚动（默认 y）。x 轴一律 hidden：横向滚动条在这个产品里从来不该出现。 */
     axis?: "y" | "both";
     /**
-     * 何时显示滚动条。**不传时一律 `never`（常驻）**，所有平台同一口径
-     * （用户 2026-11-26：「每个平台的滚动条要一致，不要有区别」）。
-     *
-     * 另外三个值留给"确实需要更安静"的局部：`leave`（指针离开才隐）、`move`（移动/滚动
-     * 才显）、`scroll`（只有滚动才显）。注意它们只影响库加不加 `-hidden` 那个类，
-     * 而 `style.css` 里对常驻态有一层强制可见的兜底 —— 传 `move` 时以 CSS 那层为准，
-     * 也就是说**这里不再是"能不能看见"的开关**，而是"想不想让它淡出"的意向。
-     */
-    autoHide?: "move" | "scroll" | "leave" | "never";
-    /**
      * 滑块粗细分档（用户 2026-11-20：「滚动把手宽度可以按照业务不同粗细不同」）。
      * · `thick`（12px 带）：主内容区 —— 会话列表 / 消息列表（拖得动最重要）；
      * · `normal`（10px 带）：内容页 —— 设置 / 日志 / 任务详情；
      * · `thin`（8px 带）：弹窗里的小列表、表情面板、代码气泡。
      */
     size?: "thin" | "normal" | "thick";
-    /** 停手多久后淡出（ms）。 */
-    hideDelay?: number;
     /**
      * 无障碍属性：**落在真正滚动的元素上**（OS 建的 viewport），不是 host。
      *
@@ -72,41 +60,126 @@ const props = withDefaults(
     ariaLive?: string;
     ariaRelevant?: string;
   }>(),
-  { axis: "y", size: "normal", hideDelay: 1200 },
+  { axis: "y", size: "normal" },
 );
 
 const emit = defineEmits<{ (e: "scroll"): void }>();const host = ref<HTMLElement | null>(null);
 const instance = shallowRef<ReturnType<typeof OverlayScrollbars> | null>(null);
 /** 原生 scroll 监听器要能解绑，且 scroll **不冒泡** ⇒ 只能挂在 viewport 上自己转发。 */
 let detachScroll: (() => void) | null = null;
+/** 内容高度变化的观察者（见 onMounted）。 */
+let ro: ResizeObserver | null = null;
 
 /**
- * 显隐口径：**所有平台一律常驻**（用户 2026-11-26：「每个平台的滚动条要一致，不要有区别」）。
+ * 滚动条：**本组件自己画**（2026-11-26 定稿）。
  *
- * 为什么不再按平台分档（上一版是 Windows `never` / 其余 `move`）：
- * `autoHide` 只是让库决定**加不加 `os-scrollbar-auto-hide-hidden` 这个类**，而"到底显不显示"
- * 最终由那串类名的 CSS 决定。Windows 上 `never` 没能让条出现（用户 7.2.12 实测仍无条），
- * 说明把"有没有条"押在库的 JS 状态机上不可靠 —— 它还会受指针事件、初始化时机、
- * 以及引擎差异影响，而这些都不受我们控制。
+ * 为什么不再用 OverlayScrollbars 自带的条：三轮实修都卡在同一处 —— 条能不能看见，
+ * 取决于库给 `.os-scrollbar` 加的一串类名（`os-scrollbar-visible` /
+ * `os-scrollbar-auto-hide-hidden` …），而类名由库的 JS 状态机决定，还会被引擎差异
+ * （Chromium 在 Windows 上默认 overlay 滚动条、WKWebView 画系统条）左右。结果是：
+ * 同一份代码 mac 上"有"、Windows 上"没有"，我们能改的只有猜测。
  *
- * 所以改成：**JS 统一传 `never`（语义正确），CSS 再兜一层强制可见**（见 `style.css`
- * 的 `.gosslan-os .os-scrollbar-vertical` 段）。两层都站在"常驻"这一边，任意一层生效
- * 结果都一样；只改 JS 里那个值改不动显隐，只改 CSS 也不会被库的类名盖回去。
- * `gosslan-os--persistent` 只用来选颜色档（常驻必须比 hover 时淡，见样式注释）。
+ * 现在把职责切开，两边都变简单：
+ *   · **滚动**仍交给 OverlayScrollbars（原生滚动、尺寸测量、虚拟列表兼容都靠它）；
+ *   · **条**由本组件用两个 div 画（`.gosslan-os-bar` + `-thumb`），实色、常驻、
+ *     高度按 `clientHeight / scrollHeight` 算 —— 两端同一个 DOM、同一份 CSS，
+ *     逐像素一致，且不依赖任何"库状态"。
+ * 库自带的条用官方 `os-theme-none` 主题彻底隐藏（库 CSS 里有 `display:none !important`），
+ * 不会出现"两套条"。
+ *
+ * 代价与边界（如实记着）：拖动手势、轨道点击是本组件实现的，换行/换库时要一起搬；
+ * 只做垂直条（全站没有 `axis="both"` 的用法，真需要时再补水平条）。
  */
-const effectiveAutoHide = props.autoHide ?? "never";
-
 const options: PartialOptions = {
   scrollbars: {
-    theme: "os-theme-gosslan",
-    autoHide: effectiveAutoHide,
-    autoHideDelay: props.hideDelay,
-    // 默认 true 时"第一次滚动之前不让出现"，会把 hover 显现也一起压掉。
+    // 官方"无主题"：`display: none !important` ⇒ 库的条完全不参与视觉。
+    theme: "os-theme-none",
+    // 这两项对 none 主题已无视觉效果，留着是为了万一将来回退时行为可预期。
+    autoHide: "never",
     autoHideSuspend: false,
     clickScroll: true,
   },
   overflow: { x: props.axis === "both" ? "scroll" : "hidden", y: "scroll" },
 };
+
+// ---------------- 自绘滚动条 ----------------
+
+/** 轨道上下各留的空白（px）：滑块顶到底时不要贴死边角。 */
+const BAR_INSET = 2;
+/** 滑块最小高度（px）：太短就抓不住。 */
+const MIN_THUMB = 24;
+
+const barVisible = ref(false);
+const thumbHeight = ref(0);
+const thumbTop = ref(0);
+/** scroll 事件很密，合并到一帧里算一次（避免每像素都触发 Vue 更新）。 */
+let barRaf = 0;
+
+/** 按当前滚动几何重算滑块的高度与位置。 */
+function syncBar() {
+  const vp = instance.value?.elements().viewport;
+  const hostEl = host.value;
+  if (!vp || !hostEl) return;
+  const trackLen = hostEl.clientHeight - BAR_INSET * 2;
+  const overflow = vp.scrollHeight - vp.clientHeight;
+  // 内容不足一屏（或容器还没高度）⇒ 不画条。这是唯一"没有条"的情形，且它是正确的。
+  if (trackLen <= 0 || overflow <= 1) {
+    barVisible.value = false;
+    return;
+  }
+  barVisible.value = true;
+  const h = Math.max(MIN_THUMB, Math.round((trackLen * vp.clientHeight) / vp.scrollHeight));
+  const maxTop = Math.max(0, trackLen - h);
+  const top = Math.round((maxTop * vp.scrollTop) / overflow);
+  thumbHeight.value = Math.min(h, trackLen);
+  thumbTop.value = Math.max(0, Math.min(maxTop, top));
+}
+
+function scheduleSyncBar() {
+  if (barRaf) return;
+  barRaf = requestAnimationFrame(() => {
+    barRaf = 0;
+    syncBar();
+  });
+}
+
+/** 拖滑块：1px 轨道位移对应 `overflow / maxTop` px 滚动。 */
+function onThumbDown(e: PointerEvent) {
+  const vp = instance.value?.elements().viewport;
+  const hostEl = host.value;
+  if (!vp || !hostEl) return;
+  e.preventDefault();
+  const trackLen = hostEl.clientHeight - BAR_INSET * 2;
+  const overflow = vp.scrollHeight - vp.clientHeight;
+  const maxTop = Math.max(1, trackLen - thumbHeight.value);
+  const startY = e.clientY;
+  const startScroll = vp.scrollTop;
+  const el = e.currentTarget as HTMLElement;
+  el.setPointerCapture(e.pointerId);
+  const move = (ev: PointerEvent) => {
+    vp.scrollTop = startScroll + ((ev.clientY - startY) / maxTop) * overflow;
+    scheduleSyncBar();
+  };
+  const up = () => {
+    el.removeEventListener("pointermove", move);
+    el.removeEventListener("pointerup", up);
+    el.removeEventListener("pointercancel", up);
+  };
+  el.addEventListener("pointermove", move);
+  el.addEventListener("pointerup", up);
+  el.addEventListener("pointercancel", up);
+}
+
+/** 点轨道：把该位置当成滑块中心，滚过去（macOS 的直觉，不是"翻一屏"）。 */
+function onTrackDown(e: PointerEvent) {
+  const vp = instance.value?.elements().viewport;
+  if (!vp) return;
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  const overflow = vp.scrollHeight - vp.clientHeight;
+  const maxTop = Math.max(1, rect.height - thumbHeight.value);
+  const target = ((e.clientY - rect.top - thumbHeight.value / 2) / maxTop) * overflow;
+  vp.scrollTo({ top: Math.max(0, Math.min(overflow, target)), behavior: "smooth" });
+}
 
 onMounted(() => {
   if (!host.value) return;
@@ -116,12 +189,28 @@ onMounted(() => {
   if (props.role) viewport.setAttribute("role", props.role);
   if (props.ariaLive) viewport.setAttribute("aria-live", props.ariaLive);
   if (props.ariaRelevant) viewport.setAttribute("aria-relevant", props.ariaRelevant);
-  const onScroll = () => emit("scroll");
+  const onScroll = () => {
+    emit("scroll");
+    scheduleSyncBar();
+  };
   viewport.addEventListener("scroll", onScroll, { passive: true });
   detachScroll = () => viewport.removeEventListener("scroll", onScroll);
+  // 内容高度会异步变（图片加载、异步列表、展开折叠）⇒ 用 ResizeObserver 跟住，
+  // 只靠 scroll 事件会让滑块行程停在旧值上（"拖到底也到不了底"那类症状）。
+  const wrap = host.value.querySelector(".gosslan-os-wrap");
+  if (typeof ResizeObserver !== "undefined") {
+    ro = new ResizeObserver(() => scheduleSyncBar());
+    ro.observe(viewport);
+    if (wrap) ro.observe(wrap);
+  }
+  scheduleSyncBar();
 });
 
 onBeforeUnmount(() => {
+  if (barRaf) cancelAnimationFrame(barRaf);
+  barRaf = 0;
+  ro?.disconnect();
+  ro = null;
   detachScroll?.();
   detachScroll = null;
   instance.value?.destroy();
@@ -149,13 +238,18 @@ defineExpose({ scrollElement, scrollToBottom, isAtBottom });
 </script>
 
 <template>
-  <div
-    ref="host"
-    class="gosslan-os min-h-0"
-    :class="[`gosslan-os--${size}`, { 'gosslan-os--persistent': effectiveAutoHide === 'never' }]"
-  >
+  <div ref="host" class="gosslan-os min-h-0" :class="`gosslan-os--${size}`">
     <div class="gosslan-os-wrap">
       <slot />
+    </div>
+    <!-- 自绘条：只画滑块，轨道透明（用户 2026-11-20「轨道不要能看见」）。
+         结构固定为「轨道 div > 滑块 div」，样式在同名类里；两端同一份实现。 -->
+    <div v-show="barVisible" class="gosslan-os-bar" @pointerdown="onTrackDown">
+      <div
+        class="gosslan-os-bar-thumb"
+        :style="{ height: `${thumbHeight}px`, transform: `translateY(${thumbTop}px)` }"
+        @pointerdown.stop="onThumbDown"
+      />
     </div>
   </div>
 </template>

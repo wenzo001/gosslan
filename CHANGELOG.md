@@ -14,6 +14,25 @@
 
 ## [Unreleased]
 
+### 修复：滚动条改成本仓自绘 —— 不再把「有没有条」交给第三方库
+- **现场**（用户 2026-11-26 第三轮，附 Windows 截图）：装了 7.2.12、又试了 7.2.13 的
+  「CSS 强制可见」，Windows 上**仍然没有滚动条**；要求「各平台一致，不要有区别」。
+- **三轮为什么都没修好**：条能不能看见，取决于 OverlayScrollbars 给 `.os-scrollbar`
+  加的一串类名（`-visible` / `-auto-hide-hidden` …），而那串类名由库的 JS 状态机决定，
+  还叠加引擎差异 —— Chromium 在 Windows 上**默认用 overlay 滚动条**（连"还回去的原生条"
+  都是滚动时才出现、静止不显示），WKWebView 又画系统条。这条路上没有一处是我们能控制的。
+- **改法：把职责切开**。滚动仍交给 OverlayScrollbars（原生滚动、尺寸测量、虚拟列表
+  兼容都靠它），**条改由本组件用两个 div 自己画**：实色 rgba、常驻、高度按
+  `clientHeight / scrollHeight` 现算，`ResizeObserver` 跟住内容变化，支持拖动与点轨道跳转。
+  库自带的条用官方 `os-theme-none` 主题隐藏（库 CSS 里是 `display:none !important`），
+  不会出现两套。两端同一份 DOM + 同一份 CSS ⇒ **逐像素一致，且不依赖任何库状态**。
+- 顺手把「细/中/粗」三档从库的 `--os-size` 换成本仓的 `--gosslan-os-bar-w`（8/10/12），
+  档位语义不变；`designGuards` 的 SC-02 锚点同步搬过去（守的仍是"三档存在且是这个宽度"）。
+- **实测（真实前端 dev server + Chromium）**：塞入 2400px 内容后，条 10px 宽、
+  滑块 124px（= 543 × 547/2400），`scrollTop=1000` ⇒ `translateY(226px)`（理论 226.1），
+  滚到底 ⇒ `translateY(419px)`（= 轨道减滑块）。库的条 `display:none`。
+- 判据 2 条：自绘结构 + 实色/亮暗两档/不许按平台分档；`npm test` 2353 全绿。
+
 ## [7.2.13] - 2026-11-26
 
 ### 修复：滚动条在 Windows 上仍然不出现 —— 显隐改由我们的 CSS 接管，两端同一份规则

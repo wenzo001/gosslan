@@ -367,49 +367,58 @@ test("移动布局宽度档只有一个家：JS 不许裸抄、CSS 与 Tailwind 
 });
 
 
-// ---------------- 滚动条：所有平台一条口径，且必须有条 ----------------
+// ---------------- 滚动条：本仓自绘、常驻、两端同一份实现 ----------------
 //
-// 2026-11-25/26 连续两轮现场：
-//   ① 把原生条归零后，Windows 静止时"一条都没有"（自绘条要指针移动才出现）；
-//   ② 于是按平台分档（Windows 常驻 / 其余 hover 才显），用户装 7.2.12 后**仍然没有条**。
-// 结论：把"有没有条"押在库的 `autoHide` 状态机（它只加/删一个类，胜负在 CSS 里）不可靠。
-// 现在显隐由 `style.css` 接管、两端同一份规则。这三条判据就是钉住这个决定。
+// 三轮现场（2026-11-25/26）：
+//   ① 把原生条归零后，Windows 静止时"一条都没有"（库的条要指针移动才出现）；
+//   ② 按平台分档（Windows 常驻 / 其余 hover 才显），用户装 7.2.12 后**仍然没有条**；
+//   ③ 改成 CSS 强制可见，Windows 上**还是没有**。
+// 根因：库的条显不显示由它的 JS 状态机（一串类名）决定，加上 Chromium 在 Windows 上
+// 默认 overlay 滚动条（连"还回去的原生条"都是滚动时才出现）—— 这条路上没有我们能控制的东西。
+// 结论：条必须由本仓自己画。下面三条判据钉住这件事，别让它再退回"依赖库"。
 
-test("滚动条不再按平台分档（用户 2026-11-26：各平台要一致，不要有区别）", () => {
-  const os = readFileSync(join(SRC_DIR, "components/ui/OverlayScroll.vue"), "utf8");
+test("滚动条是本仓自绘的：库的条隐藏、自绘条常驻、颜色是实色", () => {
+  const vue = readFileSync(join(SRC_DIR, "components/ui/OverlayScroll.vue"), "utf8");
   assert.ok(
-    os.includes('props.autoHide ?? "never"'),
-    "默认值必须是统一的 never；一旦退回 `?? scrollbarAutoHide` 之类的平台分档，就会再出现两端不一致",
+    vue.includes('theme: "os-theme-none"'),
+    "库的条必须用官方 none 主题隐藏（库 CSS 里是 display:none !important）—— 否则会和自绘条叠成两条",
+  );
+  assert.ok(vue.includes("gosslan-os-bar-thumb"), "缺自绘滑块节点：条就是它，删了等于没有条");
+  assert.ok(
+    vue.includes("function syncBar(") && vue.includes("scrollHeight"),
+    "缺几何同步：滑块高度/位置必须按 clientHeight / scrollHeight 现算",
   );
   assert.ok(
-    !os.includes("scrollbarAutoHide"),
-    "组件里不该再引用平台口径（那条口径已删除，留着就是死代码/第二份规则）",
+    vue.includes("ResizeObserver"),
+    "内容异步变高（图片/列表）时必须重算，否则滑块行程停在旧值（拖不到底）",
   );
+  // 不再有"何时显示"这个概念：常驻。
+  assert.ok(!/autoHide:\s*effectiveAutoHide/.test(vue), "自绘条常驻，不该再把显示交给库的 autoHide");
   const platform = readFileSync(join(SRC_DIR, "utils/platform.ts"), "utf8");
   assert.ok(
     !platform.includes("scrollbarAutoHide"),
-    "平台口径函数必须彻底删掉 —— 留着早晚有人接回去，又变成两端两套",
+    "平台分档口径必须彻底删掉 —— 留着早晚有人接回去，又变成两端两套",
   );
 });
 
-test("样式的两层：常驻强制可见 + 自绘条缺席时把原生条还回去", () => {
+test("自绘条的样式：实色 rgba、亮暗各一档、不按平台/断点分档", () => {
   const css = readFileSync(join(SRC_DIR, "style.css"), "utf8");
-  // 第一层：只要 DOM 里有自绘条就一定可见（压过库的 `os-scrollbar-auto-hide-hidden`）。
+  assert.ok(css.includes(".gosslan-os-bar-thumb"), "缺自绘滑块样式");
   assert.ok(
-    /\.gosslan-os \.os-scrollbar-vertical:not\(\.os-scrollbar-unusable\)[\s\S]{0,160}?opacity: 1;[\s\S]{0,40}?visibility: visible;/.test(
-      css,
-    ),
-    "缺常驻强制可见规则：库一旦加上 `os-scrollbar-auto-hide-hidden`，条就又没了",
+    /\.gosslan-os-bar-thumb \{[\s\S]{0,240}?rgba\(77, 79, 81/.test(css),
+    "滑块颜色必须是实色 rgba —— 用 color-mix() 的话，旧引擎解析失败就是一条透明条（等于没有）",
   );
-  // 第二层：OS 没接管（DOM 里没有 .os-scrollbar）时，原生条必须回来 ——
-  // 否则"静态预隐藏 + 初始化失败"就是一条都没有（最佳实践里点名的坑）。
   assert.ok(
-    css.includes(".gosslan-os:not(:has(.os-scrollbar))"),
-    "缺兜底：自绘条缺席时原生条要恢复，不能两条都没有",
+    css.includes(".dark .gosslan-os-bar-thumb"),
+    "暗色主题必须另给一档，否则暗底上看不见",
   );
-  // 判据非空转：隐藏原生条那条也必须还在（否则上面两层都失去意义）。
+  assert.ok(
+    !/@media[^{]*\{[^}]*gosslan-os-bar/.test(css),
+    "滚动条不许按平台/断点分档：这正是前两轮翻车的形状（用户 2026-11-26「不要有区别」）",
+  );
+  // 原生条必须仍然关掉：自绘了还留着原生的，就会出现两条。
   assert.ok(
     css.includes(".gosslan-os [data-overlayscrollbars-viewport]::-webkit-scrollbar"),
-    "隐藏原生条那条规则被删了？那 Windows 上会同时出现原生条 + 自绘条",
+    "原生条那条规则被删了？自绘条 + 原生条会同时出现",
   );
 });

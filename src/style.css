@@ -516,11 +516,8 @@
      此前标题/页脚 16px、header 插槽 12px，同一张弹窗里出现两种节奏。
      守卫：designGuards `MD-01`。 */
   --gosslan-modal-gap: 1rem;
-  /* thumb 三态浓度（`color-mix` 的百分比；对比度读数见下面"滚动条规范"）：
-     第四档 `-idle` 只给**常驻**滚动条用（Windows 口径，见 `OverlayScroll.vue`）：
-     常驻的条必须比"hover 时才冒出来"的条淡一截，否则一条 72% 的深竖线整天压在
-     内容右缘上；鼠标靠近时仍会升到 72% / 88%。 */
-  --gosslan-scrollbar-thumb-idle: 42%;
+  /* thumb 三态浓度（`color-mix` 的百分比；对比度读数见下面"滚动条规范"）。
+     ⚠️ 自绘滚动条（`gosslan-os-bar`）**不用**这三个，它写实色 rgba —— 原因见那边注释。 */
   --gosslan-scrollbar-thumb: 72%;
   --gosslan-scrollbar-thumb-active: 88%;
   --gosslan-scrollbar-track: 12%;
@@ -2166,15 +2163,12 @@ html.is-mobile {
   overscroll-behavior: contain;
 }
 
-/* ★ 2026-11-25（用户 Win 截图）：把 OS viewport 上的**原生滚动条彻底关掉**。
-   现象：同一份代码，Windows 上是一条贴边、带灰轨道、无圆角的系统条；macOS 上是
-   OS 画的圆角浮条。根因是 Chromium（Windows WebView2）会照上面那条全局
-   `::-webkit-scrollbar` 把原生条**画出来**，盖在 OS 的 overlay 带旁边；而 macOS 的
-   WKWebView 对 `::-webkit-scrollbar` 支持有限、不会画，于是两端看到两种滚动条。
-   这里用更高的特异性（`[data-overlayscrollbars-viewport]::-webkit-scrollbar`）把
-   原生条归零 —— 只留 OS 自己画的那一条，两端才一致。
-   ⚠️ 只在 OS 容器上关：尚未迁移的容器（少数弹层）仍走全局那套 8px 细条。
-   ⚠️ 关之前必须先保证"自绘那条一定在"，否则就是两条都没有 —— 见下面兜底段。 */
+/* ---------------- 原生条：我们自绘，原生的必须关掉 ----------------
+   2026-11-25 现场：Chromium（Windows WebView2）会照上面那条全局 `::-webkit-scrollbar`
+   把原生条画出来，盖在自绘条旁边；WKWebView 不画这一层 ⇒ 两端看到两种条。
+   ⚠️ 以前关掉它有"一条都没有"的风险（自绘条由库决定显不显示）；2026-11-26 起条是
+   本仓自己画的，所以这条不再有那个风险 —— 见下面 `gosslan-os-bar`。
+   ⚠️ 只在 OS 容器上关：尚未迁移的容器（少数弹层）仍走全局那套 8px 细条。 */
 .gosslan-os [data-overlayscrollbars-viewport]::-webkit-scrollbar {
   width: 0;
   height: 0;
@@ -2184,104 +2178,49 @@ html.is-mobile {
   scrollbar-width: none;
 }
 
-/* ★★ 2026-11-26（用户：Windows 装了 7.2.12 仍然没有条；要各平台一致、不要有区别）。
-   ── 为什么不再靠 `autoHide` 选项 ──────────────────────────────────────────────
-   `autoHide` 只决定库给不给 `.os-scrollbar` 加 `os-scrollbar-auto-hide-hidden`，
-   而这个类在库自带样式里排在 `.os-scrollbar-visible` **后面**（v2.17.1 的 443 行 vs
-   437 行），同特异性下后者被前者盖掉 ⇒ 条隐藏。也就是说"有没有条"最终是一串
-   类名的 CSS 胜负，那串类名由库的 JS 状态机（指针事件 / 初始化时机 / 引擎差异）决定，
-   不受我们控制 —— 上一版赌 `isWindows → never` 就是输在这里。
-   ── 现在的口径 ─────────────────────────────────────────────────────────────
-   显隐**由本文件的 CSS 接管**：只要 DOM 里有那条（`.os-scrollbar-vertical`），
-   就一定是可见的，两端跑同一份规则 ⇒ 体验逐像素一致。
-   特异性 0,3,0 > 库的 0,1,0，且本文件整体晚于 `@import` 的库样式 ⇒ 稳定赢。
-   `.os-scrollbar-unusable`（内容不足一屏）不在此列，库用 `!important` 归零，不用管。 */
-.gosslan-os .os-scrollbar-vertical:not(.os-scrollbar-unusable),
-.gosslan-os .os-scrollbar-horizontal:not(.os-scrollbar-unusable) {
-  opacity: 1;
-  visibility: visible;
+/* ---------------- 自绘滚动条（2026-11-26 定稿） ----------------
+   ⚠️ 为什么不再用 OverlayScrollbars 自带的条：见 `OverlayScroll.vue` 顶部那段长注释。
+   一句话 —— 库的条显不显示由它自己的 JS 状态机（一串类名）决定，在 Windows/WebView2 上
+   连续三轮修不出来；换成两个 div 自己画：**常驻、实色、两端同一份实现**，没有第三种可能。
+   颜色刻意写实色 rgba 而不是 `color-mix()`：滚动条是"没有就没有"的组件，不该再依赖一个
+   需要引擎支持的颜色函数（`--gosslan-text-2` 亮 #4d4f51 / 暗 #cdced1 手算成 rgba）。 */
+.gosslan-os {
+  /* 自绘条的定位参照系（滑块绝对定位在宿主右缘）。 */
+  position: relative;
 }
 
-/* ★★ 兜底（最佳实践里最该有的一条）：**自绘条缺席时，把原生条还回去**。
-   上面那段隐藏原生条是"静态预隐藏"：一旦库只完成了半截接管（viewport 建出来了、
-   但 `.os-scrollbar` 节点没插进去），页面就会"能滚却没有任何视觉入口"。这里用 `:has()`
-   判断宿主里到底有没有自绘条，没有就按全局那套 8px 细条恢复 —— 宁可样式差一点，也不能没有。
-   ⚠️ 这条**兜不住"库完全没初始化"**：那时没有 `[data-overlayscrollbars-viewport]`，
-   而且宿主自身不滚（内容被裁掉但不产生滚动条），属于另一种坏法 —— 判据见
-   `platform.test.ts`，初始化异常要走日志，不在这里假装修好了。
-   `:has()` 在 Chromium 105+ / Safari 15.4+ 都有，两端覆盖得到。 */
-.gosslan-os:not(:has(.os-scrollbar)) [data-overlayscrollbars-viewport]::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-  display: block;
-}
-.gosslan-os:not(:has(.os-scrollbar)) [data-overlayscrollbars-viewport] {
-  scrollbar-width: thin;
+.gosslan-os-bar {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  right: 2px;
+  width: var(--gosslan-os-bar-w);
+  z-index: 3;
+  /* 触摸屏上拖滑块时不要被当成页面滚动。 */
+  touch-action: none;
 }
 
-/* 虚拟列表关掉浏览器原生滚动锚定：高度变化由 VirtualList 同帧显式补偿。
-   锚定属性必须落在**真正滚动的元素**上（viewport），挂在 host 上不生效。 */
-.vlist-no-anchor [data-overlayscrollbars-viewport] {
-  overflow-anchor: none;
+.gosslan-os-bar-thumb {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  border-radius: 999px;
+  background: rgba(77, 79, 81, 0.42);
+  transition: background-color var(--gosslan-duration-fast) var(--gosslan-ease);
 }
 
-.os-theme-gosslan.os-scrollbar {
-  box-sizing: border-box;
-  /* 带宽 10px：够拖（旧原生滑块只有 8px，用户反馈"偏细不好拖"）；
-     `--os-padding-perpendicular` 1px ⇒ 滑块本体 8px、上下各留 1px 呼吸位。 */
-  --os-size: 10px;
-  --os-padding-perpendicular: 1px;
-  --os-padding-axis: 1px;
-  --os-track-border-radius: var(--gosslan-radius-pill);
-  --os-handle-border-radius: var(--gosslan-radius-pill);
-  --os-handle-min-size: 40px;
-  /* 命中区比滑块本体宽 4px（左右各 2px）：够拖，又不至于伸进内容太多。 */
-  --os-handle-interactive-area-offset: 4px;
+.gosslan-os-bar-thumb:hover,
+.gosslan-os-bar-thumb:active {
+  background: rgba(77, 79, 81, 0.72);
 }
 
-.os-theme-gosslan .os-scrollbar-track {
-  /* 轨道**完全透明**（用户 2026-11-20：「不需要轨道能看见，现在滚动轨道也是能看见。需要透明」）。
-     轨道只作为滑块的定位面存在，不画任何底色 ⇒ 消息气泡右缘不会被一条灰带"贴脸"。 */
-  background: transparent;
+.dark .gosslan-os-bar-thumb {
+  background: rgba(205, 206, 209, 0.42);
 }
 
-.os-theme-gosslan .os-scrollbar-handle {
-  background: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-thumb), transparent);
-}
-
-.os-theme-gosslan .os-scrollbar-handle:hover,
-.os-theme-gosslan .os-scrollbar-handle:active {
-  background: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-thumb-active), transparent);
-}
-
-/* 常驻档（Windows，见 `OverlayScroll.vue` 的 `gosslan-os--persistent`）：
-   条一直在，所以空闲态要**更淡**（`-idle` 42%），鼠标靠近/拖动时才升到 72% / 88%。
-   特异性比上面那条多一个类 ⇒ 不需要 `!important`。
-   ⚠️ 只挂在 `.gosslan-os--persistent` 上：hover 才显的容器在"正在显示"时类名同样是
-   `os-scrollbar-auto-hide`（只少了 `-hidden`），靠类名分不出平台，必须由宿主标记。 */
-.gosslan-os--persistent .os-scrollbar-handle {
-  background: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-thumb-idle), transparent);
-}
-.gosslan-os--persistent .os-scrollbar-handle:hover,
-.gosslan-os--persistent .os-scrollbar-handle:active {
-  background: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-thumb), transparent);
-}
-
-/* 滑块粗细分档（写在主题规则之后 ⇒ 同特异性时以本段为准）。
-   一档 = 一条视觉重量：主内容区（会话列表 / 消息列表）最粗好拖，
-   内容页（设置 / 日志 / 任务）中等，弹窗里的小列表最细。
-   `--os-size` 是**带**宽，滑块本体 = 带宽 − 2×padding-perpendicular。 */
-.gosslan-os--thin .os-scrollbar {
-  --os-size: 8px;
-  --os-padding-perpendicular: 1px;
-}
-.gosslan-os--normal .os-scrollbar {
-  --os-size: 10px;
-  --os-padding-perpendicular: 1px;
-}
-.gosslan-os--thick .os-scrollbar {
-  --os-size: 12px;
-  --os-padding-perpendicular: 1px;
+.dark .gosslan-os-bar-thumb:hover,
+.dark .gosslan-os-bar-thumb:active {
+  background: rgba(205, 206, 209, 0.72);
 }
 
 /* 滑块"车道"：滑块浮在容器右缘，**会盖住靠右的内容**。
@@ -2294,9 +2233,11 @@ html.is-mobile {
    同时**不能把内容的边距撑大**（用户 2026-11-20：「间距看起来太大，不和谐」——
    微信 PC 的气泡到右缘约 20px，且滚动条在不在都一模一样）。
    ⇒ 车道只补「尾巴突出量 + 滑块带宽」真正需要的那么多，其余留白还给内容。 */
-.gosslan-os--thin { --gosslan-os-lane: 6px; }
-.gosslan-os--normal { --gosslan-os-lane: 10px; }
-.gosslan-os--thick { --gosslan-os-lane: 12px; }
+/* 档位：一档 = 一条视觉重量。`--gosslan-os-bar-w` 是整条带宽（滑块本体两边各留 1px），
+   `--gosslan-os-lane` 是给宿主预留的"车道"（见上）。两者必须同源，否则滑块会压到内容。 */
+.gosslan-os--thin { --gosslan-os-bar-w: 8px; --gosslan-os-lane: 6px; }
+.gosslan-os--normal { --gosslan-os-bar-w: 10px; --gosslan-os-lane: 10px; }
+.gosslan-os--thick { --gosslan-os-bar-w: 12px; --gosslan-os-lane: 12px; }
 
 /* macOS 不再单独压标题栏高度：红绿灯由 AppKit 原生绘制（`decorations:false` +
    `Titled`），其纵向位置不读本变量；把 caption 压到 28px 只会让右侧功能组贴边。

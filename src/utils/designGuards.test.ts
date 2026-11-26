@@ -8496,16 +8496,18 @@ function findScrollGapIssues(css: string): string[] {
     issues.push(`track(${track}) + gutter(${gutter}) = ${track + gutter} ≠ 16（滚动条带 + 空隙的固定缩进）`);
   if (!/--gosslan-scroll-inset:\s*calc\(var\(--gosslan-scroll-track\)\s*\+\s*var\(--gosslan-scroll-gap\)\)/.test(css))
     issues.push("缺 `--gosslan-scroll-inset`（标题/页脚与内容没有同一条竖线）");
-  // 统一容器的滑块粗细分档（用户 2026-11-20：「滚动把手宽度可以按照业务不同粗细不同」）。
-  // 三档是这件事的唯一口径：thin 8 / normal 10 / thick 12（带宽 = 滑块 + 2×padding）。
+  // 滚动条的粗细分档（用户 2026-11-20：「滚动把手宽度可以按照业务不同粗细不同」）。
+  // 三档是这件事的唯一口径：thin 8 / normal 10 / thick 12。
+  // ⚠️ 2026-11-26 起条由本仓自绘（`gosslan-os-bar`），档位变量从库的 `--os-size`
+  //    换成了 `--gosslan-os-bar-w`；判据守的是"三档存在且宽度是 8/10/12"，不守变量名。
   for (const [cls, want] of [["thin", 8], ["normal", 10], ["thick", 12]] as const) {
-    const m = new RegExp(`\\.gosslan-os--${cls} \\.os-scrollbar \\{([^}]*)\\}`).exec(css);
+    const m = new RegExp(`\\.gosslan-os--${cls} \\{([^}]*)\\}`).exec(css);
     if (!m) {
-      issues.push(`缺 .gosslan-os--${cls} 档（统一容器的滑块粗细分档）`);
+      issues.push(`缺 .gosslan-os--${cls} 档（滚动条的粗细分档）`);
       continue;
     }
-    const size = Number(/--os-size:\s*(\d+)px/.exec(m[1])?.[1]);
-    if (size !== want) issues.push(`.gosslan-os--${cls} 的 --os-size 应为 ${want}px（实为 ${size}）`);
+    const size = Number(/--gosslan-os-bar-w:\s*(\d+)px/.exec(m[1])?.[1]);
+    if (size !== want) issues.push(`.gosslan-os--${cls} 的 --gosslan-os-bar-w 应为 ${want}px（实为 ${size}）`);
   }
   return issues;
 }
@@ -8565,7 +8567,7 @@ test("SC-02 反例自证：删掉缩进 / 加回 gutter / 改档位宽度 都必
     "删掉 scroll-inset（标题与内容对齐）必须命中",
   );
   assert.ok(
-    findScrollGapIssues(mut(/(\.gosslan-os--thick \.os-scrollbar \{[^}]*?)--os-size:\s*12px;/, "$1--os-size: 9px;")).length > 0,
+    findScrollGapIssues(mut(/(\.gosslan-os--thick \{[^}]*?)--gosslan-os-bar-w:\s*12px;/, "$1--os-size: 9px;")).length > 0,
     "滑块粗细分档被改掉必须命中（粗细是分档口径，不许随手改）",
   );
 });
