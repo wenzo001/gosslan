@@ -261,11 +261,23 @@ const messageLoadError = computed(() =>
  */
 const listSwitching = ref(false);
 let listRevealRaf = 0;
+let listRevealTimer = 0;
 function revealListAfterLayout() {
   if (listRevealRaf) cancelAnimationFrame(listRevealRaf);
+  // 兜底：双 `requestAnimationFrame` 在窗口不可见 / WebView2 节流 / 渲染线程繁忙时
+  // 可能**一直不跑** ⇒ 列表永久停在 `opacity-0`。用户看到的就是
+  // 「点进去刷了一下，然后整个聊天区空白，只剩输入框」（2026-11-26 线上反馈）。
+  // 宁可早一帧揭示，也不要空着 —— 列表本身有骨架过渡，早显示不会更难看。
+  if (listRevealTimer) window.clearTimeout(listRevealTimer);
+  listRevealTimer = window.setTimeout(() => {
+    listRevealTimer = 0;
+    listSwitching.value = false;
+  }, 1_200);
   listRevealRaf = requestAnimationFrame(() => {
     listRevealRaf = requestAnimationFrame(() => {
       listRevealRaf = 0;
+      if (listRevealTimer) window.clearTimeout(listRevealTimer);
+      listRevealTimer = 0;
       listSwitching.value = false;
     });
   });
@@ -296,6 +308,7 @@ watch([messagesLoading, messageLoadError, () => messages.value.length], ([loadin
 });
 onBeforeUnmount(() => {
   if (listRevealRaf) cancelAnimationFrame(listRevealRaf);
+  if (listRevealTimer) window.clearTimeout(listRevealTimer);
   if (historyLoadingTimer) window.clearTimeout(historyLoadingTimer);
   if (highlightTimer) window.clearTimeout(highlightTimer);
 });

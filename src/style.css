@@ -2174,6 +2174,28 @@ html.is-mobile {
   overscroll-behavior: contain;
 }
 
+/* ---------------- 防御：naive 关键布局规则的本地副本（2026-11-26 线上 7.3 反馈） ----------------
+   naive 的基础样式（宿主 `height:100%; overflow:hidden`、滚动元素 `overflow:scroll;
+   height:100%`）是**运行时注入**的（css-render 在组件首次渲染时往 head 里写 <style>），
+   **不进构建产物的 .css**。一旦这次注入被推迟或没生效，滚动容器就退化成一个普通 div：
+     · 宿主高度被内容撑开 ⇒ 消息列表盖住宿主的 `padding-bottom`（用户看到的"穿到输入框下面"）；
+     · 滚动元素没有 overflow ⇒ 不能滚；
+     · 虚拟列表按错误的 `clientHeight` 算可见范围 ⇒ 长群聊整块空白。
+   下面四条与 naive 同值（同值不会改变正常路径），只在注入缺失时接管。
+   ⚠️ 特异性要比 naive 高（0,2,0 vs 0,1,0），否则同值时会被后注入的 naive 覆盖 ——
+   这不是"抢样式"，是为了在注入失效时仍有一份在。 */
+.gosslan-os.n-scrollbar {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.gosslan-os .n-scrollbar-container {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 /* 原生条兜底：naive 已生成同义规则（width/height 0 + display:none），
    这里再钉一次，防止上面的全局 `::-webkit-scrollbar` 在 WebView2 里插进来。 */
 .gosslan-os .n-scrollbar-container::-webkit-scrollbar {
