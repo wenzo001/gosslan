@@ -11,7 +11,6 @@ import {
   isWindowsUA,
   prefersReducedMotionByMedia,
   resolveMobileLayout,
-  scrollbarAutoHideForUA,
 } from "./platform.ts";
 
 const SRC_DIR = join(import.meta.dirname, "..");
@@ -367,47 +366,50 @@ test("移动布局宽度档只有一个家：JS 不许裸抄、CSS 与 Tailwind 
   );
 });
 
-// ---------------- 滚动条口径：Windows 常驻、其余 hover 才显 ----------------
+
+// ---------------- 滚动条：所有平台一条口径，且必须有条 ----------------
 //
-// 2026-11-25 用户实报「Windows 上滚动条直接没了」。这条判据钉的是**决策本身**：
-// 一旦有人把 Windows 也改回 `move`（或两边都写死 `never`），这里必须红 ——
-// 前者会让 Windows 静止时完全没有滚动条（原生条已归零、自绘条不动不显），
-// 后者会让 mac 上多出一条本不该常驻的深色竖线。
+// 2026-11-25/26 连续两轮现场：
+//   ① 把原生条归零后，Windows 静止时"一条都没有"（自绘条要指针移动才出现）；
+//   ② 于是按平台分档（Windows 常驻 / 其余 hover 才显），用户装 7.2.12 后**仍然没有条**。
+// 结论：把"有没有条"押在库的 `autoHide` 状态机（它只加/删一个类，胜负在 CSS 里）不可靠。
+// 现在显隐由 `style.css` 接管、两端同一份规则。这三条判据就是钉住这个决定。
 
-test("scrollbarAutoHideForUA：Windows 常驻，mac / 安卓走 hover 才显", () => {
-  const win =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36 Edg/130.0";
-  const mac =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
-  const android =
-    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36";
-
-  assert.equal(scrollbarAutoHideForUA(win), "never", "Windows 必须常驻：原生条已归零，再 hover 才显就等于没有");
-  assert.equal(scrollbarAutoHideForUA(mac), "move", "mac 保持 hover/滚动才出现（系统惯例也是 overlay）");
-  assert.equal(scrollbarAutoHideForUA(android), "move", "移动端没有 hover，常驻条只会挡住内容");
-
-  // 判据非空转：这两个平台必须给出**不同**的答案 —— 否则恒返回一个值也能"通过"。
-  assert.notEqual(scrollbarAutoHideForUA(win), scrollbarAutoHideForUA(mac));
+test("滚动条不再按平台分档（用户 2026-11-26：各平台要一致，不要有区别）", () => {
+  const os = readFileSync(join(SRC_DIR, "components/ui/OverlayScroll.vue"), "utf8");
+  assert.ok(
+    os.includes('props.autoHide ?? "never"'),
+    "默认值必须是统一的 never；一旦退回 `?? scrollbarAutoHide` 之类的平台分档，就会再出现两端不一致",
+  );
+  assert.ok(
+    !os.includes("scrollbarAutoHide"),
+    "组件里不该再引用平台口径（那条口径已删除，留着就是死代码/第二份规则）",
+  );
+  const platform = readFileSync(join(SRC_DIR, "utils/platform.ts"), "utf8");
+  assert.ok(
+    !platform.includes("scrollbarAutoHide"),
+    "平台口径函数必须彻底删掉 —— 留着早晚有人接回去，又变成两端两套",
+  );
 });
 
-test("OverlayScroll 真的接在这个口径上（不是自己又写死一个值）", () => {
-  const vue = readFileSync(join(SRC_DIR, "components/ui/OverlayScroll.vue"), "utf8");
-  assert.ok(
-    vue.includes("props.autoHide ?? scrollbarAutoHide"),
-    "组件必须「显式传入优先、否则用平台口径」，直接写死 autoHide 会让 Windows 又变成静止无条",
-  );
-  assert.ok(
-    vue.includes("gosslan-os--persistent"),
-    "常驻时宿主必须带上 persistent 标记 —— 滑块颜色分档（idle 更淡）挂在它上面",
-  );
-  // 常驻档的颜色必须在样式里真的存在，否则常驻条会用 72% 的深色整天压在内容上。
+test("样式的两层：常驻强制可见 + 自绘条缺席时把原生条还回去", () => {
   const css = readFileSync(join(SRC_DIR, "style.css"), "utf8");
+  // 第一层：只要 DOM 里有自绘条就一定可见（压过库的 `os-scrollbar-auto-hide-hidden`）。
   assert.ok(
-    css.includes("--gosslan-scrollbar-thumb-idle"),
-    "缺常驻档浓度令牌：常驻条会跟 hover 条一样深",
+    /\.gosslan-os \.os-scrollbar-vertical:not\(\.os-scrollbar-unusable\)[\s\S]{0,160}?opacity: 1;[\s\S]{0,40}?visibility: visible;/.test(
+      css,
+    ),
+    "缺常驻强制可见规则：库一旦加上 `os-scrollbar-auto-hide-hidden`，条就又没了",
   );
+  // 第二层：OS 没接管（DOM 里没有 .os-scrollbar）时，原生条必须回来 ——
+  // 否则"静态预隐藏 + 初始化失败"就是一条都没有（最佳实践里点名的坑）。
   assert.ok(
-    css.includes(".gosslan-os--persistent .os-scrollbar-handle"),
-    "缺常驻档的滑块样式：令牌定义了也没人用",
+    css.includes(".gosslan-os:not(:has(.os-scrollbar))"),
+    "缺兜底：自绘条缺席时原生条要恢复，不能两条都没有",
+  );
+  // 判据非空转：隐藏原生条那条也必须还在（否则上面两层都失去意义）。
+  assert.ok(
+    css.includes(".gosslan-os [data-overlayscrollbars-viewport]::-webkit-scrollbar"),
+    "隐藏原生条那条规则被删了？那 Windows 上会同时出现原生条 + 自绘条",
   );
 });

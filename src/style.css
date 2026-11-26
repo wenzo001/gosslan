@@ -2173,7 +2173,8 @@ html.is-mobile {
    WKWebView 对 `::-webkit-scrollbar` 支持有限、不会画，于是两端看到两种滚动条。
    这里用更高的特异性（`[data-overlayscrollbars-viewport]::-webkit-scrollbar`）把
    原生条归零 —— 只留 OS 自己画的那一条，两端才一致。
-   ⚠️ 只在 OS 容器上关：尚未迁移的容器（少数弹层）仍走全局那套 8px 细条。 */
+   ⚠️ 只在 OS 容器上关：尚未迁移的容器（少数弹层）仍走全局那套 8px 细条。
+   ⚠️ 关之前必须先保证"自绘那条一定在"，否则就是两条都没有 —— 见下面兜底段。 */
 .gosslan-os [data-overlayscrollbars-viewport]::-webkit-scrollbar {
   width: 0;
   height: 0;
@@ -2181,6 +2182,41 @@ html.is-mobile {
 }
 .gosslan-os [data-overlayscrollbars-viewport] {
   scrollbar-width: none;
+}
+
+/* ★★ 2026-11-26（用户：Windows 装了 7.2.12 仍然没有条；要各平台一致、不要有区别）。
+   ── 为什么不再靠 `autoHide` 选项 ──────────────────────────────────────────────
+   `autoHide` 只决定库给不给 `.os-scrollbar` 加 `os-scrollbar-auto-hide-hidden`，
+   而这个类在库自带样式里排在 `.os-scrollbar-visible` **后面**（v2.17.1 的 443 行 vs
+   437 行），同特异性下后者被前者盖掉 ⇒ 条隐藏。也就是说"有没有条"最终是一串
+   类名的 CSS 胜负，那串类名由库的 JS 状态机（指针事件 / 初始化时机 / 引擎差异）决定，
+   不受我们控制 —— 上一版赌 `isWindows → never` 就是输在这里。
+   ── 现在的口径 ─────────────────────────────────────────────────────────────
+   显隐**由本文件的 CSS 接管**：只要 DOM 里有那条（`.os-scrollbar-vertical`），
+   就一定是可见的，两端跑同一份规则 ⇒ 体验逐像素一致。
+   特异性 0,3,0 > 库的 0,1,0，且本文件整体晚于 `@import` 的库样式 ⇒ 稳定赢。
+   `.os-scrollbar-unusable`（内容不足一屏）不在此列，库用 `!important` 归零，不用管。 */
+.gosslan-os .os-scrollbar-vertical:not(.os-scrollbar-unusable),
+.gosslan-os .os-scrollbar-horizontal:not(.os-scrollbar-unusable) {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* ★★ 兜底（最佳实践里最该有的一条）：**自绘条缺席时，把原生条还回去**。
+   上面那段隐藏原生条是"静态预隐藏"：一旦库只完成了半截接管（viewport 建出来了、
+   但 `.os-scrollbar` 节点没插进去），页面就会"能滚却没有任何视觉入口"。这里用 `:has()`
+   判断宿主里到底有没有自绘条，没有就按全局那套 8px 细条恢复 —— 宁可样式差一点，也不能没有。
+   ⚠️ 这条**兜不住"库完全没初始化"**：那时没有 `[data-overlayscrollbars-viewport]`，
+   而且宿主自身不滚（内容被裁掉但不产生滚动条），属于另一种坏法 —— 判据见
+   `platform.test.ts`，初始化异常要走日志，不在这里假装修好了。
+   `:has()` 在 Chromium 105+ / Safari 15.4+ 都有，两端覆盖得到。 */
+.gosslan-os:not(:has(.os-scrollbar)) [data-overlayscrollbars-viewport]::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+  display: block;
+}
+.gosslan-os:not(:has(.os-scrollbar)) [data-overlayscrollbars-viewport] {
+  scrollbar-width: thin;
 }
 
 /* 虚拟列表关掉浏览器原生滚动锚定：高度变化由 VirtualList 同帧显式补偿。

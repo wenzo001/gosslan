@@ -14,6 +14,26 @@
 
 ## [Unreleased]
 
+### 修复：滚动条在 Windows 上仍然不出现 —— 显隐改由我们的 CSS 接管，两端同一份规则
+- **现场**（用户 2026-11-26）：装上 7.2.12 后 Windows 仍然没有滚动条；要求「各平台一致、
+  不要有区别」。
+- **为什么上一版没修好**：`autoHide` 只是让库决定**加不加 `os-scrollbar-auto-hide-hidden`
+  这个类**，而这个类在库自带样式里排在 `.os-scrollbar-visible` **之后**（v2.17.1 的 443 行
+  vs 437 行），同特异性下把后者盖掉 ⇒ 条隐藏。也就是说"有没有条"最终是一串类名的 CSS
+  胜负，而那一串由库的 JS 状态机（指针事件 / 初始化时机 / 引擎差异）决定 —— 不受我们控制。
+  上一版赌 `isWindows → never` 就输在这里。
+- **现在**：显隐由 `style.css` 接管 —— `.gosslan-os .os-scrollbar-vertical:not(.os-scrollbar-unusable)
+  { opacity: 1; visibility: visible }`，特异性 0,3,0 压过库的 0,1,0，且本文件整体晚于
+  `@import` 的库样式 ⇒ 稳定赢。**所有平台统一常驻、同一份规则**，不再按平台分档
+  （`scrollbarAutoHideForUA` 已删除，避免留成第二份口径）。
+- **兜底**：`:has(.os-scrollbar)` 判断宿主里有没有自绘条，没有就把原生 8px 条还回去 ——
+  防的是"静态预隐藏 + 库只完成半截接管 = 能滚却没有任何视觉入口"。
+- **实测**（Chromium，复刻 7.2.12 的真实类名组合）：`autoHide: "move"` 时条上确实带着
+  `os-scrollbar-auto-hide-hidden`，新规则仍算出 `opacity: 1 / visibility: visible`；
+  `never` 同样可见。
+- 判据 2 条（不许再按平台分档、CSS 两层必须在），变异检验两向精确红
+  （强制可见改成 0 / 默认改回 `move`）。
+
 ## [7.2.12] - 2026-11-25
 
 ### 修复：Windows 上滚动条「直接没了」（原生条归零后没人接手）

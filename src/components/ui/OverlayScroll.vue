@@ -28,7 +28,6 @@
  */
 import { onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 import { ClickScrollPlugin, OverlayScrollbars, type PartialOptions } from "overlayscrollbars";
-import { scrollbarAutoHide } from "@/utils/platform";
 
 /**
  * 「点轨道翻页」由 `ClickScrollPlugin` 提供 —— `clickScroll: true` 只是它的**配置**，
@@ -43,19 +42,13 @@ const props = withDefaults(
     /** 只在需要时滚动（默认 y）。x 轴一律 hidden：横向滚动条在这个产品里从来不该出现。 */
     axis?: "y" | "both";
     /**
-     * 何时显示滚动条。**不传时按平台给默认值**（`utils/platform.ts` 的
-     * `scrollbarAutoHide`）：
+     * 何时显示滚动条。**不传时一律 `never`（常驻）**，所有平台同一口径
+     * （用户 2026-11-26：「每个平台的滚动条要一致，不要有区别」）。
      *
-     * · Windows 默认 `never`（**常驻**）—— 2026-11-25 用户实报「Windows 上滚动条直接
-     *   没了」：原生条被归零、自绘条又要指针移动才出现 ⇒ 静止时两条都没有。Windows 的
-     *   惯例本来就是常驻（资源管理器 / VS Code），常驻态用更淡的 `-idle` 令牌；
-     * · 其余平台默认 `move`：**滚动或指针在容器内移动**时出现，停手 `hideDelay` 后淡出
-     *   —— 同时满足"hover 才显"和"idle 隐藏"（v2 文档原文：hidden unless the pointer
-     *   moves in the host element **or** the user scrolls）；
-     * · `leave`：指针停在容器里就一直显示（macOS 原生那种，长时间阅读会常驻）；
-     * · `scroll`：只有滚动才显示（微信 PC 的旧口径，hover 不出）；
-     *
-     * 显式传值一律优先于平台默认（例如某个面板就是要常驻/就是要更安静）。
+     * 另外三个值留给"确实需要更安静"的局部：`leave`（指针离开才隐）、`move`（移动/滚动
+     * 才显）、`scroll`（只有滚动才显）。注意它们只影响库加不加 `-hidden` 那个类，
+     * 而 `style.css` 里对常驻态有一层强制可见的兜底 —— 传 `move` 时以 CSS 那层为准，
+     * 也就是说**这里不再是"能不能看见"的开关**，而是"想不想让它淡出"的意向。
      */
     autoHide?: "move" | "scroll" | "leave" | "never";
     /**
@@ -82,19 +75,26 @@ const props = withDefaults(
   { axis: "y", size: "normal", hideDelay: 1200 },
 );
 
-const emit = defineEmits<{ (e: "scroll"): void }>();
-
-const host = ref<HTMLElement | null>(null);
+const emit = defineEmits<{ (e: "scroll"): void }>();const host = ref<HTMLElement | null>(null);
 const instance = shallowRef<ReturnType<typeof OverlayScrollbars> | null>(null);
 /** 原生 scroll 监听器要能解绑，且 scroll **不冒泡** ⇒ 只能挂在 viewport 上自己转发。 */
 let detachScroll: (() => void) | null = null;
 
 /**
- * 显式传入优先，否则用平台默认（Windows 常驻 / 其余 hover 才显）。
- * 为什么要一个变量而不是直接写进 options：模板也要用它决定 `gosslan-os--persistent`，
- * 而那个类名决定滑块用哪一档颜色（常驻必须更淡，见 `style.css`）。
+ * 显隐口径：**所有平台一律常驻**（用户 2026-11-26：「每个平台的滚动条要一致，不要有区别」）。
+ *
+ * 为什么不再按平台分档（上一版是 Windows `never` / 其余 `move`）：
+ * `autoHide` 只是让库决定**加不加 `os-scrollbar-auto-hide-hidden` 这个类**，而"到底显不显示"
+ * 最终由那串类名的 CSS 决定。Windows 上 `never` 没能让条出现（用户 7.2.12 实测仍无条），
+ * 说明把"有没有条"押在库的 JS 状态机上不可靠 —— 它还会受指针事件、初始化时机、
+ * 以及引擎差异影响，而这些都不受我们控制。
+ *
+ * 所以改成：**JS 统一传 `never`（语义正确），CSS 再兜一层强制可见**（见 `style.css`
+ * 的 `.gosslan-os .os-scrollbar-vertical` 段）。两层都站在"常驻"这一边，任意一层生效
+ * 结果都一样；只改 JS 里那个值改不动显隐，只改 CSS 也不会被库的类名盖回去。
+ * `gosslan-os--persistent` 只用来选颜色档（常驻必须比 hover 时淡，见样式注释）。
  */
-const effectiveAutoHide = props.autoHide ?? scrollbarAutoHide;
+const effectiveAutoHide = props.autoHide ?? "never";
 
 const options: PartialOptions = {
   scrollbars: {
