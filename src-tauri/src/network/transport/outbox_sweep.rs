@@ -134,8 +134,17 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
     tauri::async_runtime::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(OUTBOX_SWEEPER_INTERVAL_MS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // 送达类节拍：**电池下不降**（降了就是"电池模式下发消息变慢"），只有锁屏才放慢。
+        // 这是"消息发出去了没有"的唯一收敛出口 —— 宁可多花一点电，也不让用户觉得卡。
+        let mut cadence = crate::runtime_profile::Cadence::new(
+            Duration::from_millis(OUTBOX_SWEEPER_INTERVAL_MS),
+            crate::runtime_profile::CadenceKind::Delivery,
+        );
         loop {
             tick.tick().await;
+            if !cadence.due() {
+                continue;
+            }
 
             let now = db::now_ms();
             // 群文件 ACK 账本重放：上一轮（**或上一次进程**）收到 ACK 却没落终态 ⇒ 在这里补上。

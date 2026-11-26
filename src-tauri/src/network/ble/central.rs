@@ -381,7 +381,13 @@ async fn scan_loop(
             continue;
         }
         let active = state.app_active.load(std::sync::atomic::Ordering::Relaxed);
-        let interval = scan_interval(active);
+        // 运行档位：扫描属于主动类 ⇒ 电池时 5s→15s / 30s→90s，锁屏时 5min / 30min。
+        // 锁屏仍会扫（否则解锁那一下看不到任何设备），只是很慢；
+        // 解锁/插电后 `state.ble_wake` 之外的恢复走 `set_app_active` 的 wake_scan。
+        let interval = scan_interval(active).mul_f64(crate::runtime_profile::multiplier(
+            crate::runtime_profile::CadenceKind::Proactive,
+            crate::runtime_profile::profile(),
+        ));
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,

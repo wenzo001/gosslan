@@ -14,6 +14,26 @@
 
 ## [Unreleased]
 
+### 新增：按电源与锁屏状态自适应降档（插电全速 / 电池降一档 / 锁屏只保活）
+- **现场**（用户 2026-11-26）：长期挂机的桌面端在电池上掉电快、机器温热；人不在跟前时
+  仍在全速广播/扫描/打洞。要求"无感知、不影响收发消息"。
+- **三级档位**：`active`（插电+前台）/ `saver`（电池或后台，周期 ×3）/ `dormant`（锁屏，
+  主动行为近似停）。判据合成是纯函数，**锁屏优先**（锁屏时窗口往往仍是"前台"）。
+- **倍数是唯一事实来源**（`runtime_profile::multiplier`）：保活类 1/3/12（心跳 5s→15s→60s）、
+  主动类 1/3/60（广播/扫描/打洞）、**送达类 1/1/20**（outbox 对账在电池下**不降** ——
+  降了就是"电池模式下发消息变慢"）。
+- **无感知三件事**：只改"下一轮等多久"不碰协议语义；档位稳定 3s 才切（电源抖动不驱动节奏）；
+  恢复 Active 时各循环**立刻补一轮**（`generation` + `applied_notify`），不等被拉长的周期。
+- **平台**：macOS 走 IOKit + `CGSessionCopyCurrentDictionary`（本机实测）；Windows 走
+  `GetSystemPowerStatus` + WTS `SessionFlags`（判定语义抽纯函数单测，FFI 用独立 scratch crate
+  交叉 `cargo check --target x86_64-pc-windows-msvc` 验证）；其它平台恒 `active`，
+  行为与改造前完全一致；移动端不接（系统自己冻结后台）。
+- **新增常驻 worker** `power_profile`（受 `worker_supervisor` 监督）：它死了就再也没有降档，
+  必须能被发现与拉起。
+- **验证**：`cargo test --lib runtime_profile` 7 条 + `power` 7 条（含真机探针、连采 50 次
+  不崩）；`verify:local` 31 步全绿；领域图/依赖方向守门绿。文档见
+  `docs/architecture/runtime-profile.md`。
+
 ## [7.3.1] - 2026-11-26
 
 ### 修复（线上 7.3）：长群聊点进去空白、单聊列表盖住输入框且滚不动

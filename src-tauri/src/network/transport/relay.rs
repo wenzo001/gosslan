@@ -204,6 +204,13 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
     let inflight: std::sync::Arc<std::sync::Mutex<HashSet<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(HashSet::new()));
 
+    // 打洞会合属于"主动类"：插电 2s / 电池 6s / 锁屏 120s。
+    // 锁屏时放慢不会丢链路（已建的电路不受影响），恢复时 `Cadence` 立刻补一轮。
+    let mut cadence = crate::runtime_profile::Cadence::new(
+        Duration::from_secs(RELAY_RENDEZVOUS_SECS),
+        crate::runtime_profile::CadenceKind::Proactive,
+    );
+
     loop {
         tokio::select! {
             biased;
@@ -220,6 +227,12 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
                     format!("拨号任务异常退出（在途名额已由守卫回收）: {e}"),
                 );
             }
+        }
+
+        // 档位节拍：先回收在途名额（上面那段），**再**判这一轮要不要干 ——
+        // 顺序反了会让 `dials` 在锁屏期间堆积。
+        if !cadence.due() {
+            continue;
         }
 
         let cfg = {

@@ -1323,6 +1323,11 @@ notifications::tests::platform_hint_is_never_empty
 notifications::tests::windows_only_branch_is_source_checkable_for_pattern_bounds
 open_path::tests::open_dir_native_reports_a_missing_directory
 open_path::tests::opening_a_directory_never_forks_the_open_binary
+power::macos::tests::probe_runs_without_panic
+power::macos::tests::repeated_sampling_is_stable
+power::tests::ac_line_status_treats_unknown_as_ac
+power::tests::probe_failure_keeps_active
+power::tests::session_flags_lock_is_zero_not_one
 private_fs::tests::create_private_dir_makes_0700_and_leaves_an_existing_dir_alone
 private_fs::tests::dot_prefixed_names_are_hidden_on_every_platform
 private_fs::tests::restrict_dir_to_owner_sets_0700
@@ -1415,6 +1420,13 @@ rp_key_store::tests::open_rejects_other_backends_instead_of_returning_plaintext
 rp_key_store::tests::open_rejects_unknown_backend_and_broken_payload
 rp_key_store::tests::platform_without_keystore_keeps_legacy_behavior
 rp_key_store::tests::seal_and_open_round_trip_byte_for_byte
+runtime_profile::tests::cadence_runs_immediately_after_profile_switch
+runtime_profile::tests::cadence_skips_in_saver_and_passes_in_active
+runtime_profile::tests::compose_truth_table
+runtime_profile::tests::first_tick_is_immediate
+runtime_profile::tests::gate_collapses_power_flapping_into_one_switch
+runtime_profile::tests::multiplier_table_is_monotonic_and_splits_by_kind
+runtime_profile::tests::set_profile_is_idempotent
 share::share_tests::argv_picks_the_share_link_only
 share::share_tests::content_url_rejects_non_http_schemes
 share::share_tests::dispatcher_does_not_steal_authorize_links

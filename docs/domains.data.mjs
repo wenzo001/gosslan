@@ -109,6 +109,14 @@ export default {
     ],
     ["src-tauri/src/state.rs", "1494 行 / 284 个 pub 项：跨领域共享状态（耦合热点）"],
     ["src-tauri/src/focus_rhythm.rs", "前台/失焦节奏的纯状态机（2026-11-04 引入）：`commands/network.rs` 的窗口信号与 `state.rs` 的蓝牙扫描节奏共用 ⇒ 归任一业务域都会造出反向依赖（与 watchdog.rs 同一条口径）"],
+    // ↓ 运行档位（2026-11-26，用户「插电/电池/锁屏三级省电」）：同样是跨领域组装点。
+    //   `runtime_profile.rs` 被 network/transport（心跳/对账/打洞/广播）、network/ble、
+    //   commands/network 同时读；`power/` 又是纯平台探针。归任一业务域都会造出反向依赖。
+    ["src-tauri/src/runtime_profile.rs", "运行档位（三级节奏）+ 统一节拍器 + 抖动的三态防抖：被 transport / outbox_sweep / relay / discovery / ble 五处共同读取 ⇒ 跨领域共用件，与 focus_rhythm.rs 同一条口径"],
+    ["src-tauri/src/power/mod.rs", "电源/锁屏探针的调度与判定语义（含 Windows 纯函数）：探针是平台能力，读写方却是上面那张档位表所在的跨领域件 ⇒ 不归业务域"],
+    ["src-tauri/src/power/macos.rs", "macOS 平台探针（IOKit 供电来源 + CGSession 锁屏），纯 FFI"],
+    ["src-tauri/src/power/windows.rs", "Windows 平台探针（GetSystemPowerStatus + WTS 会话标志），纯 FFI"],
+    ["src-tauri/src/power/other.rs", "未接入平台（Linux 等）的安全默认：一律插电+未锁屏 ⇒ 档位恒 Active，行为与改造前一致"],
     ["src/vite-env.d.ts", "类型声明"],
     ["src/types.ts", "跨领域共享类型"],
     ["src/style.css", "全局样式（令牌化设计体系的落点）"],

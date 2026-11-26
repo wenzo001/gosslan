@@ -525,6 +525,12 @@ pub async fn spawn(
                         }
                         next_at = Instant::now() + Duration::from_secs(next_wait(&state));
                     }
+                    // 档位变了（插电 / 解锁 / 掉电）：立刻按新周期重算下一次。
+                    // 不这么做的话，锁屏时排下的 15 分钟会一直生效 —— 用户回到电脑前
+                    // 也看不到重新广播，只能干等。
+                    _ = crate::runtime_profile::applied_notify().notified() => {
+                        next_at = Instant::now() + Duration::from_secs(next_wait(&state));
+                    }
                     // 按需探测：用户打开「添加好友」时触发一次 who_has 群发
                     _ = probe.changed() => {
                         broadcast_probe(&send_cell.current(), &state, tcp_port, lan_bc).await;
@@ -540,7 +546,16 @@ pub async fn spawn(
 /// 下一轮广播周期（秒）：读一次在线节点数即放锁，绝不跨 await 持锁。
 fn next_wait(state: &AppState) -> u64 {
     let node_count = state.peers.lock().unwrap_or_else(|e| e.into_inner()).len();
-    adaptive_interval(node_count)
+    let base = adaptive_interval(node_count);
+    // 运行档位：广播属于主动类 ⇒ 插电 ×1 / 电池 ×3 / 锁屏 ×60。
+    // 局域网内"发现新设备"在用户不在跟前时没有价值，锁屏下 15 分钟一轮足够
+    // （已建的连接不受影响，恢复时立刻补一轮）。
+    (base as f64
+        * crate::runtime_profile::multiplier(
+            crate::runtime_profile::CadenceKind::Proactive,
+            crate::runtime_profile::profile(),
+        ))
+    .round() as u64
 }
 
 /// 依据当前在线节点数自适应调整广播周期（秒），并叠加随机抖动以打散各节点广播相位。

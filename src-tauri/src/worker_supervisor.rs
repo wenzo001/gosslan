@@ -81,6 +81,13 @@ pub static RESIDENT_WORKERS: &[WorkerSpec] = &[
         name: "group_history_sweeper",
         spawn: crate::network::group_history::spawn_group_history_sweeper,
     },
+    // 用户 2026-11-26：插电/电池/锁屏三级节奏的电源探针。
+    // 它只改各循环的"下一轮等多久"，不碰任何协议语义；但一旦死掉就再也没有降档
+    // （省电功能静默失效、日志里一行都没有），所以必须受监督。
+    WorkerSpec {
+        name: "power_profile",
+        spawn: crate::spawn_power_profile,
+    },
 ];
 
 /// **刻意不监督**的常驻循环：`(函数名, 为什么)`。每一条都在源码里真实存在，且都不在
@@ -365,7 +372,7 @@ mod tests {
     fn resident_worker_list_is_complete_and_unique() {
         assert_eq!(
             RESIDENT_WORKERS.len(),
-            7,
+            8,
             "被监督的常驻 worker 数量变了：要么是新增了一个（把它写进 RESIDENT_WORKERS 并更新这里），\
              要么是漏了一个（漏掉的那个死了没人知道）"
         );

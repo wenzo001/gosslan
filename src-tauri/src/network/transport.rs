@@ -362,11 +362,21 @@ pub async fn spawn(
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // 拥塞告警限频（心跳每 5s 一轮，不限频会把日志刷满）。
         let mut last_congestion_warn = std::time::Instant::now() - Duration::from_secs(60);
+        // 运行档位节拍：插电 5s / 电池 15s / 锁屏 60s（见 `runtime_profile`）。
+        // 只决定"这一轮发不发心跳"，**不改心跳语义**：断连判定靠链路被移除
+        // （`peer_offline_after_tail`），不靠心跳超时，所以拉长周期不会把谁误判成离线。
+        let mut cadence = crate::runtime_profile::Cadence::new(
+            Duration::from_secs(HEARTBEAT_INTERVAL_SECS),
+            crate::runtime_profile::CadenceKind::Keepalive,
+        );
         loop {
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
                 _ = tick.tick() => {
+                    if !cadence.due() {
+                        continue;
+                    }
                     // 与 `try_send`/`broadcast_gossip` 同理：心跳每 5s 给**每条**链路发一次，
                     // 若持 `links` 锁 await，一条拥塞链路会把整张连接表连同心跳一起卡住。
                     // 锁内只克隆 Sender。

@@ -165,6 +165,10 @@ pub async fn set_app_active(state: State<'_, Arc<AppState>>, active: bool) -> Re
         let probe = st.clone();
         let handle = tokio::task::spawn_blocking(move || {
             st.app_active.store(switch.active, Ordering::Relaxed);
+            // 焦点切换立刻反映到运行档位（插电时前台=全速、后台=省电；电池时同理）。
+            // 不等 15s 采样周期，否则用户切回前台要干等一轮才恢复。
+            #[cfg(desktop)]
+            crate::power::recompute_now(switch.active);
             if switch.wake {
                 // 断链重拨 / 从后台切回前台：立刻补一轮（最小间隔已由 `tick` 把关）。
                 #[cfg(feature = "bluetooth")]

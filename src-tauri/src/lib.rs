@@ -78,13 +78,31 @@ mod notifications;
 /// Android 用 FileProvider + ACTION_VIEW（opener 只发 file:// 会被系统拒绝）、
 /// Windows/Linux 走 opener。
 mod open_path;
+/// 电源 / 锁屏探针（桌面）：给运行档位提供判据，见该模块头与 [`runtime_profile`]。
+#[cfg(desktop)]
+mod power;
 mod private_fs;
+/// 电源档位采样任务的启动面（跨平台签名统一，供 `worker_supervisor` 名单引用）。
+///
+/// 移动端**不起**这个任务：Android/iOS 自己会冻结后台进程，再压一层只会被系统判定为
+/// 异常并杀掉。这里返回一个**永不完成**的 future（而不是立刻返回）—— 否则看门狗会认为
+/// 这个 worker 秒退，每 10s 拉起一次、5 次后记 error。
+#[cfg(desktop)]
+pub(crate) use power::spawn_power_profile;
+#[cfg(not(desktop))]
+pub(crate) fn spawn_power_profile(
+    _state: &std::sync::Arc<state::AppState>,
+) -> tauri::async_runtime::JoinHandle<()> {
+    tauri::async_runtime::spawn(std::future::pending::<()>())
+}
 pub mod protocol;
 mod restart;
 /// RP 绑定密钥导出/恢复的协议核心（格式 + Argon2id + 冲突判定），见该文件注释。
 /// RP 绑定私钥的平台密钥库存放（Windows DPAPI / Android Keystore；macOS 暂缓）。
 /// 跨平台纯逻辑 + 平台后端各占一个子模块，见该文件头。
 mod rp_key_store;
+/// 运行档位（插电 / 电池 / 锁屏 三级节奏）与统一节拍器，见该文件头。
+mod runtime_profile;
 /// 外部分享到会话的协议核心（入口解析 + 内存排队；**不发送消息**），见该文件注释。
 /// ⚠️ 与 `commands/share.rs`（P2P 共享目录/共享请求）不是一件事。
 ///
