@@ -1,15 +1,4 @@
 @import "./styles/hljs-theme.css";
-/**
- * OverlayScrollbars v2 的**必需**样式（2026-11-20 引入）。
- *
- * 为什么用它：用户要"轨道完全不可见、hover 才显、idle 隐藏、且不占布局宽度"。
- * 最后一条是关键 —— 现在的 `scrollbar-gutter: stable` 给滚动条留了 8px 布局宽度，
- * 输入卡与消息列表的右边距因此对不上。true overlay 不占位，边距才可能三边相等。
- *
- * ⚠️ 这一行必须在 `@tailwind` 之前：后面还有本仓自己的 `::-webkit-scrollbar` 规则，
- * 两者同时生效时以更靠后的为准（迁移完成前，原生滚动条仍是兜底）。
- */
-@import "overlayscrollbars/styles/overlayscrollbars.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -516,11 +505,14 @@
      此前标题/页脚 16px、header 插槽 12px，同一张弹窗里出现两种节奏。
      守卫：designGuards `MD-01`。 */
   --gosslan-modal-gap: 1rem;
-  /* thumb 三态浓度（`color-mix` 的百分比；对比度读数见下面"滚动条规范"）。
-     ⚠️ 自绘滚动条（`gosslan-os-bar`）**不用**这三个，它写实色 rgba —— 原因见那边注释。 */
+  /* thumb 三态浓度（`color-mix` 的百分比；对比度读数见下面"滚动条规范"）。 */
   --gosslan-scrollbar-thumb: 72%;
   --gosslan-scrollbar-thumb-active: 88%;
   --gosslan-scrollbar-track: 12%;
+  /* 自绘滑块的**唯一取色点**（naive 的 themeOverrides 也读这两个变量）。
+     亮/暗各一档：`.dark` 里同名覆盖。滑块样式与 naive token 因此不会出现两套颜色。 */
+  --gosslan-os-thumb: rgba(77, 79, 81, 0.42);
+  --gosslan-os-thumb-hover: rgba(77, 79, 81, 0.72);
 
   /* ---------------- 浮层贴边安全边距（唯一来源，2026-11-07） ----------------
      所有从触发器展开、内容可能变长的浮层（下拉 / 菜单 / 气泡面板），
@@ -663,6 +655,9 @@
        app-bg #0b1220 < chat/bg #0f172a < caption/rail #16202f < list/panel #1e293b < list-active #334155
      越靠前越"深"（越靠近屏幕底），越靠后越"高"（越靠近用户），不允许倒置。 */
   color-scheme: dark;
+  /* 自绘滑块的暗色档（与 :root 同名；naive 的 token 也读它 ⇒ 一处改、两边生效）。 */
+  --gosslan-os-thumb: rgba(205, 206, 209, 0.42);
+  --gosslan-os-thumb-hover: rgba(205, 206, 209, 0.72);
   /* 暗色遮罩：60% 黑（暗色主题下背景本来就深，遮罩需要更深才能形成层级） */
   --gosslan-overlay: rgba(0, 0, 0, 0.6);
   /* 主题色的「文字档」暗色版：亮色下是压暗、暗色下必须**提亮**（+28% 白）。
@@ -1141,6 +1136,13 @@ html.is-mobile #app {
      否则又出现第二套数字（守卫 SC-01/SC-02）。 */
 .gosslan-scroll {
   overscroll-behavior: contain;
+  padding-inline: var(--gosslan-scroll-inset);
+}
+
+/* 统一容器的内容缩进兜底：组件会把宿主 padding 搬到内容盒（`.n-scrollbar-content`）,
+   但"合成夹具 / 尚未执行 JS 的路径"没有那一步。这条 CSS 让 `.gosslan-scroll` 的
+   16px 缩进不依赖挂载时机；正常路径下内容盒是内联 padding（同值），不会翻倍。 */
+.gosslan-os.gosslan-scroll .n-scrollbar-content {
   padding-inline: var(--gosslan-scroll-inset);
 }
 /* 旧口径退役：`scrollbar-gutter`（both-edges / 单侧）不再用于任何容器 ——
@@ -2134,110 +2136,110 @@ html.is-mobile {
   }
 }
 
-/* ---------------- 统一滚动容器（OverlayScrollbars v2，2026-11-20） ----------------
+/* ---------------- 统一滚动容器（naive-ui Scrollbar 内核，2026-11-26 第四版） ----------------
    入口是 `components/ui/OverlayScroll.vue`。上面那套 `::-webkit-scrollbar` 仍是
    **尚未迁移**的容器的兜底；已迁移的容器（会话列表 / 消息列表 …）走下面这一族。
-   四条口径（用户 2026-11-20 拍板）：
-     ① 轨道默认**完全不可见** —— `.os-scrollbar` 自身 opacity 0，只有 OS 判定"该出现"
-        时才加 `.os-scrollbar-visible`（轨道与滑块一起出现，一起消失）；
-     ② hover 或滚动才出现，停手 1.2s 淡出（`autoHide: "move"`，见组件 props）；
-     ③ true overlay：**不写 `scrollbar-gutter`、不吃内容宽度** ⇒ 输入卡左/右/底三边距
-        才可能相等。这是本次迁移的目的，不要为了"滑块不压内容"把 gutter 加回来；
-     ④ 出现时不挤压内容：滑块画在 overlay 带上，内容盒宽度逐像素不变（不重排、不抖动）。
-   颜色全部复用 `--gosslan-scrollbar-*` 三档百分比 ⇒ 亮/暗/换主题跟随同一套令牌。 */
+   结构（naive 的真实 DOM，改样式前必读）：
+     .n-scrollbar           ← 宿主（height:100%; overflow:hidden；本仓 class 落这里）
+       .n-scrollbar-container ← **真正的滚动元素**（overflow:scroll）
+         .n-scrollbar-content ← 内容盒（高度 = 内容高度；内边距由组件从宿主搬来）
+       .n-scrollbar-rail      ← 轨道（absolute；默认透明）
+         .n-scrollbar-rail__scrollbar ← 滑块
+   四条口径（用户 2026-11-20 拍板，2026-11-26 改为 naive 实现）：
+     ① 轨道**完全不可见**（`--n-scrollbar-rail-color: transparent`），只画滑块；
+     ② 默认隐藏，hover 或滚动时淡入，停手 1s 淡出（`is-scrolling` 由组件加，见下）；
+     ③ true overlay：不写 `scrollbar-gutter`、不吃内容宽度 ⇒ 三边距才可能相等；
+     ④ 出现时不挤压内容：滑块是 absolute，内容盒宽度逐像素不变。
+   颜色用实色 rgba（亮 #4d4f51 / 暗 #cdced1 手算），不依赖 `color-mix()` 的引擎支持。 */
 
-/* 稳定包裹层：Vue 的插入容器（详见组件头部注释）。
-   ⚠️ 必须是**有盒子的真块**：OS 用它测内容高度来决定滑块行程与滚动范围 ——
-   `display: contents` 的盒子是 0×0 ⇒ 内容变高（设置页异步加载完）时 OS 测不到，
-   滑块行程停在旧值上 ⇒ 用户「拖到底也到不了底」（用户 2026-11-20 实测）。
-   `min-height: 100%` 让短内容也撑满视口（空态不塌）。
-   `display: flex; flex-direction: column` 让里面的 `flex-1` 段（空态居中）有确定高度可分。 */
-.gosslan-os-wrap {
+/* 短内容也撑满视口（空态居中依赖 `flex-1`），与旧包裹层语义一致。
+   ⚠️ `flex-shrink: 0`：虚拟列表的 sizer 是普通块，不能让 flex 容器把它压缩。 */
+.gosslan-os .n-scrollbar-content {
   display: flex;
   flex-direction: column;
   min-height: 100%;
 }
 
-/* 滚到边界不要把整页带出去（原先由 `.overflow-y-auto` 提供，迁移后这里接手）。 */
-.gosslan-os [data-overlayscrollbars-viewport] {
+.gosslan-os .n-scrollbar-content > * {
+  flex-shrink: 0;
+}
+
+/* 组件把宿主的 padding 搬到 content 之后用它清零；`!important` 要压过 Tailwind 的 p-*。 */
+.gosslan-os--pads {
+  padding: 0 !important;
+}
+
+/* 滚到边界不要把整页带出去。 */
+.gosslan-os .n-scrollbar-container {
   overscroll-behavior: contain;
 }
 
-/* ---------------- 原生条：我们自绘，原生的必须关掉 ----------------
-   2026-11-25 现场：Chromium（Windows WebView2）会照上面那条全局 `::-webkit-scrollbar`
-   把原生条画出来，盖在自绘条旁边；WKWebView 不画这一层 ⇒ 两端看到两种条。
-   ⚠️ 以前关掉它有"一条都没有"的风险（自绘条由库决定显不显示）；2026-11-26 起条是
-   本仓自己画的，所以这条不再有那个风险 —— 见下面 `gosslan-os-bar`。
-   ⚠️ 只在 OS 容器上关：尚未迁移的容器（少数弹层）仍走全局那套 8px 细条。 */
-.gosslan-os [data-overlayscrollbars-viewport]::-webkit-scrollbar {
+/* 原生条兜底：naive 已生成同义规则（width/height 0 + display:none），
+   这里再钉一次，防止上面的全局 `::-webkit-scrollbar` 在 WebView2 里插进来。 */
+.gosslan-os .n-scrollbar-container::-webkit-scrollbar {
   width: 0;
   height: 0;
   display: none;
 }
-.gosslan-os [data-overlayscrollbars-viewport] {
-  scrollbar-width: none;
-}
 
-/* ---------------- 自绘滚动条（2026-11-26 定稿） ----------------
-   ⚠️ 为什么不再用 OverlayScrollbars 自带的条：见 `OverlayScroll.vue` 顶部那段长注释。
-   一句话 —— 库的条显不显示由它自己的 JS 状态机（一串类名）决定，在 Windows/WebView2 上
-   连续三轮修不出来；换成两个 div 自己画：**常驻、实色、两端同一份实现**，没有第三种可能。
-   颜色刻意写实色 rgba 而不是 `color-mix()`：滚动条是"没有就没有"的组件，不该再依赖一个
-   需要引擎支持的颜色函数（`--gosslan-text-2` 亮 #4d4f51 / 暗 #cdced1 手算成 rgba）。 */
+/* ---------------- 滑块：微信桌面端观感 ----------------
+   naive 的 `trigger="none"` 让滑块常驻 DOM（只在 needYBar 时渲染），所以显隐完全由
+   下面两条 CSS 决定：默认 opacity 0，容器 hover 或组件标记 `is-scrolling` 时 1。
+   停手一秒后由组件撤掉 `is-scrolling`，CSS transition 负责淡出。
+   颜色用 `!important` 压过 naive 内联的 `--n-scrollbar-color` 与它自己的 `:hover`。 */
 .gosslan-os {
-  /* 自绘条的定位参照系（滑块绝对定位在宿主右缘）。 */
-  position: relative;
+  /* 轨道不可见；上下/右侧各留 2px，滑块贴右缘但不顶死边角。 */
+  --n-scrollbar-rail-color: transparent !important;
+  --n-scrollbar-border-radius: 999px !important;
+  --n-scrollbar-rail-top-vertical-right: 2px !important;
+  --n-scrollbar-rail-bottom-vertical-right: 2px !important;
+  --n-scrollbar-rail-right-vertical-right: 2px !important;
+  --n-scrollbar-rail-left-vertical-right: auto !important;
 }
 
-.gosslan-os-bar {
-  position: absolute;
-  top: 2px;
-  bottom: 2px;
-  right: 2px;
-  width: var(--gosslan-os-bar-w);
-  z-index: 3;
-  /* 触摸屏上拖滑块时不要被当成页面滚动。 */
-  touch-action: none;
+.gosslan-os .n-scrollbar-rail__scrollbar {
+  background-color: var(--gosslan-os-thumb) !important;
+  opacity: 0;
+  /* naive 的运行时样式里有 `pointer-events: all`（同特异性但晚注入）⇒ 必须 !important。 */
+  pointer-events: none !important;
+  transition:
+    opacity var(--gosslan-duration-fast) var(--gosslan-ease),
+    background-color var(--gosslan-duration-fast) var(--gosslan-ease);
 }
 
-.gosslan-os-bar-thumb {
-  position: absolute;
-  left: 1px;
-  right: 1px;
-  border-radius: 999px;
-  background: rgba(77, 79, 81, 0.42);
-  transition: background-color var(--gosslan-duration-fast) var(--gosslan-ease);
+.gosslan-os .n-scrollbar-rail__scrollbar:hover,
+.gosslan-os .n-scrollbar-rail__scrollbar:active {
+  background-color: var(--gosslan-os-thumb-hover) !important;
 }
 
-.gosslan-os-bar-thumb:hover,
-.gosslan-os-bar-thumb:active {
-  background: rgba(77, 79, 81, 0.72);
+.gosslan-os:hover .n-scrollbar-rail__scrollbar,
+.gosslan-os.is-scrolling .n-scrollbar-rail__scrollbar,
+.gosslan-os .n-scrollbar-rail__scrollbar:active {
+  opacity: 1;
+  pointer-events: auto !important;
 }
 
-.dark .gosslan-os-bar-thumb {
-  background: rgba(205, 206, 209, 0.42);
+/* 触屏不显示滚动条（naive 在 iOS 本来就不渲染；Android 由这条兜底）。 */
+@media (hover: none) {
+  .gosslan-os .n-scrollbar-rail {
+    display: none;
+  }
 }
 
-.dark .gosslan-os-bar-thumb:hover,
-.dark .gosslan-os-bar-thumb:active {
-  background: rgba(205, 206, 209, 0.72);
+/* 档位：一档 = 一条视觉重量。`--n-scrollbar-width` 是整条带宽；
+   `--gosslan-os-lane` 是给宿主预留的"车道"（内容要让开滑块，见下）。两者同源。 */
+.gosslan-os--thin {
+  --n-scrollbar-width: 8px !important;
+  --gosslan-os-lane: 6px;
 }
-
-/* 滑块"车道"：滑块浮在容器右缘，**会盖住靠右的内容**。
-   旧口径靠 `scrollbar-gutter` 预留一条空带（内容自动缩进），overlay 之后那条带没了 ——
-   聊天区的气泡小尾巴（超出气泡 10px）就被滑块压掉半截（用户 2026-11-20 截图）。
-   ⇒ 需要留车道的容器给宿主加 `padding-right: var(--gosslan-os-lane)`：
-   OS 会把宿主的 padding 搬进视口 ⇒ 内容盒自动让出一条与滑块等宽的槽，滑块正好浮在槽里。
-   ⚠️ 车道宽度必须与滑块带宽度同源，否则要么还压一点、要么多留一条空白。 */
-/* 车道宽度按档位给：它要保证「滑块不压到会伸到盒子外面的东西」（聊天区的小尾巴），
-   同时**不能把内容的边距撑大**（用户 2026-11-20：「间距看起来太大，不和谐」——
-   微信 PC 的气泡到右缘约 20px，且滚动条在不在都一模一样）。
-   ⇒ 车道只补「尾巴突出量 + 滑块带宽」真正需要的那么多，其余留白还给内容。 */
-/* 档位：一档 = 一条视觉重量。`--gosslan-os-bar-w` 是整条带宽（滑块本体两边各留 1px），
-   `--gosslan-os-lane` 是给宿主预留的"车道"（见上）。两者必须同源，否则滑块会压到内容。 */
-.gosslan-os--thin { --gosslan-os-bar-w: 8px; --gosslan-os-lane: 6px; }
-.gosslan-os--normal { --gosslan-os-bar-w: 10px; --gosslan-os-lane: 10px; }
-.gosslan-os--thick { --gosslan-os-bar-w: 12px; --gosslan-os-lane: 12px; }
+.gosslan-os--normal {
+  --n-scrollbar-width: 10px !important;
+  --gosslan-os-lane: 10px;
+}
+.gosslan-os--thick {
+  --n-scrollbar-width: 12px !important;
+  --gosslan-os-lane: 12px;
+}
 
 /* macOS 不再单独压标题栏高度：红绿灯由 AppKit 原生绘制（`decorations:false` +
    `Titled`），其纵向位置不读本变量；把 caption 压到 28px 只会让右侧功能组贴边。
@@ -3083,6 +3085,13 @@ html.is-mobile .pane-under-chat--instant {
 /* 虚拟聊天列表关闭**浏览器原生滚动锚定**：高度变化由 `VirtualList` 在同一帧显式补偿。
    两者同时开启会各写一次 scrollTop（用户 2026-10-25：「加表情整个聊天区上下闪一下」）。 */
 .vlist-no-anchor {
+  overflow-anchor: none;
+}
+
+/* ⚠️ `overflow-anchor` 不继承：宿主上写了不等于滚动根上也有。
+   naive 内核下真正滚动的是 `.n-scrollbar-container`，必须显式再落一次，
+   否则浏览器会拿"原生的锚定"和 TanStack 的锚定同时改 scrollTop（scrollreact 判据测的就是它）。 */
+.vlist-no-anchor .n-scrollbar-container {
   overflow-anchor: none;
 }
 

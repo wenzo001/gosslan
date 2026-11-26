@@ -939,7 +939,7 @@ defineExpose({
   <OverlayScroll
     ref="osRef"
     size="thin"
-    class="vlist-no-anchor h-full pb-6 pr-[var(--gosslan-os-lane)]"
+    class="vlist-no-anchor h-full pr-[var(--gosslan-os-lane)]"
     :role="live ? 'log' : undefined"
     :aria-live="live ? 'polite' : undefined"
     :aria-relevant="live ? 'additions' : undefined"

@@ -14,6 +14,24 @@
 
 ## [Unreleased]
 
+### 重构：滚动条换成 naive-ui 的 Scrollbar（官方主题接入，全站统一）
+- **现场**（用户 2026-11-26）：聊天界面滚动条「滑块长度/位置不对」，远程用 Windows 鼠标时
+  方向感也不对；要求「多端一致、像素级像微信桌面端」，并把旧实现与旧依赖清干净。
+- **内核**：`OverlayScrollbars` 整包退场（依赖已从 `package.json` 删除）。滚动、几何、
+  拖拽交给 `naive-ui` 的 `Scrollbar`；命名导入 + `sideEffects:false` ⇒ 产物里只有
+  `n-scrollbar`，button/data-table 等未用组件**不进包**。
+- **观感**：`trigger="none"` + 纯 CSS 显隐 —— 默认不可见、hover 或滚动淡入、停手一秒淡出；
+  轨道透明；触屏不显示；三档带宽 8/10/12；长列表滑块最小 24px（主题宽度与视觉宽度解耦）。
+- **主题融合**：`boot.createWindowApp` 统一挂 `NConfigProvider`，`naiveTheme.ts` 把
+  `common` / `Scrollbar` token 指向本仓语义变量（`--gosslan-primary/text/panel/…`），
+  亮暗跟随 `html.dark`；滑块颜色唯一来源 `--gosslan-os-thumb[-hover]`（亮/暗各一档）。
+- **修掉的错乱**：内边距从宿主搬到内容盒（滚动区与轨道等高，贴底不再差 24px）；
+  原生锚定关到真正的滚动元素（`overflow-anchor` 不继承）；补回「点轨道翻页」
+  （naive 的轨道是 `pointer-events:none`，只支持拖滑块）。
+- **验证**：`--only=overlay,scrollbar,listmetrics,emojiscroll,scrollreact,scrollswitch,
+  scrollhist,scrollrestore,scrollshake,scrollstable,backjump,scrollinput` 全绿（含反例自证）；
+  `npm test` 2353/2353；`vue-tsc --noEmit` 0。
+
 ## [7.2.14] - 2026-11-26
 
 ### 修复：滚动条改成本仓自绘 —— 不再把「有没有条」交给第三方库

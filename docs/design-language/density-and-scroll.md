@@ -51,30 +51,40 @@
 | 桌面常规 | **本仓默认档**（12 / 16 / 40 / 8） | 与画板缩放一致；会话列表与消息流仍是 62/64（画板 + 触控目标） |
 | 桌面紧凑（可选档） | **不提供用户开关** | 用户要的是"紧凑但井然有序"，不是"多档让用户选"；再多一档会让 QA 面翻倍而收益极小 |
 
-## 4. 滚动条规范（2026-11-20 改为统一滚动容器）
+## 4. 滚动条规范（2026-11-26 第四版：naive-ui Scrollbar 内核）
 
-**口径变更**：滚动条从「原生 `::-webkit-scrollbar` + `scrollbar-gutter` 预留槽位」改成
-**true overlay**（`overlayscrollbars` v2，统一容器 `components/ui/OverlayScroll.vue`）。
-`scrollbar-gutter` / `.scrollbar-both` 随之退役 —— 槽位没了，内容盒**恒为满宽**，
-标题/页脚/内容那条竖线不再会因为"有没有滚动条"而横移。
+**口径变更**：前三版把"滚动 + 条 + 显隐"都压在 `overlayscrollbars` 上，条显不显示由库的
+JS 状态机（一串类名）决定；同一份代码在 WKWebView 有、在 Windows/WebView2 没有，三轮修不出。
+第四版把职责切开：
 
-1. **不占内容**：滑块浮在容器右缘，**不占布局宽度** ⇒ 内容盒宽度与滚动条在不在**逐像素相等**。
-2. **默认看不见**：静止态整条滚动条 `opacity: 0`；**轨道完全透明**（不画底色），
-   只有滑块出现时才看得见（避免一条灰带贴着气泡右缘）。
-3. **hover / 滚动才出现**：`autoHide: "move"`（指针在容器内移动或滚动时出现，停手 1.2s 淡出）。
-4. **粗细分档**：`thin` 8px / `normal` 10px / `thick` 12px（`--os-size`）——
-   按业务挑：**消息流 thin**（尾巴要留空隙，见下）、会话列表与内容页 normal、弹窗小列表 thin。
+- **滚动与几何**交给 naive-ui 的 `Scrollbar`（原生滚动、自绘 rail/thumb、自己量 container）；
+- **显隐由本仓决定**：`trigger="none"` 让滑块常驻 DOM，默认 `opacity: 0`，
+  `:hover` 或 `is-scrolling`（滚动开始、停手一秒后撤）才淡入；
+- **主题**由官方 `NConfigProvider` 下发：`components/ui/naiveTheme.ts` 把 naive 的
+  `common` / `Scrollbar` token 全部指向本仓语义变量（`--gosslan-primary`、`--gosslan-text`、
+  `--gosslan-panel`、`--gosslan-os-thumb` …），亮/暗跟随 `html.dark`（`NaiveRoot.ts`），
+  **不存在第二套色板**。
+
+1. **不占内容**：滑块是 `absolute`，**不占布局宽度** ⇒ 内容盒宽度与滚动条在不在**逐像素相等**。
+2. **默认看不见**：`opacity: 0` 且 `pointer-events: none`；**轨道完全透明**
+   （`--n-scrollbar-rail-color: transparent`），只画滑块。
+3. **hover / 滚动才出现**：滚动开始即显，停手一秒后淡出；hover 容器期间常显（微信桌面端口径）。
+   **触屏不显示**（`@media (hover: none)`；naive 在 iOS 本来就不渲染滑块）。
+4. **粗细分档**：`thin` 8px / `normal` 10px / `thick` 12px（`--n-scrollbar-width`）。
+   naive 的滑块**最小长度**是 `1.5 × 主题宽度`，主题宽度固定 16px ⇒ 长列表滑块不小于 24px，
+   视觉宽度仍按档位（两者解耦）。
 5. **车道**：滑块会盖住"伸到盒子外面"的东西（聊天气泡的小尾巴超出气泡 10px）。
-   ⇒ 消息流容器给宿主留 `--gosslan-os-lane`（6px）的右内边距：OS 把它搬进视口，
-   滑块正好浮在这条空隙里，**尾巴不被压**。车道宽度按档位给，**不许**把内容的边距撑大
-   （用户 2026-11-20：「间距看起来太大，不和谐」—— 微信 PC 的气泡到右缘约 20px，
-   且滚动条在不在都一样）。
-6. **可用性**：点轨道翻页由 `ClickScrollPlugin` 提供（**必须注册插件**，
-   `clickScroll: true` 只是它的配置）；滚轮/触控/键盘由原生滚动行为提供。
+   ⇒ 消息流容器给宿主留 `--gosslan-os-lane`（6px）的右内边距；组件把宿主 padding
+   搬到**内容盒**（`.n-scrollbar-content`），滑块正好浮在这条空隙里，**尾巴不被压**。
+   ⚠️ 内边距必须落在**内容盒**，不能落在滚动元素上：TanStack 的贴底口径是
+   `totalSize - clientHeight`，落在滚动元素会让 `clientHeight` 含 24px 留白、切会话跨帧跳 24px。
+6. **可用性**：点轨道翻页由 `OverlayScroll.vue` 补实现（naive 的轨道是
+   `pointer-events: none`，只支持拖滑块）；点在滑块上仍交给 naive 的拖拽。
+   滚轮/触控/键盘由原生滚动行为提供。
 7. **一页一层**：同一屏只留一层滚动条；子列表随内容展开或折叠，不再自套
    `max-h-* + overflow-y-auto`（2026-11-08 诊断页四处子列表已按此收口，判据 `PG-03`）。
-8. **例外**：输入框编辑器（textarea）与浮层内的原生滚动（Reka popper 定位依赖内容盒原样）
-   暂不迁移，前者靠 `scrollbar-width: none` 保持空态干净。
+8. **例外**：输入框编辑器（textarea）、代码块的**横向**滚动、移动端整屏对话框
+   （触屏本来就不显示条）不套统一容器。
 
 ## 5. 验收表（逐面板）
 

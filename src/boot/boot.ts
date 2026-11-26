@@ -20,7 +20,7 @@
 // 而新的 `src/entries/*.ts` 没有带这句 ⇒ 打包出来的 CSS 为空、界面全裸。
 // 这类退化**不会报错、也不影响任何测试**，只会让"样式全没"，所以另有护栏盯着（见 windowEntries.test.ts）。
 import "@/style.css";
-import { createApp, nextTick, watch, type App, type Component } from "vue";
+import { createApp, defineComponent, h, nextTick, watch, type App, type Component } from "vue";
 import { createPinia } from "pinia";
 import { VueQueryPlugin } from "@tanstack/vue-query";
 import { api } from "@/api";
@@ -28,6 +28,7 @@ import { currentLocale, t } from "@/i18n";
 import { copyText } from "@/utils/crashReport";
 import { installAmbient } from "@/utils/ambient";
 import { installReducedTransparency } from "@/utils/reducedTransparency";
+import NaiveRoot from "@/components/ui/NaiveRoot";
 import { vPressRipple } from "@/directives/pressRipple";
 
 // ---------------- 前端异常上报（必须在挂载之前注册） ----------------
@@ -180,7 +181,18 @@ export function showBootFailure(kind: string, detail?: unknown) {
  * 建 Vue 应用（Pinia + 全局错误处理）。三个窗口完全一致，只是根组件不同。
  */
 export function createWindowApp(root: Component): App {
-  const app = createApp(root);
+  /**
+   * 所有窗口的根都包一层 naive 的 `NConfigProvider`（官方主题下发方式）。
+   *
+   * 为什么放在这里而不是各入口：主窗口 / 设置 / 日志 / 待办 / 预览五份入口都走本函数，
+   * 主题 token 与亮暗主题只需要维护一处；少改一层就少一个"某个窗口忘了接主题"的分叉。
+   * `NaiveRoot` 用 `abstract` 不渲染包裹盒，窗口根的布局类（h-full / flex）不受影响。
+   */
+  const RootWithNaive = defineComponent({
+    name: "GosslanWindowRoot",
+    setup: () => () => h(NaiveRoot, null, { default: () => h(root) }),
+  });
+  const app = createApp(RootWithNaive);
   // 渲染/生命周期里的异常：记日志（带组件名）并让 Vue 继续跑别的组件。
   // 一个组件抛错若没人接，Vue 只会把错误抛到 window —— 界面当次 patch 会中断，
   // 表现就是"这一页再也点不动"。这里至少把它变成**有名字、有位置**的一条日志。

@@ -367,58 +367,86 @@ test("移动布局宽度档只有一个家：JS 不许裸抄、CSS 与 Tailwind 
 });
 
 
-// ---------------- 滚动条：本仓自绘、常驻、两端同一份实现 ----------------
+// ---------------- 滚动条：naive-ui Scrollbar 内核 + 本仓显隐（2026-11-26 第四版） ----------------
 //
-// 三轮现场（2026-11-25/26）：
-//   ① 把原生条归零后，Windows 静止时"一条都没有"（库的条要指针移动才出现）；
-//   ② 按平台分档（Windows 常驻 / 其余 hover 才显），用户装 7.2.12 后**仍然没有条**；
-//   ③ 改成 CSS 强制可见，Windows 上**还是没有**。
-// 根因：库的条显不显示由它的 JS 状态机（一串类名）决定，加上 Chromium 在 Windows 上
-// 默认 overlay 滚动条（连"还回去的原生条"都是滚动时才出现）—— 这条路上没有我们能控制的东西。
-// 结论：条必须由本仓自己画。下面三条判据钉住这件事，别让它再退回"依赖库"。
+// 前三轮（2026-11-25/26）都栽在同一处：条显不显示由旧内核的 JS 状态机（一串类名）决定，
+// 加上 Chromium 在 Windows 上默认 overlay 滚动条 —— 同一份代码 mac 有、Windows 没有。
+// 第四版把职责切开：
+//   · 滚动与几何交给 naive 的 `Scrollbar`（原生滚动、自绘 rail/thumb、自己量 container）；
+//   · 显隐由本仓决定 —— `trigger="none"` 让滑块常驻 DOM，:hover / .is-scrolling 两个
+//     CSS 条件负责出现，滚动停手 1s 由组件撤标记。
+// 内边距必须由组件搬到 content：宿主是 height:100%，padding 会让滚动区比轨道矮一截，
+// 滑块长度/位置就跟内容对不上（用户报的「错乱」正是这一类）。
+function findScrollbarIssues(css, vue) {
+  const issues = [];
+  if (!vue.includes("NScrollbar")) issues.push("缺 NScrollbar 内核（滚动与几何的唯一来源）");
+  if (!/trigger="none"/.test(vue)) issues.push("必须是 trigger=\"none\" —— 交回 naive 的 hover 状态机，滚动时就不会显示");
+  if (/from\s+["']overlayscrollbars["']/.test(vue)) issues.push("旧内核 OverlayScrollbars 必须彻底退场（两套几何会互相打架）");
+  if (!vue.includes("containerRef")) issues.push("滚动元素必须取 naive 的 containerRef（宿主自己不滚）");
+  if (!vue.includes("is-scrolling")) issues.push("缺滚动中标记：滚动时不显示条");
+  if (!vue.includes("gosslan-os--pads")) issues.push("缺内边距移植：滚动区会比轨道矮，滑块位置/长度必然错");
+  if (!vue.includes("contentStyle")) issues.push("内边距要落到 content 盒上（不能留在宿主）");
 
-test("滚动条是本仓自绘的：库的条隐藏、自绘条常驻、颜色是实色", () => {
+  const base = /\.gosslan-os \.n-scrollbar-rail__scrollbar \{([^}]*)\}/.exec(css);
+  if (!base) {
+    issues.push("缺滑块默认样式（锚点失效，判据会空转）");
+  } else {
+    const body = base[1];
+    if (!/opacity:\s*0/.test(body)) issues.push("滑块默认必须 opacity:0（默认不可见）");
+    if (!/pointer-events:\s*none/.test(body)) issues.push("隐藏时不许接管指针（否则会吞掉右缘内容的点击）");
+    if (!/background-color:\s*var\(--gosslan-os-thumb\)/.test(body))
+      issues.push("滑块颜色必须走 --gosslan-os-thumb（与 naive 的 token 同源，不许另写一套色）");
+  }
+  if (!css.includes(".gosslan-os:hover .n-scrollbar-rail__scrollbar")) issues.push("缺 hover 显示规则");
+  if (!css.includes(".gosslan-os.is-scrolling .n-scrollbar-rail__scrollbar")) issues.push("缺滚动时显示规则");
+  // 亮/暗两档的唯一定义处：:root 与 .dark 各一条同名变量（naive 的 token 也读它）。
+  const thumbDefs = [...css.matchAll(/--gosslan-os-thumb:\s*([^;]+);/g)].map((m) => m[1].trim());
+  if (thumbDefs.length < 2) issues.push("滑块颜色必须亮/暗各一档（:root 与 .dark 都要定义 --gosslan-os-thumb）");
+  else if (thumbDefs[0] === thumbDefs[1]) issues.push("亮/暗两档不能是同一个值（暗底上会看不见）");
+  if (!/@media \(hover: none\)[\s\S]{0,220}?\.n-scrollbar-rail\s*\{/.test(css))
+    issues.push("触屏必须隐藏滚动条（能力分档，不是平台分档）");
+  if (!css.includes(".gosslan-os .n-scrollbar-container::-webkit-scrollbar"))
+    issues.push("原生条没关：naive 的滑块会和原生条同时出现");
+  if (css.includes("gosslan-os-bar-thumb")) issues.push("旧的自绘滑块节点必须删干净（两套条会叠在一起）");
+  return issues;
+}
+
+test("滚动条走 naive 内核、显隐由本仓控制、内边距搬到 content", () => {
   const vue = readFileSync(join(SRC_DIR, "components/ui/OverlayScroll.vue"), "utf8");
-  assert.ok(
-    vue.includes('theme: "os-theme-none"'),
-    "库的条必须用官方 none 主题隐藏（库 CSS 里是 display:none !important）—— 否则会和自绘条叠成两条",
-  );
-  assert.ok(vue.includes("gosslan-os-bar-thumb"), "缺自绘滑块节点：条就是它，删了等于没有条");
-  assert.ok(
-    vue.includes("function syncBar(") && vue.includes("scrollHeight"),
-    "缺几何同步：滑块高度/位置必须按 clientHeight / scrollHeight 现算",
-  );
-  assert.ok(
-    vue.includes("ResizeObserver"),
-    "内容异步变高（图片/列表）时必须重算，否则滑块行程停在旧值（拖不到底）",
-  );
-  // 不再有"何时显示"这个概念：常驻。
-  assert.ok(!/autoHide:\s*effectiveAutoHide/.test(vue), "自绘条常驻，不该再把显示交给库的 autoHide");
-  const platform = readFileSync(join(SRC_DIR, "utils/platform.ts"), "utf8");
-  assert.ok(
-    !platform.includes("scrollbarAutoHide"),
-    "平台分档口径必须彻底删掉 —— 留着早晚有人接回去，又变成两端两套",
-  );
+  const css = readFileSync(join(SRC_DIR, "style.css"), "utf8");
+  assert.deepEqual(findScrollbarIssues(css, vue), [], findScrollbarIssues(css, vue).join("\n"));
 });
 
-test("自绘条的样式：实色 rgba、亮暗各一档、不按平台/断点分档", () => {
-  const css = readFileSync(join(SRC_DIR, "style.css"), "utf8");
-  assert.ok(css.includes(".gosslan-os-bar-thumb"), "缺自绘滑块样式");
+test("滚动条判据反例自证：退回旧内核 / 去掉默认隐藏 / 去掉滚动显示 / 留旧节点 / 丢掉内边距 都必须红", () => {
+  const vue0 = readFileSync(join(SRC_DIR, "components/ui/OverlayScroll.vue"), "utf8");
+  const css0 = readFileSync(join(SRC_DIR, "style.css"), "utf8");
+  const mut = (src, from, to) => {
+    const out = src.replace(from, to);
+    assert.notEqual(out, src, `反例自证：${from} 没被替换到，锚点已漂`);
+    return out;
+  };
   assert.ok(
-    /\.gosslan-os-bar-thumb \{[\s\S]{0,240}?rgba\(77, 79, 81/.test(css),
-    "滑块颜色必须是实色 rgba —— 用 color-mix() 的话，旧引擎解析失败就是一条透明条（等于没有）",
+    findScrollbarIssues(css0, mut(vue0, /trigger="none"/g, 'trigger="hover"')).length > 0,
+    "退回 naive 的 hover 状态机必须命中（滚动时看不到条）",
   );
   assert.ok(
-    css.includes(".dark .gosslan-os-bar-thumb"),
-    "暗色主题必须另给一档，否则暗底上看不见",
+    findScrollbarIssues(css0, mut(vue0, /gosslan-os--pads/g, "gosslan-os--noop")).length > 0,
+    "去掉内边距移植必须命中（滚动区与轨道不等高）",
   );
   assert.ok(
-    !/@media[^{]*\{[^}]*gosslan-os-bar/.test(css),
-    "滚动条不许按平台/断点分档：这正是前两轮翻车的形状（用户 2026-11-26「不要有区别」）",
+    findScrollbarIssues(mut(css0, /(var\(--gosslan-os-thumb\) !important;\s*)opacity: 0;/, "$1opacity: 1;"), vue0).length > 0,
+    "滑块默认可见必须命中（用户要的是微信式「默认不出现」）",
   );
-  // 原生条必须仍然关掉：自绘了还留着原生的，就会出现两条。
   assert.ok(
-    css.includes(".gosslan-os [data-overlayscrollbars-viewport]::-webkit-scrollbar"),
-    "原生条那条规则被删了？自绘条 + 原生条会同时出现",
+    findScrollbarIssues(mut(css0, ".gosslan-os.is-scrolling .n-scrollbar-rail__scrollbar", ".gosslan-os.is-scrolling .nope"), vue0).length > 0,
+    "删掉滚动显示必须命中",
+  );
+  assert.ok(
+    findScrollbarIssues(mut(css0, "background-color: var(--gosslan-os-thumb) !important;", "background-color: #888 !important;"), vue0).length > 0,
+    "颜色绕过主题变量必须命中（会出现与主题脱节的一套色）",
+  );
+  assert.ok(
+    findScrollbarIssues(css0, mut(vue0, /NScrollbar/g, "LegacyScroll")).length > 0,
+    "拿掉 naive 内核必须命中",
   );
 });

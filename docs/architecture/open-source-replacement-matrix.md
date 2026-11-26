@@ -64,6 +64,8 @@ A38 / A39 / §3 依赖清单（漏 `mitt` `vue-i18n` `vue-router` `zod` `motion-
 
 | 页面路由 / 层级返回 | `ResponsiveLayout` 的 `navState` 组件内 ref + `mobileView` store + 页面级 `useBackLayer`；无 URL | `vue-router@5.4.0`（MIT；peer 硬要求只有 `vue ^3.5.34`，vite/pinia/colada/compiler-sfc 均为 optional） | **A（已落地，2026-10-22）** | `src/router/main.ts`、`src/router/settings.ts`、`src/entries/main.ts`、`src/entries/settings.ts`、`src/layouts/ResponsiveLayout.vue`、`src/components/SettingsWindow.vue` | 主窗口 14 条命名路由 + 设置窗口 `#/settings/:key`；`navState` / `mobileView` 改为路由派生态；页面级返回层退役、浮层 `useBackLayer` 保留；Chromium 实测前进/返回、覆盖层、弹窗与路由共存；Tauri WebView 真机 NOT RUN。详见 `docs/architecture/routing-and-navigation.md` |
 
+| 统一滚动条 / 无限滚动 | `overlayscrollbars@2.17`（滚动 + 自带条；显隐由库的 JS 状态机决定，Windows/WebView2 上三轮修不出稳定显隐） | `naive-ui@2.45.3` 的 `Scrollbar`（+ 将来的 `InfiniteScroll`），主题由官方 `NConfigProvider` 下发 | **B（已落地）** | `src/components/ui/OverlayScroll.vue`、`src/components/ui/naiveTheme.ts`、`src/components/ui/NaiveRoot.ts`、`src/boot/boot.ts` | 依赖已删除：`package.json` 不再含 `overlayscrollbars`；tree-shaking 实测产物只有 `n-scrollbar`（无 button/data-table/select）；token 全走 `--gosslan-*`，亮暗跟随 `html.dark`；滚动语义/输入/切换全绿（`--only=overlay,scrollbar,listmetrics,scrollswitch,scrollreact,scrollinput`） |
+
 ## 2. 本轮评估、尚未迁移
 
 | 能力 | 原实现 / 调用点 | 候选 | 判定 | 证据 / 原因 | 重评估条件 |
