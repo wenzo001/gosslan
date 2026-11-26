@@ -920,7 +920,6 @@ useEventListener(document, "click", closeFriendMenu);
          ⚠️ 条高读 `--gosslan-mobile-tabbar-h`（家 = `src/style.css`），与 `ResponsiveLayout` 主内容区
          那份占位同源 —— 这里再抄一个字面量，改一处就会让另一处的最后一行被压住（判据 ㊻）。 -->
     <OverlayScroll
-      size="normal"
       class="flex-1 select-none"
       :class="[
         viewFadeClass,

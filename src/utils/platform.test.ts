@@ -386,6 +386,10 @@ function findScrollbarIssues(cssRaw, vue) {
   if (/from\s+["']overlayscrollbars["']/.test(vue)) issues.push("旧内核 OverlayScrollbars 必须彻底退场（两套几何会互相打架）");
   if (!vue.includes("containerRef")) issues.push("滚动元素必须取 naive 的 containerRef（宿主自己不滚）");
   if (!vue.includes("is-scrolling")) issues.push("缺滚动中标记：滚动时不显示条");
+  // 2026-11-26 线上反馈（7.4.0，Windows）：会话列表与设置页的条明显比聊天界面粗 ——
+  // 因为默认档位是 `normal`(10px)，只有聊天显式传了 `thin`(8px)。8px 是全程基准，
+  // 默认值必须是它；要更粗得显式传，不能靠"忘了传"来决定视觉重量。
+  if (!/size:\s*"thin"/.test(vue)) issues.push('默认档位必须是 thin（8px）：normal 在会话列表/设置页上明显偏粗');
   if (!vue.includes("gosslan-os--pads")) issues.push("缺内边距移植：滚动区会比轨道矮，滑块位置/长度必然错");
   if (!vue.includes("contentStyle")) issues.push("内边距要落到 content 盒上（不能留在宿主）");
 
@@ -504,8 +508,8 @@ function findVendoredGeometryIssues(cssRaw) {
 
   need(
     ".gosslan-os.n-scrollbar",
-    ["height: 100%", "overflow: hidden", "position: relative"],
-    "宿主：占满高度 / 裁掉溢出 / 给 rail 当定位参照系",
+    ["height: 100%", "overflow: hidden", "position: relative", "isolation: isolate"],
+    "宿主：占满高度 / 裁掉溢出 / 给 rail 当定位参照系 / 把 rail 的层级关在容器内",
   );
   need(
     ".gosslan-os .n-scrollbar-container",
@@ -517,7 +521,11 @@ function findVendoredGeometryIssues(cssRaw) {
     ["box-sizing: border-box", "min-width: 100%"],
     "内容盒宽度口径",
   );
-  need(".gosslan-os .n-scrollbar-rail", ["position: absolute"], "轨道必须脱离文档流（否则被裁掉）");
+  need(
+    ".gosslan-os .n-scrollbar-rail",
+    ["position: absolute", "z-index: 40"],
+    "轨道必须脱离文档流、且压在容器内容之上（sticky 分组行是 z-10，见 2026-11-26 截图）",
+  );
   need(
     ".gosslan-os .n-scrollbar-rail--vertical",
     ["width: var(--n-scrollbar-width)"],
@@ -555,6 +563,13 @@ test("几何 vendor 判据反例自证：少任何一条都必须红", () => {
     assert.notEqual(out, css0, `锚点漂了：${sel}`);
     return out;
   };
+  // 只改层级（不删整块）：把 40 压回 1 必须红 —— 那就是被分组行盖住的原状。
+  const lowered = css0.replace("z-index: 40;", "z-index: 1;");
+  assert.notEqual(lowered, css0, "锚点漂了：rail 的 z-index: 40");
+  assert.ok(
+    findVendoredGeometryIssues(lowered).length > 0,
+    "把轨道的 z-index 压回 1 必须判红（通讯录的分组行会盖住滑块）",
+  );
   for (const [sel, why] of [
     [".gosslan-os.n-scrollbar", "宿主不占满高 / 不裁溢出 ⇒ 列表盖住输入框"],
     [".gosslan-os .n-scrollbar-container", "滚动元素没有 overflow ⇒ 滚不动"],

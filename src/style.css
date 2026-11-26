@@ -2213,6 +2213,9 @@ html.is-mobile {
   overflow: hidden;
   /* rail 的定位参照系：缺了它，absolute 的 rail 会飞到最近的定位祖先上（通常看不见）。 */
   position: relative;
+  /* 把 rail 的 `z-index: 40` 关在容器自己的层叠上下文里：只有这一步能让"滚动条盖住
+     sticky 分组行"与"滚动条不许盖页面浮层"两件事同时成立（见下面 rail 那段注释）。 */
+  isolation: isolate;
 }
 
 .gosslan-os .n-scrollbar-container {
@@ -2227,11 +2230,17 @@ html.is-mobile {
   scrollbar-width: none;
 }
 
-/* rail：naive 只在 needYBar 时才渲染它，渲染出来就必须有确定的盒子。 */
+/* rail：naive 只在 needYBar 时才渲染它，渲染出来就必须有确定的盒子。
+   ⚠️ 层级（用户 2026-11-26 截图）：通讯录的「C」「F」「H」分组行是
+   `sticky top-0 z-10`，滑块只有 `z-index: 1` ⇒ 被分组行盖住、切成几段。
+   口径：**滚动条在容器内永远最高**（内容最高到 z-30，真正的浮层从 z-[60] 起且在更外层）。
+   宿主上的 `isolation: isolate` 把这条 40 号限制在容器自己的层叠上下文里 ——
+   没有它，40 会跑到页面级去和别的浮层比大小（那才是真事故）。 */
 .gosslan-os .n-scrollbar-rail {
   position: absolute;
   pointer-events: none;
   user-select: none;
+  z-index: 40;
 }
 
 .gosslan-os .n-scrollbar-rail--vertical {

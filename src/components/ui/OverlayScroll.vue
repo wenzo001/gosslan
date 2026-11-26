@@ -54,7 +54,7 @@ const props = withDefaults(
     /** 追加到滚动元素的内联样式（极少用；内边距已自动移植）。 */
     contentStyle?: Record<string, string>;
   }>(),
-  { axis: "y", size: "normal" },
+  { axis: "y", size: "thin" },
 );
 
 const emit = defineEmits<{ (e: "scroll"): void }>();

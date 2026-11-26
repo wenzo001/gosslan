@@ -17,6 +17,15 @@ const props = defineProps<{
   placement: "side" | "bottom";
 }>();
 
+/**
+ * 收起详情。
+ *
+ * 为什么要有：原先只能"再点一次同一行"才取消选中 —— 窄窗落在底部时，面板横跨整屏、
+ * 又没有任何关闭入口，用户的原话是「变成整屏详情了，还没有返回功能」（2026-11-26）。
+ * 位置由父级决定（清 `selectedKey`），本组件只发信号。
+ */
+const emit = defineEmits<{ close: [] }>();
+
 const levelText = computed(() => LOG_LEVEL_TEXT[props.row.level] ?? props.row.level);
 /** 行内的 target/message 带高亮标记（v-html），详情里是纯文本 ⇒ 先剥标记再渲染。 */
 const target = computed(() => stripTags(props.row.target));
@@ -75,6 +84,16 @@ function copyRow() {
         @click="copyRow"
       >
         <Icon name="copy" class="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        class="tap-safe flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+        :title="t('common.close')"
+        :aria-label="t('common.close')"
+        data-log-detail-close
+        @click="emit('close')"
+      >
+        <Icon name="x" class="h-3.5 w-3.5" />
       </button>
     </div>
     <div

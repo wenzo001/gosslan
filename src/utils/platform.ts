@@ -135,6 +135,19 @@ export const MOBILE_MAX_WIDTH_PX = 767;
 export const NARROW_LAYOUT_QUERY = `(max-width: ${MOBILE_MAX_WIDTH_PX}px)`;
 
 /**
+ * 「列表 + 侧边详情」并排所需的最小窗口宽 = 列表最小可用宽（360）+ 详情固定宽（300）+ 余量。
+ *
+ * 为什么不复用 [`MOBILE_MAX_WIDTH_PX`]（767）：那个数回答的是「这台设备该不该用移动布局」，
+ * 这里问的是「这一页能不能并排放下列表与详情」—— 两件事。用 767 会让 700~767 的窗口
+ * 无谓地退化成"底部详情条"（用户 2026-11-26：点一条日志变成整屏详情、还回不去）。
+ * 窗口默认是主窗设计宽（1000），所以正常打开就是并排；这条只影响被拖窄之后。
+ */
+export const SIDE_DETAIL_MIN_WIDTH_PX = 660;
+
+/** 由 [`SIDE_DETAIL_MIN_WIDTH_PX`] 现拼的媒体查询（生产码不许再手抄宽度串）。 */
+export const SIDE_DETAIL_QUERY = `(min-width: ${SIDE_DETAIL_MIN_WIDTH_PX}px)`;
+
+/**
  * 输入能力：这台设备**有没有真指针悬停**（纯函数，便于单测）。
  *
  * 用途：只在真有 hover 的设备上走 mouseenter —— 触屏上 mouseenter 是"点完才来"的假事件，

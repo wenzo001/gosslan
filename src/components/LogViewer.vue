@@ -20,7 +20,7 @@ import { formatBytes } from "@/utils/format";
 import { highlightText } from "@/utils/highlight";
 import { INPUT_DEFER_MS } from "@/utils/defer";
 import { refDebounced, useMediaQuery } from "@vueuse/core";
-import { NARROW_LAYOUT_QUERY } from "@/utils/platform";
+import { SIDE_DETAIL_QUERY } from "@/utils/platform";
 import { useBackLayer } from "@/composables/useBackLayer";
 import {
   LOG_LEVEL_TEXT,
@@ -102,11 +102,21 @@ const levelChips = computed(() => [
 
 /** 选中的日志行（详情面板跟着它）：宽窗（≥ Tailwind md）贴右侧，窄窗与移动端落底部。 */
 const selectedKey = ref<string | null>(null);
-/** 宽度档只有一家：`platform.ts` 的 `NARROW_LAYOUT_QUERY`，不在这里手抄媒体查询。 */
-const narrowLayout = useMediaQuery(NARROW_LAYOUT_QUERY);
-const wide = computed(() => !narrowLayout.value);
+/**
+ * 详情是"并排在右"还是"落在底部"。
+ *
+ * 判据是**能不能并排放下**（`SIDE_DETAIL_QUERY` = 660 = 列表 360 + 详情 300），
+ * 不是"是不是移动端"：用全站移动断点（767）会让 700~767 的日志窗无谓地退化成底部条
+ * （用户 2026-11-26：点一条日志变成整屏详情）。窗口默认是主窗宽 1000 ⇒ 默认并排；
+ * 这条只影响用户把窗口拖窄之后。宽度档仍然只有 `platform.ts` 一家，不在这里手抄。
+ */
+const wide = useMediaQuery(SIDE_DETAIL_QUERY);
 function onSelect(key: string) {
   selectedKey.value = selectedKey.value === key ? null : key;
+}
+/** 详情面板自己的关闭键（窄窗落在底部时尤其需要，见 LogDetailPanel 的 emit 注释）。 */
+function clearSelection() {
+  selectedKey.value = null;
 }
 /**
  * 延迟镜像：过滤 + 每行 4 处高亮都用它。
@@ -522,9 +532,9 @@ function close() {
           @select="onSelect"
         />
       </OverlayScroll>
-      <LogDetailPanel v-if="selectedRow && wide" :row="selectedRow" placement="side" />
+      <LogDetailPanel v-if="selectedRow && wide" :row="selectedRow" placement="side" @close="clearSelection" />
     </div>
-    <LogDetailPanel v-if="selectedRow && !wide" :row="selectedRow" placement="bottom" />
+    <LogDetailPanel v-if="selectedRow && !wide" :row="selectedRow" placement="bottom" @close="clearSelection" />
 
     <!-- 底部状态条（画板 34px）：刷新状态 / 可见行数 / 路径与诊断包。
          路径与诊断包都只读后端给的真实落点，前端不拼路径、不猜目录。 -->
@@ -702,7 +712,7 @@ function close() {
         />
       </OverlayScroll>
       <!-- 移动端：详情落底部（窄窗回退，画板 detail 的同一份内容）。 -->
-      <LogDetailPanel v-if="selectedRow" :row="selectedRow" placement="bottom" />
+      <LogDetailPanel v-if="selectedRow" :row="selectedRow" placement="bottom" @close="clearSelection" />
     </MobilePageFrame>
   </Transition>
 </template>
