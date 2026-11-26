@@ -31346,6 +31346,11 @@ async function runScrollStable(cdp, url) {
     // 模拟「内容异步变高」（设置页的真实数据是后到的）：往内容里塞一段 2000px。
     // 滑块的行程必须跟着长 —— OS 靠**内容盒**测高度；包裹层若是 display:contents 的 0×0 盒子，
     // OS 永远测不到 ⇒ 滑块行程停在旧值 ⇒「拖到底也到不了底」（用户 2026-11-20 实测）。
+    // ⚠️ 必须塞进 **`.n-scrollbar-content`**，不能塞 container（2026-11-26）：container 现在
+    // 是 `display:flex; flex-direction:column`（高度靠 flex 从宿主传下来，见 style.css），
+    // 直接 append 进去的盒子是 flex 子项、默认 `flex-shrink:1` ⇒ 2000px 被压成 0，
+    // 判据读到 max=0 而产品其实没坏（那是夹具塞错了层）。content 是 `flex:1 0 auto`（不收缩），
+    // 塞进去才是"内容真的变高了"。
     const reach = await cdp.eval(`(async () => {
       const host = [...document.querySelectorAll('div')].find((el) => {
         const c = String(el.className || '');
@@ -31354,10 +31359,15 @@ async function runScrollStable(cdp, url) {
       if (!host) return { ok: false, why: 'no host' };
       const vp = host.querySelector('.n-scrollbar-container');
       if (!vp) return { ok: false, why: 'no viewport' };
+      const content = vp.querySelector('.n-scrollbar-content') || vp;
+      // 注入前的行程：判据要比**增量**，不能比绝对值。设置页「通用」那一屏的内容
+      // 本来就可能不到一屏（实测 128px），加 2000 之后 max = 128 + 2000 - clientHeight，
+      // 拿绝对值去判会恒红（那是夹具的算术错，不是产品错）。
+      const baselineMax = Math.max(0, vp.scrollHeight - vp.clientHeight);
       const grow = document.createElement('div');
       grow.setAttribute('data-probe-grow', '1');
       grow.style.cssText = 'height:2000px;background:transparent;';
-      vp.appendChild(grow);
+      content.appendChild(grow);
       await new Promise((r) => setTimeout(r, 500));
       const max = vp.scrollHeight - vp.clientHeight;
       vp.scrollTop = max;
@@ -31366,9 +31376,10 @@ async function runScrollStable(cdp, url) {
       const cs = getComputedStyle(vp);
       const gr = grow.getBoundingClientRect();
       const res = {
-        ok: true, max, scrollTop: Math.round(vp.scrollTop),
+        ok: true, max, baselineMax, scrollTop: Math.round(vp.scrollTop),
+        growH: +gr.height.toFixed(1),
         vpH: +r.height.toFixed(1), vpBottom: +r.bottom.toFixed(1),
-        growBottom: +gr.bottom.toFixed(1),
+        growTop: +gr.top.toFixed(1), growBottom: +gr.bottom.toFixed(1),
         padB: cs.paddingBottom, overflowY: cs.overflowY,
         gapToBottom: +(gr.bottom - r.bottom).toFixed(1),
       };
@@ -31377,9 +31388,17 @@ async function runScrollStable(cdp, url) {
       return res;
     })()`);
     console.log("  · 拉到底读数（注入 2000px 后）：" + JSON.stringify(reach));
+    // 判据形状（2026-11-26 第二轮定）：不能看 `scrollHeight` 的**增量**。
+    // content 是 `flex: 1 0 auto`（短内容撑满视口），注入前它已经被撑到视口高（基线 max=0），
+    // 所以注入 2000 之后 max 只涨 2000 − 视口高 —— 那不是行程没跟上，是基线里那截空白。
+    // 要看的三件事：① 注入块**没被压扁**（2000px 真的落地，这是 flex 容器最容易坏事的地方）；
+    // ② scrollTop 能到 max；③ 滚到底时块的底边落在视口下沿（差 ≤1px，负值 = content 的 padding）。
     check("设置窗口：内容变高后滚动条行程跟得上（拖到底必须真的到底）",
-      !!reach.ok && reach.max >= 2000 && reach.gapToBottom !== null && reach.gapToBottom <= 1,
-      "可滚距离必须覆盖注入的 2000px（>= 2000），且滚到底时内容末尾与视口下沿的差 <= 1px",
+      !!reach.ok &&
+        Math.abs(reach.growH - 2000) <= 2 &&
+        Math.abs(reach.scrollTop - reach.max) <= 1 &&
+        reach.gapToBottom !== null && reach.gapToBottom <= 1,
+      "注入的 2000px 必须真的落地（不许被 flex 压扁）、scrollTop 能到 max、滚到底时内容末尾贴到视口下沿（≤1px）",
       JSON.stringify(reach));
 
 

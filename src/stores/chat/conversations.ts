@@ -18,6 +18,7 @@ import {
 } from "@/utils/messages";
 import { isLatestReadSeq, nextReadSeq, rollbackUnread } from "@/utils/optimistic";
 import { withReadError, withoutReadError } from "@/utils/readErrorFlags";
+import { messageListEqual } from "@/utils/transferSnapshot";
 import { beginHistoryStart, settleHistoryStart, releaseHistoryStart } from "@/utils/groupHistoryStart";
 import { clearWhenFull } from "@/utils/bounded";
 import { shouldRunThrottled } from "@/utils/defer";
@@ -643,9 +644,15 @@ export function createConversationsModule(ctx: ChatContext) {
     const prev = messages.value[convId];
     // 乐观气泡（tmp-*）/ 文件失败占位（file-failed-*）只存在于内存：快照整表
     // 覆盖会把它们吞掉 → 已发出的消息"凭空消失"，用户以为失败而重发（审计 1.3）。
-    messages.value[convId] = prev
+    const next = prev
       ? appendLocalOnly(preserveDeliveryStatus(list, prev), prev)
       : list;
+    // 内容逐条相同 ⇒ **保留旧数组引用**，别赋值。
+    // 为什么（2026-11-26 用户实测「切会话要顿一下」）：`preserveDeliveryStatus` 每条都返回
+    // 新对象、整个数组也是新引用 ⇒ 虚拟列表那 18 行 `MessageItem` 的 props 全部"变了" ⇒
+    // 全量 patch。用户实测切回已缓存会话会白付 229ms，而其中没有任何一条消息真的变过。
+    // 与 `taskCenter.refreshTransfers` 的 `transferListEqual` 同一条纪律：没变就不换引用。
+    if (!(prev && messageListEqual(next, prev))) messages.value[convId] = next;
     pagesLoaded.set(convId, 1);
     // 冷加载补齐代码语言（只读 message_render 里的显式值；失败就当全部自动识别）。
     void hydrateRenderLangs(convId);

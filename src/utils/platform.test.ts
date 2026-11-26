@@ -508,19 +508,48 @@ function findVendoredGeometryIssues(cssRaw) {
 
   need(
     ".gosslan-os.n-scrollbar",
-    ["height: 100%", "overflow: hidden", "position: relative", "isolation: isolate"],
-    "宿主：占满高度 / 裁掉溢出 / 给 rail 当定位参照系 / 把 rail 的层级关在容器内",
+    [
+      "height: 100%",
+      "overflow: hidden",
+      "position: relative",
+      "isolation: isolate",
+      // 高度由 flex 逐级传递（2026-11-26「新增/编辑任务滚不动」）：宿主的 `height: 100%`
+      // 在"父高 auto + max-height"的卡片里解析成 auto，容器再用百分比就一起失效。
+      "display: flex",
+      "flex-direction: column",
+    ],
+    "宿主：占满高度 / 裁掉溢出 / 给 rail 当定位参照系 / 把 rail 的层级关在容器内 / 用 flex 传递高度",
   );
   need(
     ".gosslan-os .n-scrollbar-container",
-    ["height: 100%", "overflow: scroll", "max-height: inherit"],
-    "真正滚动的那一层（少 overflow 就是滚不动）",
+    [
+      // ⚠️ **不能**写成 `height: 100%`：父的 height 是 auto（flex 拉伸而来）时它静默失效，
+      // 容器被内容撑高 ⇒ clientHeight === scrollHeight ⇒ 滚不动、滑块都不渲染。
+      "height: auto",
+      "flex: 1 1 auto",
+      "display: flex",
+      "flex-direction: column",
+      "overflow: scroll",
+      "max-height: inherit",
+    ],
+    "真正滚动的那一层（少 overflow / 高度没被宿主夹住就是滚不动）",
   );
   need(
     ".gosslan-os .n-scrollbar-content",
-    ["box-sizing: border-box", "min-width: 100%"],
-    "内容盒宽度口径",
+    ["box-sizing: border-box", "min-width: 100%", "flex: 1 0 auto"],
+    "内容盒宽度口径 + 短内容撑满（同样不依赖百分比）",
   );
+  // 否定判据：这两条是本轮根因的字面形状，出现即代表"又回到百分比传递"。
+  for (const [sel, bad] of [
+    [".gosslan-os .n-scrollbar-container", "height: 100%"],
+    [".gosslan-os .n-scrollbar-content", "min-height: 100%"],
+  ]) {
+    const blocks = [...css.matchAll(new RegExp(escapeRe(sel) + "\\s*\\{([^}]*)\\}", "g"))].map((m) => m[1]);
+    const body = flat(blocks.join(" "));
+    if (body.includes(bad)) {
+      issues.push(`${sel} 不许出现 ${bad}（auto 高的父里百分比会静默失效 ⇒ 滚不动）`);
+    }
+  }
   need(
     ".gosslan-os .n-scrollbar-rail",
     ["position: absolute", "z-index: 40"],
@@ -570,6 +599,18 @@ test("几何 vendor 判据反例自证：少任何一条都必须红", () => {
     findVendoredGeometryIssues(lowered).length > 0,
     "把轨道的 z-index 压回 1 必须判红（通讯录的分组行会盖住滑块）",
   );
+  // 退回百分比传高（2026-11-26 的真根因）：把 container 的 flex 传递换回 `height: 100%`
+  // 必须红。这一条是那轮"新增/编辑任务滚不动"的**原文形状**，没有它，下次"顺手简化"
+  // 又会把 auto 高父里的百分比失效引回来。
+  const pct = css0.replace(
+    /(\.gosslan-os \.n-scrollbar-container \{[\s\S]*?)\n  flex: 1 1 auto;/,
+    "$1\n  flex: 1 1 auto;\n  height: 100%;",
+  );
+  assert.notEqual(pct, css0, "锚点漂了：container 的 flex: 1 1 auto");
+  assert.ok(
+    findVendoredGeometryIssues(pct).length > 0,
+    "container 又写 height: 100% 必须判红（auto 高的父里百分比失效 ⇒ 滚不动）",
+  );
   for (const [sel, why] of [
     [".gosslan-os.n-scrollbar", "宿主不占满高 / 不裁溢出 ⇒ 列表盖住输入框"],
     [".gosslan-os .n-scrollbar-container", "滚动元素没有 overflow ⇒ 滚不动"],
@@ -582,4 +623,88 @@ test("几何 vendor 判据反例自证：少任何一条都必须红", () => {
       `删掉 ${sel} 必须判红（${why}）`,
     );
   }
+});
+
+/**
+ * 切会话首帧的 overscan 必须收紧（2026-11-26，用户实测「点列表切换，右边顿一下」）。
+ *
+ * 锁的是什么：`convSwitch` 那一帧如果按 `props.overscan`(6) 双向预渲染，h=431 的视口
+ * 会画 **22 行**（视口内约 10 行 + 12 行 overscan），每行 `MessageItem` ≈ 11~20ms
+ * ⇒ 白付 130~240ms。实测收紧到 2 之后同一场景降到 9~16 行。
+ *
+ * 四条一起才成立，缺一条就退化成"设了但没生效 / 一次切换渲染两遍"：
+ *   ① options 的 overscan 被 `tightOverscan` 收口；
+ *   ② 必须挂在 **pre-flush** 的 items watcher 里（post 已经晚了那一帧）；
+ *   ③ 必须由**用户输入**恢复（wheel/touch/pointerdown），不许定时 ——
+ *      240ms 定时器恰好落在切换后的忙窗口里，恢复本身又要多挂 12 行
+ *      （用户实测：切换首帧渲染 5~10 行，两帧后变成 13~20 行，中间 453ms）；
+ *   ④ 恢复必须挂在 `onUserInput` 上（那三个事件是模板里真实绑定的口径）。
+ */
+test("VirtualList：切会话首帧收紧 overscan，且必须在 items 变化那一帧之前设上", () => {
+  const src = readFileSync(join(SRC_DIR, "components/VirtualList.vue"), "utf8");
+  assert.ok(
+    src.includes("overscan: tightOverscan.value ? Math.min(props.overscan, TIGHT_OVERSCAN) : props.overscan"),
+    "options.overscan 必须被 tightOverscan 收口（否则首帧仍按 6 双向预渲染）",
+  );
+  const setAt = src.indexOf("tightOverscan.value = true;");
+  assert.ok(setAt > 0, "找不到收紧的那一句 —— 锚点漂了");
+  const postWatchAt = src.indexOf('watch(() => props.items, onItemsChanged, { flush: "post" })');
+  assert.ok(postWatchAt > 0, "找不到 post 的 items watcher —— 锚点漂了");
+  assert.ok(
+    setAt < postWatchAt,
+    "收紧必须在 pre-flush 的 watcher 里（写在 post 之后 = 那一帧已经按全量 overscan 画完了）",
+  );
+  const tightBlock = src.slice(src.indexOf("const TIGHT_OVERSCAN"), src.indexOf("function rangeExtractor"));
+  assert.ok(
+    tightBlock.indexOf("const TIGHT_OVERSCAN") === 0 && !tightBlock.includes("setTimeout"),
+    "收紧的恢复不许放在定时器里：240ms 那个窗口里恢复 = 切换后第二遍全量挂载",
+  );
+  const inputAt = src.indexOf("function onUserInput()");
+  const restoreAt = src.indexOf("restoreOverscanNow();", inputAt);
+  assert.ok(
+    inputAt > 0 && restoreAt > inputAt && restoreAt < src.indexOf("function onResize()"),
+    "恢复必须挂在用户输入的处理器里（wheel/touch/pointerdown）：没动手就不该再渲染一遍",
+  );
+});
+
+/**
+ * 切会话首帧要把逐行的布局读取合批（2026-11-26 第四轮实测后的优化）。
+ *
+ * 证据：12 条真实 MessageItem 的 `getComputedStyle` 调用有 600 次，栈全部指向
+ * `usePreviewColumns.allowedColumnWidth`（cap / parent / 每层祖先的 padding+border，
+ * 再加两次 font）。这些读紧跟在每行挂载之后 ⇒ 每行一次强制样式重算，而
+ * 切会话那一轮 patch 实测 93~406ms。修法是两条一起：
+ *   ① 同一聊天视口共享一次实测（内容宽 + 字体 + class 链 + 世代）；
+ *   ② VirtualList 切会话那一帧开窗，窗口内的测量攒到当前 patch 后的同一个微任务再读
+ *      （用 rAF 会让行高晚一帧，实测跨帧跳 28px）。
+ * 少哪条都会退回逐行强制 recalc。
+ */
+test("VirtualList × usePreviewColumns：切会话首帧的逐行布局读取必须合批", () => {
+  const vl = readFileSync(join(SRC_DIR, "components/VirtualList.vue"), "utf8");
+  const upc = readFileSync(join(SRC_DIR, "composables/usePreviewColumns.ts"), "utf8");
+
+  assert.ok(
+    vl.includes("deferLayoutReadsFor(240);"),
+    "切会话那一帧必须开合批窗口（窗口外的逐行测量行为不变）",
+  );
+  const deferAt = vl.indexOf("deferLayoutReadsFor(240);");
+  const postAt = vl.indexOf('watch(() => props.items, onItemsChanged, { flush: "post" })');
+  assert.ok(deferAt > 0 && postAt > 0 && deferAt < postAt, "开窗必须发生在渲染那一帧之前");
+
+  assert.ok(
+    upc.includes("afterLayoutReadWindow(() => measure())"),
+    "onMounted / 元素换掉的测量必须走合批入口",
+  );
+  const hasSharedRead = (src: string) =>
+    src.includes("sharedEpoch === layoutEpoch") &&
+    src.includes("sharedLayoutKey === previewLayoutKey(el)");
+  assert.ok(hasSharedRead(upc), "同一视口要复用一次实测，且世代 / class 链不同时必须重新量");
+  assert.ok(
+    vl.includes("invalidatePreviewLayout();"),
+    "字号 / 真实宽度变化时必须让共享读数作废，否则列数停在旧值",
+  );
+  // 反例自证：把世代判等翻转，同一个判据必须红（否则这条测试是恒真的摆设）。
+  const broken = upc.replace("sharedEpoch === layoutEpoch", "sharedEpoch !== layoutEpoch");
+  assert.notEqual(broken, upc, "锚点漂了：世代比较");
+  assert.equal(hasSharedRead(broken), false, "把世代判等翻转后判据必须变红");
 });

@@ -18,6 +18,7 @@ import { useEventListener } from "@vueuse/core";
 import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/vue-virtual";
 import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { classifyItemsChange } from "@/utils/scrollIntent";
+import { deferLayoutReadsFor, invalidatePreviewLayout } from "@/composables/usePreviewColumns";
 import { computeListBuffer } from "@/utils/listBuffer";
 import { gapAtBottom, shouldShowBackToLatest } from "@/utils/backToLatest";
 
@@ -98,6 +99,33 @@ let velocity = 0;
 let lastVelocityTop = 0;
 let velocityReady = false;
 
+/**
+ * 切会话**首帧**的 overscan 预算（双向各 2 行，而不是 props 的 6）。
+ *
+ * 为什么（2026-11-26 用户实测「点列表切换，右边要顿一下」）：切换那一帧实际渲染
+ * **22 行**、`h` 只有 431px —— 视口内约 10 行，
+ * 另外 12 行全是 `overscan 6 × 双向`。而这一帧用户**还没滚**，预渲染的 12 行
+ * 纯属白付：每行 `MessageItem` 挂载 ≈ 11~20ms ⇒ 130~240ms。
+ *
+ * ⚠️ 必须在 **pre-flush**（items 变化那一帧之前）设上：等 post 的 `onItemsChanged`
+ * 再设，那一帧已经按 6 双向渲染完了 —— 削的就是那一帧。
+ * ⚠️ 同样必须在 `useVirtualizer` **之前**声明（同 `roBatched` 的理由：TDZ）。
+ *
+ * ⚠️ **恢复不能定时**（第一版是"240ms 后恢复"，用户第三次实测打脸）：240ms 恰好落在
+ * 切换后主线程还在忙的窗口里，而"恢复"本身要改 virtualizer 的 options ⇒ 又把那 12 行
+ * **再挂一遍**。实测就是切换首帧 5~10 行、两帧后 12~20 行，中间那 150~400ms
+ * 全是这次"恢复"付的 —— 一次切换变成两次全量渲染。
+ * 现在的口径：**用户一动手（滚轮/触摸/按住滑块）才恢复**（`onUserInput`），
+ * 没动手就一直按 2 行预渲染（本来也用不着）。代价：切换后第一次滚动那一帧会补挂
+ * 那几行预渲染 —— 但那一帧本来就要挂新进入视口的行，是同一笔开销。
+ */
+const TIGHT_OVERSCAN = 2;
+const tightOverscan = ref(false);
+/** 用户开始操作 ⇒ 立刻回到完整预渲染（只改 options，不主动触发滚动）。 */
+function restoreOverscanNow() {
+  if (tightOverscan.value) tightOverscan.value = false;
+}
+
 /** 非响应式：TanStack 在 range 变化时会重新调用它，读到的是本帧最新值。 */
 function rangeExtractor(range: {
   startIndex: number;
@@ -173,11 +201,12 @@ const virtualizer = useVirtualizer(
     void props.items;
     void props.items.length;
     void props.overscan;
+    void tightOverscan.value;
     return {
       count: props.items.length,
       getScrollElement: () => container.value,
       estimateSize: (i: number) => props.estimateHeight(props.items[i], i),
-      overscan: props.overscan,
+      overscan: tightOverscan.value ? Math.min(props.overscan, TIGHT_OVERSCAN) : props.overscan,
       rangeExtractor,
       getItemKey: (i: number) => keyOf(props.items[i]),
       anchorTo: "end" as const,
@@ -477,6 +506,8 @@ function onScroll() {
  */
 function onUserInput() {
   if (pendingJump) pendingJump = null;
+  // 收紧只服务于「切换首帧」：用户真的开始操作了就把完整预渲染还回来（见 `tightOverscan`）。
+  restoreOverscanNow();
 }
 
 function onResize() {
@@ -665,6 +696,16 @@ function onItemsChanged() {
 watch(
   () => props.items,
   (arr) => {
+    // 切会话的第一帧就要用收紧的 overscan（见 `tightOverscan` 那段注释）：
+    // `prevItemsConv` 在 post 的 `onItemsChanged` 里才更新，所以这里读到的是**上一个会话**，
+    // 比较即可判出"这一帧是不是切换帧"。必须在任何 early return 之前做 —— 收敛窗口里
+    // 反复 armSettleHold 的那些帧同样需要收紧。
+    if ((props.conversationKey ?? "") !== prevItemsConv) {
+      tightOverscan.value = true;
+      // 这一帧要挂的每一行都会在 usePreviewColumns 里读样式；开窗把它们合批到当前
+      // patch 后的同一个微任务（窗口外逐行同步测量，正常打字/收消息的行为不变）。
+      deferLayoutReadsFor(240);
+    }
     if (Date.now() < pinHoldHardUntil) {
       armSettleHold();
       return;
@@ -689,6 +730,8 @@ watch(
     const atBottom = !!el && el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
     const anchor = el ? getAnchor() : null;
     suppressTransient();
+    // 字号变了 ⇒ 行里共享的「内容宽 + 字体」世代作废，下一批行必须重新量。
+    invalidatePreviewLayout();
     virtualizer.value.measure();
     // 真实度量变化（字号）：按身份而不是像素恢复 —— 底部就回底部，否则回到同一消息同一偏移。
     void nextTick(() => {
@@ -883,6 +926,8 @@ function observeContainerSize() {
         // 面板开合/侧栏折叠这类真实布局变化（>24px）才清测量缓存；
         // 滚动条出现/消失只差 ~15px，清缓存会形成"高度↔滚动条"反馈环（实测 5 次反转）。
         lastWidth = w;
+        // 真实布局变化 ⇒ 正文内容宽变了，共享的那份读数作废（否则列数停在旧宽度）。
+        invalidatePreviewLayout();
         virtualizer.value.measure();
       }
     }

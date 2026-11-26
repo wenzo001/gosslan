@@ -76,6 +76,17 @@ JS 状态机（一串类名）决定；同一份代码在 WKWebView 有、在 Wi
 > 2026-11-26 线上 7.3 的 Windows 就是漏了这一层（宿主被内容撑开、滚动元素没 overflow、
 > rail 变成被裁掉的静态块）；而 `devCsp` 是 null（dev 不施加 CSP）⇒ 本地永远测不出来。
 > 判据：`platform.test.ts` 的「naive Scrollbar 的几何全部写在外部 CSS 里」（少一条就红）。
+>
+> **高度必须用 flex 逐级传递，不能用百分比**（2026-11-26 用户实测「新增/编辑任务滚不动」）：
+> 宿主 → 滚动元素 → 内容盒这条链里，`height: 100%` 要求**父的 height 属性**是确定值，
+> 而宿主常常是 `height: 100%` + `flex-1`，在"父高 auto、只有 `max-height`"的卡片里
+> 解析成 auto（高度来自 flex 拉伸）⇒ 百分比**逐级静默失效**，滚动元素被内容撑到
+> `clientHeight === scrollHeight` ⇒ 滚不动、滑块都不渲染（7.3.1 的「更新说明区域
+> 无法滚动」是同一个根因，只是那处有 `max-h-36`）。现在的写法：
+> 宿主 `display:flex; flex-direction:column`、滚动元素 `flex: 1 1 auto`（basis **auto**，
+> 不是 `0%`，否则"宿主高度也由内容决定"的浮层会塌成 0）、内容盒 `flex: 1 0 auto`
+> （短内容撑满、长内容不收缩）。判据：`platform.test.ts` 的否定断言 —— 这两层再出现
+> `height: 100%` / `min-height: 100%` 就红。
 
 1. **不占内容**：滑块是 `absolute`，**不占布局宽度** ⇒ 内容盒宽度与滚动条在不在**逐像素相等**。
 2. **默认看不见**：`opacity: 0` 且 `pointer-events: none`；**轨道完全透明**
@@ -107,22 +118,40 @@ JS 状态机（一串类名）决定；同一份代码在 WKWebView 有、在 Wi
    滚轮/触控/键盘由原生滚动行为提供。
 8. **一页一层**：同一屏只留一层滚动条；子列表随内容展开或折叠，不再自套
    `max-h-* + overflow-y-auto`（2026-11-08 诊断页四处子列表已按此收口，判据 `PG-03`）。
-9. **例外**：输入框编辑器（textarea）、代码块的**横向**滚动、移动端整屏对话框
+9. **切会话首帧收紧预渲染**：`VirtualList` 只在切换那一帧把 `overscan` 从 6 收到 2
+   （用户切会话时还没滚，双向 12 行白挂 ≈ 130~240ms）。**恢复必须由用户输入触发**
+   （滚轮 / 触摸 / 按住滑块），不许定时：240ms 定时器恰好落在切换后的忙窗口，
+   "恢复"本身又改 virtualizer options，把那 12 行再挂一遍，一次切换变成两次全量渲染
+   （实测切换首帧 5 行、两帧后 13 行，中间 453ms）。判据在
+   `platform.test.ts` 的「切会话首帧收紧 overscan」四条断言。
+   **逐行布局读取也必须合批**：12 条真实消息曾产生 600 次 `getComputedStyle`，栈全部来自
+   `usePreviewColumns.allowedColumnWidth`（cap / parent / 每层祖先的 padding+border + 两次 font），
+   每行挂载后一次强制样式重算 ⇒ 切会话那一轮 patch 实测 93~406ms。现在同一聊天视口复用
+   一次实测（内容宽 + 字体 + class 链 + 世代），切会话那一帧剩下的读取攒到**当前 patch 后的
+   同一个微任务**集中做（不是 rAF —— 那会让行高晚一帧，实测滚动跨帧跳 28px）；
+   字号 / 真实宽度变化（>24px）时世代作废重量。受控对照：12 行挂载 66ms→37ms，
+   挂载期 `getComputedStyle` 600→0 次，共享列数前后同为 42 列。
+10. **例外**：输入框编辑器（textarea）、代码块的**横向**滚动、移动端整屏对话框
    （触屏上由 `is-scrolling` 驱动显隐，不常驻）不套统一容器。
 
 ## 5. 验收表（逐面板）
 
 | 面板 | 滚动容器 | 滑块带宽 | 车道 | 静止可见 | 对比（亮 / 暗） | 遮挡内容 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 设置（独立窗/移动页） | `<OverlayScroll>` normal | 10px | — | 否（hover 才现） | 3.35 / 4.30 : 1 | 否 |
-| 日志 | `<OverlayScroll>` normal | 10px | — | 否 | 3.35 / 4.30 : 1 | 否 |
-| 群任务（列表 + 表单弹层） | `<OverlayScroll>` normal | 10px | — | 否 | 3.35 / 4.30 : 1 | 否 |
-| 群成员 / 好友请求 | `<OverlayScroll>` normal | 10px | — | 否 | 3.35 / 4.30 : 1 | 否 |
-| 搜索 | `<OverlayScroll>` normal | 10px | — | 否 | 3.35 / 4.30 : 1 | 否 |
-| 收藏 | `<OverlayScroll>` normal | 10px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 设置（独立窗/移动页） | `<OverlayScroll>` thin | 8px | — | 否（hover 才现） | 3.35 / 4.30 : 1 | 否 |
+| 日志 | `<OverlayScroll>` thin | 8px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 群任务（列表 + 表单弹层） | `<OverlayScroll>` thin | 8px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 群成员 / 好友请求 | `<OverlayScroll>` thin | 8px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 搜索 | `<OverlayScroll>` thin | 8px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 收藏 | `<OverlayScroll>` thin | 8px | — | 否 | 3.35 / 4.30 : 1 | 否 |
 | 转发 / 群文件 / @提醒 | `<OverlayScroll>` thin | 8px | — | 否 | 3.35 / 4.30 : 1 | 否 |
-| 会话列表（左列） | `<OverlayScroll>` normal | 10px | — | 否 | 3.35 / 4.30 : 1 | 否 |
+| 会话列表（左列） | `<OverlayScroll>` thin | 8px | — | 否 | 3.35 / 4.30 : 1 | 否 |
 | 消息流（聊天区） | `<OverlayScroll>` thin | 8px | 6px | 否 | 3.35 / 4.30 : 1 | 否（车道保住小尾巴） |
+
+> 全仓 8px（`thin`，默认档）：2026-11-26 线上反馈会话列表/设置页比聊天界面粗，因为
+> 它们吃了默认的 `normal`(10px)。现已把默认档改成 `thin`，且**没有任何调用点**再显式传
+> `normal`/`thick`（`grep -rn 'size="normal"' src` 为空）—— 表格里的带宽逐格相同是**结论**，
+> 不是抄漏。
 
 > 读数口径：带/thumb 来自 `style.css` 的 token 与 border 计算；对比度按 WCAG 2.x 公式，
 > 把 `--gosslan-text-2` 以 72% / 88% / 12% 混到 `--gosslan-panel` 上计算，亮暗两个主题各算一次。

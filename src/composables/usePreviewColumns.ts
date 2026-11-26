@@ -22,6 +22,44 @@ const MAX_COLUMNS = 400;
 
 const unitCache = new Map<string, number>();
 
+/* ── 切会话首帧：把逐行布局读取合批到绘制之前 ────────────────────────────────
+ *
+ * 为什么（2026-11-26 用户实测「点列表切换，右边要顿一下」）：切会话那一轮
+ * patch 单次 93~406ms，而 12 条 MessageItem 在干净页面里挂载只要 50ms。逐行看栈，
+ * **全部** `getComputedStyle` 都来自这里：`allowedColumnWidth` 读 cap / parent /
+ * 每一层祖先的 padding+border（一行 6~10 次），再读两次 font。每行挂载都紧接着
+ * 一次读样式 ⇒ 每次都是强制 recalc，切会话那 10 来行就是十几次全文档样式重算。
+ *
+ * 做法：VirtualList 在切会话那一帧开一个短窗口；窗口内的测量不逐行立刻读，而是攒到
+ * **当前 patch 结束后的同一个微任务**里集中读。一次强制重算供所有行复用，
+ * 又赶在绘制之前完成 —— 行高/截断不会晚一帧（rAF 版实测让切换后滚动跨帧跳 28px，
+ * 所以这里必须是微任务而不是下一帧）。
+ * 没开窗口时（正常打字、收消息）行为与原来逐字一致。
+ */
+let layoutReadDeadline = 0;
+let pendingReads: Array<() => void> = [];
+let readQueued = false;
+
+export function deferLayoutReadsFor(ms: number): void {
+  layoutReadDeadline = performance.now() + ms;
+}
+
+export function afterLayoutReadWindow(task: () => void): void {
+  if (performance.now() >= layoutReadDeadline) {
+    task();
+    return;
+  }
+  pendingReads.push(task);
+  if (readQueued) return;
+  readQueued = true;
+  queueMicrotask(() => {
+    readQueued = false;
+    const jobs = pendingReads;
+    pendingReads = [];
+    for (const job of jobs) job();
+  });
+}
+
 /**
  * 正文能用的宽度 —— **取「列宽上限」而不是正文自己的实测宽**（2026-11-21 第六刀）。
  *
@@ -107,6 +145,23 @@ export function halfCharWidth(font: string): number {
  * ⚠️ 模块级 ref 是**每个 WebView 一个实例**，不跨窗口共享 —— 正好符合"列数是窗口属性"。
  */
 export const sharedPreviewColumns = ref(0);
+
+/**
+ * 共享值的"世代"。窗口宽度 / 字号变化时要让所有行放弃复用、重新量一次；
+ * 只在 VirtualList 确认过的真实布局变化处（`>24px` 宽度变化 / `layoutKey` 变化）递增。
+ */
+let layoutEpoch = 0;
+let sharedEpoch = -1;
+let sharedLayoutKey = "";
+export function invalidatePreviewLayout(): void {
+  layoutEpoch += 1;
+}
+
+/** 正文那一格的 class 链：同聊天视口内所有文本气泡相同；不同气泡形状不互相复用。 */
+function previewLayoutKey(el: HTMLElement): string {
+  const cap = el.closest(".msg-stack");
+  return `${el.className}|${el.parentElement?.className ?? ""}|${cap?.className ?? ""}`;
+}
 /**
  * 会话级共享的**正文内容宽**（px）与**字体串**（2026-11-22）。
  *
@@ -158,17 +213,36 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
   const measure = (entry?: ResizeObserverEntry) => {
     const el = getEl();
     if (!el || !el.isConnected) return;
-    const inner =
-      allowedColumnWidth(el) ??
-      (entry != null
-        ? entry.contentRect.width // content box 浮点宽，已不含 padding
-        : (() => {
-            const cs = getComputedStyle(el);
-            const padL = parseFloat(cs.paddingLeft) || 0;
-            const padR = parseFloat(cs.paddingRight) || 0;
-            return el.clientWidth - padL - padR;
-          })());
+    const cap = el.closest(".msg-stack");
+    // 会话级复用（2026-11-26）：同一聊天视口里所有文本气泡的「内容宽 + 字体」相同，
+    // 后到的行不必再逐层读 cap / parent / 祖先的 padding+border。世代或 class 链不同
+    // 就老老实实全量量一次 —— 不同气泡形状（代码/文件）不共用同一份读数。
+    const reuse =
+      !!cap &&
+      sharedEpoch === layoutEpoch &&
+      sharedPreviewWidth.value > 0 &&
+      !!sharedPreviewFont.value &&
+      sharedLayoutKey === previewLayoutKey(el);
+    const inner = reuse
+      ? sharedPreviewWidth.value
+      : (allowedColumnWidth(el) ??
+        (entry != null
+          ? entry.contentRect.width // content box 浮点宽，已不含 padding
+          : (() => {
+              const cs = getComputedStyle(el);
+              const padL = parseFloat(cs.paddingLeft) || 0;
+              const padR = parseFloat(cs.paddingRight) || 0;
+              return el.clientWidth - padL - padR;
+            })()));
     if (inner <= 0) return;
+    const font = reuse ? sharedPreviewFont.value : getComputedStyle(el).font;
+    if (!reuse && cap && font) {
+      // 只有"全量量过"的那一行才有权写共享值（避免把 fallback 误抄成真值）。
+      sharedPreviewWidth.value = inner;
+      sharedPreviewFont.value = font;
+      sharedEpoch = layoutEpoch;
+      sharedLayoutKey = previewLayoutKey(el);
+    }
     // ⚠️ 高度变化触发的 RO 回调在这里止步：宽度没变 ⇒ 列数**通常**不可能变。
     // 缺了这道门，第一刀的"切断高度环"只存在于注释里（2026-11-21 补齐）。
     //
@@ -177,11 +251,9 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
     // 宽度和字体都没变才 return（2026-11-21 review 修回：只按宽度设门，会把
     // 「只改字号」这条合法路径一起挡掉，`textColumns` 的注释承诺就落空了）。
     //
-    // 代价：每次 RO 回调付一次 `getComputedStyle`。RO 回调发生在布局之后、样式没有
-    // 脏标记 ⇒ 这是**干净读**，不是强制 recalc；真正会放大抖动的是"被门挡掉之后还要
-    // 继续往下跑"，那一步已经被 return 掐掉了。
+    // 代价：每次 RO 回调付一次 font 读。RO 回调发生在布局之后、样式没有脏标记 ⇒
+    // 干净读；切会话那批挂载读已由 `afterLayoutReadWindow` 合批到绘制前的微任务。
     const widthChanged = shouldRemeasure(lastWidth, inner);
-    const font = getComputedStyle(el).font;
     if (!widthChanged && font === lastFont) return;
     const unit = halfCharWidth(font);
     if (unit <= 0) return;
@@ -198,18 +270,16 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
     // 抄送会话级共享值（估算端读它，见上面的说明）。迟滞带**之后**抄：估算端拿到的
     // 是与渲染端当前生效值完全相同的那个数。
     sharedPreviewColumns.value = columns.value;
-    const elNow = getEl();
-    if (elNow) {
-      sharedPreviewWidth.value = allowedColumnWidth(elNow) ?? 0;
-      sharedPreviewFont.value = getComputedStyle(elNow).font;
-    }
   };
 
   onMounted(() => {
-    measure();
+    // 切会话窗口里不逐行读样式：攒到当前 patch 后的同一个微任务集中量（窗口外同步执行）。
+    afterLayoutReadWindow(() => measure());
     const el = getEl();
     if (el && typeof ResizeObserver !== "undefined") {
-      observer = new ResizeObserver((entries) => measure(entries[entries.length - 1]));
+      observer = new ResizeObserver((entries) =>
+        afterLayoutReadWindow(() => measure(entries[entries.length - 1])),
+      );
       observer.observe(el);
     }
   });
@@ -226,7 +296,7 @@ export function usePreviewColumns(getEl: () => HTMLElement | null, fallback: num
       lastWidth = -1;
       lastFont = "";
       hasMeasured = false;
-      measure();
+      afterLayoutReadWindow(() => measure());
     },
   );
 

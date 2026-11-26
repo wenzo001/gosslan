@@ -7,9 +7,11 @@ import {
   transferListEqual,
   contentListEqual,
   opsListEqual,
+  messageListEqual,
   TRANSFER_FIELDS,
   CONTENT_FIELDS,
   OP_FIELDS,
+  MESSAGE_FIELDS,
 } from "./transferSnapshot.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -72,4 +74,85 @@ test("CONTENT_FIELDS 与 types.ts 的 ContentTransfer 字段一一对应", () =>
 test("OP_FIELDS 与 types.ts 的 PendingMessageOp 字段一一对应", () => {
   const want = interfaceFields("PendingMessageOp");
   assert.deepEqual([...OP_FIELDS].sort(), [...want].sort());
+});
+
+// ── 消息列表：切会话时「快照没变就别换引用」（2026-11-26）──────────────────────
+// 背景：`loadMessages` 每次拿到的新快照里每条都是新对象，整表替换会让虚拟列表
+// 那 18 行 `MessageItem` 全部 patch。用户实测那一段白花 229ms。
+
+const row = (over: Record<string, unknown> = {}) => ({
+  id: 1,
+  msg_id: "m1",
+  local_id: null,
+  conv_id: "c1",
+  sender_id: "p",
+  receiver_id: "c1",
+  kind: "text" as const,
+  content: "hi",
+  ts: 1000,
+  seq: 1,
+  status: "delivered",
+  fail_code: null,
+  mention_ids: null,
+  mention_targets: null,
+  ...over,
+});
+
+test("messageListEqual：同内容新引用判等（切会话不重渲染的前提）", () => {
+  const a = [row(), row({ msg_id: "m2", seq: 2, ts: 2000 })];
+  const b = [row(), row({ msg_id: "m2", seq: 2, ts: 2000 })];
+  assert.equal(messageListEqual(a, b), true, "逐条同内容的新数组必须判等");
+  assert.equal(messageListEqual([], []), true);
+  assert.equal(messageListEqual(a, a), true);
+});
+
+test("messageListEqual：任何可见字段变化都必须判不等", () => {
+  const base = [row()];
+  for (const [field, value] of [
+    ["status", "sending"],
+    ["content", "hi2"],
+    ["ts", 1001],
+    ["seq", 2],
+    ["kind", "image"],
+    ["fail_code", "NET"],
+    ["local_id", "tmp-1"],
+    ["mention_ids", ["p"]],
+    ["mention_targets", [{ id: "p", name: "P", n: 1 }]],
+  ] as const) {
+    assert.equal(
+      messageListEqual(base, [row({ [field]: value })]),
+      false,
+      `${field} 变了必须判不等（否则界面停在旧值）`,
+    );
+  }
+  assert.equal(messageListEqual(base, []), false, "行数不同直接不等");
+  assert.equal(messageListEqual(base, [row({ msg_id: "m9" })]), false, "换了消息必须不等");
+});
+
+test("messageListEqual：mention_targets 逐格比较（对象是新引用但内容相同）", () => {
+  const a = [row({ mention_targets: [{ id: "p", name: "P", n: 1 }] })];
+  const b = [row({ mention_targets: [{ id: "p", name: "P", n: 1 }] })];
+  assert.equal(messageListEqual(a, b), true, "结构体内容相同要判等（否则每条 @ 消息恒重渲染）");
+  assert.equal(
+    messageListEqual(a, [row({ mention_targets: [{ id: "p", name: "P", n: 2 }] })]),
+    false,
+    "n（第几次出现）不同必须不等",
+  );
+});
+
+test("MESSAGE_FIELDS 覆盖 MessageRecord 的全部字段（含两个数组列）", () => {
+  const want = interfaceFields("MessageRecord");
+  assert.deepEqual(
+    [...MESSAGE_FIELDS, "mention_ids", "mention_targets"].sort(),
+    [...want].sort(),
+    "字段清单与 MessageRecord 对不上：类型加了列没登记 ⇒ 那个列的变化不再触发渲染",
+  );
+});
+
+test("接线判据：loadMessages 必须用 messageListEqual 包住赋值（不许退回无条件整表覆盖）", () => {
+  const src = readFileSync(join(ROOT, "stores/chat/conversations.ts"), "utf8");
+  assert.ok(
+    src.includes("if (!(prev && messageListEqual(next, prev))) messages.value[convId] = next;"),
+    "loadMessages 的赋值必须被 messageListEqual 守卫 —— 少了它，切回已缓存会话会白渲染一次",
+  );
 });

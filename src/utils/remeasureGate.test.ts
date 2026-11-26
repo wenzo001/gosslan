@@ -102,8 +102,9 @@ test("接线：宽度没变时还要看字体 —— 只按宽度设门会挡掉
     /if \(!widthChanged && font === lastFont\) return;/.test(src),
     "门退化成了只看宽度 ⇒ 改字号后列数不再重算（气泡 5 行截断按旧字号切，多出/少掉半行）",
   );
+  // 2026-11-26：同一视口复用实测时字体来自共享值，全量量那一轮仍现读 getComputedStyle。
   assert.ok(
-    /const font = getComputedStyle\(el\)\.font;/.test(src),
+    /const font\s*=\s*reuse \? sharedPreviewFont\.value : getComputedStyle\(el\)\.font;/.test(src),
     "没有取字体指纹 ⇒ 上面那半个条件恒真，等于没接",
   );
   assert.ok(
@@ -164,8 +165,9 @@ test("接线：列数宽度取「列宽上限」而不是正文实测宽（否�
     "没扣中间层的水平内边距/边框 ⇒ 列数会多算几个，截断后仍会换到第 6 行（被 CSS 裁掉、省略号看不见）",
   );
   // ③ 优先用它，容器实测宽只做兜底（这个 composable 理论上也能被别处用）。
+  //    2026-11-26 起首个输入是"同视口共享的实测"，全量量那一轮仍优先走列宽上限。
   assert.ok(
-    /const inner\s*=\s*allowedColumnWidth\(el\) \?\?/.test(composable),
+    /const inner\s*=\s*reuse[\s\S]{0,120}allowedColumnWidth\(el\) \?\?/.test(composable),
     "measure() 没有优先用上限 ⇒ 下面那段兜底代码仍在生效",
   );
 
@@ -174,7 +176,7 @@ test("接线：列数宽度取「列宽上限」而不是正文实测宽（否�
   assert.notEqual(gutted, composable, "变异没落进去 ⇒ 锚点写法变了");
   assert.doesNotMatch(
     gutted,
-    /const inner\s*=\s*allowedColumnWidth\(el\) \?\?/,
+    /const inner\s*=\s*reuse[\s\S]{0,120}allowedColumnWidth\(el\) \?\?/,
     "去掉优先关系后仍然命中 ⇒ 这条判据在空集上恒绿",
   );
 });

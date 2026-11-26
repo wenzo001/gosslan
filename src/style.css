@@ -2170,7 +2170,13 @@ html.is-mobile {
 .gosslan-os .n-scrollbar-content {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  /* ⚠️ 这里**不能**写 `min-height: 100%`（2026-11-26 用户实测「新增/编辑任务滚不动」）：
+     百分比高度要求**父的 height 属性**是确定值。而宿主的 `height: 100%` 在"高度 auto +
+     max-height 夹紧"的父里（`BaseModal` 的卡片、`max-h-72` 那类弹窗）解析为 auto，
+     于是这一条与 container 的 `height: 100%` **一起失效** ⇒ container 被内容撑到 1216px、
+     clientHeight === scrollHeight ⇒ 滑块都不渲染（"滚不动"）。
+     现在高度全部由**两级 flex** 传递（见下面 container 那段），不依赖任何百分比。 */
+  flex: 1 0 auto;
   /* 与 naive 同值（生产包里只有这两条在）：`border-box` 让内容盒宽度按 padding 内缩，
      `min-width: 100%` 保证短内容也占满视口宽（否则居中/右对齐的元素会贴左）。 */
   box-sizing: border-box;
@@ -2216,11 +2222,27 @@ html.is-mobile {
   /* 把 rail 的 `z-index: 40` 关在容器自己的层叠上下文里：只有这一步能让"滚动条盖住
      sticky 分组行"与"滚动条不许盖页面浮层"两件事同时成立（见下面 rail 那段注释）。 */
   isolation: isolate;
+  /* ⚠️ 为什么宿主是 flex 容器（2026-11-26「新增/编辑任务滚不动」的根因修法）：
+     宿主里的滚动元素只能用**百分比**（naive 的 `height: 100%`）填满它，而百分比高度
+     要求宿主的 height 是确定值；宿主自己常常是 `height: 100%` + `flex-1`，在"父高 auto、
+     只有 max-height"的卡片里解析成 auto（高度来自 flex 拉伸）⇒ 百分比**逐级失效**。
+     改成 flex 传递后，container 的 `flex: 1 1 auto` 相对的是宿主**已经算出来的**
+     used height（644px 这种），与父级 height 是 auto 还是 100% 无关。 */
+  display: flex;
+  flex-direction: column;
 }
 
 .gosslan-os .n-scrollbar-container {
-  height: 100%;
+  /* ⚠️ 这里同样不能写 `height: 100%`（同上，父的 height 是 auto 时它失效）。
+     `flex-basis: auto` 是这套方案的关键：内容比宿主高 ⇒ shrink 到宿主高度（可滚）；
+     内容比宿主矮 ⇒ grow 撑满（空态居中）。若写成 `flex: 1 1 0%`，在"宿主高度也由内容
+     决定"的地方（无 max-h 的浮层）会塌成 0 —— 那是另一种坏法。 */
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  height: auto;
   width: 100%;
+  /* `inherit` 拿到的是宿主的 min-height（本组件恒为 0）⇒ 允许收缩到宿主高度。 */
   min-height: inherit;
   /* `max-height: inherit` 是 `max-h-72` 那类容器能滚的前提（宿主被限高，滚动元素要跟着）。 */
   max-height: inherit;
