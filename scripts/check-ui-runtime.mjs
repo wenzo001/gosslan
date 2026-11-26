@@ -31195,6 +31195,12 @@ async function runScrollStable(cdp, url) {
     const s = vp || host;
     const cs = getComputedStyle(s);
     const hostCs = getComputedStyle(host);
+    // padding 现在落在两层：滚动元素（车道；旧口径）与内容盒（组件把宿主缩进搬过来）。
+    // 相加才是「内容相对宿主内缘的真实缩进」，也是唯一能抓出「双份 padding」的算法
+    // （宿主 16 + 内容 16 = 32，视觉上就是"内容比标题多缩进一截"）。
+    const contentEl = host.querySelector('.n-scrollbar-content');
+    const ccs = contentEl ? getComputedStyle(contentEl) : null;
+    const effPad = (side) => (parseFloat(cs['padding' + side]) || 0) + (ccs ? (parseFloat(ccs['padding' + side]) || 0) : 0);
     const rectOf = (el) => { if (!el) return null; const b = el.getBoundingClientRect();
       return { x: +b.x.toFixed(2), w: +b.width.toFixed(2), r: +b.right.toFixed(2) }; };
     const visible = [...s.querySelectorAll('*')].filter((el) => el.getClientRects().length > 0);
@@ -31214,7 +31220,7 @@ async function runScrollStable(cdp, url) {
       isOs: !!vp,
       gutter: hostCs.scrollbarGutter,
       overflowY: cs.overflowY,
-      padL: cs.paddingLeft, padR: cs.paddingRight,
+      padL: effPad('Left') + 'px', padR: effPad('Right') + 'px',
       hostPadL: hostCs.paddingLeft, hostPadR: hostCs.paddingRight,
       offW: +s.offsetWidth.toFixed(2), clientW: +s.clientWidth.toFixed(2),
       barW: +(s.offsetWidth - s.clientWidth).toFixed(2),
@@ -31223,13 +31229,14 @@ async function runScrollStable(cdp, url) {
       canScroll: s.scrollHeight > s.clientHeight + 1,
       // 内容盒宽 = 视口宽 − 左右 padding（**不是** clientWidth：padding 正是"车道/留白"，
       // OS 把它搬进视口，内容盒才是内容真正能用的宽度）。
-      contentW: +(s.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0)).toFixed(2),
+      contentW: +(s.clientWidth - effPad('Left') - effPad('Right')).toFixed(2),
       card: rectOf(card), text: rectOf(textEl),
       // 标题（header h2）走 px-[var(--gosslan-scroll-inset)]，是内容页"那条竖线"的基准；
       // 卡片的左右缘必须与它逐像素相等 —— 这才是用户说的"看起来一致"。
       // ⚠️ 标题是滚动容器的**兄弟**（在同一列里），所以要从**宿主**的父级找，不是视口的父级。
       header: rectOf(host.parentElement ? host.parentElement.querySelector('h2') : null),
       textTxt: textEl ? (textEl.textContent || '').trim().slice(0, 16) : null,
+
     };
   })()`;
 
@@ -31250,8 +31257,12 @@ async function runScrollStable(cdp, url) {
     const vp = host.querySelector('.n-scrollbar-container') || host;
     const cs = getComputedStyle(vp);
     const hostCs = getComputedStyle(host);
+    // 双份 padding 是「内容比标题多缩进一截」的根因 ⇒ 这里把两层相加（见 READ 里的同款注释）。
+    const contentEl2 = host.querySelector('.n-scrollbar-content');
+    const ccs2 = contentEl2 ? getComputedStyle(contentEl2) : null;
+    const effPad2 = (side) => (parseFloat(cs['padding' + side]) || 0) + (ccs2 ? (parseFloat(ccs2['padding' + side]) || 0) : 0);
     // 内容盒宽 = 视口宽 − 左右 padding（padding 就是"车道/留白"；display:contents 的包裹层没有盒子，量不到）
-    const contentW = () => +(vp.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0)).toFixed(2);
+    const contentW = () => +(vp.clientWidth - effPad2('Left') - effPad2('Right')).toFixed(2);
     const before = { clientW: vp.clientWidth, contentW: contentW() };
     // 加 8px 车道（视口右内边距）⇒ 内容盒必须真的窄 8px。
     // ⚠️ 改**视口**而不是宿主：OS 只在初始化时把宿主 padding 搬进视口，
@@ -31262,8 +31273,8 @@ async function runScrollStable(cdp, url) {
     vp.style.paddingRight = prevPad;
     return {
       isOs: !!host.querySelector('.n-scrollbar-container'),
-      padL: +(parseFloat(cs.paddingLeft) || 0).toFixed(2),
-      padR: +(parseFloat(cs.paddingRight) || 0).toFixed(2),
+      padL: +effPad2('Left').toFixed(2),
+      padR: +effPad2('Right').toFixed(2),
       hostPadR: +(parseFloat(hostCs.paddingRight) || 0).toFixed(2),
       laneDeltaW: +(before.contentW - after.contentW).toFixed(2),
       before, after,

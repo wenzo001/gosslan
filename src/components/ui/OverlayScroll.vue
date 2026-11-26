@@ -155,26 +155,29 @@ function readPad(cs: CSSStyleDeclaration): Pad {
 /**
  * 读宿主 padding 并搬到 content。规则：
  * 1. 先摘掉清零类，读**真实**的计算值（否则读到 0）；
- * 2. 与已保存值相同 ⇒ 什么也不做（避免无谓的样式写入）；
- * 3. 有 padding ⇒ 写 `pad` 并加清零类；无 ⇒ 清空 `pad`。
+ * 2. 写回 `pad`，有 padding 就立刻把清零类补回（同帧内不能留"双份 padding"的窗口）。
  * 只在挂载后、class 变化、宽度跨断点时跑，不参与滚动热路径。
+ *
+ * ⚠️ 清零类**必须同时**出现在模板的 `:class` 绑定里（`hasPad`），不能只靠这里手工
+ * `classList.add`（2026-11-26 实测：切主题/`is-scrolling` 变化时 Vue 重算 class 串，
+ * 把手工加的类整串覆盖掉 ⇒ 宿主 16px 复活、和 content 的 16px 叠成 32px，
+ * 表现为「暗色下内容比标题多缩进 16px」，scrollstable 的卡片对齐判据就是这么红的）。
  */
 function capturePadding() {
   const el = rootEl();
   if (!el || capturing) return;
   capturing = true;
   try {
-    const hadClass = el.classList.contains(PAD_CLASS);
-    if (hadClass) el.classList.remove(PAD_CLASS);
+    if (el.classList.contains(PAD_CLASS)) el.classList.remove(PAD_CLASS);
     const next = readPad(getComputedStyle(el));
-    const same = next.t === pad.value.t && next.r === pad.value.r && next.b === pad.value.b && next.l === pad.value.l;
-    if (same && hadClass) {
-      el.classList.add(PAD_CLASS);
-      return;
-    }
+    // 同值赋值不会触发渲染，所以可以无条件写：逻辑只剩"读 → 记 → 按需补类"一条线。
     pad.value = next;
     if (next.t || next.r || next.b || next.l) el.classList.add(PAD_CLASS);
   } finally {
+    // 把基准同步到**捕获结束后的稳定宽度**：宿主 `clientWidth` 含 padding，
+    // 捕获期间去掉清零类会让它短暂变小。RO 若拿中间值当基准，下一帧就会判成
+    // "跨断点"再排一次捕获（自激）。这里记最终值，中间态一律不参与比较。
+    lastWidth = el.clientWidth;
     capturing = false;
   }
 }
@@ -204,6 +207,13 @@ const mergedContentStyle = computed<Record<string, string>>(() => {
   return out;
 });
 
+/**
+ * 宿主是否需要"清零 padding"类。**这是清零类的权威来源**（模板 `:class` 绑定它）。
+ * 手工 `classList.add` 只是让状态在同一帧就位；真正的归属权必须在 Vue 手里，
+ * 否则任何一次 class 重算都会把它抹掉（见 `capturePadding` 的注释）。
+ */
+const hasPad = computed(() => !!(pad.value.t || pad.value.r || pad.value.b || pad.value.l));
+
 // ---------------- 无障碍 ----------------
 
 function applyAria() {
@@ -218,6 +228,16 @@ function applyAria() {
 }
 
 watch(() => [props.role, props.ariaLive, props.ariaRelevant], applyAria);
+
+/**
+ * 父组件换 class（响应式断点 / 条件类）⇒ 重读 padding。
+ *
+ * ⚠️ 必须在 setup 顶层注册：之前写在 `onMounted` 的 `nextTick` 回调里，
+ * 那个时刻 `getCurrentInstance()` 已是 null，`watch` 建的是**独立 effect**，
+ * 组件卸载时不会被自动 stop（每个滚动容器漏一份闭包）。顶层注册由组件 scope 托管。
+ * 挂载前 `rootEl()` 还是 null 也无妨：`scheduleCapture` 的 rAF 回调会自行判空。
+ */
+watch(() => attrs.class, () => scheduleCapture());
 
 // ---------------- 点轨道翻页 ----------------
 //
@@ -265,8 +285,6 @@ onMounted(() => {
     applyAria();
     const el = rootEl();
     if (!el) return;
-    // 父组件换 class（响应式断点/条件类）⇒ 重读 padding；滚动不触发。
-    watch(() => attrs.class, () => scheduleCapture());
     if (typeof ResizeObserver !== "undefined") {
       lastWidth = el.clientWidth;
       ro = new ResizeObserver(() => {
@@ -332,7 +350,7 @@ defineExpose({ scrollElement, scrollToBottom, scrollToTop, scrollTo, scrollBy, s
   <NScrollbar
     ref="barRef"
     class="gosslan-os"
-    :class="[`gosslan-os--${size}`, { 'is-scrolling': scrolling }]"
+    :class="[`gosslan-os--${size}`, { 'is-scrolling': scrolling, 'gosslan-os--pads': hasPad }]"
     trigger="none"
     :theme-overrides="themeOverrides"
     :x-scrollable="axis === 'both'"
