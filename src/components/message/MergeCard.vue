@@ -43,7 +43,7 @@ const previewLines = computed(() =>
 
 <template>
   <button
-    class="relative flex h-24 w-60 flex-col gap-1 rounded-[var(--gosslan-bubble-radius)] px-3 py-2 text-left transition hover:brightness-[0.97]"
+    class="relative flex h-24 w-60 max-w-full min-w-0 flex-col gap-1 rounded-[var(--gosslan-bubble-radius)] px-3 py-2 text-left transition hover:brightness-[0.97]"
     :style="props.cardStyle"
     :aria-label="t('merge.open')"
     @click="emit('open')"

@@ -128,30 +128,37 @@ function onCardClick(e: MouseEvent) {
         <Icon name="x" v-else class="h-5 w-5" />
       </div>
       <div class="min-w-0 flex-1">
-        <div class="gosslan-card-text line-clamp-2 break-all text-body font-medium leading-snug">{{ meta.name }}</div>
+        <!-- 文件名：最多两行。用 `break-words`（overflow-wrap:break-word）而不是
+             `break-all` —— 后者在任意字符处硬断，`gosslan-crash.log` 会变成
+             「gosslan-cr / ash.log」；前者优先在连字符/句点后断，观感更接近微信。
+             超长无断点的文件名照样会断（overflow-wrap 的兜底就是任意位置断），不会溢出。 -->
+        <div class="gosslan-card-text line-clamp-2 break-words text-body font-medium leading-snug">{{ meta.name }}</div>
         <div v-if="failed" class="mt-0.5 text-caption text-[var(--card-danger)]">{{ failReason || t("msg.sendFailed") }}</div>
-        <div v-else class="mt-0.5 flex items-center gap-1 text-caption text-[var(--card-ink-soft)]">
-          <span>{{ extLabel }}</span>
-          <span>·</span>
-          <span>{{ formatBytes(meta.size) }}</span>
+        <!-- 元信息行：移动端卡片会被 `max-w-full` 压到 150~200px，原来 5 段挤在一条
+             `flex` 里、各自都能在空格处折行 ⇒ 「1.9 / MB」「已验证完 / 整」这种词内断行
+             （155px 时甚至把「已验证完整」折成 5 行竖排）。
+             两条口径：
+               ① **段内**一律 `whitespace-nowrap`（一个信息块永不断开）；
+               ② 放不下时在**段间**换行（`flex-wrap` + `gap-y`），换行位置整齐、不会出现
+                  半截数字；`·` 前缀跟着后一段走，所以不会有一行只剩一个点。 -->
+        <div v-else class="mt-0.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-caption text-[var(--card-ink-soft)]">
+          <span class="whitespace-nowrap">{{ extLabel }} · {{ formatBytes(meta.size) }}</span>
           <template v-if="note">
-            <span>·</span>
-            <span class="truncate" :title="note">{{ note }}</span>
+            <span class="min-w-0 truncate" :title="note">· {{ note }}</span>
           </template>
           <!-- J3-3（旅程走查 2026-11-20）：SHA-256 全量校验通过才落 ready ⇒ ready 即"已验证"，
                但界面上从来没有这个正向信号，"完整"只能靠没报错来推断。给接收方一个明确的
                已验证标识；发送方的文件来自本机磁盘、没经过校验，不显示（不冒领）。
                颜色用 accent-ink 而不是绿 —— 与已读双勾同一口径（绿色易与"在线"混淆）。 -->
-          <template v-if="ready && !mine">
-            <span>·</span>
-            <span
-              class="flex items-center gap-0.5 text-[var(--gosslan-accent-ink)]"
-              :title="t('msg.fileVerifiedHint')"
-            >
-              <Icon name="check-circle2" class="h-3 w-3" />
-              {{ t("msg.fileVerified") }}
-            </span>
-          </template>
+          <span
+            v-if="ready && !mine"
+            class="inline-flex items-center gap-0.5 whitespace-nowrap text-[var(--gosslan-accent-ink)]"
+            :title="t('msg.fileVerifiedHint')"
+          >
+            <span class="opacity-60">·</span>
+            <Icon name="check-circle2" class="h-3 w-3 shrink-0" />
+            {{ t("msg.fileVerified") }}
+          </span>
         </div>
       </div>
       <!-- 微信式按钮逻辑：未就绪才显示——接收中＝转圈+百分比；等待传输＝下载按钮。
@@ -194,18 +201,20 @@ function onCardClick(e: MouseEvent) {
         </button>
       </div>
     </div>
-    <!-- 群文件成员投递状态：独立成底栏，用一条极淡分隔线与文件信息区隔开（微信式卡片层次） -->
+    <!-- 群文件成员投递状态：独立成底栏，用一条极淡分隔线与文件信息区隔开（微信式卡片层次）。
+         同元信息行口径：每段 `whitespace-nowrap`，放不下就在段间换行（窄屏下「· 3 人待上线」
+         不会被拆成「3 人待上 / 线」）。 -->
     <div
       v-if="delivery"
-      class="flex items-center gap-1.5 border-t border-current/10 pt-1.5 text-caption text-[var(--card-ink-soft)]"
+      class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 border-t border-current/10 pt-1.5 text-caption text-[var(--card-ink-soft)]"
     >
-      <span>{{ t("msg.sentTo", { n: delivery.completed }) }}</span>
-      <span v-if="delivery.waiting > 0">· {{ t("msg.waitingOnline", { n: delivery.waiting }) }}</span>
-      <span v-if="delivery.failed > 0" class="text-[var(--card-danger)]">· {{ t("msg.failedCount", { n: delivery.failed }) }}</span>
+      <span class="whitespace-nowrap">{{ t("msg.sentTo", { n: delivery.completed }) }}</span>
+      <span v-if="delivery.waiting > 0" class="whitespace-nowrap">· {{ t("msg.waitingOnline", { n: delivery.waiting }) }}</span>
+      <span v-if="delivery.failed > 0" class="whitespace-nowrap text-[var(--card-danger)]">· {{ t("msg.failedCount", { n: delivery.failed }) }}</span>
       <!-- 已取消必须单独说，不能并进「待上线」：那几个人**永远不会再收了**，
            把他们算成"在等"就是这句"M 人待上线"永远挂着、用户等一个不会来的上线（B2）。
            颜色用次要文字而不是 danger —— 用户自己按下的取消不是错误。 -->
-      <span v-if="delivery.cancelled > 0">· {{ t("msg.cancelledCount", { n: delivery.cancelled }) }}</span>
+      <span v-if="delivery.cancelled > 0" class="whitespace-nowrap">· {{ t("msg.cancelledCount", { n: delivery.cancelled }) }}</span>
     </div>
     <!-- 进度条只在活动传输时出现；状态文案独立一行 —— 进度停下来之后那句话还得说得出失败/取消 -->
     <template v-if="progress !== null">
