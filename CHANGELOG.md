@@ -28,6 +28,9 @@
 - **修掉的错乱**：内边距从宿主搬到内容盒（滚动区与轨道等高，贴底不再差 24px）；
   原生锚定关到真正的滚动元素（`overflow-anchor` 不继承）；补回「点轨道翻页」
   （naive 的轨道是 `pointer-events:none`，只支持拖滑块）。
+- **无限滚动**：新增 `components/ui/InfiniteScroll.vue`（官方 `NInfiniteScroll` 薄封装，
+  样式复用 `.gosslan-os`，`trigger="none"` 常驻滑块）。⚠️ 它是**向下**触底加载；
+  聊天消息流是**向上**加载历史，语义相反、不接这里。当前无向下分页数据源，故暂无消费者。
 - **验证**：`--only=overlay,scrollbar,listmetrics,emojiscroll,scrollreact,scrollswitch,
   scrollhist,scrollrestore,scrollshake,scrollstable,backjump,scrollinput` 全绿（含反例自证）；
   `npm test` 2353/2353；`vue-tsc --noEmit` 0。
