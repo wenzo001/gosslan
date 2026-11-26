@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "7.3.0"
+version = "7.3.1"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -155,6 +155,12 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
     "Win32_System_Memory",
+    # 2026-11-26：运行档位（`power/windows.rs`）的电源与锁屏探针。
+    # `GetSystemPowerStatus` 住 `Win32_System_Power`；`WTSQuerySessionInformationW` /
+    # `WTSFreeMemory` / `WTSINFOEXW` 住 `Win32_System_RemoteDesktop`。
+    # 同样没有传递关系，必须逐个点名（漏一个只有 Windows CI 会红）。
+    "Win32_System_Power",
+    "Win32_System_RemoteDesktop",
     "Win32_System_ProcessStatus",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
