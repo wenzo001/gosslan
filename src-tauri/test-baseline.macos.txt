@@ -12,13 +12,17 @@ commands::attention_tests::other_desktops_keep_the_previous_behavior
 commands::attention_tests::windows_flashes_regardless_of_urgency
 commands::avatar_gate_tests::avatar_size_gate_is_fail_closed_and_boundary_exact
 commands::bot_cmd_tests::action_error_writes_only_last_error
+commands::bot_cmd_tests::bot_list_cross_window_calls_share_one_backend_cache
 commands::bot_cmd_tests::dnd_is_a_local_preference_command
 commands::bot_cmd_tests::endpoint_and_status_normalization
 commands::bot_cmd_tests::group_bot_creation_checks_group_admin
 commands::bot_cmd_tests::personal_bots_never_enter_the_network_outbox
+commands::bot_cmd_tests::poll_stats_report_only_visible_changes
+commands::bot_cmd_tests::polling_writes_invalidate_and_broadcast_visible_bot_changes
 commands::bot_cmd_tests::revoking_clears_the_client_credential
 commands::bot_cmd_tests::server_address_accepts_http_and_https
 commands::bot_cmd_tests::server_url_rejects_tricky_shapes
+commands::bot_cmd_tests::stale_bot_list_read_cannot_refill_after_invalidation
 commands::bot_cmd_tests::storage_round_trips_and_the_inbox_is_idempotent
 commands::bot_cmd_tests::the_ack_happens_after_the_local_delivery
 commands::bot_cmd_tests::the_list_view_carries_no_secret
@@ -468,6 +472,11 @@ db::offline_queue_tests::list_expired_outbox_returns_peer_and_age_for_classifica
 db::offline_queue_tests::list_outbox_batch_bounds_a_reconnect_flood
 db::offline_queue_tests::offline_peer_is_held_while_reachable_peer_fails_at_deadline
 db::offline_queue_tests::removing_a_friend_fails_only_the_messages_still_in_the_outbox
+db::pending_recall_tests::pending_recall_before_target_creates_the_tombstone
+db::pending_recall_tests::pending_recall_capacity_evicts_the_oldest
+db::pending_recall_tests::pending_recall_never_crosses_conversation_boundaries
+db::pending_recall_tests::pending_recall_replays_only_after_authority_catches_up
+db::pending_recall_tests::pending_recall_ttl_and_envelope_limits_are_enforced
 db::read_receipts_tests::read_receipt_does_not_promote_a_failed_message
 db::read_receipts_tests::read_receipt_heals_a_stuck_sending_row
 db::read_receipts_tests::read_receipt_leaves_cancelled_rows_alone
@@ -478,6 +487,7 @@ db::resend_requeue_tests::an_unknown_message_writes_nothing
 db::resend_requeue_tests::failed_and_cancelled_come_back_to_sending_with_a_queue_row
 db::resend_requeue_tests::terminal_and_in_flight_states_are_refused_without_writing
 db::startup_safety_tests::a_failing_ddl_batch_leaves_no_half_schema_behind
+db::startup_safety_tests::admin_group_key_snapshot_cannot_remove_the_owner
 db::startup_safety_tests::backup_detection_picks_the_newest_migration_backup_and_ignores_the_main_db
 db::startup_safety_tests::boot_counts_ignore_default_settings_but_see_real_rows
 db::startup_safety_tests::durability_notice_follows_the_read_back_value
@@ -485,6 +495,10 @@ db::startup_safety_tests::expired_finalize_is_atomic_when_outbox_delete_fails
 db::startup_safety_tests::fresh_database_lands_in_wal_without_a_degraded_notice
 db::startup_safety_tests::fresh_database_really_has_foreign_keys_on_and_reports_no_degradation
 db::startup_safety_tests::fresh_version_is_written_inside_the_ddl_transaction
+db::startup_safety_tests::gossip_group_snapshot_is_atomic_for_members_and_group_row
+db::startup_safety_tests::group_key_snapshot_rechecks_authority_inside_the_transaction
+db::startup_safety_tests::group_key_snapshot_rolls_back_every_write_and_the_clock
+db::startup_safety_tests::group_key_snapshot_rolls_back_persisted_key_when_clock_write_fails
 db::startup_safety_tests::group_resend_flips_cancelled_message_back_to_sending_in_the_same_tx
 db::startup_safety_tests::late_status_writes_cannot_undo_hard_terminal_states
 db::startup_safety_tests::orphan_sending_is_recovered_but_queued_and_terminal_rows_are_untouched
@@ -526,6 +540,7 @@ db::tests::favorite_insert_list_delete_and_idempotency
 db::tests::file_outbox_failed_is_not_pending
 db::tests::file_outbox_lifecycle
 db::tests::friend_add_and_pubkey_persistence
+db::tests::friend_pubkeys_checked_distinguishes_missing_rows_and_errors
 db::tests::friend_remove_then_readd_flow
 db::tests::get_group_file_missing_returns_none
 db::tests::gfile_transfer_record_persists_local_path
@@ -559,6 +574,8 @@ db::tests::latest_page_is_identical_to_the_count_plus_offset_two_step
 db::tests::latest_page_is_scoped_to_its_conversation_and_returns_a_short_tail_whole
 db::tests::latest_page_returns_an_empty_page_instead_of_erroring_on_an_unknown_limit
 db::tests::list_group_files_scoped_and_newest_first
+db::tests::mention_receipt_failure_rolls_back_the_message
+db::tests::mention_receipt_is_atomic_idempotent_and_cleared_on_read
 db::tests::merge_payload_validation_and_summary
 db::tests::message_and_outbox_are_written_atomically
 db::tests::message_dedup_by_unique_msg_id
@@ -578,6 +595,8 @@ db::tests::placeholder_on_real_msg_id_swallows_the_good_copy
 db::tests::recall_is_idempotent_and_materializes_content
 db::tests::recall_recorded_before_the_message_arrives_still_applies
 db::tests::recall_source_carries_the_evidence_needed_to_recheck_a_late_arrival
+db::tests::receipt_identity_preserves_database_errors
+db::tests::receipt_identity_returns_the_full_durable_identity
 db::tests::repeated_ack_is_idempotent
 db::tests::repeated_delivery_of_same_msg_id_yields_single_side_effect
 db::tests::schema_and_settings
@@ -907,6 +926,7 @@ network::ble::tests::throughput_estimate_matches_real_mtu_budgets
 network::discovery::tests::adaptive_interval_thresholds_and_jitter_bounds
 network::discovery::tests::announce_arm_gates_the_dial_with_sec07_checks
 network::discovery::tests::announce_dial_budget_caps_rotating_forgeries
+network::discovery::tests::announce_dial_budget_sweep_reclaims_only_expired_windows
 network::discovery::tests::announce_port_plausible_rejects_wellknown_ports
 network::discovery::tests::broadcast_diag_event_reflects_send_result
 network::discovery::tests::broadcast_streak_counts_only_full_silence
@@ -1185,6 +1205,7 @@ network::transport::tests::ble_link_is_neither_lan_nor_preferred_over_tcp
 network::transport::tests::bounded_profile_caps_nickname_and_avatar
 network::transport::tests::bulk_messages_are_only_large_chunks
 network::transport::tests::business_duplicate_still_enters_the_propagation_layer
+network::transport::tests::complete_identity_bundle_never_mixes_friend_and_peer_keys
 network::transport::tests::content_pull_route_group_cid_non_member_is_refused
 network::transport::tests::content_pull_route_group_cid_only_group_file
 network::transport::tests::content_pull_route_single_chat_cid_keeps_one_to_one
@@ -1196,10 +1217,11 @@ network::transport::tests::direct_open_succeeds_with_current_keys
 network::transport::tests::directed_relay_target_routes_share_and_offer_frames
 network::transport::tests::dispatch_arms_and_volume_arms_agree
 network::transport::tests::display_name_never_returns_raw_device_id
-network::transport::tests::display_name_prefers_local_alias_over_self_report
+network::transport::tests::display_name_prefers_stored_remote_nickname_over_live_report
 network::transport::tests::display_name_self_branch_and_empty_id
 network::transport::tests::display_name_treats_blank_source_as_absent
 network::transport::tests::e2e_gossip_encrypt_sign_decrypt
+network::transport::tests::effective_x25519_prefers_the_friend_anchor
 network::transport::tests::every_trust_gate_rejection_leaves_a_code
 network::transport::tests::expired_fail_code_splits_offline_from_undeliverable_and_is_wired
 network::transport::tests::expired_file_does_not_touch_the_group_bubble
@@ -1219,6 +1241,7 @@ network::transport::tests::friend_accept_flush_is_bounded_and_spaced
 network::transport::tests::friend_accept_only_lands_when_we_asked_or_already_friends
 network::transport::tests::friend_anchor_binding_truth_table
 network::transport::tests::friend_chat_message_accepted
+network::transport::tests::friend_key_conflict_checks_both_purposes
 network::transport::tests::friend_message_blocked_has_original_sender
 network::transport::tests::friend_request_arrival_notifies_only_the_first_time
 network::transport::tests::gossip_anchor_home_is_named_fill_only_and_coded
@@ -1250,6 +1273,7 @@ network::transport::tests::link_queues_are_created_from_one_place
 network::transport::tests::malformed_known_frame_still_errors
 network::transport::tests::member_id_tail_shape_and_oversize_id
 network::transport::tests::member_removed_action_full_truth_table
+network::transport::tests::mention_receipt_detection_matches_the_frontend_three_state_rules
 network::transport::tests::new_peer_entry_respects_friend_key_anchor
 network::transport::tests::non_frame_bytes_still_error
 network::transport::tests::non_friend_chat_message_rejected
@@ -1263,7 +1287,6 @@ network::transport::tests::peer_wide_receiver_cleanup_is_gated_on_total_link_los
 network::transport::tests::pending_friend_request_reflush_is_spaced_not_per_heartbeat
 network::transport::tests::pending_friend_requests_are_bounded
 network::transport::tests::pending_reads_keeps_max_timestamp
-network::transport::tests::pick_member_x25519_prefers_peers_then_friends
 network::transport::tests::plaintext_payload_is_rejected
 network::transport::tests::port_is_free_immediately_after_accept_loop_exits
 network::transport::tests::presence_caps_inline_avatar
@@ -1273,6 +1296,8 @@ network::transport::tests::read_receipt_marks_messages_as_read
 network::transport::tests::read_status_never_regresses_to_delivered
 network::transport::tests::real_db_keeps_group_and_dm_conversations_isolated
 network::transport::tests::rebind_after_accepted_connection_matches_platform_semantics
+network::transport::tests::receipt_identity_never_guesses_a_missing_group
+network::transport::tests::receipt_identity_requires_the_same_sender_and_conversation
 network::transport::tests::redistribute_failure_registers_pending
 network::transport::tests::relay_forward_rate_window
 network::transport::tests::relay_receipt_absent_keeps_send_row_at_sent
@@ -1552,6 +1577,7 @@ tests::discovery_send_egress_rebinds_after_sustained_silence
 tests::disk_full_deletes_the_part_and_other_failures_keep_it
 tests::dm_recipient_friend_check_keeps_read_errors_and_undoes_dedupe
 tests::duplicate_file_done_still_answers_with_an_ack
+tests::duplicate_receipts_are_wired_through_the_checked_identity_fast_path
 tests::every_cancel_channel_leaves_a_named_outcome
 tests::every_db_write_failure_branch_only_logs_and_never_changes_control_flow
 tests::every_finalize_path_defers_the_destructive_write
@@ -1595,9 +1621,11 @@ tests::group_relation_sync_updates_existing_conversation_title_but_never_creates
 tests::group_remind_ack_is_user_layer_separate_from_transport_group_ack
 tests::group_remind_rides_delivery_kernel_with_validated_audience
 tests::group_send_kernel_emits_to_own_windows_after_commit_outside_the_lock
+tests::group_snapshots_use_one_transaction_and_emit_only_after_success
 tests::guard_source_views_register_every_include_subfile
 tests::hello_reply_before_reader_loop_is_bounded
 tests::hourly_sweep_covers_parts_relay_and_stalled_receivers
+tests::identity_consumers_share_the_anchored_resolver
 tests::image_dimensions_reads_common_headers_without_decoding
 tests::in_flight_media_is_not_reported_as_deleted
 tests::inbound_space_preflight_tests::inbound_admission_preflights_the_disk_space_with_the_right_folding
@@ -1630,6 +1658,7 @@ tests::outgoing_media_lives_in_sent_dir_not_cache_or_downloads
 tests::peer_version_is_declared_not_signed_and_reclaimed
 tests::pending_friend_requests_are_written_forgotten_and_restored_exactly_once
 tests::pending_key_rotation_cleared_on_both_friend_removal_paths
+tests::pending_recall_replay_is_wired_to_rejection_transfer_target_and_startup
 tests::pending_requests_exclude_existing_friends
 tests::peripheral_reconnect_hello_replaces_the_stale_route
 tests::peripheral_subscribe_resets_that_centrals_reassembler

@@ -72,11 +72,11 @@ pub fn create_group(
         )
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
+        s.group_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.clone(), key);
     }
-    s.group_keys
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(id.clone(), key);
 
     Ok(Group {
         id,
@@ -130,14 +130,26 @@ pub async fn distribute_group_key(
         if m == &s.device_id {
             continue;
         }
-        // peers 优先、friends 回落：peers 由 announce/Hello 实时维护，
-        // friends 表公钥可能因 accept 路径未补写而缺失（曾致 GroupKey 静默跳过）
+        // 好友锚点优先；只有好友没有锚定 X25519 时才回落 peers。
         // 跳过必须留痕：静默 `continue` 会让「这个成员永远收不到群密钥」表现成
         // 「群里就他看不到新消息」，而日志里一个字都没有（闭环矩阵 F-GRP-003）。
-        // 一个码 + reason 字段：三种原因是同一个动作（跳过），不是三件事。
         // 限流按「原因」而不是按成员：`log_throttled` 只吃 `&'static str`，按成员拼 key 会漏内存；
         // 真正打出来的那一行仍带 group/member，能定位到人。
-        let Some(pubkey) = resolve_member_x25519(s, m) else {
+        let pubkey = match resolve_effective_x25519(s, m) {
+            Ok(pubkey) => pubkey,
+            Err(e) => {
+                if crate::logging::log_throttled("gk_key_read_failed", 60_000) {
+                    s.logger.warn(
+                        "group",
+                        format!("code=GROUP_KEY_MEMBER_KEY_READ_FAILED group={group_id} member={m} err={e}"),
+                    );
+                }
+                let mut pending = s.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner());
+                mark_pending_group_key(&mut pending, m, &group_id);
+                continue;
+            }
+        };
+        let Some(pubkey) = pubkey else {
             if crate::logging::log_throttled("gk_skip_no_pubkey", 60_000) {
                 s.logger.warn(
                     "group",
@@ -285,8 +297,7 @@ pub async fn rename_group(
 }
 
 /// 向成员列表里的每一位重发当前群密钥（携带群名 + 最新成员表）。
-async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], key: [u8; 32]) {
-    let (group_name, admins) = {
+async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], key: [u8; 32]) {    let (group_name, admins) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         // 群名是**装饰性**字段（成员表由调用方传进来），折成空不改变任何行为 ⇒ 同一口径只留痕。
         match db::get_group_checked(&dbc, group_id) {
@@ -310,13 +321,26 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
         if m == &s.device_id {
             continue;
         }
-        // peers 优先、friends 回落（与 distribute_group_key 同一来源策略）
+        // 与 distribute_group_key 同一来源策略：好友锚点优先，缺锚才回落 peers。
         // 跳过必须留痕：静默 `continue` 会让「这个成员永远收不到群密钥」表现成
         // 「群里就他看不到新消息」，而日志里一个字都没有（闭环矩阵 F-GRP-003）。
-        // 一个码 + reason 字段：三种原因是同一个动作（跳过），不是三件事。
         // 限流按「原因」而不是按成员：`log_throttled` 只吃 `&'static str`，按成员拼 key 会漏内存；
         // 真正打出来的那一行仍带 group/member，能定位到人。
-        let Some(pubkey) = resolve_member_x25519(s, m) else {
+        let pubkey = match resolve_effective_x25519(s, m) {
+            Ok(pubkey) => pubkey,
+            Err(e) => {
+                if crate::logging::log_throttled("gk_key_read_failed", 60_000) {
+                    s.logger.warn(
+                        "group",
+                        format!("code=GROUP_KEY_MEMBER_KEY_READ_FAILED group={group_id} member={m} err={e}"),
+                    );
+                }
+                let mut pending = s.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner());
+                mark_pending_group_key(&mut pending, m, group_id);
+                continue;
+            }
+        };
+        let Some(pubkey) = pubkey else {
             if crate::logging::log_throttled("gk_skip_no_pubkey", 60_000) {
                 s.logger.warn(
                     "group",
@@ -504,11 +528,11 @@ pub async fn group_remove_member(
         if let Err(e) = db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(key)) {
             crate::logging::log_write_failure(&s.logger, "set_setting", e);
         }
+        s.group_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(group_id.clone(), key);
     }
-    s.group_keys
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(group_id.clone(), key);
     let remaining = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         // 同上加人那一处（只留痕）：折成空 ⇒ 移除之后**留在群里的成员**收不到这一次重发的密钥，
@@ -614,6 +638,7 @@ pub async fn transfer_group_creator(
         &crate::network::transport::group_creator_changed_text(s, &name),
     );
     let _ = s.app.emit("groups-updated", &group_id);
+    crate::network::transport::replay_pending_recalls_for_group(s, &group_id).await;
     Ok(())
 }
 
@@ -692,6 +717,7 @@ pub async fn group_appoint_admin(
     )
     .await?;
     let _ = s.app.emit("groups-updated", &group_id);
+    crate::network::transport::replay_pending_recalls_for_group(&s, &group_id).await;
     Ok(())
 }
 

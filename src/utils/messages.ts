@@ -315,6 +315,23 @@ export function patchMessageInConv(
   return { lists: replaceMessageAt(lists, convId, index, rec), rec };
 }
 
+/** Ack 专用：只替换目标行，根表与目标数组引用不变。 */
+export function patchMessageInConvLocal(
+  lists: Record<string, MessageRecord[]>,
+  convId: string | null | undefined,
+  msgId: string,
+  patch: (rec: MessageRecord) => MessageRecord,
+): MessageRecord | null {
+  if (!convId) return null;
+  const list = lists[convId];
+  if (!list) return null;
+  const index = list.findIndex((m) => m.msg_id === msgId);
+  if (index < 0) return null;
+  const rec = patch(list[index]);
+  list[index] = rec;
+  return rec;
+}
+
 export function replaceOptimistic(
   list: MessageRecord[],
   tmpMsgId: string,

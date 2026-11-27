@@ -678,6 +678,32 @@
         );
     }
 
+    #[test]
+    fn identity_consumers_share_the_anchored_resolver() {
+        let transport = crate::network::transport_src_for_guards();
+        let group_key = rust_fn_body(&transport, "async fn handle_group_key(");
+        assert!(group_key.contains("resolve_effective_x25519(state, &from)"));
+        assert!(!group_key.contains("peers.get(&from)"), "群密钥收端不得绕过好友锚点");
+
+        let pending = include_str!("network/transport/pending_keys.rs");
+        assert!(pending.contains("resolve_effective_x25519(state, peer_id)"));
+        assert!(!pending.contains("peers.get(peer_id)"), "待发群密钥不得绕过好友锚点");
+
+        let commands = all_commands_src();
+        let safety = rust_fn_body(commands, "pub async fn get_safety_number(");
+        assert!(safety.contains("resolve_peer_identity_bundle("));
+        assert!(!safety.contains("get_friend_x25519("), "安全码不得再拼混合身份束");
+
+        for file in [
+            include_str!("network/file/send.rs"),
+            include_str!("network/file/relay_push.rs"),
+            include_str!("network/transport/handle_file.rs"),
+            include_str!("network/transport/relay_file.rs"),
+        ] {
+            assert!(file.contains("resolve_effective_x25519("), "文件链必须复用统一取钥");
+        }
+    }
+
     /// 待处理好友申请的**持久化接线**（审计 A4）。
     ///
     /// 这一族失败的形状是"逻辑全绿、功能为零"：`db::put_friend_request` 写对了，但没人调它 ⇒

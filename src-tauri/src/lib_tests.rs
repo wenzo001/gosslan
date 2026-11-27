@@ -130,6 +130,8 @@ mod tests {
             "\n",
             include_str!("db/recalls.rs"),
             "\n",
+            include_str!("db/pending_recalls.rs"),
+            "\n",
             include_str!("db/bots.rs"),
             "\n",
             include_str!("db/group_history.rs"),

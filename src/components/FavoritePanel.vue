@@ -47,6 +47,7 @@ import { formatBytes } from "@/utils/format";
 import { FILE_KIND_ICON_NAMES, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { dropFavoritePreview, favoritePreviewUrl, loadFavoritePreview, clearFavoritePreviews } from "@/utils/favoritePreview";
+import { favoritePreviewCandidates, resetFavoritePreviewQueue } from "@/utils/favoritePreviewQueue";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
 import { isForwardableKind, isKnownKind, isTransferKind, kindClass } from "@/utils/messageKinds";
 import { isWindows } from "@/utils/platform";
@@ -405,32 +406,43 @@ const activeMergeItems = computed(() => {
  * 旧写法每次回包都让 `thumbs` 换引用，watch 重跑 + 全表重渲 ⇒ O(n²) 次 patch。
  */
 const PREVIEW_CONCURRENCY = 3;
-const previewQueue: FavoriteEntry[] = [];
-const previewSeen = new Set<string>();
+let previewQueue: FavoriteEntry[] = [];
+let previewSeen = new Set<string>();
+const previewInFlight = new Set<string>();
 let previewsInFlight = 0;
+let previewScopeKey = "";
 
 function pumpPreviews() {
   while (previewsInFlight < PREVIEW_CONCURRENCY && previewQueue.length > 0) {
     const f = previewQueue.shift();
     if (!f) break;
     previewsInFlight += 1;
+    previewInFlight.add(f.id);
     void loadFavoritePreview(f.id, displayName(f))
       .then((r) => {
         if (r.url) thumbs.value[f.id] = r.url;
       })
       .finally(() => {
         previewsInFlight -= 1;
+        previewInFlight.delete(f.id);
         pumpPreviews();
       });
   }
 }
 
 watch(
-  [items, thumbs],
+  [filtered, thumbs],
   ([list]) => {
-    for (const f of list) {
-      if (f.kind !== "image" || !f.available || thumbs.value[f.id]) continue;
-      if (previewSeen.has(f.id)) continue;
+    const scopeKey = list.map((f) => f.id).join("\u0000");
+    if (scopeKey !== previewScopeKey) {
+      const reset = resetFavoritePreviewQueue(previewQueue, previewSeen, previewInFlight);
+      previewQueue = reset.queue;
+      previewSeen = reset.seen;
+      previewScopeKey = scopeKey;
+    }
+    // 只扫描当前筛选结果；已发 IPC 的在途计数不归零，切回来也不会重复发。
+    const images = list.filter((f) => f.kind === "image" && f.available);
+    for (const f of favoritePreviewCandidates(images, thumbs.value, previewSeen)) {
       previewSeen.add(f.id);
       previewQueue.push(f);
     }

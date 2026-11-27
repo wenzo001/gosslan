@@ -13,6 +13,9 @@ import {
   type SavedScroll,
 } from "@/utils/scrollRestore";
 import { useRouter } from "vue-router";
+import { useQueryClient } from "@tanstack/vue-query";
+import { useBotsQuery } from "@/composables/useBotsQuery";
+import { invalidateBots } from "@/utils/botsQuery";
 import { useEventListener } from "@vueuse/core";
 import { api } from "@/api";
 import { isMac } from "@/utils/platform";
@@ -24,7 +27,6 @@ import { useOpenProfile } from "@/composables/useOpenProfile";
 import { sharedPreviewColumns, sharedPreviewWidth, sharedPreviewFont } from "@/composables/usePreviewColumns";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { listen } from "@tauri-apps/api/event";
 import { createInitScope } from "@/utils/initScope";
 import MessageItem from "@/components/MessageItem.vue";
 import BotDetailModal from "@/components/BotDetailModal.vue";
@@ -60,6 +62,7 @@ import { recallTargetOf } from "@/utils/recall";
 import { shouldShowTimeDivider } from "@/utils/previewMetrics";
 import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
+import { reconcileRenderedMessages } from "@/utils/renderedMessages";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import {
@@ -219,8 +222,15 @@ const isSelfChat = computed(() => chat.activeConv === app.device?.device_id);
  * 卡片形式展示（不再落到"未知 kind 兜底"里显示原始 JSON）。它进时间线、计未读、弹通知
  * （Card 口径），且卡片里有「查看任务」直接开面板，不会与面板重复。
  */
-const messages = computed(() =>
-  (chat.messages[chat.activeConv ?? ""] ?? []).filter((m) => isRenderedInTimeline(m.kind)),
+const EMPTY_MESSAGES: MessageRecord[] = [];
+/** 稳定派生列表：Ack 只改目标行，总数组与未变化行引用保持稳定。 */
+const messages = ref<MessageRecord[]>([]);
+watch(
+  () => chat.messages[chat.activeConv ?? ""] ?? EMPTY_MESSAGES,
+  (source) => {
+    reconcileRenderedMessages(messages.value, source, (m) => isRenderedInTimeline(m.kind));
+  },
+  { immediate: true, flush: "sync", deep: true },
 );
 
 /**
@@ -755,7 +765,6 @@ const tasksOpen = ref(false);
  * 本群机器人列表还原出机器人身份，交给 MessageItem 渲染成「对方」：气泡靠左、
  * 头像与昵称用机器人的。识别不到就原样退回（不会把普通消息误判）。
  */
-const groupBots = ref<BotView[]>([]);
 function botSenderOf(
   m: MessageRecord,
 ): { id: string; name: string; avatar: string | null; markdown: boolean } | null {
@@ -788,26 +797,16 @@ function botSenderOf(
 const activeGroupId = computed(() =>
   isGroup.value && chat.activeConv ? chat.activeConv.slice(6) : null,
 );
-async function loadGroupBots() {
-  const gid = activeGroupId.value;
-  if (!gid) { groupBots.value = []; return; }
-  try {
-    const all = await api.botList();
-    groupBots.value = all.filter((b) => b.target?.kind === "group" && b.target?.groupId === gid);
-  } catch {
-    groupBots.value = [];
-  }
-}
-watch(activeGroupId, () => { void loadGroupBots(); }, { immediate: true });
-// 新建/改名机器人后要跟上：否则新机器人的消息仍按「自己」渲染（气泡回到右侧）。
+const botsQuery = useBotsQuery(() => !!activeGroupId.value);
+const queryClient = useQueryClient();
+const groupBots = computed(() =>
+  (botsQuery.data.value ?? []).filter((b) => b.target?.kind === "group" && b.target?.groupId === activeGroupId.value),
+);
+// 改了机器人资料后，同窗所有 ["bots"] 入口一起失效；QueryClient 合并并发重拉。
 const botScope = createInitScope();
 onMounted(() => {
-  void listen("bot-inbox-updated", () => { void loadGroupBots(); })
-    .then((off) => botScope.onDispose(off))
-    .catch(() => {});
-  // 改了机器人资料（头像/名字）也要立刻反映到群里的历史气泡。
   void api
-    .onBotChanged(() => { void loadGroupBots(); })
+    .onBotChanged(() => { void invalidateBots(queryClient); })
     .then((off) => botScope.onDispose(off))
     .catch(() => {});
 });
@@ -888,6 +887,18 @@ const { openProfile } = useOpenProfile({
 /** 机器人详情（点机器人消息头像/会话里点机器人进这里，不是好友资料页）。 */
 const botDetail = ref<BotView | null>(null);
 const botDetailOpen = ref(false);
+watch(
+  () => botsQuery.data.value,
+  (bots) => {
+    if (!bots || !botDetail.value) return;
+    const updated = bots.find((b) => b.botId === botDetail.value?.botId);
+    if (updated) botDetail.value = updated;
+    else {
+      botDetail.value = null;
+      botDetailOpen.value = false;
+    }
+  },
+);
 
 async function openSenderProfile(senderId: string) {
   // 机器人消息 sender_id = `bot:<bot_id>`（本机假身份，见 commands/bots.rs）。
@@ -895,7 +906,7 @@ async function openSenderProfile(senderId: string) {
   if (senderId.startsWith("bot:")) {
     const botId = senderId.slice("bot:".length);
     try {
-      const bots = await api.botList();
+      const bots = botsQuery.data.value ?? (await botsQuery.refetch()).data ?? [];
       const found = bots.find((b) => b.botId === botId) ?? null;
       botDetail.value = found;
       botDetailOpen.value = !!found;

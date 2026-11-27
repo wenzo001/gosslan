@@ -219,10 +219,22 @@ const confirmRemove = ref(false);
         </div>
 
         <!-- 单张合并卡：去掉两个 section 标题 + 收紧 py-3 → py-2.5。
-             重要性排序：连接方式 → 设备 → 端口/IP → 安全码 → device_id → E2EE。
+             重要性排序：昵称 → 连接方式 → 设备 → 端口/IP → 安全码 → device_id → E2EE。
              原来两张卡（朋友资料 + 更多信息）共 5 行标题 + 4 条分割线 + mt-7 + mt-6，
              现在一张卡，总高度砍半。 -->
-        <section class="mt-4">          <div class="overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
+        <section class="mt-4">
+          <div class="overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
+            <!-- 昵称来源明说清楚：好友表保存的是远端昵称，不是本地另起的名字。 -->
+            <div class="flex items-start justify-between gap-4 px-4 py-2.5 text-sm">
+              <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.nickname") }}</span>
+              <span class="min-w-0 break-all text-right">
+                {{ friend.nickname }}
+                <span v-if="!isSelf" class="mt-0.5 block text-xs text-[var(--gosslan-text-2)]">
+                  {{ t("friend.profile.nicknameHint") }}
+                </span>
+              </span>
+            </div>
+            <div class="h-px bg-[var(--gosslan-divider)]"></div>
             <!-- 安全码（防中间人核心，放在最上面让它显眼，但不再占两大块）。「自己」不适用 -->
             <template v-if="!isSelf">
             <div class="flex items-start justify-between gap-3 px-4 py-2.5">

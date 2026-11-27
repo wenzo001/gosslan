@@ -41,6 +41,8 @@ let gLateSeed = null;
 /// 反向模式：注入与预置完全不动，只把**判据要去找的那个 msg_id** 换成一个必定不存在的值。
 /// 报不出红 ⇒ 那几条断言读的不是真落库行。
 const GROUP_LIE = ROUND === "group-lie";
+const ACK_DROP = ROUND === "group-ackdrop";
+// group-ackdrop 首 Ack 丢弃后重复副本补 Ack
 
 /// 群聊这一族（`--round=group`）的预置。形状照 `e2e_peer.rs:300-338` 的 `ensure_test_group`
 /// （仓内既有先例：停机给真实例写群记录），两端各写三行：
@@ -69,17 +71,10 @@ export async function preset() {
           "INSERT OR REPLACE INTO conversations(id,kind,name,avatar,unread,updated_at)"
           + " VALUES(?1,'group',?2,NULL,0,?3)",
         ).run(convId, GROUP_NAME, ts);
-        // ★ 只有 `GOSSLAN_AX=1` 才写的**读数前置**（#140）：给 B 多写一行闲会话，保证被 @ 的那个群
-        // **不是**界面自动打开的那条。
-        // 为什么必须有它：桌面端启动会**自动打开 convs[0]**（`ResponsiveLayout.vue` 那条 watch，
-        // 对齐微信桌面版），而这一轮 B 的列表里原本只有那一个群 ⇒ 那条 @ 永远落在"被自动打开"
-        // 的会话上 ⇒ 按规则（`4.31.5`：开着**且真在看**才抑制）本来就不该亮红点。之前两次读数
-        // 判不出结论的根因是这个，不是无障碍树读不到。
-        // ⚠️ 生效方式**与我原先以为的不同**（下方 ① 已按现读改口）：决定 convs[0] 的是前端
-        // `sortConversations`（只看 `last_ts`），不是 SQL 那条带 `updated_at` 兜底的排序
-        // ⇒ 这行没有消息的闲会话在前端序里排**最后**；这一轮真正抢到 convs[0] 的是那条 1:1
-        //   （「Wise Seal L45」，它有新到的文件消息）。保留它的理由改成：若某轮 B 的列表里只有群，
-        //   它至少不会被自动打开 ⇒ 这条前置仍然有意义，但它不是这次读数能判的原因。
+        // AX 读数保留一条闲会话，确保被 @ 的群不是列表首项；当前启动只恢复 last/深链，不再自动打开首会话。
+        // 历史读数（2026-09-28，run-2026-09-27T22-25-52-307Z）曾抓到开机瞬间漏事件：
+        // 当时 mentionedConvs 只有摄入时一次 .add()，没有恢复路径；该缺陷已由 durable mention receipt 关闭。
+        // 历史归因记录（2026-09-28）：当时决定 convs[0] 的是前端 sortConversations，而不是 SQL 的 updated_at 兜底排序。
         // ⚠️ 必须写在这同一个 seed 回调里：先做成一条独立 step 时，它被排到整轮**最后**执行
         //    （日志里是 `[10/10] 读数前置`），那一刻 @ 早就被摄入并按规则抑制掉了 —— 读数是"没有"，
         //    但成因是采样前置没生效，不是产品。这种错不会报错，只会让一次真投递白做。
@@ -120,8 +115,7 @@ export async function preset() {
         //      ⇒ 同一轮、同一进程、同一扇窗的对照成立：**开机那一瞬投的不亮、就绪之后投的亮**
         //      ⇒ 未亮的成因 = 启动窗口错过那一次 `message-received`，而这枚红点只有一个写入点、无重算路径；
         //      "就绪后也点不亮"（更糟的那种形状）被排除。
-        //    ⚠️ 这条读数证的是"能亮"，**不是**"启动窗口的丢法已关闭"。要不要在加载时用已落库的
-        //      `mention_targets` 重算 = 会推翻"重启不该再亮一次红点"的既定口径 ⇒ 语义决定仍摆给用户拍板。
+        // 当前语义已裁决：启动从 durable mention receipt 恢复，不重放历史 @，也不重放系统通知。
         if (process.env.GOSSLAN_AX === "1" && inst === INSTANCES[1]) {
           db.prepare(
             "INSERT OR REPLACE INTO conversations(id,kind,name,avatar,unread,updated_at)"
@@ -242,6 +236,15 @@ export async function run() {
           .every((id) => db.prepare("SELECT COUNT(*) c FROM messages WHERE msg_id=?1").get(id).c > 0);
       } finally { db.close(); }
     }, 60_000, "B 侧六条群消息到齐（建链后 flush_group_outbox 送达）");
+    if (ACK_DROP) {
+      await waitFor(() => {
+        const db = openDb(INSTANCES[0].db, true);
+        try {
+          return db.prepare("SELECT COUNT(*) c FROM group_outbox WHERE msg_id=?1")
+            .get(gTextId).c === 0;
+        } finally { db.close(); }
+      }, 60_000, "F-01：首 GroupAck 丢弃后，重复副本补 Ack 清空发送队列");
+    }
     // 撤回物化与投递是两次独立写盘，给它一个**有界**的等待（不许无条件睡）
     await waitFor(() => {
       const db = openDb(INSTANCES[1].db, true);
@@ -509,6 +512,16 @@ export async function run() {
       aStatusAdv.length === aSeededIds.length
       && aStatusAdv.every((x) => x === "delivered" || x === "read"),
       `${aSeededIds.length} 行全部前进过 sent`, JSON.stringify(aStatusAdv));
+    if (ACK_DROP) {
+      const dropped = countLogFields(INSTANCES[1].log,
+        "code=GOSSIP_ACK_FAULT_DROPPED", { msg: gTextId });
+      const repeated = countLogFields(INSTANCES[1].log,
+        "code=GOSSIP_DUPLICATE_ACK", { msg: gTextId });
+      check("F-01：接收端确实只丢弃了首条 GroupAck（故障注入真生效）",
+        dropped === 1, 1, dropped);
+      check("F-01：同一 msg_id 的重复副本从持久化快路径补发 GroupAck",
+        repeated >= 1, "≥1 条重复确认", repeated);
+    }
     check("A 侧那条正文此刻仍是 text —— ⚠️ **实测出来的边界**：harness 写的是入队形状，"
       + "没有执行产品的撤回命令 ⇒ 发送侧本地物化不在这一格的证明范围里",
       aT1?.kind === "text", "text（本格的已知边界）", aT1?.kind);

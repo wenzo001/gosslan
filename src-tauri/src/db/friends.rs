@@ -13,7 +13,7 @@ pub fn add_friend(
     // `mobile_picker::accept_friend_request` 两次都传 `avatar: None`、老客户端的 Hello 不带头像、
     // peers 快照也可能没有头像 ⇒ 一次"信息更少"的帧会把已知头像清成 NULL（好友列表回退到种子头像）。
     // 口径与 `update_friend_pubkeys` 同一句：**没有信息时保留已有值**；
-    // 有信息时仍然跟随（改名要跟着变，这是既定语义）。
+    // 有信息时仍然跟随远端昵称/头像（改名要跟着变，这是既定语义）。
     conn.execute(
         "INSERT INTO friends(device_id, nickname, avatar, added_at) VALUES(?1, ?2, ?3, ?4)
          ON CONFLICT(device_id) DO UPDATE SET
@@ -132,6 +132,24 @@ pub fn get_friend_pubkeys(
     .optional()
     .ok()
     .flatten()
+}
+
+pub fn get_friend_pubkeys_checked(
+    conn: &Connection,
+    device_id: &str,
+) -> Result<Option<(Option<String>, Option<String>)>> {
+    conn
+        .query_row(
+            "SELECT x25519_pubkey, ed25519_pubkey FROM friends WHERE device_id = ?1",
+            params![device_id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
+        .optional()
 }
 
 /// 列出所有**已绑定 Ed25519 公钥**的好友 `(device_id, ed25519_pubkey)`。
@@ -716,7 +734,7 @@ mod friend_request_store_tests {
         assert_eq!(after.name, "小王");
     }
 
-    /// 好友资料：**没有信息时保留已有值**，有信息时跟随（与 `update_friend_pubkeys` 同口径）。
+    /// 好友资料：**没有信息时保留已有值**，有信息时跟随远端昵称/头像（与 `update_friend_pubkeys` 同口径）。
     ///
     /// 真实触发路径：`mobile_picker::accept_friend_request` 两次都传 `avatar: None`；
     /// 老客户端的 Hello 也可能不带头像 ⇒ 整行覆盖会把已知头像清成 NULL（好友列表回退到种子头像）。
@@ -724,7 +742,7 @@ mod friend_request_store_tests {
     fn add_friend_never_clears_a_known_profile_with_less_information() {
         let conn = mem();
         add_friend(&conn, "dev-x", "老王", Some("data:avatar-1")).unwrap();
-        // 改名 + 不带头像 ⇒ 名字跟随、头像保留
+        // 远端改名 + 不带头像 ⇒ 名字跟随、头像保留
         add_friend(&conn, "dev-x", "老王改名了", None).unwrap();
         let (name, avatar) = get_friend_checked(&conn, "dev-x").unwrap().unwrap();
         assert_eq!(name, "老王改名了");

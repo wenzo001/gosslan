@@ -843,7 +843,7 @@ test("群历史按钮的 emit 必须有调用方接住，一路到命令名", ()
  *
  * 旧实现是「await 之后直接 `groupTodosUnlisten = unlisten`」——两次切群交错时，
  * 先发起但后返回的那次会把新群的监听顶掉，自己却没有任何人持有 ⇒ 旧监听永远留在
- * 事件总线上（每条消息多一次全表重读），而且共享的 150ms 定时器还可能被旧清理清掉。
+ * 事件总线上（每条消息多一次全表重读），而且旧订阅的 150ms 定时器还可能被旧清理清掉。
  * 本仓的 `StaleGuard` 已由单测覆盖语义；这里只钉**接线**：store 真的用了它，
  * 且过期分支真的把监听摘掉、清理真的不再碰新群的定时器。
  */
@@ -872,8 +872,8 @@ test("群任务订阅：切群竞态必须让旧监听作废并摘除（接线�
 
   const cleanup = body.slice(body.lastIndexOf("return () => {"));
   const guardAt = cleanup.indexOf("groupTodosWatchGuard.isCurrent");
-  const clearAt = cleanup.indexOf("window.clearTimeout(groupTodosTimer)");
-  assert.ok(guardAt >= 0 && clearAt > guardAt, "清理里的 clearTimeout 必须在 isCurrent 之后（否则旧群会清掉新群的定时器）");
+  const clearAt = cleanup.indexOf("refresh.cancel()");
+  assert.ok(guardAt >= 0 && clearAt > guardAt, "清理里的 cancel 必须在 isCurrent 之后（否则旧群会清掉新群的定时器）");
 
   // 非空转对照：把过期分支整段摘掉 ⇒ 上面的 unlisten 判据必须不再成立。
   const mutated = body.replace(/if \(!groupTodosWatchGuard\.isCurrent\("groupTodos", token\)\) \{[\s\S]*?return \(\) => \{\};\n    \}/, "");
@@ -1186,12 +1186,24 @@ test("chat.init() 的 bindEvents 必须早于首轮业务刷新", () => {
   const end = st.indexOf("\n  return {", start);
   assert.ok(start >= 0 && end > start, "找不到 init() 函数体");
   const body = st.slice(start, end);
-  const bindAt = body.indexOf("bindEvents({");
-  assert.ok(bindAt >= 0, "init() 里没有 bindEvents");
+  const bindAt = body.indexOf("await bindEvents({");
+  assert.ok(bindAt >= 0, "init() 里没有 await bindEvents");
   for (const refresh of ["refreshPeers(", "refreshFriends(", "refreshConversations("]) {
     const at = body.indexOf(refresh, bindAt);
     assert.ok(at > bindAt, `${refresh} 必须排在 bindEvents 之后（启动窗口期事件不许丢）`);
   }
+});
+
+test("启动提及恢复必须先于 initialized，last 恢复必须避开深链", () => {
+  const store = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
+  const restoreAt = store.indexOf("api.getActiveMentionConvs()");
+  const initializedAt = store.indexOf("initialized.value = true", restoreAt);
+  assert.ok(restoreAt >= 0 && initializedAt > restoreAt, "durable mention 恢复必须先于 initialized");
+
+  const layout = stripComments(readFileSync(join(ROOT, "layouts", "ResponsiveLayout.vue"), "utf8"));
+  assert.ok(layout.includes("() => [chat.initialized, route.name] as const"));
+  assert.ok(layout.includes("if (!ready || startupRestoreChecked) return;"), "last 恢复只能等初始化并执行一次");
+  assert.ok(layout.includes('if (name !== "conversation") chat.restoreLastConversation();'), "深链必须优先于 last 恢复");
 });
 
 /** 取一个顶层函数体（从签名到「下一个两空格缩进的 `}`」）——只用于结构守卫。 */

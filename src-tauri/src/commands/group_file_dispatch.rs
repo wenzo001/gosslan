@@ -467,6 +467,7 @@ async fn dispatch_group_file_to_peer(
                 path: source_path.to_string(),
             },
         );
+        crate::network::file::emit_group_file_activity(state, transfer_id);
         Ok(())
     })
     .await;

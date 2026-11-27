@@ -71,7 +71,7 @@
 - 改口轮 24 条断言 —— 反向：`--fault=recv-dir-rotted-lie`
 - 停滞轮 25 条断言 —— 反向：`--fault=stall-mid-lie`
 - 发送端被杀轮 26 条断言 —— 反向：`--fault=sender-kill-mid-lie`
-- 群聊轮 37 条断言 —— 反向：`--round=group-lie`（+1 是 2026-10-13 真机第 7 条的**群聊那一半**：
+- 群聊轮 39 条断言（现算口径，复跑 `--round=group`）—— 反向：`--round=group-lie`（其中一条是 2026-10-13 真机第 7 条的**群聊那一半**：
   `A 侧这几条群消息的终态必须由对端 GroupAck 点亮进真库`。为什么这一条值一轮判据 —— 现场是用户那份库（只读现算，未写一字节）：
   `group_outbox` **0 行**，而 **16 条群消息**（9 text + 5 todo_update + 1 todo + 1 reaction）永远停在 `status='sent'`，
   对端自己的已读标记 `group_reads.last_read_ts` 却已经落在这批消息**之后** ⇒ 队列行是被 **GroupAck** 删的
@@ -90,6 +90,7 @@
 它只把线上明文里的 `mention_targets` 键摘掉（拓扑/时序/名单/正文全都与正向档一字不差），期望**恰好 1 条红**
 （正向那条），夹具自查与"只带名单"对照照旧绿 —— 需要它正是因为 `group-lie` 翻 id 对这三条永远够不到。
 同所有 `-lie` 档：**不进任何门禁层**。
+- 丢首 Ack 轮（`--round=group-ackdrop`）：复用群聊拓扑，只在接收端丢弃首条 GroupAck；同一 `msg_id` 的重复副本必须从持久化快路径补 Ack，发送队列清空，且数据库仍恰好一行。反向证明见 `GOSSIP_ACK_FAULT_DROPPED` 与 `GOSSIP_DUPLICATE_ACK` 两条具名读数。
 - 链式轮 25 条断言 —— 反向：`--round=gossip3-lie`（三实例，跑在**发版前**那一层 `npm run verify:release`，日常本地层不收）
 - 补递轮 23 条断言 —— 反向：`--round=gossip-late-lie`（#77 晚到成员补递；同一族三实例拓扑、启动时序相反，也只挂在**发版前**那一层。⚠️ 原本 24 条、撤掉一条：那条「C 侧从来没有与 A 的建链行」把**某一瞬间的读数**当判据，而同机局域网迟早互达 ⇒ 换个时刻跑就从 0 变 1；详见 roadmap §12.7）
 - 关发现轮 26 条断言 —— 反向：`--round=lanoff-lie`（#95 之后这一轮把「关了就真的不监听」也钉住了：`tcpOpen` 三条读数=开时连得上 / 闲口连不上 / 关时连不上，第三条缺前两条就是半个守卫）（#89：判"把局域网发现关掉之后，对端再也学不到我"。
@@ -377,14 +378,16 @@ Android 真机仍 **BLOCKED**（本机无对应设备）；采集步骤见
       自己起隔离实例、读到控件树挂上为止，判「有 AXWebArea / 节点数 ≥ 15 / 带可访问名字 ≥ 5 / 可操作控件 ≥ 5」，
       反证 = 指到一个没有 WebView 的进程必须四条全红）。
       ⚠️ 它**不判键盘出口** ⇒ Smoke-11 本行仍归人工；也**有意不进任何门禁层**（要辅助访问权限 + 人类 GUI 会话 +
-      只有 macOS 这一条腿）⇒ 本行状态记作 **MANUAL-LOCAL**。**WebView2（Windows）仍完全人工。**
+      只有 macOS 这一条腿）⇒ 本行状态记作 **MANUAL-LOCAL**。**WebView2（Windows）的生产态滚动已有独立入口，但尚未实跑。**
       ★ **2026-09-28 上面那句"不判该不该亮"在 macOS 这半边第一次有了直接读数**（入口：
       `GOSSLAN_AX=1 npm run test:e2e:group`，群聊轮里那条 @ 走心跳补递，界面无障碍树读到
       `E2E-Group，7 条未读，[有人@我]`）⇒ "该亮 ⇒ 真界面上亮"在真 WKWebView 上证到一次；
-      **同一轮开机那一秒投的那条不亮** ⇒ 那格是"启动窗口错过那一次 emit"（红点只有一个写入点、无重算路径），
-      要不要打开软件时补点亮＝语义决定，等他拍板。**它同样有意不进任何门禁层、不算本行等级变化。**
+      **同一轮开机那一秒投的那条不亮** ⇒ 那格是"启动窗口错过那一次 emit"。2026-11-27 F-03 已改为
+      durable mention receipt：消息同事务登记、打开/已读同事务清除，监听就绪后恢复未清除 receipt；
+      历史 @ 不回填、系统通知不重放。机器层已覆盖，真 WKWebView/WebView2 的启动时序仍归人工复测。
 | Smoke-12 | **已经在用的老库升到 v11**（#122 第二段那条迁移的真机验证） | 拿一个**升级前就有真实聊天/群历史**的实例装新版本，第一次启动看四件事：① 能进主界面（迁移报错会让启动直接失败，不会静默）；② 历史条数一条不少（重点看群里那些老消息）；③ 老消息里那句 `@张三` 仍照常显示（老行那一列是空的 = 不知道 ⇒ 按昵称兜底，这是**设计如此**，不是坏了）；④ 新收发一条 @ 到重名的人，重启之后**仍只对被点名那个人亮**。⚠️ 什么算真故障：启动失败 / 历史少一条 / 老行的落点被读成「这条谁都没 @」（那说明 `NULL` 被当成空数组，是 INV-P24 的反面）。**为什么只能人工**：三层门禁的双实例轮**每轮都把用户现有库整个挪走**（`e2e-multi-instance.mjs` 起跑前 `renameSync(i.db, …)`，收尾再还原）⇒ 应用永远看到空目录 ⇒ 走 `is_fresh` 分支 ⇒ **整条迁移链一行都不执行**。今天为这一格存在的机器判据只有一条单元级的（`migration_tests::v10_to_v11_adds_mention_targets_column_without_touching_existing_rows`，手抄一张 v10 的表 + 真跑 `run_migrations`），**"真用户库 + 真数据 + 真启动"没有自动化覆盖** ⇒ 不许把"三层都绿"读成"升级路径已证"。 | **未做**（等用户本机走一遍；版本号 ≥ 4.31.2） |
 | Smoke-13 | 桌面窗口 chrome 与浮层层级（预览遮罩 × 标题栏 / 表情入口 / 任务编号列） | ① 独立预览窗口开着图时，标题栏那一条 ✕ / − 与整窗唯一拖拽区**必须看得见也点得着**；② 悬停一条**多行**消息，那颗「添加表情回复」应贴着气泡底边、比从前小一圈且不误触相邻项；③ 看板与聊天卡片上那串编号：类型字母跟着当前类型（需求改成缺陷 ⇒ `R` 变 `B` 而数字不变），数字超过 4 位时列表里只显后四位、悬停或进详情看得到完整码。**机器已判到的那一半只到浏览器内**（`scripts/check-ui-runtime.mjs`，入口 `npm run test:ui-runtime`，分段跑 `--only=caption` / `--only=reaction` / `--only=task`）：caption × 遮罩＝`elementFromPoint` 在标题栏中点命中标题栏，且带可逆反面对照（把层级按回修之前 ⇒ 同一个点被遮罩吃掉）；表情入口＝真 `Input.dispatchMouseEvent` 悬停后量到 24×24、底边与气泡那一列差 0px、`tap-safe` 仍在；任务编号＝类型 bug、号 12345 时可见文本恰为 `B2345`，`title` 与 `aria-label` 都含 `B12345`，不传实时表时那一格一个字都不出现。⚠️ 等级没有往上改：真 WKWebView 的**窗口遮挡与 hover、WebView2 一律未证**（那两样读的是几何与命中，控件树里没有）。**编号那一格已经从「浏览器内」升级成真窗口读数**：`node scripts/check-ui-runtime-ax.mjs --fixture todo` ⇒ 真 App 的控件树里读到 `AXStaticText=R2345` 与 `AXGroup=任务编号 R12345`（各 1 个）；反面对照档 `--fixture todo-nonumber` ⇒ 带编号字样的名字 **0 个** ⇒ 那两条不是探针自己造的。夹具是**读数前置、有意不判红**（`scripts/axTodoFixture.mjs` 两档 + 五条用例：载荷键集合现读自 `protocol.rs` 的 `TodoPayload`，生产加字段而夹具没跟上就红；参数只认空格写法，`--fixture=todo` 会被拒跑而不是被静默忽略）。 | 未做（三处的**观感**仍等你本机看一眼；编号那一格今天已有真窗口读数，遮挡与 hover 仍只有浏览器内） |
+| Smoke-15 | **F-06 Windows WebView2 生产态滚动** | `npm run test:ui-scroll:win`：真实 release exe（内嵌 `dist/`、Tauri CSP）、smoke 配置下的临时 app 数据目录、两个 `GOSSLAN_INSTANCE` 隔离实例与独立 WebView2 UDF；经 IPC 交好友/建群/种长会话、任务、群文件；量首尾可达、意外横条、嵌套浮层裁切、rail/thumb 几何与 360×640 矮窗。`npm run test:ui-scroll:win:selfproof` 对 dev 空 CSP、源码入口、百分比高度回退、rail 降层做反例自证 | **NOT RUN**（2026-11-27 在 macOS 编写，未启动 Windows GUI）；Windows `build.yml` 已接入口并上传 `test-results/ui-scroll-win/**`，但尚无运行读数。移动软键盘、实体 line-mode 滚轮、ARM64/多屏 DPI 明列 `NOT RUN`，不进入通过结论 |
 
 ## 这张表怎么维护（否则三周内又会漂）
 

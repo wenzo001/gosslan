@@ -190,7 +190,8 @@ const SHRINK = FAULT === "src-shrunk" || FAULT === "src-shrunk-lie";
 ///   （`file.rs:1599-1602` 那段注释只解决了 `.part` 交错，没解决 final 撞名）。
 ///   少一个文件、或落地内容集合少一份，就是这条被判红 —— 不是"看着不顺眼"，是丢东西。
 const MULTI = FAULT === "multi-file" || FAULT === "multi-file-lie";
-const GROUP = ROUND === "group" || ROUND === "group-lie" || ROUND === "group-targets-lie";
+const GROUP_ACK_DROP = ROUND === "group-ackdrop";
+const GROUP = ROUND === "group" || ROUND === "group-lie" || ROUND === "group-targets-lie" || GROUP_ACK_DROP;
 
 /// 链式轮（`--round=gossip3`，用户 2026-09-26 拍板＝建，但只挂在**发版前**那一层，不进日常本地门禁）。
 /// 钉的是 §五 点名的 `群聊 + gossip` 交叉里唯一没被跨实例判着的那一半：**经中间人转发的收敛**。
@@ -511,7 +512,11 @@ if (GROUP) await group.preset();
 if (POSTTEXT) await posttext.preset();
 
 step("起 A/B 并等链路真的建立（routed 拨号一轮 10s）", async () => {
-  for (const i of INSTANCES) launch(i);
+  for (const i of INSTANCES) {
+    launch(i, GROUP_ACK_DROP && i === INSTANCES[1]
+      ? { GOSSLAN_E2E_DROP_FIRST_GOSSIP_ACK: "1" }
+      : {});
+  }
   for (const i of INSTANCES) {
     await waitFor(() => tcpOpen(i.port), 60_000, `实例 ${i.label} TCP ${i.port} 可连`);
   }

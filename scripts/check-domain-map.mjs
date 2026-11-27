@@ -33,10 +33,12 @@
  *      而本脚本原先**只读 `.mjs`、不看 HTML** ⇒ 改那边不改这里不会有任何东西变红
  *      （图里那句 ⚠️ 注释是唯一的提醒，而注释不是判据）。现在两边按集合对账，
  *      并且**领域 id 也要双向对齐** —— 否则新增一个域只写进 `.mjs`，快照那条判据会静默少判一格。
+ *   I. **语义事实**：presence 的第二家必须标注为活的 Routed 配置层；已删除的固定规模、
+ *      “中继全量驻内存”与“CI 完整验证矩阵”声明不得回流。
  *
  * ## 本脚本**守不住**的（诚实边界）
  *
- * 它守不住 `activeHome` **是否属实** —— 那一栏只能靠人诚实（与真机/调用点核对）。
+ * 它仍守不住 `activeHome` **是否属实** —— 那一栏只能靠人诚实（与真机/调用点核对）。
  * 所以 `docs/migration-ledger.md` 要求每个关注点给出 file:line 证据：机器守形式，人守事实。
  *
  * ## 用法
@@ -54,6 +56,42 @@ import { fileURLToPath } from "node:url";
 import domainMap from "../docs/domains.data.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+export function semanticFactProblems({ domainsText, ledgerText, readmeZh, readmeEn }) {
+  const problems = [];
+  if (!domainsText.includes('secondHomeStatus: "配置解析（活）"')) {
+    problems.push("presence.secondHomeStatus 必须如实标注 discovery/ 是活的配置解析层");
+  }
+  for (const stale of ["142 行 + 25", "1494 行", "284 个 pub 项"]) {
+    if (domainsText.includes(stale)) problems.push(`领域图仍有过期规模声明：${stale}`);
+  }
+  if (ledgerText.includes("全量驻内存")) problems.push("迁移台账仍称中继接收全量驻内存");
+  if (readmeZh.includes("完整验证矩阵") || readmeEn.includes("full verification matrix")) {
+    problems.push("README 仍把 CI 说成完整验证矩阵");
+  }
+  return problems;
+}
+
+if (process.argv.includes("--self-test")) {
+  const good = semanticFactProblems({
+    domainsText: 'secondHomeStatus: "配置解析（活）"',
+    ledgerText: "分片落盘",
+    readmeZh: "分层验证",
+    readmeEn: "layered verification",
+  });
+  const bad = semanticFactProblems({
+    domainsText: 'secondHomeStatus: "未接线"；142 行 + 25；1494 行；284 个 pub 项',
+    ledgerText: "全量驻内存",
+    readmeZh: "完整验证矩阵",
+    readmeEn: "full verification matrix",
+  });
+  if (good.length || bad.length !== 6) {
+    console.error(`语义事实反例自证失败：good=${good.length} bad=${bad.length}`);
+    process.exit(1);
+  }
+  console.log("✓ 语义事实反例自证：6 条过期声明全部检出");
+  process.exit(0);
+}
 
 /** 参与覆盖检查的源文件后缀（其余如 .html/.json 不在 coverageRoots 的语义范围内）。 */
 const SOURCE_EXT = [".rs", ".ts", ".vue", ".tsx", ".css", ".sql"];
@@ -282,6 +320,17 @@ if (!existsSync(MAP_HTML)) {
   }
   if (ok) console.log(`  ✓ ${snapshot.size} 个领域的 inv 快照与 .mjs 逐项一致（共 ${claimedBy.size} 个 id）`);
 }
+
+// ---------------- I. 已证伪的语义事实 ----------------
+console.log("\n判据 I：过期规模、未接线声明与验证矩阵文案");
+const factProblems = semanticFactProblems({
+  domainsText: readFileSync(path.join(ROOT, "docs", "domains.data.mjs"), "utf8"),
+  ledgerText: readFileSync(path.join(ROOT, "docs", "migration-ledger.md"), "utf8"),
+  readmeZh: readFileSync(path.join(ROOT, "README.zh-CN.md"), "utf8"),
+  readmeEn: readFileSync(path.join(ROOT, "README.md"), "utf8"),
+});
+for (const problem of factProblems) fail(`  ✗ ${problem}`);
+if (!factProblems.length) console.log("  ✓ 未接线/过期规模/全量驻内存/完整矩阵声明均已退场");
 
 // ---------------- 汇总 ----------------
 if (ok) {

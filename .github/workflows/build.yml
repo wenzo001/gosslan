@@ -163,6 +163,27 @@ jobs:
             Stop-Process -Id $p.Id -Force
           }
 
+      - name: Production scroll smoke — real WebView2 + dist + Tauri CSP + IPC
+        # 这条不是上面「exe 能加载」的加强版注释，而是独立生产证据：两个隔离实例经真实 IPC
+        # 交好友/建群/种长会话、任务与群文件，再读 WebView2 的首尾、横条、浮层和滑块几何。
+        # arm64 仍是交叉编译，不在 x64 runner 上冒充实跑；移动键盘/实体线模式滚轮明确 NOT RUN。
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          npm run test:ui-scroll:win:selfproof
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:ui-scroll:win
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload production scroll smoke evidence
+        if: always() && matrix.target == 'x86_64-pc-windows-msvc'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosslan-windows-scroll-smoke
+          path: test-results/ui-scroll-win/**
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Verify the installer really contains Bluetooth
         shell: pwsh
         # 旁证：开了 bluetooth feature ⇒ btleplug 会被链进去，Cargo.lock 里必然出现它。

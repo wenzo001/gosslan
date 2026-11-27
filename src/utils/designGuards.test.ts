@@ -6259,13 +6259,16 @@ test("群任务指派：候选只取当前成员，权威成员表到达时能�
   assert.ok((board.match(/assigneesInGroup\(/g) ?? []).length >= 3, "开始编辑/保存/认领三处都要收敛指派");
 
   const transport = readFileSync(join(root, "..", "src-tauri", "src", "network", "transport.rs"), "utf8");
-  assert.match(transport, /db::replace_group_members\(&dbc, &group_id, &all\)/,
-    "GroupKey 是群主权威成员表，接到后必须整体替换（否则只增不减）");
+  assert.match(transport, /db::apply_group_key_snapshot\(/,
+    "GroupKey 必须走单一群快照事务，接到权威成员表后整体替换");
+  const groups = readFileSync(join(root, "..", "src-tauri", "src", "db", "groups.rs"), "utf8");
+  assert.match(groups, /replace_group_members_in_tx\(&tx, group_id, members\)/,
+    "群快照事务内必须整体替换成员，否则只增不减");
   const gossip = readFileSync(join(root, "..", "src-tauri", "src", "network", "transport", "gossip.rs"), "utf8");
-  assert.match(gossip, /let authoritative_members = sender_is_manager/,
+  assert.match(gossip, /let authoritative_members =/,
     "群 Gossip 信封只有本机群主/管理员的成员表才可整体替换");
-  assert.match(gossip, /db::replace_group_members\(&dbc, &gid, &all\)/,
-    "群主权威成员表到达后没有调用替换");
+  assert.match(gossip, /db::apply_group_gossip_snapshot\(/,
+    "群主权威成员表到达后必须走原子快照");
 });
 
 // ---------------- 55 主色实底的「填充 + 前景」必须成对（2026-10-24 无障碍实测） ----------------
@@ -6648,12 +6651,12 @@ test("会话内的按 msg_id 改一条也走家：store 里不再有手写的 fi
   const FIND = /\.find\(\s*\(?\s*m\s*\)?\s*=>\s*m\.msg_id/g;
   const findHits = [...store.matchAll(FIND)].length;
   assert.equal(findHits, 0, `store 里还有 ${findHits} 处手写 .find(m => m.msg_id)`);
-  const uses = [...store.matchAll(/patchMessageInConv\(/g)].length;
-  assert.ok(uses >= 2, `patchMessageInConv 只被用了 ${uses} 处（下限 2：送达提升 + 重发回退）`);
+  const uses = [...store.matchAll(/patchMessageInConv(?:Local)?\(/g)].length;
+  assert.ok(uses >= 2, `patchMessageInConv 族只被用了 ${uses} 处（下限 2：送达提升 + 重发回退）`);
   // 正控：把一处换回手写 findIndex，尺子必须说"有"
   const gutted = store.replace(
-    'const hit = patchMessageInConv(messages.value, convIdOfMessage(msgId), msgId, (m) => ({',
-    'const i = (messages.value[convId] ?? []).findIndex((m) => m.msg_id === msgId); void i;\n        const hit = patchMessageInConv(messages.value, convIdOfMessage(msgId), msgId, (m) => ({',
+    'const hit = patchMessageInConvLocal(messages.value, convIdOfMessage(msgId), msgId, (m) => ({',
+    'const i = (messages.value[convId] ?? []).findIndex((m) => m.msg_id === msgId); void i;\n        const hit = patchMessageInConvLocal(messages.value, convIdOfMessage(msgId), msgId, (m) => ({',
   );
   assert.notEqual(gutted, store, "正控没落进去 ⇒ 锚点写法变了");
   assert.ok(HAND.test(gutted));

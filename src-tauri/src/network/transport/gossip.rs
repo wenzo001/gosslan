@@ -99,6 +99,86 @@ pub(crate) fn group_envelope_consumable(
     members.iter().any(|m| m == me) && members.iter().any(|m| m == sender)
 }
 
+fn mention_lead(ch: Option<char>) -> bool {
+    ch.map_or(true, |c| c.is_whitespace() || c == ']')
+}
+
+fn mention_tail(ch: Option<char>) -> bool {
+    ch.map_or(true, |c| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '，' | '。'
+                    | '！'
+                    | '？'
+                    | '；'
+                    | '：'
+                    | '、'
+                    | ','
+                    | '.'
+                    | '!'
+                    | '?'
+                    | ';'
+                    | ':'
+                    | ')'
+                    | '）'
+                    | '】'
+                    | '》'
+                    | '"'
+                    | '\''
+                    | ']'
+            )
+    })
+}
+
+fn text_mentions_token(text: &str, token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    for (at, ch) in text.char_indices() {
+        if ch != '@' {
+            continue;
+        }
+        let before = text[..at].chars().next_back();
+        if !mention_lead(before) {
+            continue;
+        }
+        let rest = &text[at + 1..];
+        if !rest.starts_with(token) {
+            continue;
+        }
+        let after = rest[token.len()..].chars().next();
+        if mention_tail(after) {
+            return true;
+        }
+    }
+    false
+}
+
+fn gossip_mentions_me(
+    kind: &str,
+    content: &str,
+    mentions: Option<&[String]>,
+    me: &str,
+    my_name: &str,
+) -> bool {
+    if kind == "text" {
+        if text_mentions_token(content, "所有人") {
+            return true;
+        }
+        if let Some(ids) = mentions {
+            return !me.is_empty() && ids.iter().any(|id| id == me);
+        }
+        return text_mentions_token(content, my_name.trim());
+    }
+    if kind == "todo" || kind == "todo_update" {
+        return serde_json::from_str::<crate::protocol::TodoPayload>(content)
+            .map(|todo| !me.is_empty() && todo.assignees.iter().any(|id| id == me))
+            .unwrap_or(false);
+    }
+    false
+}
+
 /// 替别人转发的**每秒**上限（2026-10-29 审计 SEC-05）。
 ///
 /// 为什么是一个数而不是"每源一张表"：每源表要淘汰、且能被"造很多 sender_id"绕过；
@@ -193,6 +273,178 @@ pub(crate) fn inbound_conversation(
             })
         }
         _ => None,
+    }
+}
+
+pub(crate) fn receipt_identity_matches(
+    stored: &crate::db::MessageReceiptIdentity,
+    env: &GossipEnvelope,
+    me: &str,
+) -> bool {
+    let Some(target) = inbound_conversation(&env.kind, env.group_id.as_deref(), &env.sender_id)
+    else {
+        return false;
+    };
+    stored.conv_id == target.conv_id
+        && stored.sender_id == env.sender_id
+        && stored.receiver_id == me
+}
+
+async fn send_gossip_receipt(state: &AppState, env: &GossipEnvelope) {
+    static DROP_FIRST: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    if std::env::var("GOSSLAN_E2E_DROP_FIRST_GOSSIP_ACK").as_deref() == Ok("1")
+        && DROP_FIRST
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
+    {
+        state.logger.warn(
+            "ack",
+            format!(
+                "code=GOSSIP_ACK_FAULT_DROPPED kind={:?} msg={} （E2E 丢弃首条 Gossip Ack）",
+                env.kind, env.message_id
+            ),
+        );
+        return;
+    }
+    if env.kind == GossipKind::Group {
+        let ack = Message::GroupAck {
+            group_id: env.group_id.clone().unwrap_or_default(),
+            msg_id: env.message_id.clone(),
+            from: state.device_id.clone(),
+        };
+        let _ = try_send(state, &env.sender_id, &ack).await;
+        return;
+    }
+    let payload = serde_json::json!({ "msg_id": env.message_id }).to_string();
+    let payload_b64 = STANDARD.encode(payload.as_bytes());
+    let mut ack_env = {
+        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+        gossip.build_envelope(
+            &state.identity,
+            &state.device_id,
+            GossipKind::ChatAck,
+            None,
+            None,
+            &payload_b64,
+            db::now_ms(),
+            0,
+        )
+    };
+    ack_env.encrypted = false;
+    ack_env.target = Some(env.sender_id.clone());
+    ack_env.sender_sig = state.identity.sign_b64(&ack_env.signing_bytes());
+    if state.has_link(&env.sender_id).await {
+        let _ = try_send(
+            state,
+            &env.sender_id,
+            &Message::Gossip { envelope: ack_env },
+        )
+        .await;
+    } else {
+        broadcast_gossip(state, ack_env).await;
+    }
+}
+
+async fn ack_persisted_gossip(state: &AppState, env: &GossipEnvelope) {
+    if env
+        .target
+        .as_deref()
+        .is_some_and(|target| target != state.device_id.as_str())
+    {
+        return;
+    }
+    let Some(target) = inbound_conversation(&env.kind, env.group_id.as_deref(), &env.sender_id)
+    else {
+        return;
+    };
+    if env.kind == GossipKind::Group
+        && !group_envelope_consumable(
+            &env.kind,
+            &env.group_members,
+            &state.device_id,
+            &env.sender_id,
+        )
+    {
+        allow_message_retry(state, &env.message_id, "duplicate_not_consumable");
+        return;
+    }
+    let lookup = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::message_receipt_identity(&dbc, &env.message_id)
+    };
+    match lookup {
+        Ok(Some(identity)) if receipt_identity_matches(&identity, env, &state.device_id) => {
+            state.logger.info(
+                "ack",
+                format!(
+                    "code=GOSSIP_DUPLICATE_ACK kind={:?} conv={} msg={}",
+                    env.kind, target.conv_id, env.message_id
+                ),
+            );
+            send_gossip_receipt(state, env).await;
+        }
+        Ok(Some(_)) => {
+            state.logger.warn(
+                "ack",
+                format!(
+                    "code=GOSSIP_RECEIPT_IDENTITY_CONFLICT kind={:?} expected_conv={} msg={} —— 已有同名消息属于其他会话，不确认",
+                    env.kind, target.conv_id, env.message_id
+                ),
+            );
+        }
+        Ok(None) => {
+            allow_message_retry(state, &env.message_id, "duplicate_not_persisted");
+        }
+        Err(e) => {
+            state.logger.warn(
+                "ack",
+                format!(
+                    "code=GOSSIP_RECEIPT_LOOKUP_FAILED msg={} err={e} —— 不确认，放行补发重入",
+                    env.message_id
+                ),
+            );
+            allow_message_retry(state, &env.message_id, "receipt_lookup_failed");
+        }
+    }
+}
+
+async fn cancel_local_recall_transfer(state: &std::sync::Arc<crate::state::AppState>, target: &str) {
+    crate::commands::cancel_transfer_for_recalled_message(
+        state,
+        target,
+        crate::commands::CancelNotify::LocalOnly,
+    )
+    .await;
+}
+
+pub(crate) async fn replay_pending_recalls_for_group(
+    state: &std::sync::Arc<crate::state::AppState>,
+    group_id: &str,
+) {
+    let conv_id = format!("group:{group_id}");
+    let applied = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::replay_pending_group_recalls(&dbc, &conv_id, db::now_ms())
+    };
+    match applied {
+        Ok(targets) => {
+            for target in targets {
+                let _ = state.app.emit("message-recalled", &target);
+                cancel_local_recall_transfer(state, &target).await;
+            }
+        }
+        Err(e) => {
+            state.logger.warn(
+                "chat",
+                format!("code=RECALL_REPLAY_GROUP_FAILED group={group_id} err={e}"),
+            );
+        }
     }
 }
 
@@ -616,16 +868,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     // 污染 Bloom/LRU，甚至抢先占用真实消息的 id 造成合法消息被丢弃。
     // 块返回值 = 本机可继续转发的 TTL（None = 不再转发），供第 4 步使用。
     let mesh_forward_ttl = {
-        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-        // Case B 已经为补锚验过一次（那一次是**绑定判据**的一部分），这里直接复用：
-        // 同一封信封、同一把钥匙，再验一遍只是白付一次 Ed25519 成本。
-        let verified = match envelope_verified {
-            Some(v) => v,
-            None => gossip.verify_envelope(&env),
+        let verified = {
+            let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+            match envelope_verified {
+                Some(v) => v,
+                None => gossip.verify_envelope(&env),
+            }
         };
         if !verified {
-            // Block 4：验签失败也必须有码 —— 它和"信任门拒绝"是**不同的死因**，
-            // 混成一条会让下一个排查的人把冒充/损坏信封误判成身份未绑定。
             state.logger.warn(
                 "gossip",
                 format!(
@@ -636,7 +886,6 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             );
             return;
         }
-        drop(gossip);
         // Mesh 层：**全局去重 + TTL 判定**（§15 / §16 / §17）。
         //
         // 必须在**验签之后**才登记去重表，否则攻击者可用伪造的 frame_id 污染
@@ -652,7 +901,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         // 转发出去的信封 TTL **只能取自这里的 Forward 决策**（`max_ttl` 裁剪 + 递减）。
         // TTL 不参与 Ed25519 签名（`protocol.rs` 的 signing_bytes），对端可自报 255；
         // 旧写法用 `env.ttl - 1` 重建信封 ⇒ 一条 Gossip 能跨 254 跳扩散（设计上限 6）。
-        let mesh_ttl = {
+        let decision = {
             let mut router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
             let frame = MeshFrame {
                 frame_id: env.message_id.clone(),
@@ -664,10 +913,11 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 payload: Vec::new(),
             };
             let decision = router.on_receive(frame, &state.device_id);
-            if let ForwardDecision::Drop(reason) = decision {
-                // Block 4：网格层丢弃也必须留码（`Duplicate` 是正常重投、`TtlExhausted`
-                // 是拓扑问题，两者对排查的指向完全不同）。节流 5s：重投风暴下不刷屏，
-                // 但任何 5s 窗口里至少留得下一行。
+            drop(router);
+            decision
+        };
+        let mesh_ttl = match decision {
+            ForwardDecision::Drop(reason) => {
                 if crate::logging::log_throttled("gossip_mesh_drop_log", 5_000) {
                     state.logger.warn(
                         "gossip",
@@ -678,13 +928,20 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         ),
                     );
                 }
+                if reason == DropReason::Duplicate
+                    && matches!(env.kind, GossipKind::Chat | GossipKind::Group)
+                {
+                    ack_persisted_gossip(state, &env).await;
+                }
                 return;
             }
-            forward_ttl_from(&decision)
+            other => forward_ttl_from(&other),
         };
-        // 业务层去重（Mesh 之后的第二道防线）
-        let mut gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-        if !gossip.is_new(&env.message_id) {
+        let business_duplicate = {
+            let mut gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+            !gossip.is_new(&env.message_id)
+        };
+        if business_duplicate {
             // Block 4：业务层去重在网格层去重之外还拦一次（补发重入 / 双路径）。
             // 正常重投会走到这里，节流 5s 避免刷屏；但"某条消息只以 Duplicate 出现"
             // 本身就是可诊断信号（说明第一份被后面某个环节吞了）。
@@ -696,6 +953,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         env.kind, env.sender_id, env.message_id
                     ),
                 );
+            }
+            if matches!(env.kind, GossipKind::Chat | GossipKind::Group) {
+                ack_persisted_gossip(state, &env).await;
             }
             return;
         }
@@ -1630,58 +1890,50 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         if !all.contains(&state.device_id) {
                             all.push(state.device_id.clone());
                         }
-                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        let known = db::get_group(&dbc, &gid);
-                        // 本机从没建过这个群的记录 = 第一次成为它的成员（与 `handle_group_key`
-                        // 里那个读数同一个用途，只是这一路是"从未收到 GroupKey、只收到群消息"的成员）。
-                        let first_membership = known.is_none();
-                        let is_self_declared_creator = env.sender_id == creator;
-                        // 群名/成员表的权威 = **本机记录里的群主或管理员**（去中心化授权：
-                        // 凭本机管理员名单判定，发帧人自报的 group_creator 不作数）；
-                        // 首次接触（无本地记录）按 TOFU 采信自称群主者，与建链口径一致。
-                        let sender_is_manager = known
-                            .as_ref()
-                            .map_or(is_self_declared_creator, |g| g.is_manager(&env.sender_id));
-                        let display_name = match &known {
-                            // 已有该群：只有群主/管理员才更新名字，否则沿用本地名字
-                            Some(g) => {
-                                if sender_is_manager {
-                                    env.group_name.clone().unwrap_or_else(|| g.name.clone())
-                                } else {
-                                    g.name.clone()
+                        let authoritative_members = {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            db::get_group(&dbc, &gid).map_or(
+                                env.sender_id == creator,
+                                |group| group.is_manager(&env.sender_id),
+                            )
+                        };
+                        let requested_name = env.group_name.clone().unwrap_or_else(|| name.clone());
+                        let display_name: String = requested_name
+                            .chars()
+                            .take(MAX_GROUP_NAME_LEN)
+                            .collect();
+                        let snapshot = {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            db::apply_group_gossip_snapshot(
+                                &dbc,
+                                &gid,
+                                &env.sender_id,
+                                &creator,
+                                &display_name,
+                                &all,
+                                authoritative_members,
+                            )
+                        };
+                        match snapshot {
+                            Ok(outcome) if outcome.applied => {
+                                let _ = state.app.emit("groups-updated", &gid);
+                                replay_pending_recalls_for_group(state, &gid).await;
+                                if outcome.first_membership {
+                                    crate::network::group_history::note_new_membership(state, &gid);
                                 }
                             }
-                            None => env.group_name.clone().unwrap_or_else(|| name.clone()),
-                        };
-                        // 群名长度与建群/改名一致封顶，避免这条路径塞进超长字符串
-                        let display_name: String =
-                            display_name.chars().take(MAX_GROUP_NAME_LEN).collect();
-                        if let Err(e) = db::upsert_group(&dbc, &gid, &display_name, &creator, &all) {
-                            state.logger.warn(
-                                "group",
-                                format!("code=GROUP_SYNC_WRITE_FAILED op=upsert group={gid} err={e}"),
-                            );
-                        }
-                        // 只有**本机记录里的群主或管理员**（首次接触按 TOFU）的成员表才当权威表
-                        // 整体替换；普通成员的成员表仍只增不减，避免一条伪造的 group_members
-                        // 把别人从本地成员视图里抹掉。管理员名单不在此路更新（只走群主 GroupKey 帧）。
-                        let authoritative_members = sender_is_manager;
-                        if authoritative_members {
-                            if let Err(e) = db::replace_group_members(&dbc, &gid, &all) {
+                            Ok(_) => {
                                 state.logger.warn(
                                     "group",
-                                    format!("code=GROUP_SYNC_WRITE_FAILED op=members group={gid} err={e}"),
+                                    format!("code=GROUP_SYNC_REJECTED group={gid} sender={} —— 事务内复核未通过，未写群快照", env.sender_id),
                                 );
                             }
-                        }
-                        drop(dbc);
-                        let _ = state.app.emit("groups-updated", &gid);
-                        // 这一路也是"第一次成为成员"（有些人只收到过群消息、从没收到 GroupKey，
-                        // 见上面那段建群注释）。不喊这一声，那一类新成员就永远拿不到历史 ——
-                        // 而需求写的是"新进群的人员"，与他靠哪一帧知道自己在群里无关。
-                        // 放在 `drop(dbc)` 之后：`note_new_membership` 自己还要取那把锁（INV-P25）。
-                        if first_membership {
-                            crate::network::group_history::note_new_membership(state, &gid);
+                            Err(e) => {
+                                state.logger.warn(
+                                    "group",
+                                    format!("code=GROUP_SYNC_WRITE_FAILED op=gossip_snapshot group={gid} err={e}"),
+                                );
+                            }
                         }
                     }
                 }
@@ -1732,46 +1984,78 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                                 is_manager_here,
                                 is_member_here,
                             );
-                            if allowed {
-                                // B1-F6：三笔（墓碑/物化/预览）合成一笔事务；失败要留痕。
-                                // 这里是**收端**，没有界面能承接错误 ⇒ 只记日志。
-                                if let Err(e) = db::apply_recall(
+                            let applied = if allowed {
+                                let ok = db::apply_recall(
                                     &dbc,
                                     &conv_id,
                                     &p.target,
                                     &env.sender_id,
                                     env.seq,
-                                ) {
+                                )
+                                .is_ok();
+                                if !ok {
                                     state.logger.warn(
                                         "chat",
-                                        format!(
-                                            "code=RECALL_APPLY_FAIL conv={conv_id} msg={}：{e}",
-                                            p.target
-                                        ),
+                                        format!("code=RECALL_APPLY_FAIL conv={conv_id} msg={}", p.target),
                                     );
                                 }
-                                // 会话列表那一行读的是 `conversations.last_msg`（存储列），
-                                // 不重算就是"对端撤了、我这台预览还挂着原文"。
                                 if let Err(e) = db::refresh_conversation_summary(&dbc, &conv_id) {
                                     state.logger.warn(
                                         "chat",
                                         format!("code=RECALL_PREVIEW_REFRESH_FAIL conv={conv_id}：{e}"),
                                     );
                                 }
-                            }
-                            allowed
+                                ok
+                            } else {
+                                let target_matches = target_row
+                                    .as_ref()
+                                    .map_or(true, |message| message.conv_id == conv_id);
+                                let target_recallable = target_row
+                                    .as_ref()
+                                    .map_or(true, |message| crate::protocol::is_recallable_kind(&message.kind));
+                                if is_group && is_member_here && target_matches && target_recallable {
+                                    match serde_json::to_string(&env) {
+                                        Ok(envelope_json) => {
+                                            match db::enqueue_pending_group_recall(
+                                                &dbc,
+                                                &conv_id,
+                                                &p.target,
+                                                &env.sender_id,
+                                                &env.message_id,
+                                                env.seq,
+                                                &envelope_json,
+                                                db::now_ms(),
+                                            ) {
+                                                Ok(db::PendingRecallEnqueue::Stored) => {
+                                                    state.logger.info(
+                                                        "chat",
+                                                        format!("code=RECALL_REPLAY_QUEUED conv={conv_id} msg={} recaller={}", p.target, env.sender_id),
+                                                    );
+                                                }
+                                                Ok(db::PendingRecallEnqueue::Duplicate) => {}
+                                                Ok(db::PendingRecallEnqueue::TooLarge) => {
+                                                    state.logger.warn("chat", "code=RECALL_REPLAY_TOO_LARGE 签名意图过大，未入重放队列");
+                                                }
+                                                Err(e) => {
+                                                    state.logger.warn("chat", format!("code=RECALL_REPLAY_ENQUEUE_FAILED msg={} err={e}", p.target));
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            state.logger.warn("chat", format!("code=RECALL_REPLAY_SERIALIZE_FAILED msg={} err={e}", p.target));
+                                        }
+                                    }
+                                }
+                                false
+                            };
+                            applied
                         };
                         if applied {
                             let _ = state.app.emit("message-recalled", &p.target);
                             // 在途附件：本机这一侧也停掉自己那笔。通知**不再外发** ——
                             // 这条 recall 帧本来就全群广播过，每台都发 FileCancel 会变成
                             // N 份取消通知（回声），而真正的发送方自己也会走到这一格。
-                            crate::commands::cancel_transfer_for_recalled_message(
-                                state,
-                                &p.target,
-                                crate::commands::CancelNotify::LocalOnly,
-                            )
-                            .await;
+                            cancel_local_recall_transfer(state, &p.target).await;
                         }
                     }
                 }
@@ -1838,6 +2122,16 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 不得再计未读、再发 message-received，否则未读数与系统通知都会重复。
                 // 与 Direct 分支共用 announced_on 裁决，两路径并发时只有一方拿到 Ok(true)。
                 // 单聊与群聊走同一块 ⇒ 两种 GossipKind 都被覆盖。
+                let my_name = state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let mentions_me = conv_kind == "group"
+                    && env.sender_id != state.device_id
+                    && gossip_mentions_me(
+                        &kind,
+                        &content,
+                        mentions.as_deref(),
+                        &state.device_id,
+                        &my_name,
+                    );
                 let (out_rec, inserted) = {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     // 展示时间用本地接收时间；排序用信封携带的逻辑序号 seq。
@@ -1907,7 +2201,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             );
                         }
                     }
-                    let inserted = db::insert_message_if_new(&dbc, &rec);
+                    let inserted =
+                        db::insert_message_if_new_with_mention_receipt(&dbc, &rec, mentions_me);
                     if announced_on(&inserted) {
                         // 时钟推进与静默**无关**，必须照常：漏掉它本机后续 seq 会落后，
                         // 之后自己发的消息会排到历史前面。
@@ -1941,6 +2236,32 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     }
                     (rec, inserted)
                 };
+                let receipt_ok = match &inserted {
+                    Ok(false) => {
+                        let identity = {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            db::message_receipt_identity(&dbc, &env.message_id)
+                        };
+                        match identity {
+                            Ok(Some(identity)) => {
+                                receipt_identity_matches(&identity, &env, &state.device_id)
+                            }
+                            Ok(None) => false,
+                            Err(e) => {
+                                state.logger.warn("ack", format!("code=GOSSIP_RECEIPT_LOOKUP_FAILED msg={} err={e}", env.message_id));
+                                false
+                            }
+                        }
+                    }
+                    Ok(true) => true,
+                    Err(_) => false,
+                };
+                if matches!(&inserted, Ok(false)) && !receipt_ok {
+                    state.logger.warn(
+                        "ack",
+                        format!("code=GOSSIP_RECEIPT_IDENTITY_CONFLICT kind={:?} msg={} —— 重复落库裁决命中其他身份，不确认", env.kind, env.message_id),
+                    );
+                }
                 // 落库失败必须留痕（同上第七家）：这一格行为不改 —— Err 时既不 emit 也不回 GroupAck，
                 // 发送方保留 outbox 继续补发；补的是"这台为什么没收到这条"在日志里的存在感。
                 if let Err(e) = &inserted {
@@ -1953,6 +2274,27 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     );
                     // 不撤销就会把发送方之后每一份补发都判成重复（同一信封同一 id）。
                     allow_message_retry(state, &env.message_id, "insert_failed");
+                }
+                if conv_kind == "group" && matches!(&inserted, Ok(true)) {
+                    let replayed = {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        db::replay_pending_recall_for_message(
+                            &dbc,
+                            &conv_id,
+                            &env.message_id,
+                            db::now_ms(),
+                        )
+                    };
+                    match replayed {
+                        Ok(Some(target)) => {
+                            let _ = state.app.emit("message-recalled", &target);
+                            cancel_local_recall_transfer(state, &target).await;
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            state.logger.warn("chat", format!("code=RECALL_REPLAY_FAILED msg={} err={e}", env.message_id));
+                        }
+                    }
                 }
                 // 重复投递与数据库失败都不产生本地副作用；Gossip 的转发已在上面完成。
                 if announced_on(&inserted) {
@@ -2003,50 +2345,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     let path = inbound_path_kind(state, peer_id).await;
                     update_conv_link(state, &conv_id, &path, hop);
                 }
-                // 群消息现在有 outbox 兜底：只要消息确实已持久化（无论本次是否新建），
-                // 就回 GroupAck 让发送方删除对应 (msg_id, peer_id) 的待发记录。
-                // 数据库 Err 时不回 Ack，发送方保留 outbox 继续补发。
-                if conv_kind == "group" && !inserted.is_err() {
-                    let ack = Message::GroupAck {
-                        group_id: env.group_id.clone().unwrap_or_default(),
-                        msg_id: env.message_id.clone(),
-                        from: state.device_id.clone(),
-                    };
-                    let _ = try_send(state, &env.sender_id, &ack).await;
-                }
-                // 单聊送达确认：跨跳（无直连）时直连 Ack 到不了原始发送方，改走定向
-                // Gossip ChatAck；有直连时也走 Gossip，让「已送达」立即出现，不必等
-                // 心跳触发 outbox 直发补 Ack。接收端按 outbox(msg_id, sender) 命中才接受，
-                // 防伪造送达。
-                if conv_kind == "single" && !inserted.is_err() {
-                    let payload = serde_json::json!({ "msg_id": env.message_id }).to_string();
-                    let payload_b64 = STANDARD.encode(payload.as_bytes());
-                    let mut ack_env = {
-                        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                        gossip.build_envelope(
-                            &state.identity,
-                            &state.device_id,
-                            GossipKind::ChatAck,
-                            None,
-                            None,
-                            &payload_b64,
-                            db::now_ms(),
-                            0,
-                        )
-                    };
-                    ack_env.encrypted = false;
-                    ack_env.target = Some(env.sender_id.clone());
-                    ack_env.sender_sig = state.identity.sign_b64(&ack_env.signing_bytes());
-                    if state.has_link(&env.sender_id).await {
-                        let _ = try_send(
-                            state,
-                            &env.sender_id,
-                            &Message::Gossip { envelope: ack_env },
-                        )
-                        .await;
-                    } else {
-                        broadcast_gossip(state, ack_env).await;
-                    }
+                // Ack 与「是否本次新建」无关：消息已在库中（无论是哪条路径先写的）即代表已成功接收。
+                if receipt_ok {
+                    send_gossip_receipt(state, &env).await;
                 }
             }
         }

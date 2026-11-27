@@ -42,6 +42,42 @@ pub fn insert_message_if_new(conn: &Connection, m: &MessageRecord) -> Result<boo
     Ok(changed > 0)
 }
 
+pub fn insert_message_if_new_with_mention_receipt(
+    conn: &Connection,
+    m: &MessageRecord,
+    mentions_me: bool,
+) -> Result<bool> {
+    let tx = conn.unchecked_transaction()?;
+    let inserted = insert_message_if_new(&tx, m)?;
+    if inserted && mentions_me {
+        tx.execute(
+            "INSERT OR IGNORE INTO mention_receipts(msg_id, conv_id, created_at, cleared_at)
+             VALUES(?1, ?2, ?3, NULL)",
+            params![m.msg_id, m.conv_id, now_ms()],
+        )?;
+    }
+    tx.commit()?;
+    Ok(inserted)
+}
+
+pub fn list_active_mention_convs(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT conv_id FROM mention_receipts
+         WHERE cleared_at IS NULL ORDER BY created_at, conv_id",
+    )?;
+    let rows = stmt.query_map([], |r| r.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>()
+}
+
+pub fn clear_mention_receipts(conn: &Connection, conv_id: &str, now: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE mention_receipts SET cleared_at = ?2
+         WHERE conv_id = ?1 AND cleared_at IS NULL",
+        params![conv_id, now],
+    )?;
+    Ok(())
+}
+
 pub fn insert_message(conn: &Connection, m: &MessageRecord) -> Result<()> {
     insert_message_if_new(conn, m).map(|_| ())
 }
@@ -145,6 +181,7 @@ pub fn insert_message_and_outbox(
     tx.commit()
 }
 
+#[cfg(test)]
 pub fn message_exists(conn: &Connection, msg_id: &str) -> bool {
     conn.query_row(
         "SELECT 1 FROM messages WHERE msg_id = ?1",
@@ -155,6 +192,33 @@ pub fn message_exists(conn: &Connection, msg_id: &str) -> bool {
     .ok()
     .flatten()
     .is_some()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageReceiptIdentity {
+    pub conv_id: String,
+    pub sender_id: String,
+    pub receiver_id: String,
+}
+
+pub fn message_receipt_identity(
+    conn: &Connection,
+    msg_id: &str,
+) -> Result<Option<MessageReceiptIdentity>> {
+    let row = conn
+        .query_row(
+            "SELECT conv_id, sender_id, receiver_id FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| {
+                Ok(MessageReceiptIdentity {
+                    conv_id: r.get(0)?,
+                    sender_id: r.get(1)?,
+                    receiver_id: r.get(2)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
 }
 
 /// flush 期问「这条队列消息还要什么能力位」：kind（必看）+ 载荷里的额外位（目前只有抖动）。
@@ -862,6 +926,10 @@ mod message_ops_tests {
 
 /// 按 msg_id 取完整消息记录（需要跨字段判断时用；今天只有 `network/file/receive.rs::resume_receive` 认领续传用它）。
 pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageRecord> {
+    get_message_record_checked(conn, msg_id).ok().flatten()
+}
+
+pub fn get_message_record_checked(conn: &Connection, msg_id: &str) -> Result<Option<MessageRecord>> {
     conn.query_row(
         "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id, fail_code
          FROM messages WHERE msg_id = ?1",
@@ -878,15 +946,13 @@ pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageReco
                 ts: r.get(7)?,
                 seq: r.get(8)?,
                 status: r.get(9)?,
-            mention_targets: decode_mention_targets(r.get(10)?),
+                mention_targets: decode_mention_targets(r.get(10)?),
                 local_id: r.get(11)?,
                 fail_code: r.get(12)?,
             })
         },
     )
     .optional()
-    .ok()
-    .flatten()
 }
 
 /// 收藏取源：按 msg_id 返回 `(sender_id, kind, content, ts)`。

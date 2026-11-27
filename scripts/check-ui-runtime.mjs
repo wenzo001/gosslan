@@ -29,7 +29,10 @@
  * 3. 同一个页面里别叠两个开着的浮层（曾经把 renderer 主线程搞死，连 reload 的 eval 都发不进去）。
  *    ⇒ 每一段跑完都重新加载一次页面，段与段之间不共享浮层状态。
  *
- * ## 与真 app 的差别（报结论必须带上）
+ * ## DEV PROBE —— 不是生产态证据（报结论必须带上）
+ * 本文件固定启动 `vite dev`、直接挂载 `src/**` 组件，且**不施加 Tauri CSP**。
+ * 它的通过读数只能证明 dev/Chromium 路径，**不得**写成 dist、release exe 或 WebView2 生产验收。
+ * 生产态 Windows 滚动入口是 `npm run test:ui-scroll:win`（真实 release exe + dist + Tauri CSP + IPC）。
  * 组件逻辑是同一份代码，但按键走的是**浏览器**输入管线 ⇒ 这不等于 WKWebView / WebView2 里验过。
  * 那一半仍是人工（见验收矩阵 Smoke-11 的边界行）。
  *
@@ -877,6 +880,8 @@ window.__probe = (() => {
     if (qUrl) {
       const Q = await import(qUrl);
       window.__qc = new Q.QueryClient();
+      window.__queryClient = window.__qc;
+      window.__queryPlugin = Q.VueQueryPlugin;
       app.use(Q.VueQueryPlugin, { queryClient: window.__qc });
     }
     // 与 boot 对齐：v-press-ripple 由 createWindowApp 注册，夹具 app 也要装同一份实现，
@@ -1362,6 +1367,7 @@ window.__probe = (() => {
       },
     });
     if (window.__pinia) app.use(window.__pinia);
+    if (window.__queryPlugin) app.use(window.__queryPlugin, { queryClient: window.__queryClient });
     // 把根实例挂到探针上：有些能力是 defineExpose 出来的（如 MessageComposer.insertMention），
     // 不经 DOM 事件就能调；没有这个句柄就没法量"调完之后编辑器里到底长出了什么"。
     app.mount(host);
@@ -4593,6 +4599,7 @@ async function runHangNotice(cdp, url) {
 }
 
 async function main() {
+  console.log("· DEV PROBE：vite dev + src 组件 + 无 Tauri CSP；本结果不是生产态/WebView2 证据。");
   const chrome = findChrome();
   if (!chrome) {
     // 缺件必须红，不能"少一条 ✅"就当过了（§十）
@@ -29777,7 +29784,7 @@ async function runTasksRealtime(cdp, url) {
     window.__probe.todoRows([
       window.__mk('A', 1, 'todo', {
         title: '写周报', number: 1, priority: 'high',
-        description: '本周进展与下周计划：完成登录链路的断线重连与文件续传验证。',
+        description: '本周进展与下周计划：完成登录链路的断线重连与文件续传验证。' + '长描述滚动验收。'.repeat(80),
       }, now),
     ]);
     return window.__probe.todoRows.length;
@@ -29822,6 +29829,10 @@ async function runTasksRealtime(cdp, url) {
     st1.subscribed === 1, "subscribed=1", JSON.stringify(st1));
 
   // —— 展开 A 的详情：验证实时更新不把展开态关掉 ——
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 800, height: 500, deviceScaleFactor: 1, mobile: false,
+  });
+  await sleep(150);
   await cdp.eval(`(() => {
     const btns = Array.from(document.querySelectorAll('button.min-w-0.flex-1'));
     const a = btns.find((b) => (b.textContent || '').includes('写周报'));

@@ -566,8 +566,7 @@ async function removeFriend(f: Friend) {
   }
 }
 
-/** 启动时自动打开最近会话：用 replace 落路由，避免返回键多退一次到空列表。 */
-const autoOpenRecent = ref(false);
+/** activeConv 变化时同步路由；启动恢复与深链都由 store/路由 watcher 决定。 */
 watch(
   () => chat.activeConv,
   (convId) => {
@@ -581,11 +580,9 @@ watch(
       if (current && current !== convId) return;
       if (current !== convId) {
         const target = { name: "conversation", params: { convId } } as const;
-        if (autoOpenRecent.value && route.name === "chats") void router.replace(target);
-        else void router.push(target);
+        void router.push(target);
       }
     }
-    autoOpenRecent.value = false;
   },
 );
 
@@ -610,16 +607,15 @@ watch(
  *   5. 再切到 contacts → profileFriend 还在 → 右侧 FriendProfile 张三
  */
 
-// 桌面端默认选中：启动后会话列表就绪且当前无选中会话时，自动打开最近的一个会话，
-// 右侧直接进入聊天（对齐微信桌面版行为）；移动端保持列表优先，不自动跳转。
+// 冷启动只有一个恢复入口：等 store 初始化后由 store 恢复 last。
+// 布局不再猜 convs[0]；深链路由直接让给下面的路由 watcher，避免先查 last 再查深链。
+let startupRestoreChecked = false;
 watch(
-  () => chat.conversations,
-  (convs) => {
-    if (app.isMobile) return;
-    if (!chat.activeConv && convs.length > 0) {
-      autoOpenRecent.value = true;
-      void chat.openConversation(convs[0].id);
-    }
+  () => [chat.initialized, route.name] as const,
+  ([ready, name]) => {
+    if (!ready || startupRestoreChecked) return;
+    startupRestoreChecked = true;
+    if (name !== "conversation") chat.restoreLastConversation();
   },
   { immediate: true },
 );

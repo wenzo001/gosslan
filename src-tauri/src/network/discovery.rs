@@ -601,8 +601,28 @@ pub struct AnnounceDialBudgets {
     inner: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, (i64, u32)>>,
 }
 
+impl AnnounceDialBudgets {
+    /// 回收已越过完整窗口的源 IP 预算；窗口内与时钟回拨产生的未来起点都保留。
+    /// 不设条数硬上限：旋转 IP 只在下一个 sweep 按同一时间窗自然过期。
+    /// 锁忙时跳过本轮（下轮补清），绝不阻塞广播循环。
+    pub fn retain_unexpired(&self, now_ms: i64) {
+        let mut budgets = match self.inner.try_lock() {
+            Ok(g) => g,
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
+        budgets.retain(|_, (win_start, _)| announce_dial_budget_window_active(*win_start, now_ms));
+    }
+}
+
+/// 预算窗口是否仍有效（纯函数，判定与回收共用同一事实源）。
+/// `saturating_sub` 让墙上时钟回拨时未来起点继续保留，不会因下溢被误清。
+fn announce_dial_budget_window_active(win_start: i64, now_ms: i64) -> bool {
+    now_ms.saturating_sub(win_start) < ANNOUNCE_DIAL_BUDGET_WINDOW_MS
+}
+
 /// 预算判据（纯函数，可逐格测试）：窗口内未超限 ⇒ 放行并计数；
-/// 新窗口 ⇒ 重置计数。超限 ⇒ 拒。`budgets` 为 None 时是**纯判定**（测试用）。
+/// 新窗口 ⇒ 重置计数。超限 ⇒ 拒。
 pub fn announce_dial_budget_allowed(
     budgets: &AnnounceDialBudgets,
     ip: std::net::IpAddr,
@@ -611,7 +631,7 @@ pub fn announce_dial_budget_allowed(
     let mut g = budgets.inner.lock().unwrap_or_else(|e| e.into_inner());
     let entry = g.entry(ip).or_insert((now_ms, 0u32));
     let (win_start, count) = *entry;
-    if now_ms - win_start >= ANNOUNCE_DIAL_BUDGET_WINDOW_MS {
+    if !announce_dial_budget_window_active(win_start, now_ms) {
         // 新窗口：重置。
         *entry = (now_ms, 1);
         return true;
@@ -993,6 +1013,9 @@ fn should_forget_peer_identity(is_friend: bool) -> bool {
 ///   在线状态「一会儿绿一会儿灰」。
 fn sweep_peers(state: &AppState) {
     let now = now_ms();
+    // SEC-07 预算按源 IP 写入，由 announce 路径持续刷新；错过窗口的格子在这里回收。
+    // 它只动自己的 HashMap，不改变下面 peers 的在册/超时语义。
+    state.announce_dial_budgets.retain_unexpired(now);
     // 好友豁免名单（审计 R-04）：走 `AppState::friend_ids()` 这一个读出口，
     // 不在这里内联 `crate::db::…`（领域依赖方向棘轮盯的就是这种看不见的耦合）。
     // 取在任何表锁**之前** —— `db → peers` 是本仓既有的顺序，反过来会与 Hello 路径构成 ABBA。
@@ -1115,9 +1138,13 @@ mod tests {
             !announce_dial_budget_allowed(&b, ip, t0 + 31_000),
             "窗口内第 61 次必须拒（伪造旋转 device_id 也绕不开——预算按源 IP 计）"
         );
-        // 跨窗口重置：60s 后放行。
         assert!(
-            announce_dial_budget_allowed(&b, ip, t0 + ANNOUNCE_DIAL_BUDGET_WINDOW_MS + 1),
+            !announce_dial_budget_allowed(&b, ip, t0 + ANNOUNCE_DIAL_BUDGET_WINDOW_MS - 1),
+            "窗口最后一毫秒仍必须拒"
+        );
+        // 跨窗口重置：恰好满 60s 即放行（与回收边界同口径）。
+        assert!(
+            announce_dial_budget_allowed(&b, ip, t0 + ANNOUNCE_DIAL_BUDGET_WINDOW_MS),
             "新窗口必须重置预算"
         );
         // 不同 IP 互不影响（NAT 后两台合法节点共享源 IP 也各有余量——预算 24 > 12×2? 不：
@@ -1127,6 +1154,47 @@ mod tests {
             announce_dial_budget_allowed(&b, other, t0 + 1_000),
             "别的 IP 必须独立计"
         );
+    }
+
+    /// F-09：sweep 只回收过期预算，窗口内计数原样保留；恰好满窗即过期，
+    /// 时钟回拨形成的未来起点不得因下溢被误删。
+    #[test]
+    fn announce_dial_budget_sweep_reclaims_only_expired_windows() {
+        let budgets = AnnounceDialBudgets::default();
+        let expired = std::net::IpAddr::V4(Ipv4Addr::new(192, 168, 31, 99));
+        let active = std::net::IpAddr::V4(Ipv4Addr::new(192, 168, 31, 100));
+        let future = std::net::IpAddr::V4(Ipv4Addr::new(192, 168, 31, 101));
+        let t0 = 1_700_000_000_000i64;
+        let now = t0 + ANNOUNCE_DIAL_BUDGET_WINDOW_MS;
+        {
+            let mut inner = budgets.inner.lock().unwrap();
+            inner.insert(expired, (t0, ANNOUNCE_DIAL_BUDGET_MAX));
+            inner.insert(active, (t0 + 1, ANNOUNCE_DIAL_BUDGET_MAX));
+            inner.insert(future, (now + 1, 1));
+        }
+
+        budgets.retain_unexpired(now);
+
+        {
+            let inner = budgets.inner.lock().unwrap();
+            assert!(!inner.contains_key(&expired), "恰好满窗的旧预算必须回收");
+            assert_eq!(
+                inner.get(&active),
+                Some(&(t0 + 1, ANNOUNCE_DIAL_BUDGET_MAX)),
+                "窗口内预算与计数必须原样保留"
+            );
+            assert_eq!(
+                inner.get(&future),
+                Some(&(now + 1, 1)),
+                "时钟回拨时未来窗口必须保留"
+            );
+        }
+
+        // active 的起点比 now 晚 1ms ⇒ 再推进 1ms 才恰好到达它的过期边界。
+        budgets.retain_unexpired(now + 1);
+        let inner = budgets.inner.lock().unwrap();
+        assert!(!inner.contains_key(&active), "active 恰好满窗后也必须回收");
+        assert!(inner.contains_key(&future), "同窗的新预算必须继续保留");
     }
 
     /// **SEC-07 行为判据（端口）**：知名端口不拨；应用端口族放行。
@@ -1224,6 +1292,21 @@ mod tests {
         let remove_needle = concat!("remove_peer(&", "id)");
         assert_eq!(body.matches(forget_needle).count(), 1, "回收点只能有一处");
         assert_eq!(body.matches(remove_needle).count(), 1);
+        // F-09 接线判据：预算清理必须挂在现有 sweep，且只有一处；peers 的原 retain 判据
+        // 不能被这次追加清理替换掉。压平空白后比对，避免 rustfmt 换行制造假红。
+        let compact = body
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        let budget_sweep = "state.announce_dial_budgets.retain_unexpired(now)";
+        let peer_retain = "peers.retain(|id,p|should_keep_peer(";
+        assert_eq!(compact.matches(budget_sweep).count(), 1);
+        assert_eq!(compact.matches(peer_retain).count(), 1);
+        assert!(
+            compact.find(budget_sweep).expect("预算回收不在 sweep 里")
+                < compact.find(peer_retain).expect("peers 回收判据不见了"),
+            "预算清理不能替代或晚于 peers 清理"
+        );
         // 字段访问会被 rustfmt 拆行（`state\n.peer_manager`）⇒ needle 只认带点的那一段。
         assert_eq!(body.matches(concat!(".", "peer_manager")).count(), 1);
         // 读出口也必须只有一处、且是 `AppState::friend_ids()`（不是内联 `crate::db::…`）：

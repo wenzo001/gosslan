@@ -109,9 +109,11 @@ npm test                         # 前端全量单测（node --test，零额外�
 npm run verify:local             # ★ 本地日常重门禁（跳过最长那一步「护栏非空转」；步数由 --list 现读）
 npm run verify:full              # 完整重门禁：cargo 三件套 + 护栏扫描（**只前端子集**）+ Android
 npm run verify:full -- --full    # 再加全量护栏（含 cargo 用例，每条整库重编译 ⇒ 60 分钟以上）
-npm run test:e2e:group           # 群聊 E2E（双实例停机预置，37 断言）
+npm run test:e2e:group           # 群聊 E2E（双实例停机预置；断言数以命令输出为准）
 npm run test:e2e:multi-instance  # 双实例 J1/J2/重启
-npm run test:ui-runtime          # UI 运行时探针（本机跑法见下）
+npm run test:ui-runtime          # DEV 浏览器探针（不是生产态/WebView2 证据）
+npm run test:ui-scroll:win       # Windows release exe + dist + Tauri CSP + 真实 IPC 滚动冒烟
+npm run test:ui-scroll:win:selfproof # 上一条的静态/结构反例自证（macOS 也可跑）
 npm run dist                     # 一键出包（按平台自动决定）
 ```
 
@@ -129,8 +131,9 @@ GOSSLAN_CHROME="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
 | 快速 | `npm test` + `cargo test --features bluetooth` | 单元/契约/护栏注入锚点 |
 | 本地全量 | `CODEBUDDY_SAFE_DELETE_ENABLED=0 npm run verify:local` | 清单/文档/守卫/构建/测试/Android（步数以 `node scripts/verify.mjs --list` 为准；跳过护栏扫描） |
 | 护栏非空转 | `python3 scripts/verify-guards.py`（`--lane cargo\|node\|script`、`--shard i/3`、`--only X`） | 每条判据"改坏必须红 + 红由它自己声明的 hint 报出 + 恢复后逐字节一致"；条数与耗时由它自己打印（`GUARD_LANES` / `GUARD_TIMING`），CI 全覆盖由 `scripts/check-ci-guard-coverage.mjs` 对账 |
-| UI 运行时 | `npm run test:ui-runtime` | 真实浏览器探针，**格数以命令输出为准**（2026-10-24 复跑 524/529，5 条红为既有/环境项，见 `docs/notes/audit-fix-report-2026-10-24.md` §5.3） |
-| 行为 | `npm run test:e2e:*` | 双/三实例真实进程链路 |
+| UI 运行时 | `npm run test:ui-runtime` | **DEV**：Vite + `src/**` 组件 + 无 Tauri CSP；**格数与状态以命令输出为准**，不得冒充 dist/release/WebView2 证据 |
+| Windows 生产滚动 | `npm run test:ui-scroll:win` | 自动构建内嵌 `dist/` 与 Tauri CSP 的 release exe，借 smoke 配置把整个 app 数据目录放进每次运行的临时目录；两个隔离实例经真实 IPC 种长会话/群文件/任务，读 WebView2 首尾、横条、浮层裁切与滑块几何。非 Windows 正常入口输出 `NOT RUN` 并退 2。移动软键盘、实体线模式滚轮、ARM64/多屏 DPI 不在通过结论内 |
+| 行为 | `npm run verify:e2e` | 双/三实例真实进程链路（本地专项层） |
 
 ⚠️ `npm run build` 在 WorkBuddy 沙箱里会假红（宿主批量删除守卫拦 `dist/assets`）⇒ 取真实读数用
 `CODEBUDDY_SAFE_DELETE_ENABLED=0`。CI 无此守卫。

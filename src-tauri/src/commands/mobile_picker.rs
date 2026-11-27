@@ -330,16 +330,20 @@ pub(crate) async fn send_friend_request_via_link(
     peer_id: &str,
     request_id: i64,
 ) -> Result<(), String> {
-    // 目标必须在 peers 表（announce / Presence 学到），且需有 X25519 公钥才能 E2EE 加密。
-    let target_pubkey = {
-        let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
-        peers.get(peer_id).and_then(|p| p.x25519_pubkey.clone())
-    };
-    let Some(target_pubkey) = target_pubkey else {
-        return Err(crate::error_codes::coded(
-            crate::error_codes::E2EE_PUBKEY_MISSING,
-            "未找到该节点或缺少其公钥，请先重新扫描",
-        ));
+    let target_pubkey = match crate::network::transport::resolve_effective_x25519(s, peer_id) {
+        Ok(Some(pubkey)) => pubkey,
+        Ok(None) => {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::E2EE_PUBKEY_MISSING,
+                "未找到该节点或缺少其公钥，请先重新扫描",
+            ));
+        }
+        Err(e) => {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::E2EE_PUBKEY_MISSING,
+                format!("读取对方身份密钥失败，请稍后重试：{e}"),
+            ));
+        }
     };
     let nickname = s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let raw_avatar = s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -535,18 +539,16 @@ pub(crate) async fn send_friend_accept_via_link(
     peer_id: &str,
     request_id: i64,
 ) -> Result<(), String> {
-    // 对方公钥优先从 peers 表读（接收 FriendRequest 时已 upsert_peer 记录），
-    // friends 表兜底（maybe_update_friend 可能已持久化）。
-    let target_pubkey = {
-        let from_peers = {
-            let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
-            peers.get(peer_id).and_then(|p| p.x25519_pubkey.clone())
-        };
-        let from_friends = {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_friend_x25519(&dbc, peer_id)
-        };
-        from_peers.or(from_friends)
+    let target_pubkey = match crate::network::transport::resolve_effective_x25519(s, peer_id) {
+        Ok(Some(pubkey)) => Some(pubkey),
+        Ok(None) => None,
+        Err(e) => {
+            s.logger.warn(
+                "friend",
+                format!("code=FRIEND_KEY_READ_FAILED peer={peer_id} err={e}"),
+            );
+            None
+        }
     };
     let Some(target_pubkey) = target_pubkey else {
         // 缺对端公钥时**绝不静默**：本地已加好友，但回执发不出去会导致好友关系

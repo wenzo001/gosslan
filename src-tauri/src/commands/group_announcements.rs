@@ -524,10 +524,22 @@ pub async fn send_group_file(
         let _ = s.app.emit("message-received", &rec);
     }
 
-    // 可达成员：有 TCP link 且 peers 信息完整；其余保持 pending，由上线事件自动投递。
+    // 可达成员：有 TCP link 且能拿到有效 X25519；读库失败按本轮不可达处理并留痕。
     let mut reachable: Vec<String> = Vec::new();
     for m in &members {
-        if s.has_link(m).await && resolve_member_x25519(s, m).is_some() {
+        let has_key = match resolve_effective_x25519(s, m) {
+            Ok(key) => key.is_some(),
+            Err(e) => {
+                if crate::logging::log_throttled("group_file_key_read_failed", 60_000) {
+                    s.logger.warn(
+                        "group",
+                        format!("code=GROUP_FILE_KEY_READ_FAILED group={group_id} member={m} err={e}"),
+                    );
+                }
+                false
+            }
+        };
+        if s.has_link(m).await && has_key {
             reachable.push(m.clone());
         }
     }

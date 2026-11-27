@@ -12,7 +12,7 @@ export const GROUP_FILES_QUERY = "groupFiles";
 
 export const groupFilesKey = (groupId: string) => panelKey(GROUP_FILES_QUERY, groupId);
 
-/** 文件事件没有群 id ⇒ 面板只失效「当前打开的那一个群」，不重拉所有缓存。 */
+/** 事件带归属时只失效对应群；无归属调用仍保留显式全量失效能力。 */
 export function invalidateGroupFiles(client: QueryClient, groupId?: string | null) {
   return invalidatePanels(client, GROUP_FILES_QUERY, groupId);
 }

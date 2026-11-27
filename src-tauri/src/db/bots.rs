@@ -144,11 +144,15 @@ pub fn update_bot_poll_stats(
     failed: u32,
     last_event_at: Option<i64>,
     last_error: Option<String>,
-) -> Result<()> {
+) -> Result<bool> {
     let mut rec = match load_bot(conn, bot_id)? {
         Some(r) => r,
-        None => return Ok(()), // 机器人已被删除 ⇒ 不再回写（否则会把删掉的 resurrect）
+        None => return Ok(false), // 机器人已被删除 ⇒ 不再回写（否则会把删掉的 resurrect）
     };
+    let changed = rec.pending != 0
+        || rec.failed != failed
+        || (last_event_at.is_some() && rec.last_event_at != last_event_at)
+        || rec.last_error.as_deref() != last_error.as_deref();
     rec.pending = 0;
     rec.failed = failed;
     // 只有本轮真取到事件才推进「最近收到」——没事件不该刷新时间（审计 P2）。
@@ -157,7 +161,8 @@ pub fn update_bot_poll_stats(
     }
     rec.last_error = last_error;
     let _ = pulled; // 计数由调用方记日志，记录里只留 failed / last_error
-    save_bot(conn, &rec)
+    save_bot(conn, &rec)?;
+    Ok(changed)
 }
 
 /// 读一个机器人。

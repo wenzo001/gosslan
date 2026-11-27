@@ -3,7 +3,10 @@ import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useQueryClient } from "@tanstack/vue-query";
+import { useBotsQuery } from "@/composables/useBotsQuery";
+import { invalidateBots } from "@/utils/botsQuery";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
@@ -27,6 +30,7 @@ import BotDetailModal from "@/components/BotDetailModal.vue";
 import { api } from "@/api";
 import type { BotView } from "@/types";
 import { useOpenProfile } from "@/composables/useOpenProfile";
+import { createInitScope } from "@/utils/initScope";
 
 // ⚠️ defineProps 必须在所有读取 props 的逻辑**之前**（审计 P1）：
 // 此前 watch(..., {immediate:true}) 在 defineProps 之前执行 ⇒ setup 期间 TDZ ReferenceError
@@ -41,24 +45,37 @@ const { openProfile } = useOpenProfile();
 /** 群机器人向导（仅群主/管理员看得到入口，后端还会再挡一道）。 */
 const botWizardOpen = ref(false);
 /** 本群机器人列表 + 详情弹窗（群主/管理员可点进去改配置/删除）。 */
-const groupBots = ref<BotView[]>([]);
+const botsQuery = useBotsQuery(() => props.open);
+const queryClient = useQueryClient();
+const botScope = createInitScope();
+onMounted(() => {
+  void api
+    .onBotChanged(() => { void invalidateBots(queryClient); })
+    .then((off) => botScope.onDispose(off))
+    .catch(() => {});
+});
+onUnmounted(() => { botScope.dispose(); });
+const groupBots = computed(() =>
+  (botsQuery.data.value ?? []).filter((b) => b.scope === "group" && b.target.groupId === props.groupId),
+);
 const botDetail = ref<BotView | null>(null);
 const botDetailOpen = ref(false);
-
-async function loadGroupBots() {
-  try {
-    const all = await api.botList();
-    groupBots.value = all.filter((b) => b.scope === "group" && b.target.groupId === props.groupId);
-  } catch {
-    groupBots.value = [];
-  }
-}
+watch(
+  () => botsQuery.data.value,
+  (bots) => {
+    if (!bots || !botDetail.value) return;
+    const updated = bots.find((b) => b.botId === botDetail.value?.botId);
+    if (updated) botDetail.value = updated;
+    else {
+      botDetail.value = null;
+      botDetailOpen.value = false;
+    }
+  },
+);
 function openBotDetail(bot: BotView) {
   botDetail.value = bot;
   botDetailOpen.value = true;
 }
-// 每次打开面板 / 创建完一个机器人都重读（配置可能刚变）。
-watch(() => props.open, (v) => { if (v) void loadGroupBots(); }, { immediate: true });
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "open-tasks"): void;
@@ -408,7 +425,7 @@ async function confirmAction() {
   } else if (a.kind === "removeBot") {
     try {
       await api.botDelete(a.botId);
-      groupBots.value = groupBots.value.filter((b) => b.botId !== a.botId);
+      void invalidateBots(queryClient);
       app.toast(t("bot.deleted"), "success");
       // 会话列表里那扇 bot 会话由后端一并删除，这里让主窗口刷新一次。
       void chat.refreshConversations();
@@ -711,14 +728,14 @@ async function confirmAction() {
           :group-id="groupId"
           :group-name="group?.name ?? null"
           @close="botWizardOpen = false"
-          @created="() => { void loadGroupBots(); }"
+          @created="() => { void invalidateBots(queryClient); }"
         />
         <BotDetailModal
           :open="botDetailOpen"
           :bot="botDetail"
           @close="botDetailOpen = false"
-          @deleted="() => { botDetailOpen = false; botDetail = null; void loadGroupBots(); }"
-          @changed="(b: BotView) => { botDetail = b; void loadGroupBots(); }"
+          @deleted="() => { botDetailOpen = false; botDetail = null; void invalidateBots(queryClient); }"
+          @changed="(b: BotView) => { botDetail = b; void invalidateBots(queryClient); }"
         />
 </template>
 

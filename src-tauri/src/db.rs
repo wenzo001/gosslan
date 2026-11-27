@@ -392,6 +392,7 @@ fn sweep_group_orphans(conn: &Connection) -> Vec<String> {
         format!(
             "DELETE FROM group_recalled_messages WHERE conv_id LIKE 'group:%' AND {orphan_conv}"
         ),
+        format!("DELETE FROM pending_group_recalls WHERE conv_id LIKE 'group:%' AND {orphan_conv}"),
     ]
     .iter()
     .filter_map(|sql| conn.execute(sql, []).err().map(|e| format!("{sql} ⇒ {e}")))
@@ -872,6 +873,14 @@ CREATE TABLE IF NOT EXISTS messages (
     fail_code TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, ts);
+CREATE TABLE IF NOT EXISTS mention_receipts (
+    msg_id     TEXT PRIMARY KEY,
+    conv_id    TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    cleared_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_mention_receipts_active
+    ON mention_receipts(conv_id, created_at) WHERE cleared_at IS NULL;
 -- ⚠️ `idx_messages_conv_seq` **不在这里**，而且不能放进来：`seq` 是迁移 v2→v3 才加到
 -- `messages` 上的列，而 `execute_batch(SCHEMA)` 跑在迁移**之前** ⇒ 老库里这句会
 -- `no such column: seq` 直接让 `init()` 失败（用户打不开自己的库）。
@@ -901,6 +910,24 @@ CREATE TABLE IF NOT EXISTS group_recalled_messages (
 -- 判定"这条消息是否已被撤回"只给 msg_id（`is_recalled`），PK 的前缀是 conv_id 用不上
 -- ⇒ 每次群收件都要全表扫这张**只增不减**的 G-Set。这条索引在收件热路径上。
 CREATE INDEX IF NOT EXISTS idx_group_recalled_msg ON group_recalled_messages(msg_id);
+
+CREATE TABLE IF NOT EXISTS pending_group_recalls (
+    conv_id       TEXT NOT NULL,
+    target_msg_id TEXT NOT NULL,
+    recaller_id   TEXT NOT NULL,
+    event_id      TEXT NOT NULL,
+    seq           INTEGER NOT NULL,
+    envelope_json TEXT NOT NULL,
+    received_at   INTEGER NOT NULL,
+    expires_at    INTEGER NOT NULL,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL,
+    PRIMARY KEY (conv_id, target_msg_id, recaller_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pending_group_recalls_group
+    ON pending_group_recalls(conv_id, received_at);
+CREATE INDEX IF NOT EXISTS idx_pending_group_recalls_expiry
+    ON pending_group_recalls(expires_at);
 
 -- 代码/文本消息渲染切换的 LWW 状态：只存最后一次生效的 (seq, mode, lang)。
 -- `messages.kind` 是它的物化视图；用独立表而不是给 messages 加列，避免老库迁移。
@@ -1569,6 +1596,7 @@ include!("db/read_receipts.rs");
 include!("db/favorites.rs");
 
 include!("db/recalls.rs");
+include!("db/pending_recalls.rs");
 // 群历史同步的两半：服务端分页取数 + 新成员侧幂等落库（2026-10-16 需求）
 include!("db/group_history.rs");
 include!("db/todo_tags.rs");

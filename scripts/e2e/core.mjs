@@ -676,14 +676,14 @@ export const bootBaseOf = new Map();
 /// 用户开着一个实例时，每轮 `stopAll()` 都会抛"清理后仍有实例活着"，把真正的泄漏淹掉。
 /// 口径同 e2e-dev.sh / t2 / t3 / t4：只收自己的 PID（闪退取证第 3 项）。
 const spawnedPids = new Set();
-export function launch(inst) {
+export function launch(inst, extraEnv = {}) {
   stashLogs(inst.log, RUN_DIR, `${inst.label}-${++S.stashSeq}`);
   bootBaseOf.set(inst.n, bootBaseline(inst.log, BOOT_LINE));
   const out = fs.openSync(path.join(RUN_DIR, `instance-${inst.label}.stdout.log`), "a");
   let p;
   try {
     p = spawn(BIN, [], {
-      env: { ...process.env, GOSSLAN_INSTANCE: String(inst.n), GOSSLAN_AUTOSTART: "1" },
+      env: { ...process.env, GOSSLAN_INSTANCE: String(inst.n), GOSSLAN_AUTOSTART: "1", ...extraEnv },
       stdio: ["ignore", out, out],
       detached: false,
     });

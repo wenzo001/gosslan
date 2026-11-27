@@ -15,6 +15,7 @@ import {
   shareTreeSchema,
 } from "@/utils/validation";
 import type { UpdaterDownloadEvent, UpdaterInfo, UpdaterStatus } from "@/types";
+import type { GroupFileActivity } from "@/utils/groupFileActivity";
 import type {
   AndroidDownloadEvent,
   AndroidUpdateInfo,
@@ -173,25 +174,21 @@ export const api = {
   onMessageReceived: (cb: (rec: MessageRecord) => void) =>
     listen<MessageRecord>("message-received", (e) => cb(e.payload)),
   /**
-   * 只订阅「会影响群文件清单」的事件（**窄**封装，与 `onMessageReceived` 同一条口径）。
-   *
-   * 三类变化：本机文件落盘/失败/取消（`local_state`）、新的 `gfile-` 消息（多一行）、
-   * `gfile-` 的送达回执（「已送达 N/M」）。事件载荷没有群 id ⇒ 调用方按前缀失效，
-   * 只重拉当前打开的那一个群。
+   * 只订阅「会影响群文件清单」且**带归属**的事件。
+   * message-received 保留 conv_id；Ack/台账保留 group_id；transfer-only 终态由后端
+   * group-file-activity 补 group_id/conv_id。无归属事件不再触发盲刷。
    */
-  onGroupFileActivity: (cb: () => void) =>
+  onGroupFileActivity: (cb: (event: GroupFileActivity) => void) =>
     Promise.all([
-      listen("file-done", () => cb()),
-      listen("file-failed", () => cb()),
-      listen("file-cancelled", () => cb()),
+      listen<GroupFileActivity>("group-file-activity", (e) => cb(e.payload)),
       listen<MessageRecord>("message-received", (e) => {
-        if (e.payload.msg_id.startsWith("gfile-")) cb();
+        if (e.payload.msg_id.startsWith("gfile-")) cb({ conv_id: e.payload.conv_id });
       }),
-      listen<{ msg_id: string }>("group-message-acked", (e) => {
-        if (e.payload.msg_id.startsWith("gfile-")) cb();
+      listen<{ group_id: string; msg_id: string }>("group-message-acked", (e) => {
+        if (e.payload.msg_id.startsWith("gfile-")) cb({ group_id: e.payload.group_id });
       }),
-      listen<{ msg_id: string; status: string | null }>("message-status-changed", (e) => {
-        if (e.payload.msg_id.startsWith("gfile-")) cb();
+      listen<{ group_id: string; msg_id: string }>("group-delivery-changed", (e) => {
+        if (e.payload.msg_id.startsWith("gfile-")) cb({ group_id: e.payload.group_id });
       }),
     ]).then((fns) => () => fns.forEach((fn) => fn())),
   getDeviceInfo: () => invoke<DeviceInfo>("get_device_info"),
@@ -334,6 +331,7 @@ export const api = {
   ensureConversation: (friendId: string) =>
     invoke<Conversation>("ensure_conversation", { friendId }),
   markRead: (convId: string) => invoke<void>("mark_read", { convId }),
+  getActiveMentionConvs: () => invoke<string[]>("get_active_mention_convs"),
   setConversationPinned: (convId: string, pinned: boolean) =>
     invoke<void>("set_conversation_pinned", { convId, pinned }),
   deleteConversation: (convId: string) =>

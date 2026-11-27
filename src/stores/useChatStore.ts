@@ -1,7 +1,8 @@
 import { acceptHMRUpdate, defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import { api, bindEvents } from "@/api";
-import { furthestStatus, markFailureInCache, markStatusInCache, patchMessageInConv, transferFailureMsgIds, promoteOnPeerRead, syncProfileFromPeers } from "@/utils/messages";
+import { furthestStatus, markFailureInCache, markStatusInCache, patchMessageInConvLocal, transferFailureMsgIds, promoteOnPeerRead, syncProfileFromPeers } from "@/utils/messages";
+import { restoreLastConversationId } from "@/utils/startupConversation";
 import { safeStorageBackend, storageGet } from "../utils/safeStorage.ts";
 import { useAppStore } from "@/stores/useAppStore";
 import { trimOldest } from "@/utils/bounded";
@@ -477,6 +478,13 @@ export const useChatStore = defineStore("chat", () => {
   const { activeAnnouncements, publishAnnouncement, refreshAnnouncements, deleteAnnouncement, createGroup, renameGroup, addGroupMember, removeGroupMember, appointAdmin, removeAdmin, transferGroupCreator, leaveGroup, handleSelfRemovedFromGroup } = groupsModule;
   const { sendFileTo, sendGroupFileTo, sendImage, stalledTransfers, isTransferStalled, transferStallReason, setTransferStalled, onFileStalled, updateTransferProgress, onFileDone, onGroupFileLog, onFileFailed, groupFileDiag } = mediaModule;
 
+  /** 冷启动唯一恢复口：只认 last，不回退首条；布局负责等初始化并避开深链。 */
+  function restoreLastConversation() {
+    if (activeConv.value) return;
+    const last = restoreLastConversationId(storageGet(LAST_CONV_KEY), conversations.value);
+    if (last) void openConversation(last);
+  }
+
   async function init() {
     // 重复初始化守卫：先拆掉上一轮注册的资源，再注册这一轮的。
     // 触发场景是 HMR（App.vue 热替换 → onMounted 再跑一次 init）与任何将来的
@@ -534,7 +542,8 @@ export const useChatStore = defineStore("chat", () => {
       }
     }).then((un) => scope.onDispose(un));
 
-    bindEvents({
+    try {
+      const fns = await bindEvents({
       onPeers: (p) => {
         // 这个事件最多每秒 3 次：不比对就直接换表，等于每 333ms 把整屏消息行重画一遍
         // （消息行模板里的 nicknameOf 读的就是 peers）。没变就不写。
@@ -653,12 +662,12 @@ export const useChatStore = defineStore("chat", () => {
       onMessageAcked: (msgId) => {
         // 对方收到（Ack）：sending → delivered（空圆框）。经 outbox 补发的重试 Ack
         // 可能晚于 peer-read 到达，只允许前进不允许把绿勾退回空圆框。
-        const hit = patchMessageInConv(messages.value, convIdOfMessage(msgId), msgId, (m) => ({
+        // 只原地换目标行：根表/会话数组不换引用，ChatWindow 的派生列表只 patch 这一行。
+        const hit = patchMessageInConvLocal(messages.value, convIdOfMessage(msgId), msgId, (m) => ({
           ...m,
           status: furthestStatus(m.status, "delivered"),
         }));
         const found = hit !== null;
-        if (hit) messages.value = hit.lists;
         // Ack 先于乐观→真实替换到达（store 里找不到 real msg_id）：
         // 暂存 Ack，send() 拿到真实记录后立即消费。
         if (!found) {
@@ -814,17 +823,17 @@ export const useChatStore = defineStore("chat", () => {
       onNotificationClicked: (p) => {
         routeNotificationClick(p.type, p.conv_id, p.msg_id);
       },
-    }).then((fns) => {
+      });
       for (const f of fns) scope.onDispose(f);
       eventBridgeOk.value = true;
-    }).catch((e) => {
+    } catch (e) {
       // 见 init 开头的说明：不兜底的话 init 会 reject，而骨架照常撤除 ——
       // 用户看到一个"正常"的界面，却永远收不到任何事件。必须留痕 + 可感知。
       console.error("[chat] bindEvents 失败：实时事件不可用", e);
       // 留痕之外还要**常驻**可见（R-33）：toast 会自己消失，之后无从判断是不是已经断了。
       eventBridgeOk.value = false;
       app.toast(t("chat.eventBindFail"), "error");
-    });
+    }
 
     // 初始刷新：每个独立兜底（2026-09-23 审计 1.6）—— 任一失败只影响该数据源
     // （对应事件/下次刷新会补上），不得阻断其他刷新，更不得阻断已注册的监听。
@@ -855,14 +864,13 @@ export const useChatStore = defineStore("chat", () => {
         console.error(`[chat] 初始刷新 ${names[i]} 失败`, r.reason);
       }
     });
-    initialized.value = true;
-
-    // 恢复上次打开的会话（若仍存在）。HIG State Restoration：重启后回到上次离开的地方。
-    // 用 void 触发：不阻塞 init，也避免其异步失败拖垮启动。
-    const last = storageGet(LAST_CONV_KEY);
-    if (last && conversations.value.some((c) => c.id === last)) {
-      void openConversation(last);
+    try {
+      const activeMentions = await api.getActiveMentionConvs();
+      for (const convId of activeMentions) mentionedConvs.value.add(convId);
+    } catch (e) {
+      console.error("[chat] 启动提及恢复失败：保留实时事件降级状态", e);
     }
+    initialized.value = true;
 
     // 移动端注册通知动作类别（「标记已读」按钮）。桌面端无此能力（Web Notification 不支持按钮），
     // 命令也不存在，故只对移动端调用。语言切换后按钮文案不随动（原生注册一次），可接受。
@@ -1029,6 +1037,7 @@ export const useChatStore = defineStore("chat", () => {
     locateInLoaded,
     nicknameOf,
     init,
+    restoreLastConversation,
     refreshPeers,
     searchNearbyPeers,
     refreshFriends,

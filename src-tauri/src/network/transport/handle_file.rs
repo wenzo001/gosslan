@@ -68,7 +68,7 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
             // E2EE：解封文件会话密钥（发送方用我方公钥封装，只有我能解开）。
             // 解封失败必须拒绝传输——密文分片绝不能落盘。
             let file_key = (|| {
-                let sender_pub = resolve_member_x25519(state, &from)?;
+                let sender_pub = resolve_effective_x25519(state, &from).ok().flatten()?;
                 let shared = state.identity.dh(&sender_pub)?;
                 let sealed = STANDARD.decode(&sealed_file_key).ok()?;
                 crypto::open(&shared, &sealed).and_then(|k| k.try_into().ok())

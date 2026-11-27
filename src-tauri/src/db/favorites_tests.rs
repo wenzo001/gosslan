@@ -145,6 +145,20 @@ mod tests {
     }
 
     #[test]
+    fn friend_pubkeys_checked_distinguishes_missing_rows_and_errors() {
+        let conn = mem();
+        assert_eq!(get_friend_pubkeys_checked(&conn, "missing").unwrap(), None);
+        add_friend(&conn, "partial", "Partial", None).unwrap();
+        update_friend_pubkeys(&conn, "partial", Some("x"), None).unwrap();
+        assert_eq!(
+            get_friend_pubkeys_checked(&conn, "partial").unwrap(),
+            Some((Some("x".into()), None))
+        );
+        let broken = Connection::open_in_memory().unwrap();
+        assert!(get_friend_pubkeys_checked(&broken, "partial").is_err());
+    }
+
+    #[test]
     fn friend_add_and_pubkey_persistence() {
         let conn = mem();
         add_friend(&conn, "f1", "张三", None).unwrap();
@@ -630,6 +644,52 @@ mod tests {
         assert!(message_exists(&conn, "m1"));
         assert!(!message_exists(&conn, "m2"));
         assert_eq!(get_messages(&conn, "c1", 100, 0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn mention_receipt_is_atomic_idempotent_and_cleared_on_read() {
+        let conn = mem();
+        ensure_conversation(&conn, "group:g1", "group", "G", None).unwrap();
+        let message = rec("m-mention", "group:g1");
+        assert!(insert_message_if_new_with_mention_receipt(&conn, &message, true).unwrap());
+        assert!(!insert_message_if_new_with_mention_receipt(&conn, &message, true).unwrap());
+        assert_eq!(list_active_mention_convs(&conn).unwrap(), vec!["group:g1"]);
+        mark_read(&conn, "group:g1").unwrap();
+        assert!(list_active_mention_convs(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mention_receipt_failure_rolls_back_the_message() {
+        let conn = mem();
+        conn.execute_batch(
+            "CREATE TRIGGER block_mention BEFORE INSERT ON mention_receipts
+             BEGIN SELECT RAISE(ABORT, 'simulated receipt failure'); END",
+        )
+        .unwrap();
+        let message = rec("m-mention", "group:g1");
+        assert!(insert_message_if_new_with_mention_receipt(&conn, &message, true).is_err());
+        assert!(!message_exists(&conn, "m-mention"));
+    }
+
+    #[test]
+    fn receipt_identity_returns_the_full_durable_identity() {
+        let conn = mem();
+        insert_message(&conn, &rec("m1", "group:g1")).unwrap();
+        assert_eq!(
+            message_receipt_identity(&conn, "m1").unwrap(),
+            Some(MessageReceiptIdentity {
+                conv_id: "group:g1".into(),
+                sender_id: "a".into(),
+                receiver_id: "b".into(),
+            })
+        );
+        assert_eq!(message_receipt_identity(&conn, "missing").unwrap(), None);
+    }
+
+    #[test]
+    fn receipt_identity_preserves_database_errors() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(message_receipt_identity(&conn, "m1").is_err());
     }
 
     /// 按 `msg_id` 序列比对（`MessageRecord` 没有 `PartialEq`，而这里要的正是"同一批行、

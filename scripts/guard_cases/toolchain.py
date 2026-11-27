@@ -286,15 +286,15 @@ CASES: list[Case] = [
         why="`enforce: true` 表示「该领域边界已是事实、可由机器守住」（例如禁止跨领域直接引用）。"
         "若它还有第二个家（迁移中）就把闸门打开，第一天就会全红 —— 而红门禁会催生绕过，"
         "门禁一旦被绕过一次就永久失效（本项目铁律：第一版门禁必须全绿）。"
-        "本用例把 presence 的 enforce 改成 true（它还有未接线的第二个家 discovery/），必须被拦下。"
+        "本用例把 presence 的 enforce 改成 true（它仍有第二个家 discovery/ 配置层），必须被拦下。"
         "这条把「边界收口完成一个，打开一个」从口号变成机器判定 —— 也是 Phase 6 的前置。",
         file=ROOT / "docs" / "domains.data.mjs",
         injections=[(
             '      secondHome: "src-tauri/src/discovery",\n'
-            '      secondHomeStatus: "未接线",\n'
+            '      secondHomeStatus: "配置解析（活）",\n'
             '      enforce: false,',
             '      secondHome: "src-tauri/src/discovery",\n'
-            '      secondHomeStatus: "未接线",\n'
+            '      secondHomeStatus: "配置解析（活）",\n'
             '      enforce: true,',
         )],
         cmd=["node", "scripts/check-domain-map.mjs"],
@@ -309,12 +309,12 @@ CASES: list[Case] = [
         file=ROOT / "docs" / "domains.data.mjs",
         injections=[(
             '      paths: [\n'
-            '        "src-tauri/src/network/discovery.rs", // 旧家（活）\n'
-            '        "src-tauri/src/discovery", // 新家（未接线）\n'
+            '        "src-tauri/src/network/discovery.rs", // 发现数据面（活）\n'
+            '        "src-tauri/src/discovery", // Routed 配置解析（活）\n'
             "      ],\n",
             '      paths: [\n'
-            '        "src-tauri/src/network/discovery.rs", // 旧家（活）\n'
-            '        "src-tauri/src/discovery", // 新家（未接线）\n'
+            '        "src-tauri/src/network/discovery.rs", // 发现数据面（活）\n'
+            '        "src-tauri/src/discovery", // Routed 配置解析（活）\n'
             '        "src-tauri/src/network/transport.rs", // 注入：该文件已被 transport 认领\n'
             "      ],\n",
         )],

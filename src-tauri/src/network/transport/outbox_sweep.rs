@@ -440,7 +440,7 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                     Vec::new()
                 }
             };
-            for (transfer_id, peer_id, _group_id, created_at) in expired_files {
+            for (transfer_id, peer_id, group_id, created_at) in expired_files {
                 let reachable = is_reachable(&peer_id);
                 if !db::should_fail_expired(
                     reachable,
@@ -485,6 +485,9 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                                 peer_id: String::new(),
                             },
                         );
+                        if group_id.is_some() {
+                            crate::network::file::emit_group_file_activity(&state, &transfer_id);
+                        }
                     }
                     Ok(false) => {
                         state.logger.warn(

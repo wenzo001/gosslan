@@ -27,6 +27,10 @@ fn status(conn: &Connection, msg_id: &str) -> String {
     .unwrap()
 }
 
+fn count(conn: &Connection, sql: &str) -> i64 {
+    conn.query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
 #[test]
 fn a_failing_ddl_batch_leaves_no_half_schema_behind() {
     let conn = Connection::open_in_memory().unwrap();
@@ -394,6 +398,192 @@ fn upsert_group_rolls_back_when_member_insert_fails() {
         })
         .unwrap();
     assert_eq!(n, 0, "成员写失败时群行也不许留下");
+}
+
+#[test]
+fn group_key_snapshot_rolls_back_every_write_and_the_clock() {
+    let conn = db();
+    conn.execute_batch(
+        "CREATE TRIGGER block_admins BEFORE INSERT ON group_admins
+         BEGIN SELECT RAISE(ABORT, 'simulated admin write failure'); END;",
+    )
+    .unwrap();
+    let members = vec!["owner".to_string(), "me".to_string(), "admin".to_string()];
+    let admins = vec!["admin".to_string()];
+    assert!(apply_group_key_snapshot(
+        &conn,
+        "g1",
+        "owner",
+        "me",
+        "群名",
+        &members,
+        &admins,
+        9,
+        true,
+        Some("new-key"),
+    )
+    .is_err());
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM groups"), 0);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM group_members"), 0);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM group_admins"), 0);
+    assert_eq!(get_clock(&conn, "group:g1"), 0);
+    assert_eq!(get_setting(&conn, "gk:g1"), None);
+
+    conn.execute_batch("DROP TRIGGER block_admins;").unwrap();
+    let outcome = apply_group_key_snapshot(
+        &conn,
+        "g1",
+        "owner",
+        "me",
+        "群名",
+        &members,
+        &admins,
+        9,
+        true,
+        Some("new-key"),
+    )
+    .unwrap();
+    assert!(outcome.applied && outcome.first_membership);
+    assert_eq!(get_clock(&conn, "group:g1"), 9);
+    assert_eq!(get_group(&conn, "g1").unwrap().admins, admins);
+    assert_eq!(get_setting(&conn, "gk:g1").as_deref(), Some("new-key"));
+}
+
+#[test]
+fn group_key_snapshot_rolls_back_persisted_key_when_clock_write_fails() {
+    let conn = db();
+    conn.execute_batch(
+        "CREATE TRIGGER block_clock BEFORE INSERT ON conversation_clocks
+         BEGIN SELECT RAISE(ABORT, 'simulated clock write failure'); END;",
+    )
+    .unwrap();
+    let members = vec!["owner".to_string(), "me".to_string()];
+    assert!(apply_group_key_snapshot(
+        &conn,
+        "g1",
+        "owner",
+        "me",
+        "群名",
+        &members,
+        &[],
+        9,
+        true,
+        Some("new-key"),
+    )
+    .is_err());
+    assert_eq!(get_setting(&conn, "gk:g1"), None);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM groups"), 0);
+    assert_eq!(get_clock(&conn, "group:g1"), 0);
+}
+
+#[test]
+fn group_key_snapshot_rechecks_authority_inside_the_transaction() {
+    let conn = db();
+    create_group(&conn, "g1", "旧名", "owner", &["owner".into(), "me".into()]).unwrap();
+    let before = get_group(&conn, "g1").unwrap();
+    let outcome = apply_group_key_snapshot(
+        &conn,
+        "g1",
+        "stranger",
+        "me",
+        "伪造名",
+        &["stranger".into(), "me".into()],
+        &[],
+        99,
+        true,
+        Some("forged-key"),
+    )
+    .unwrap();
+    assert!(!outcome.applied);
+    assert_eq!(get_setting(&conn, "gk:g1"), None);
+    let after = get_group(&conn, "g1").unwrap();
+    assert_eq!(after.name, before.name);
+    assert_eq!(after.creator, before.creator);
+    assert_eq!(after.members, before.members);
+    assert_eq!(after.admins, before.admins);
+    assert_eq!(get_clock(&conn, "group:g1"), 0);
+}
+
+#[test]
+fn admin_group_key_snapshot_cannot_remove_the_owner() {
+    let conn = db();
+    create_group(
+        &conn,
+        "g1",
+        "旧名",
+        "owner",
+        &["owner".into(), "me".into(), "admin".into()],
+    )
+    .unwrap();
+    add_group_admin(&conn, "g1", "admin").unwrap();
+    let before = get_group(&conn, "g1").unwrap();
+    let outcome = apply_group_key_snapshot(
+        &conn,
+        "g1",
+        "admin",
+        "me",
+        "伪造名",
+        &["admin".into(), "me".into()],
+        &[],
+        99,
+        true,
+        Some("forged-key"),
+    )
+    .unwrap();
+    assert!(!outcome.applied);
+    assert_eq!(get_setting(&conn, "gk:g1"), None);
+    let after = get_group(&conn, "g1").unwrap();
+    assert_eq!(after.name, before.name);
+    assert_eq!(after.creator, before.creator);
+    assert_eq!(after.members, before.members);
+    assert_eq!(after.admins, before.admins);
+    assert_eq!(get_clock(&conn, "group:g1"), 0);
+
+    let gossip = apply_group_gossip_snapshot(
+        &conn,
+        "g1",
+        "admin",
+        "owner",
+        "伪造名",
+        &["admin".into(), "me".into()],
+        true,
+    )
+    .unwrap();
+    assert!(!gossip.applied, "Gossip 权威成员表同样不许管理员移除群主");
+    assert_eq!(get_group(&conn, "g1").unwrap().members, before.members);
+
+    let raced = apply_group_gossip_snapshot(
+        &conn,
+        "g1",
+        "admin",
+        "owner",
+        "伪造名",
+        &["admin".into(), "me".into()],
+        false,
+    )
+    .unwrap();
+    assert!(
+        !raced.applied,
+        "事务内升为管理员后，旧 authoritative_members=false 不得绕过群主保留"
+    );
+    assert_eq!(get_group(&conn, "g1").unwrap().members, before.members);
+}
+
+#[test]
+fn gossip_group_snapshot_is_atomic_for_members_and_group_row() {
+    let conn = db();
+    conn.execute_batch(
+        "CREATE TRIGGER block_member_delete BEFORE DELETE ON group_members
+         BEGIN SELECT RAISE(ABORT, 'simulated member replace failure'); END;",
+    )
+    .unwrap();
+    let members = vec!["owner".to_string(), "me".to_string()];
+    assert!(
+        apply_group_gossip_snapshot(&conn, "g1", "owner", "owner", "群名", &members, true,)
+            .is_err()
+    );
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM groups"), 0);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM group_members"), 0);
 }
 
 /// 审计 P2 #24：`foreign_keys` 不能只写 `.ok()` —— 读回实际值并让失败进启动通知。

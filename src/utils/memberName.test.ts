@@ -3,7 +3,7 @@
  *
  * 每条都只换一个输入，成对交付：
  *  · 「查不到 ⇒ 未知成员」与「查得到 ⇒ 不出现未知成员」是一对；
- *  · 「备注优先」与「没有备注才轮到自报」是一对；
+ *  · 「好友昵称（跟随远端）优先」与「没有好友昵称才轮到自报」是一对；
  *  · 「自己用昵称」与「自己没昵称才写『我』」是一对。
  * 单独一条正例只能证明"它返回了点什么"，证明不了"顺序/兜底"这两件真正会错的事。
  */
@@ -33,14 +33,44 @@ test("尾巴位数：短 id 原样返回（不许把 'ab' 截成 'ab'以外的�
   assert.equal(memberIdTail("abcdefg"), "defg");
 });
 
-test("好友备注优先于对方自报的昵称", () => {
+test("好友昵称（跟随远端）优先于在线自报", () => {
   const name = resolveMemberName(OTHER, { selfId: SELF, friendNickname: "老王", peerNickname: "Wang-PC" }, TEXT);
   assert.equal(name, "老王");
 });
 
-test("没有备注时才轮到在线自报（只换 friendNickname 这一个输入）", () => {
+test("没有好友昵称时才轮到在线自报（只换 friendNickname 这一个输入）", () => {
   const name = resolveMemberName(OTHER, { selfId: SELF, peerNickname: "Wang-PC" }, TEXT);
   assert.equal(name, "Wang-PC");
+});
+
+test("显示层只声明跟随远端昵称，不再声称本地 alias", () => {
+  const at = (rel: string) => join(dirname(fileURLToPath(import.meta.url)), rel);
+  const profile = readFileSync(at("../components/FriendProfile.vue"), "utf8");
+  const memberName = readFileSync(at("./memberName.ts"), "utf8");
+  const notices = readFileSync(
+    at("../../src-tauri/src/network/transport/member_notices.rs"),
+    "utf8",
+  );
+  const rustTests = readFileSync(
+    at("../../src-tauri/src/network/transport/group_keys_tests.rs"),
+    "utf8",
+  );
+  const displaySources = [profile, memberName, notices, rustTests].join("\n");
+
+  assert.match(profile, /t\("friend\.profile\.nickname"\)/, "资料页必须用 i18n 标注昵称");
+  assert.match(profile, /t\("friend\.profile\.nicknameHint"\)/, "资料页必须明示昵称跟随远端");
+  assert.doesNotMatch(
+    displaySources,
+    /好友备注|我起的备注|本地备注|local\s+alias|friend_alias|prefers_local_alias/i,
+    "显示名实现与判据不能再把 friends.nickname 说成本地备注或 alias",
+  );
+  assert.equal(zhCN["friend.profile.nicknameHint"], "跟随远端昵称");
+  assert.equal(enUS["friend.profile.nicknameHint"], "Follows the remote nickname");
+  assert.doesNotMatch(
+    `${zhCN["friend.profile.nicknameHint"]}\n${enUS["friend.profile.nicknameHint"]}`,
+    /alias|remark|local\s+note/i,
+    "两种语言的提示都不能暗示本地另起名字",
+  );
 });
 
 test("空白值不算「有名字」：自报一个空格昵称必须落到未知成员那一支", () => {
@@ -78,7 +108,7 @@ test("上次也没见过 ⇒ 才落到未知成员（只换 snapshotNickname 这
   assert.ok(name.startsWith(TEXT.unknownMember), `空快照不该算"见过"，实际得到 ${JSON.stringify(name)}`);
 });
 
-test("本机备注压过上次见到的名字（备注是我起的，不该被缓存顶掉）", () => {
+test("好友昵称压过上次见到的名字（两者都来自远端，只是新鲜度不同）", () => {
   const name = resolveMemberName(OTHER, { selfId: SELF, friendNickname: "老王", snapshotNickname: "Wang-PC" }, TEXT);
   assert.equal(name, "老王");
 });

@@ -408,6 +408,62 @@ fn test_envelope(payload_len: usize, kind: GossipKind) -> GossipEnvelope {
 }
 
 #[test]
+fn receipt_identity_requires_the_same_sender_and_conversation() {
+    let identity = crate::db::MessageReceiptIdentity {
+        conv_id: "group:g1".into(),
+        sender_id: "a".into(),
+        receiver_id: "me".into(),
+    };
+    let mut env = test_envelope(1, GossipKind::Group);
+    env.group_id = Some("g1".into());
+    assert!(receipt_identity_matches(&identity, &env, "me"));
+
+    env.group_id = Some("g2".into());
+    assert!(!receipt_identity_matches(&identity, &env, "me"));
+    env.group_id = Some("g1".into());
+    env.sender_id = "other".into();
+    assert!(!receipt_identity_matches(&identity, &env, "me"));
+    env.sender_id = "a".into();
+    assert!(!receipt_identity_matches(&identity, &env, "other"));
+}
+
+#[test]
+fn receipt_identity_never_guesses_a_missing_group() {
+    let identity = crate::db::MessageReceiptIdentity {
+        conv_id: "group:g1".into(),
+        sender_id: "a".into(),
+        receiver_id: "me".into(),
+    };
+    let env = test_envelope(1, GossipKind::Group);
+    assert!(!receipt_identity_matches(&identity, &env, "me"));
+}
+
+#[test]
+fn mention_receipt_detection_matches_the_frontend_three_state_rules() {
+    assert!(gossip_mentions_me("text", "@所有人 看这里", None, "me", "Alice"));
+    assert!(gossip_mentions_me(
+        "text",
+        "@Alice 看这里",
+        Some(&["me".to_string()]),
+        "me",
+        "Alice"
+    ));
+    assert!(!gossip_mentions_me(
+        "text",
+        "@Alice 看这里",
+        Some(&[]),
+        "me",
+        "Alice"
+    ));
+    assert!(gossip_mentions_me("text", "@Alice 看这里", None, "me", "Alice"));
+    assert!(!gossip_mentions_me("text", "mail@Alice.com", None, "me", "Alice"));
+    assert!(!gossip_mentions_me("text", "@Alice丰", None, "me", "Alice"));
+    let todo = r#"{"todo_id":"t1","title":"task","assignees":["me"]}"#;
+    assert!(gossip_mentions_me("todo", todo, None, "me", "Alice"));
+    assert!(gossip_mentions_me("todo_update", todo, None, "me", "Alice"));
+}
+
+#[test]
 fn bulk_messages_are_only_large_chunks() {
     // 旧 is_bulk_message 的判据已迁移到 `dispatch::message_priority`（单一事实来源）。
     // 本测试保住的是**同一张真值表**：bulk ⇔ Low，且边界值不变。

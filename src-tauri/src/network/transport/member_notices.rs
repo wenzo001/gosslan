@@ -138,19 +138,19 @@ pub fn unknown_member_label(zh: bool, id: &str) -> String {
 ///
 /// 为什么必须和前端 `resolveMemberName` 逐格对齐（用户 2026-10-14：「名字同步，有时候还会显示
 /// 设备名，会变」）：显示名以前有**三个**家 —— 前端两份（4.38.2 已收成一份）加这一份。
-/// 旧顺序是「在线自报 → 请求里带的名字 → 好友备注 → **裸 device_id**」，于是同一屏上
-/// 消息气泡写我起的备注、群系统消息写他自报的昵称（=「会变」）；两个家都查不到时
+/// 旧顺序是「在线自报 → 请求里带的名字 → 好友昵称 → **裸 device_id**」，于是同一屏上
+/// 消息气泡写好友表里的远端昵称、群系统消息写另一份在线自报（=「会变」）；两个家都查不到时
 /// 落一串 `gosslan-xxxx` —— 而系统消息是**落库**的，对方后来改名也修不回历史那一条。
-/// 另有第三种形态：备注或请求里的名字是空串时旧代码原样返回空 ⇒「」加入了群聊。
+/// 另有第三种形态：好友昵称或请求里的名字是空串时旧代码原样返回空 ⇒「」加入了群聊。
 ///
-/// 顺序：本机自己 → 好友备注（我起的，最稳）→ 在线自报 → 好友请求带的名字 →
+/// 顺序：本机自己 → 好友表保存的远端昵称（跟随远端）→ 在线自报 → 好友请求带的名字 →
 /// 「未知成员 + id 后四位」。**永不返回裸 id、永不返回空串**（空 `id` 例外：那是
 /// "没有这个人"，调用方靠空串区分，与前端同一格）。
 pub fn pick_member_display_name(
     id: &str,
     self_id: &str,
     self_nickname: &str,
-    friend_alias: Option<&str>,
+    friend_nickname: Option<&str>,
     peer_report: Option<&str>,
     request_report: Option<&str>,
     zh: bool,
@@ -166,8 +166,8 @@ pub fn pick_member_display_name(
             n.to_string()
         };
     }
-    // 顺序就是这一行的书写顺序：备注 → 在线自报 → 请求里带的名字。取**第一个非空白**的那些。
-    if let Some(name) = [friend_alias, peer_report, request_report]
+    // 顺序就是这一行的书写顺序：好友表远端昵称 → 在线自报 → 请求里带的名字。取**第一个非空白**的那些。
+    if let Some(name) = [friend_nickname, peer_report, request_report]
         .into_iter()
         .flatten()
         .map(|v| v.trim())
@@ -197,7 +197,7 @@ pub fn resolve_nickname(state: &AppState, id: &str) -> String {
         .unwrap_or_else(|e| e.into_inner())
         .get(id)
         .map(|r| r.from_nickname.clone());
-    let friend_alias: Option<String> = db::get_friend(
+    let friend_nickname: Option<String> = db::get_friend(
         &state.db.lock().unwrap_or_else(|e| e.into_inner()),
         id,
     )
@@ -211,7 +211,7 @@ pub fn resolve_nickname(state: &AppState, id: &str) -> String {
         id,
         &state.device_id,
         &self_nickname,
-        friend_alias.as_deref(),
+        friend_nickname.as_deref(),
         peer_report.as_deref(),
         request_report.as_deref(),
         state.is_zh(),

@@ -8,6 +8,7 @@ import { ref } from "vue";
 import { api } from "@/api";
 import { StaleGuard } from "@/utils/staleGuard";
 import { createSingleFlight } from "@/utils/singleFlight";
+import { createTrailingRefresh } from "@/utils/trailingRefresh";
 import {
   foldTodos,
   isTodoRowsLoaded,
@@ -66,7 +67,7 @@ export function createTodosModule(ctx: ChatContext) {
   }
   /** 单调序号：只有最后一次发起的结果能落地（任务连着变时会话刷新会挨个追上来）。 */
   let openTodoSeq = 0;
-  async function refreshOpenTodos() {
+  async function refreshOpenTodosNow() {
     const myId = myDeviceId.value;
     // 身份还没就绪 ⇒ 什么都不做（既不清空也不点亮）：清成 0 会让徽标闪一下消失；
     // 拿空串去比对又会把 `creator: ""` 那类畸形载荷算成"与我相关"。
@@ -104,6 +105,12 @@ export function createTodosModule(ctx: ChatContext) {
       if (n > 0) next[cid] = n;
     }
     openTodoByConv.value = next;
+  }
+
+  // 与独立任务窗同一条 150ms 尾沿合并：20 条任务事件突发最多一次全表 IPC。
+  const openTodoRefresh = createTrailingRefresh(() => refreshOpenTodosNow());
+  function refreshOpenTodos() {
+    openTodoRefresh.schedule();
   }
 
   /** 按需补读某个群的任务行：冷启动只开任务窗、或身份未就绪时 bulk 读没跑成的情况。
@@ -212,7 +219,6 @@ export function createTodosModule(ctx: ChatContext) {
   }
 
   let groupTodosUnlisten: (() => void) | null = null;
-  let groupTodosTimer: number | null = null;
   /**
    * 切群竞态的唯一裁决者：`api.onMessageReceived` 是异步的，两次快速切群时
    * **先返回的那次会覆盖后返回的那次**，把新群的监听顶掉（每条消息多一次 reload，
@@ -232,37 +238,29 @@ export function createTodosModule(ctx: ChatContext) {
    */
   async function watchGroupTodos(groupId: string): Promise<() => void> {
     const convId = `group:${groupId}`;
-    const token = groupTodosWatchGuard.begin("groupTodos");
+    // 先让旧订阅用自己的令牌清掉旧 timer，再签发新令牌。
     groupTodosUnlisten?.();
     groupTodosUnlisten = null;
-    if (groupTodosTimer !== null) {
-      window.clearTimeout(groupTodosTimer);
-      groupTodosTimer = null;
-    }
+    const token = groupTodosWatchGuard.begin("groupTodos");
+    const refresh = createTrailingRefresh(() => reloadGroupTodoRows(groupId));
     const unlisten = await api.onMessageReceived((rec) => {
       if (rec.conv_id !== convId) return;
       // 订阅已过期（切群了）就不再为旧群排重读；监听本身会在下面立刻摘掉。
       if (!groupTodosWatchGuard.isCurrent("groupTodos", token)) return;
-      if (groupTodosTimer !== null) window.clearTimeout(groupTodosTimer);
-      groupTodosTimer = window.setTimeout(() => {
-        groupTodosTimer = null;
-        void reloadGroupTodoRows(groupId);
-      }, 150);
+      refresh.schedule();
     });
     if (!groupTodosWatchGuard.isCurrent("groupTodos", token)) {
       // 更晚的一次切换已经开始 ⇒ 本次结果整个丢弃，并立刻摘掉监听。
       // 不摘的话它会一直留在事件总线上，而且清理函数也再没人持有。
+      refresh.cancel();
       unlisten();
       return () => {};
     }
     groupTodosUnlisten = unlisten;
     return () => {
-      // 已被更晚的一次订阅取代时，共享的 timer 属于新群 —— 旧清理不许碰它。
+      // 已被更晚的一次订阅取代时，旧清理不许碰新订阅的 timer。
       if (groupTodosWatchGuard.isCurrent("groupTodos", token)) {
-        if (groupTodosTimer !== null) {
-          window.clearTimeout(groupTodosTimer);
-          groupTodosTimer = null;
-        }
+        refresh.cancel();
         groupTodosUnlisten = null;
       }
       unlisten();

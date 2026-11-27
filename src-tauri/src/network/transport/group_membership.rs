@@ -119,17 +119,23 @@ async fn handle_group_creator_changed(
     if !ok {
         return;
     }
-    {
+    let updated = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = db::set_group_creator(&dbc, &group_id, &to) {
-            crate::logging::log_write_failure(&state.logger, "set_group_creator", e);
-        }
+        db::set_group_creator(&dbc, &group_id, &to).is_ok()
+    };
+    if !updated {
+        state.logger.warn(
+            "group",
+            format!("code=GROUP_CREATOR_WRITE_FAILED group={group_id} to={to}"),
+        );
+        return;
     }
     // 群内提示：转让成功了但群里没人知道，等于"群主静默换人"（见 group_creator_changed_text）。
     // 幂等由上面的 `ok` 判据保证：第二次收到同一条转让时 `g.creator == from` 已不成立。
     let name = resolve_nickname(state, &to);
     insert_group_system_message(state, &group_id, &group_creator_changed_text(state, &name));
     let _ = state.app.emit("groups-updated", &group_id);
+    replay_pending_recalls_for_group(state, &group_id).await;
 }
 
 /// 处理「成员主动退群」：把 `from` 从本地成员表移除（幂等）。

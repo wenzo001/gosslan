@@ -646,6 +646,39 @@ fn finish_boot(app: &tauri::AppHandle, state: std::sync::Arc<state::AppState>) {
     // warn 级、带阈值、空窗口不产行）；跨文件数总量的那条判据在 `db_hold.rs`。
     // 定期清扫过期的 .part 断点前缀（审计 §7 风险 2）：启动后立即一次，之后每小时一次。
     spawn_part_sweeper(&state);
+    {
+        let st = state.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let groups = {
+                let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                if let Err(e) = crate::db::sweep_pending_group_recalls(&dbc, crate::db::now_ms()) {
+                    st.logger
+                        .warn("chat", format!("code=RECALL_REPLAY_SWEEP_FAILED err={e}"));
+                    return;
+                }
+                crate::db::list_pending_recall_groups(&dbc, crate::db::now_ms())
+            };
+            match groups {
+                Ok(groups) => {
+                    for conv_id in groups {
+                        if let Some(group_id) = conv_id.strip_prefix("group:") {
+                            crate::network::transport::replay_pending_recalls_for_group(
+                                &st, group_id,
+                            )
+                            .await;
+                        }
+                    }
+                }
+                Err(e) => {
+                    st.logger.warn(
+                        "chat",
+                        format!("code=RECALL_REPLAY_STARTUP_READ_FAILED err={e}"),
+                    );
+                }
+            }
+        });
+    }
     // 通知机器人的取件轮询（2026-11-16）：外部系统发一条 ⇒ 本机**自动**收到。
     // 只在应用运行时（进程内任务 ⇒ 退出即停）；只拉启用中的机器人。
     // ⚠️ 刻意**不**进受监督名单：它死了的代价只是「通知不再自动进来」，
@@ -989,6 +1022,7 @@ pub fn run() {
             commands::get_conversations,
             commands::ensure_conversation,
             commands::set_conversation_pinned,
+            commands::get_active_mention_convs,
             commands::mark_read,
             commands::delete_conversation,
             commands::create_group,

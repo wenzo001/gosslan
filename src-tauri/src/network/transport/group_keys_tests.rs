@@ -289,20 +289,19 @@
     // ---------- 显示名判据（与前端 utils/memberName.ts 同一顺序、同一兜底） ----------
     //
     // ⚠️ 别把这一族和上面那条「公钥 peers 优先」混为一谈：公钥要的是**最新那一份**，
-    // 名字要的是**我起的那一个**（用户 2026-10-14：「名字同步，有时候还会显示设备名，会变」）。
-    // 两个方向相反，合成一个口径会一边对一边错。
+    // 名字要的是**跟随远端昵称**。两个方向相反，合成一个口径会一边对一边错。
     //
     // 旧实现返回 `device_id` 原文，而群系统消息是**落库**的 ⇒ 一串 `gosslan-xxxx` 永久留在时间线里。
     #[test]
-    fn display_name_prefers_local_alias_over_self_report() {
-        // 「会变」那一半：对方改自报昵称，不该盖掉我给他起的备注。
-        let zh = |alias: Option<&str>, peer: Option<&str>| {
-            pick_member_display_name("gosslan-abcdef12", "me", "", alias, peer, None, true)
+    fn display_name_prefers_stored_remote_nickname_over_live_report() {
+        // 好友表保存的远端昵称与在线自报是两份远端读数；前者优先，避免显示面来回切换。
+        let friend = |nickname: Option<&str>, peer: Option<&str>| {
+            pick_member_display_name("gosslan-abcdef12", "me", "", nickname, peer, None, true)
         };
-        assert_eq!(zh(Some("阿强"), Some("Q")), "阿强");
-        // 只换这一个输入：备注缺席时才轮到对方自报（反向对照，防止把优先级写反）。
-        assert_eq!(zh(None, Some("Q")), "Q");
-        assert_eq!(zh(Some(""), Some("Q")), "Q");
+        assert_eq!(friend(Some("阿强"), Some("Q")), "阿强");
+        // 只换这一个输入：好友昵称缺席时才轮到对方自报（反向对照，防止把优先级写反）。
+        assert_eq!(friend(None, Some("Q")), "Q");
+        assert_eq!(friend(Some(""), Some("Q")), "Q");
     }
 
     #[test]
@@ -332,7 +331,7 @@
             true,
         );
         assert_eq!(r, "未知成员 ef12");
-        // 反证：只把备注换成真名字，就必须用备注（证明上面那格不是恒落兜底）。
+        // 反证：只把好友昵称换成真名字，就必须用好友昵称（证明上面那格不是恒落兜底）。
         assert_eq!(
             pick_member_display_name("gosslan-abcdef12", "me", "", Some("阿强"), Some("\t"), None, true),
             "阿强"

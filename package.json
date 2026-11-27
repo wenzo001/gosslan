@@ -1,7 +1,7 @@
 {
   "name": "gosslan",
   "private": true,
-  "version": "7.4.3",
+  "version": "7.4.5",
   "type": "module",
   "description": "Gosslan — 无服务器 P2P 局域网即时通讯（Tauri v2 + Vue 3 + TypeScript）",
   "scripts": {
@@ -24,6 +24,8 @@
     "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning \"src/**/*.test.ts\" \"scripts/*.test.ts\"",
     "cargo:clean": "node scripts/cargo-clean.mjs",
     "test:ui-runtime": "node scripts/check-ui-runtime.mjs",
+    "test:ui-scroll:win": "node scripts/check-ui-scroll-win.mjs",
+    "test:ui-scroll:win:selfproof": "node scripts/check-ui-scroll-win.mjs --selfproof",
     "tauri": "tauri",
     "icon": "node scripts/build-app-icons.mjs",
     "version:show": "node scripts/version.mjs show",
@@ -61,6 +63,7 @@
     "test:e2e:negative": "node scripts/e2e-multi-instance.mjs --negative",
     "test:fault-injection": "node scripts/e2e-multi-instance.mjs --fault=poison-part",
     "test:e2e:group": "node scripts/e2e-multi-instance.mjs --round=group",
+    "test:e2e:group-ackdrop": "node scripts/e2e-multi-instance.mjs --round=group-ackdrop",
     "test:e2e:group-selfproof": "node scripts/e2e-multi-instance.mjs --round=group-lie",
     "test:e2e:groupcrash": "node scripts/e2e-multi-instance.mjs --round=groupcrash",
     "test:e2e:groupcrash-selfproof": "node scripts/e2e-multi-instance.mjs --round=groupcrash-lie",

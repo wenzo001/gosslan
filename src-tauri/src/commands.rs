@@ -60,7 +60,7 @@ use crate::export;
 use crate::logging::LogEntry;
 use crate::network::transport::{
     broadcast_gossip, get_group_key, mark_pending_group_key, maybe_update_friend,
-    resolve_member_x25519, resolve_nickname, try_send,
+    resolve_effective_x25519, resolve_nickname, try_send,
 };
 use crate::network::{self, file};
 use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry};

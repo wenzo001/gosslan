@@ -596,6 +596,7 @@ pub async fn clear_all_data(
     let mut cleared: u64 = 0;
     for table in [
         "messages",
+        "mention_receipts",
         "message_render",
         "conversations",
         "outbox",
@@ -611,6 +612,7 @@ pub async fn clear_all_data(
         // （撤回账本还是**只增不减**的 G-Set，不清就永远跟在这台设备上）。审计 B3-F2。
         "group_file_acks",
         "group_recalled_messages",
+        "pending_group_recalls",
         "group_members",
         "group_admins",
         "groups",

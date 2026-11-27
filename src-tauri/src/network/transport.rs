@@ -30,7 +30,7 @@ use crate::db;
 use crate::db_hold::note_tx;
 use crate::discovery::routed::{parse_endpoints, ROUTED_ENDPOINTS_KEY};
 use crate::logging::log_throttled;
-use crate::mesh::router::{ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
+use crate::mesh::router::{DropReason, ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
 use crate::mesh::{
     Endpoint as MeshEndpoint, PathKind, PeerCandidate, PeerIdentity, PeerOnlineState,
 };
@@ -1407,6 +1407,7 @@ fn announced_on(inserted: &Result<bool, rusqlite::Error>) -> bool {
 
 /// 是否允许向发送方回 Ack。重复（`Ok(false)`）允许——消息确已在库；
 /// 真数据库错误（`Err`）不允许——否则 outbox 被删，消息永久丢失。
+#[cfg(test)]
 fn may_ack(inserted: &Result<bool, rusqlite::Error>) -> bool {
     !inserted.is_err()
 }
@@ -1454,7 +1455,6 @@ async fn handle_group_key(
         db::get_group(&dbc, &group_id)
     };
     // 管理员名单只认群主帧（首次接触按 TOFU）；管理员踢人帧携带的名单不覆盖本地任免。
-    let from_is_owner = known_group.as_ref().map_or(true, |g| g.creator == from);
     if let Some(group) = &known_group {
         if !group.is_manager(&from) {
             // 群资料/密钥仍只认群主（下面那批写入一概不做），但**逻辑时钟谁都能推进**：每一帧
@@ -1477,11 +1477,17 @@ async fn handle_group_key(
     if !members.iter().any(|m| m == &from) || !members.iter().any(|m| m == &to) {
         return;
     }
-    let pubkey = {
-        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        peers.get(&from).and_then(|p| p.x25519_pubkey.clone())
+    let pubkey = match resolve_effective_x25519(state, &from) {
+        Ok(Some(pubkey)) => pubkey,
+        Ok(None) => return,
+        Err(e) => {
+            state.logger.warn(
+                "group",
+                format!("code=GROUP_KEY_SENDER_READ_FAILED group={group_id} peer={from} err={e}"),
+            );
+            return;
+        }
     };
-    let Some(pubkey) = pubkey else { return };
     let Some(shared) = state.identity.dh(&pubkey) else {
         return;
     };
@@ -1496,24 +1502,12 @@ async fn handle_group_key(
     }
     let mut k = [0u8; 32];
     k.copy_from_slice(&raw);
-    state
-        .group_keys
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(group_id.clone(), k);
-    {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(k)) {
-            crate::logging::log_write_failure(&state.logger, "set_setting", e);
-        }
-    }
     // 建本地群记录：没有它，收到群消息时群名只能兜底成「群聊 g-xxxx」，
     // 成员面板也会为空。成员列表补上自己，保证与创建者一致。
     let mut all = members;
     if !all.contains(&state.device_id) {
         all.push(state.device_id.clone());
     }
-    let conv_id = format!("group:{group_id}");
     // 收到过群名才同步到会话行：空名会走下面的兜底，把「群聊 g-xxxx」这种占位名写进会话标题
     // 就是在制造新故障。判空要在 `group_name` 被搬进 `display_name` **之前**取（否则这里就动了搬走后的值）。
     let got_group_name = !group_name.is_empty();
@@ -1522,65 +1516,49 @@ async fn handle_group_key(
     } else {
         group_name
     };
-    {
+    let snapshot = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        // 写失败必须留痕（审计 P1 #4）：`.ok()` 吞掉后，「群资料没同步上」与
-        // 「网络没收到」在日志里不可区分，而界面上的不一致（群名/成员表半写）不会自愈。
-        if let Err(e) = db::upsert_group(&dbc, &group_id, &display_name, &from, &all) {
-            state.logger.warn(
-                "group",
-                format!("code=GROUP_SYNC_WRITE_FAILED op=upsert group={group_id} err={e}"),
-            );
+        let result = db::apply_group_key_snapshot(
+            &dbc,
+            &group_id,
+            &from,
+            &state.device_id,
+            &display_name,
+            &all,
+            &admins,
+            clock,
+            got_group_name,
+            Some(&STANDARD.encode(k)),
+        );
+        if matches!(&result, Ok(outcome) if outcome.applied) {
+            state
+                .group_keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(group_id.clone(), k);
         }
-        // 本函数上方已拒绝 `from != known_group.creator`；首次接触也只有发送方能提供成员表。
-        // 因此这里是群主的权威成员表：整体替换，清掉离线期间漏收退群帧留下的旧成员。
-        // （`upsert_group` 的 INSERT OR IGNORE 只增不减，不能单独用来收敛。）
-        if let Err(e) = db::replace_group_members(&dbc, &group_id, &all) {
-            state.logger.warn(
-                "group",
-                format!("code=GROUP_SYNC_WRITE_FAILED op=members group={group_id} err={e}"),
-            );
-        }
-        // 管理员名单只由**群主**帧权威替换（任免权归群主）；管理员踢人帧虽携带名单，
-        // 但不覆盖本地——否则管理员就能借踢人帧自我提权/任免他人。首次接触按 TOFU 采信。
-        if from_is_owner {
-            if let Err(e) = db::replace_group_admins(&dbc, &group_id, &admins) {
-                state.logger.warn(
-                    "group",
-                    format!("code=GROUP_SYNC_WRITE_FAILED op=admins group={group_id} err={e}"),
-                );
+        result
+    };
+    match snapshot {
+        Ok(outcome) if outcome.applied => {
+            let _ = state.app.emit("groups-updated", &group_id);
+            replay_pending_recalls_for_group(state, &group_id).await;
+            if outcome.first_membership {
+                crate::network::group_history::note_new_membership(state, &group_id);
             }
         }
-        // ★ 会话标题跟着群资料走（负责人 2026-10-10 拍板的 #22）：群主改名时**离线**的成员
-        // 此前要等群主下次在群里说话才看得到新名 —— 而新名其实**早就到了他机器上**
-        // （`pending_keys` 重递带的是当前名，本函数也已把它写进 `groups`），缺的只有这一格。
-        //
-        // 用 `rename_group` 而不是自己写 SQL：它是"群名同步"唯一的那个家（群主本机改名、
-        // 改名帧到达、这里的关系同步三条路共用一份），而它更新会话行用的是 `UPDATE` ——
-        // **没有会话行时一个字都不写**，所以下面那条"关系同步不得创建会话"的不变量原样成立。
-        if got_group_name {
-            if let Err(e) = db::rename_group(&dbc, &group_id, &display_name) {
-                state.logger.warn(
-                    "group",
-                    format!("code=GROUP_SYNC_WRITE_FAILED op=rename group={group_id} err={e}"),
-                );
-            }
+        Ok(_) => {
+            state.logger.warn(
+                "group",
+                format!("code=GROUP_SYNC_REJECTED group={group_id} sender={from} —— 事务内复核未通过，未写群快照"),
+            );
         }
-        // 群关系同步（GroupKey / 群成员 / 群密钥 / 群名）只更新 groups / group_members（+ 上面
-        // 已存在会话行的标题），**不得创建 conversation**：conversation 是「聊天会话索引」，只能由聊天活动驱动
-        // （收到新群消息 → insert_message → touch_conversation）。否则用户清库重装后仅凭
-        // 群关系同步，群聊就会凭空重新出现在聊天列表（关系同步 ≠ 聊天同步）。
-        if let Err(e) = db::observe_clock(&dbc, &conv_id, clock) {
-            crate::logging::log_write_failure(&state.logger, "observe_clock", e);
+        Err(e) => {
+            state.logger.warn(
+                "group",
+                format!("code=GROUP_SYNC_WRITE_FAILED op=snapshot group={group_id} err={e} —— 五写与时钟已整体回滚"),
+            );
         }
-    }
-    let _ = state.app.emit("groups-updated", &group_id);
-    // 第一次成为这个群的成员 ⇒ 记一个"欠一份群历史"的标记并立刻试一趟
-    //（负责人 2026-10-16：新进群的人要自动拿到群里的聊天与群任务）。
-    // 喊话放在两个 emit **之后**：`note_new_membership` 自己会取 db 锁，
-    // 而 INV-P25 那条规矩就是"持锁不许 emit"—— 顺序写反了就把这条纪律还回去了。
-    if known_group.is_none() {
-        crate::network::group_history::note_new_membership(state, &group_id);
     }
 }
 
@@ -1599,17 +1577,18 @@ pub async fn get_group_key(state: &AppState, group_id: &str) -> Option<[u8; 32]>
     {
         return Some(*k);
     }
-    let key_b64 = {
+    let arr = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_setting(&dbc, &format!("gk:{group_id}"))
-    }?;
-    let bytes = STANDARD.decode(key_b64).ok()?;
-    let arr: [u8; 32] = bytes.try_into().ok()?;
-    state
-        .group_keys
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(group_id.to_string(), arr);
+        let key_b64 = db::get_setting(&dbc, &format!("gk:{group_id}"))?;
+        let bytes = STANDARD.decode(key_b64).ok()?;
+        let arr: [u8; 32] = bytes.try_into().ok()?;
+        state
+            .group_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(group_id.to_string(), arr);
+        arr
+    };
     Some(arr)
 }
 

@@ -162,6 +162,56 @@ pub struct BotCreatedView {
     pub endpoint: String,
 }
 
+const BOT_LIST_CACHE_MS: i64 = 1_000;
+
+#[derive(Default)]
+struct BotListCacheState {
+    generation: u64,
+    value: Option<(i64, Vec<BotView>)>,
+}
+
+impl BotListCacheState {
+    fn cached(&self, now: i64) -> Option<Vec<BotView>> {
+        self.value
+            .as_ref()
+            .and_then(|(at, views)| (now.saturating_sub(*at) < BOT_LIST_CACHE_MS).then(|| views.clone()))
+    }
+
+    fn store_if_current(&mut self, generation: u64, now: i64, views: Vec<BotView>) {
+        if self.generation == generation {
+            self.value = Some((now, views));
+        }
+    }
+
+    fn invalidate(&mut self) {
+        self.generation = self.generation.saturating_add(1);
+        self.value = None;
+    }
+}
+
+struct BotListCache {
+    gate: tokio::sync::Mutex<()>,
+    state: std::sync::Mutex<BotListCacheState>,
+}
+
+static BOT_LIST_CACHE: std::sync::OnceLock<BotListCache> = std::sync::OnceLock::new();
+
+fn bot_list_cache() -> &'static BotListCache {
+    BOT_LIST_CACHE.get_or_init(|| BotListCache {
+        gate: tokio::sync::Mutex::new(()),
+        state: std::sync::Mutex::new(BotListCacheState::default()),
+    })
+}
+
+fn invalidate_bot_list_cache() {
+    bot_list_cache().state.lock().unwrap_or_else(|e| e.into_inner()).invalidate();
+}
+
+fn publish_bot_change(app: &tauri::AppHandle, bot_id: &str) {
+    invalidate_bot_list_cache();
+    let _ = app.emit("bot-changed", serde_json::json!({ "bot_id": bot_id }));
+}
+
 // ---------------- HTTP（与服务端对话） ----------------
 
 fn bot_client() -> Result<reqwest::Client, String> {
@@ -379,6 +429,7 @@ pub async fn bot_create(
     let view = BotView::from(&record);
     // 落库：写库失败 ⇒ 服务端那个机器人也一并撤销（别留一个孤儿机器人）。
     let s = state.inner().clone();
+    let app = s.app.clone();
     let conv_id_for_new = if scope_norm == "personal" {
         Some(format!("bot:{}", bot_id))
     } else { None };
@@ -404,6 +455,7 @@ pub async fn bot_create(
         ));
     }
 
+    publish_bot_change(&app, &bot_id);
     // ⚠️ 发送密钥**只在这里返回一次**：之后列表接口不再回显（前端要用户当场复制）。
     Ok(BotCreatedView {
         bot: view,
@@ -417,6 +469,16 @@ pub async fn bot_create(
 /// 机器人列表（**不含任何密钥**）。
 #[tauri::command(async)]
 pub async fn bot_list(state: State<'_, Arc<AppState>>) -> Result<Vec<BotView>, String> {
+    let cache = bot_list_cache();
+    let _gate = cache.gate.lock().await;
+    let now = crate::logging::now_ms();
+    let (cached, generation) = {
+        let state = cache.state.lock().unwrap_or_else(|e| e.into_inner());
+        (state.cached(now), state.generation)
+    };
+    if let Some(views) = cached {
+        return Ok(views);
+    }
     let s = state.inner().clone();
     let records = tokio::task::spawn_blocking(move || -> Result<Vec<BotRecord>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -424,7 +486,13 @@ pub async fn bot_list(state: State<'_, Arc<AppState>>) -> Result<Vec<BotView>, S
     })
     .await
     .map_err(|e| format!("读取任务中断：{e}"))??;
-    Ok(records.iter().map(BotView::from).collect())
+    let views: Vec<BotView> = records.iter().map(BotView::from).collect();
+    cache
+        .state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .store_if_current(generation, crate::logging::now_ms(), views.clone());
+    Ok(views)
 }
 
 /// 免打扰（只影响系统通知/任务栏闪烁，不影响进会话与未读角标）。
@@ -435,6 +503,7 @@ pub async fn bot_set_dnd(
     enabled: bool,
 ) -> Result<BotView, String> {
     let s = state.inner().clone();
+    let app = s.app.clone();
     // 字段级更新：一次 spawn_blocking 内持锁读改写，不与轮询统计互相覆盖。
     let bid = bot_id.clone();
     let record = tokio::task::spawn_blocking(move || -> Result<Option<BotRecord>, String> {
@@ -446,6 +515,7 @@ pub async fn bot_set_dnd(
     let Some(record) = record else {
         return Err(crate::error_codes::coded(crate::error_codes::BOT_NOT_FOUND, "机器人不存在"));
     };
+    publish_bot_change(&app, &bot_id);
     Ok(BotView::from(&record))
 }
 
@@ -460,6 +530,7 @@ pub async fn bot_set_status(
 ) -> Result<BotView, String> {
     let next = normalize_bot_status(&status)?;
     let s = state.inner().clone();
+    let app = s.app.clone();
     // 读机器人：进阻塞池（等 DB 锁不该占住 tokio worker —— R-18 棘轮）。
     let record = {
         let sd = s.clone();
@@ -548,6 +619,7 @@ pub async fn bot_set_status(
     })
     .await
     .map_err(|e| format!("保存任务中断：{e}"))??;
+    publish_bot_change(&app, &bot_id);
     Ok(view)
 }
 
@@ -597,12 +669,16 @@ pub async fn bot_report_action_error(
     reason: String,
 ) -> Result<(), String> {
     let s = state.inner().clone();
+    let app = s.app.clone();
+    let bid = bot_id.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        write_bot_last_error(&dbc, &bot_id, &reason)
+        write_bot_last_error(&dbc, &bid, &reason)
     })
     .await
-    .map_err(|e| format!("记录任务中断：{e}"))?
+    .map_err(|e| format!("记录任务中断：{e}"))??;
+    publish_bot_change(&app, &bot_id);
+    Ok(())
 }
 
 /// 用户编辑机器人名字 / 头像（2026-11-17）。
@@ -618,7 +694,7 @@ pub async fn bot_set_profile(
     server_url: Option<String>,
 ) -> Result<BotView, String> {
     let s = state.inner().clone();
-    let app_emit = s.app.clone();
+    let app = s.app.clone();
     let clean_name: String = name.trim().chars().take(BOT_NAME_MAX).collect();
     if clean_name.is_empty() {
         return Err(crate::error_codes::coded(
@@ -665,8 +741,7 @@ pub async fn bot_set_profile(
     })
     .await
     .map_err(|e| format!("保存任务中断：{e}"))??;
-    // 广播给界面：通讯录列表 / 群成员面板都据此重拉（用户 2026-11-18：改头像后列表没同步）。
-    let _ = app_emit.emit("bot-changed", serde_json::json!({ "bot_id": view.bot_id }));
+    publish_bot_change(&app, &view.bot_id);
     Ok(view)
 }
 
@@ -760,6 +835,7 @@ pub async fn bot_delete(
     })
     .await
     .map_err(|e| format!("删除任务中断：{e}"))??;
+    publish_bot_change(&s.app, &bot_id);
     Ok(())
 }
 
@@ -899,12 +975,15 @@ async fn pull_bot_once(s: &Arc<AppState>, bot_id: &str, wait_secs: u64) -> Resul
         let failed = outcome.failed;
         let last_ev = if pulled > 0 { Some(db::now_ms()) } else { None };
         let last_err = if failed > 0 { Some(format!("{failed} 条投递失败")) } else { None };
-        let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let stats_changed = tokio::task::spawn_blocking(move || -> Result<bool, String> {
             let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
             db::update_bot_poll_stats(&dbc, &bid, pulled, failed, last_ev, last_err)
                 .map_err(|e| format!("保存机器人统计失败：{e}"))
         })
         .await;
+        if matches!(stats_changed, Ok(Ok(true))) {
+            publish_bot_change(&s.app, &bot_id);
+        }
     }
     Ok(outcome)
 }
@@ -1284,15 +1363,21 @@ pub fn spawn_bot_poller(state: &Arc<AppState>) -> tauri::async_runtime::JoinHand
                         let sd2 = sd.clone();
                         let bid2 = bid.clone();
                         let reason = e.clone();
-                        let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                        let error_saved = tokio::task::spawn_blocking(move || -> Result<bool, String> {
                             let dbc = sd2.db.lock().unwrap_or_else(|x| x.into_inner());
                             let mut rec = match db::load_bot(&dbc, &bid2) {
                                 Ok(Some(r)) => r,
-                                _ => return Ok(()),
+                                _ => return Ok(false),
                             };
-                            rec.last_error = Some(reason.chars().take(200).collect());
-                            db::save_bot(&dbc, &rec).map_err(|x| format!("记录轮询错误失败：{x}"))
+                            let reason = reason.chars().take(200).collect::<String>();
+                            let changed = rec.last_error.as_deref() != Some(reason.as_str());
+                            rec.last_error = Some(reason);
+                            db::save_bot(&dbc, &rec).map_err(|x| format!("记录轮询错误失败：{x}"))?;
+                            Ok(changed)
                         }).await;
+                        if matches!(error_saved, Ok(Ok(true))) {
+                            publish_bot_change(&sd.app, &bid);
+                        }
                     }
                 }
             }
@@ -1366,6 +1451,34 @@ mod bot_cmd_tests {
         // 机器人不存在 ⇒ 静默跳过，不报错（避免把已删记录 resurrect）。
         assert!(write_bot_last_error(&conn, "missing_bot", "x").is_ok());
         assert!(db::load_bot(&conn, "missing_bot").unwrap().is_none());
+    }
+
+    #[test]
+    fn stale_bot_list_read_cannot_refill_after_invalidation() {
+        let mut state = BotListCacheState::default();
+        let generation = state.generation;
+        let views = vec![BotView::from(&sample_bot())];
+        state.invalidate();
+        state.store_if_current(generation, 1, views.clone());
+        assert!(state.value.is_none(), "失效前的旧 DB 读不得回填新缓存");
+        let current = state.generation;
+        state.store_if_current(current, 1, views);
+        assert!(state.value.is_some(), "当前代读仍可正常回填");
+    }
+
+    #[test]
+    fn poll_stats_report_only_visible_changes() {
+        let conn = test_db();
+        let mut rec = sample_bot();
+        rec.pending = 3;
+        rec.failed = 2;
+        rec.last_error = Some("旧错误".into());
+        db::save_bot(&conn, &rec).unwrap();
+
+        assert!(db::update_bot_poll_stats(&conn, "bot_1", 0, 0, None, None).unwrap());
+        assert!(!db::update_bot_poll_stats(&conn, "bot_1", 0, 0, None, None).unwrap());
+        assert!(db::update_bot_poll_stats(&conn, "bot_1", 1, 1, Some(10), None).unwrap());
+        assert!(!db::update_bot_poll_stats(&conn, "bot_1", 1, 1, Some(10), None).unwrap());
     }
 
     /// 审计：URL parser 必须挡住 userinfo / query / fragment / 非法端口 / 路径。
@@ -1508,6 +1621,43 @@ mod bot_cmd_tests {
         let prod = &src[..src.find("mod bot_cmd_tests").unwrap_or(src.len())];
         let at = prod.find("只有群主或管理员可以在群里添加机器人").expect("没有群权限校验");
         assert!(prod[..at].contains("g.creator == me || g.admins.contains(&me)"), "群权限判定错了");
+    }
+
+    #[test]
+    fn bot_list_cross_window_calls_share_one_backend_cache() {
+        let src = include_str!("bots.rs");
+        let prod = &src[..src.find("mod bot_cmd_tests").unwrap_or(src.len())];
+        let start = prod.find("pub async fn bot_list(").expect("缺机器人列表命令");
+        let rest = &prod[start..];
+        let end = rest.find("/// 免打扰").expect("列表命令边界漂移");
+        let list = &rest[..end];
+        assert!(list.contains("cache.gate.lock().await"), "跨窗口并发列表必须共用单飞闸");
+        assert!(prod.contains("BOT_LIST_CACHE_MS"), "列表缓存必须有明确时效，不能永久陈旧");
+        assert!(list.contains("state.cached(now)"), "缓存命中必须走统一状态");
+        assert!(list.contains("store_if_current(generation"), "旧 DB 读不得在失效后回填缓存");
+        assert!(list.contains("db::list_bots("), "缓存未命中必须真读库");
+        assert_eq!(prod.matches("publish_bot_change(&").count(), 8,
+            "创建/DND/状态/动作错误/资料/删除/轮询统计/轮询错误八条写路径必须广播");
+    }
+
+    #[test]
+    fn polling_writes_invalidate_and_broadcast_visible_bot_changes() {
+        let src = include_str!("bots.rs");
+        let prod = &src[..src.find("mod bot_cmd_tests").unwrap_or(src.len())];
+        let pull_start = prod.find("async fn pull_bot_once(").expect("缺单次取件函数");
+        let pull_end = prod[pull_start..].find("/// 一次取件的计数").unwrap() + pull_start;
+        let pull = &prod[pull_start..pull_end];
+        let write = pull.find("db::update_bot_poll_stats(").unwrap();
+        let publish = pull.find("publish_bot_change(&s.app").unwrap();
+        assert!(write < publish, "统计写成功后才允许失效列表缓存并广播");
+        assert!(prod.contains("fn publish_bot_change("), "缺统一失效与广播出口");
+        assert!(prod.contains("invalidate_bot_list_cache();"), "统一出口必须失效后端缓存");
+        assert!(prod.contains("emit(\"bot-changed\""), "统一出口必须广播给所有 Query 消费者");
+
+        let poll_start = prod.find("pub fn spawn_bot_poller(").expect("缺轮询 worker");
+        let poll_end = prod[poll_start..].find("/// 长轮询等待上限").unwrap() + poll_start;
+        let poll = &prod[poll_start..poll_end];
+        assert!(poll.contains("publish_bot_change(&sd.app"), "轮询错误写库后必须失效列表缓存并广播");
     }
 
     #[test]

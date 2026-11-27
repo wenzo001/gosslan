@@ -130,6 +130,7 @@ pub(crate) async fn handle_group_file_cancel(
                     status: None,
                 },
             );
+            file::emit_group_file_activity(state, &transfer_id);
         }
         state.logger.info(
             "group_file",
@@ -177,6 +178,7 @@ pub(crate) async fn handle_group_file_cancel(
                 status: None,
             },
         );
+        file::emit_group_file_activity(state, &transfer_id);
         state.logger.info(
             "group_file",
             format!("发送方取消了这一格，本机已停手 transfer={transfer_id} stopped={stopped}"),
@@ -979,6 +981,7 @@ fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str, reaso
             },
         );
     }
+    file::emit_group_file_activity(state, transfer_id);
     state.logger.warn(
         "group_file",
         format!(
@@ -1246,6 +1249,7 @@ async fn handle_group_file_done(
                     },
                 );
             }
+            file::emit_group_file_activity(state, &transfer_id);
             send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
             return;
         }
@@ -1410,6 +1414,7 @@ async fn handle_group_file_done(
                 path: final_path.to_string_lossy().to_string(),
             },
         );
+        file::emit_group_file_activity(state, &transfer_id);
     }
     // 完成确认：无论 ACK 发送成败，file_key 已清理不再保留（ACK 丢失由后续阶段处理）
     send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, true).await;

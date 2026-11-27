@@ -34,6 +34,7 @@ import {
   invalidateGroupFiles,
 } from "@/utils/groupFilesQuery";
 import { groupFileCancelSide } from "@/utils/groupFileCancel";
+import { groupFileActivityMatches } from "@/utils/groupFileActivity";
 import { cancelOutcome, fileCancelKey } from "@/utils/cancelFeedback";
 import { PANEL_QUERY_POLICY } from "@/utils/panelQuery";
 import { createInitScope, type InitScope } from "@/utils/initScope";
@@ -131,9 +132,9 @@ watch(
     const scope = createInitScope();
     activityScope = scope;
     api
-      .onGroupFileActivity(() => {
+      .onGroupFileActivity((event) => {
         const gid = props.groupId;
-        if (gid) void invalidateGroupFiles(queryClient, gid);
+        if (groupFileActivityMatches(event, gid)) void invalidateGroupFiles(queryClient, gid);
       })
       .then((unlisten) => scope.onDispose(unlisten))
       .catch(() => {

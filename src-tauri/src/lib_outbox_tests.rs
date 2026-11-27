@@ -459,6 +459,40 @@ fn ack_commit_uses_the_single_transaction_helper() {
     );
 }
 
+#[test]
+fn duplicate_receipts_are_wired_through_the_checked_identity_fast_path() {
+    let src = crate::network::transport_src_for_guards();
+    let gossip = rust_fn_body(&src, "async fn handle_gossip(");
+    assert_eq!(
+        gossip.matches("ack_persisted_gossip(state, &env).await").count(),
+        2,
+        "Mesh 与业务两层重复路径都必须进入持久化身份快路径"
+    );
+    assert_eq!(
+        gossip.matches("send_gossip_receipt(state, &env).await").count(),
+        1,
+        "正常落库后的 Ack 必须与重复快路径共用同一个发送出口"
+    );
+
+    let fast = rust_fn_body(&src, "async fn ack_persisted_gossip(");
+    assert!(fast.contains("db::message_receipt_identity("));
+    assert!(fast.contains("receipt_identity_matches("));
+    assert!(!fast.contains("message_exists("), "只查 msg_id 会跨会话误确认");
+
+    let direct = rust_fn_body(&src, "async fn handle_messaging_arm(");
+    assert!(direct.contains("db::message_receipt_identity("));
+    assert!(!direct.contains("db::message_exists("), "直连重复路径也必须核对完整身份");
+
+    let sender = rust_fn_body(&src, "async fn send_gossip_receipt(");
+    assert!(sender.contains("GOSSLAN_E2E_DROP_FIRST_GOSSIP_ACK"));
+    assert!(sender.contains("compare_exchange("));
+    assert_eq!(
+        src.matches("GOSSLAN_E2E_DROP_FIRST_GOSSIP_ACK").count(),
+        1,
+        "故障注入只能有一个接线点，否则首 Ack 丢弃语义无法复现"
+    );
+}
+
 /// 运行态快照的接线判据：只测纯函数不够，必须真的有人每 5 分钟读 WebView 数与队列数。
 #[test]
 fn runtime_diag_reporter_is_wired_once_and_covers_webviews_and_queues() {

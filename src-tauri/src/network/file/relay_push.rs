@@ -154,16 +154,19 @@ async fn relay_push_file(
     if cancel_requested(&mut cancel_rx) {
         return Err(crate::logging::FAIL_CODE_FILE_SEND_CANCELLED.to_string());
     }
-    let receiver_pubkey = resolve_member_x25519(state, peer_id).ok_or_else(|| {
-        state.logger.error(
-            "file",
-            format!(
-                "code={} transfer={transfer_id} peer={peer_id} —— 拿不到对方公钥",
-                crate::logging::FAIL_CODE_FILE_SEND_NO_PUBKEY
-            ),
-        );
-        crate::logging::FAIL_CODE_FILE_SEND_NO_PUBKEY.to_string()
-    })?;
+    let receiver_pubkey = match resolve_effective_x25519(state, peer_id) {
+        Ok(Some(pubkey)) => pubkey,
+        Ok(None) => {
+            return Err(crate::logging::FAIL_CODE_FILE_SEND_NO_PUBKEY.to_string());
+        }
+        Err(e) => {
+            state.logger.error(
+                "file",
+                format!("code=FILE_KEY_READ_FAILED transfer={transfer_id} peer={peer_id} err={e}"),
+            );
+            return Err(crate::logging::FAIL_CODE_FILE_SEND_NO_PUBKEY.to_string());
+        }
+    };
     let shared = state.identity.dh(&receiver_pubkey).ok_or_else(|| {
         state.logger.error(
             "file",

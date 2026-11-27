@@ -52,6 +52,14 @@ pub fn delete_messages(conn: &Connection, msg_ids: &[String]) -> Result<usize> {
         &format!("DELETE FROM group_outbox WHERE msg_id IN ({ph})"),
         params_from_iter(msg_ids.iter()),
     )?;
+    tx.execute(
+        &format!("DELETE FROM mention_receipts WHERE msg_id IN ({ph})"),
+        params_from_iter(msg_ids.iter()),
+    )?;
+    tx.execute(
+        &format!("DELETE FROM pending_group_recalls WHERE target_msg_id IN ({ph})"),
+        params_from_iter(msg_ids.iter()),
+    )?;
     // 文件消息的队列**按 transfer_id 建键**（`file_outbox.transfer_id`、
     // `group_files.transfer_id`），按 msg_id 删不到 ⇒ 删掉一条"发送中"的文件消息后，
     // 下一次建链/心跳仍会把整份文件推给对方（用户看到的是"删了还在传"）。

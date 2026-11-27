@@ -27,33 +27,18 @@ const FRIEND_ONLINE_GRACE_MS: i64 = 15_000;
 /// 这时**必须如实返回 None 而不是拿 device_id 凑一个**：凑出来的码在真正的中间人
 /// 攻击下与真实对端的码不同，用户核对后会以为"对得上"，比没有更糟。
 ///
-/// 对端公钥取 peers 优先、friends 回落（与 `resolve_member_x25519` 同一口径）。
+/// 对端身份束必须同源：已绑定好友使用 friends 的两把锚点；未绑定节点才使用 peers。
+/// 好友只有一把锚点时返回 None，绝不拼出混合身份束。
 #[tauri::command(async)]
 pub async fn get_safety_number(
     state: State<'_, Arc<AppState>>,
     peer_id: String,
 ) -> Result<Option<String>, String> {
     let s = state.inner().clone();
-    // 两次锁快照 + 两次点查 + 一次安全码推导（哈希/编码）：设置页与对方资料卡都会打这条。
     tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
-        let (their_x, their_e) = {
-            let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
-            let p = peers.get(&peer_id);
-            (
-                p.and_then(|p| p.x25519_pubkey.clone()),
-                p.and_then(|p| p.ed25519_pubkey.clone()),
-            )
-        };
-        let (their_x, their_e) = {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                their_x.or_else(|| db::get_friend_x25519(&dbc, &peer_id)),
-                their_e.or_else(|| db::get_friend_ed25519(&dbc, &peer_id)),
-            )
-        };
-        // 拿不到任一份公钥 = "还没核实过对方身份"，界面显示空而不是报错（语义与改造前一致：
-        // 原来这条命令返回 Option，`?` 是在 Option 上；搬进返回 Result 的闭包后必须显式退 None）。
-        let (Some(their_x), Some(their_e)) = (their_x, their_e) else {
+        let their = crate::network::transport::resolve_peer_identity_bundle(&s, &peer_id)
+            .map_err(|e| format!("读取对方身份密钥失败：{e}"))?;
+        let Some(their) = their else {
             return Ok(None);
         };
         Ok(Some(crypto::safety_number(
@@ -64,8 +49,8 @@ pub async fn get_safety_number(
             },
             &crypto::SafetyParty {
                 device_id: &peer_id,
-                x25519_pubkey: &their_x,
-                ed25519_pubkey: &their_e,
+                x25519_pubkey: &their.x25519_pubkey,
+                ed25519_pubkey: &their.ed25519_pubkey,
             },
         )))
     })

@@ -21,8 +21,8 @@ use crate::crypto;
 use crate::db;
 use crate::logging::Logger;
 use crate::network::transport::{
-    clear_file_wire_progress_in, file_wire_chunks_at, file_wire_progress_at, resolve_member_x25519,
-    send_on_link, try_send,
+    clear_file_wire_progress_in, file_wire_chunks_at, file_wire_progress_at,
+    resolve_effective_x25519, send_on_link, try_send,
 };
 use crate::protocol::{Message, ShareEntry, FILE_CHUNK};
 use crate::state::{AppState, FileDoneInfo, FileFailedInfo, FileReceiver};
@@ -36,6 +36,20 @@ fn emit_failed(state: &AppState, transfer_id: &str, peer_id: &str, reason: impl 
             peer_id: peer_id.to_string(),
         },
     );
+}
+
+/// 群文件终态事件补归属：调用方必须已经释放 DB 锁。
+pub fn emit_group_file_activity(state: &AppState, transfer_id: &str) {
+    let group_id = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_group_file(&dbc, transfer_id).map(|f| f.group_id)
+    };
+    if let Some(group_id) = group_id {
+        let _ = state.app.emit(
+            "group-file-activity",
+            &serde_json::json!({ "group_id": group_id, "conv_id": format!("group:{group_id}") }),
+        );
+    }
 }
 
 /// 流式计算文件 SHA-256（256KB 分块增量更新，不整读内存），返回小写 hex。

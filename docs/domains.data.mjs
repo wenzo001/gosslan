@@ -101,13 +101,13 @@ export default {
     ["src-tauri/src/lib_error_code_tests.rs", "测试分册：B6 错误码的「触发点 → 码」绑定与 `coded()` 形状（守门人的守门人）"],
     [
       "src-tauri/src/commands.rs",
-      "142 行 + 25 个子模块 / 26 个 tauri command：**前后端边界**，按领域拆是 Phase 7 的事",
+      "include! 物理拆分的命令装配层：前后端边界，按领域拆是 Phase 7 的事",
     ],
     [
       "src-tauri/src/commands",
-      "commands.rs 的 25 个子模块（include! 物理拆分、逻辑仍属装配层）：",
+      "commands.rs 的 include! 子模块（逻辑仍属装配层）：",
     ],
-    ["src-tauri/src/state.rs", "1494 行 / 284 个 pub 项：跨领域共享状态（耦合热点）"],
+    ["src-tauri/src/state.rs", "跨领域共享状态（耦合热点）"],
     ["src-tauri/src/focus_rhythm.rs", "前台/失焦节奏的纯状态机（2026-11-04 引入）：`commands/network.rs` 的窗口信号与 `state.rs` 的蓝牙扫描节奏共用 ⇒ 归任一业务域都会造出反向依赖（与 watchdog.rs 同一条口径）"],
     // ↓ 运行档位（2026-11-26，用户「插电/电池/锁屏三级省电」）：同样是跨领域组装点。
     //   `runtime_profile.rs` 被 network/transport（心跳/对账/打洞/广播）、network/ble、
@@ -190,21 +190,20 @@ export default {
     },
 
     // -------------------------------------------------------------------------
-    //  2. 在线状态与发现 —— 谁能被看见   ⚠️ 双家，未收口
+    //  2. 在线状态与发现 —— 谁能被看见
     // -------------------------------------------------------------------------
     {
       id: "presence",
       name: "在线状态与发现",
       tier: "L3",
       paths: [
-        "src-tauri/src/network/discovery.rs", // 旧家（活）
-        "src-tauri/src/discovery", // 新家（未接线）
+        "src-tauri/src/network/discovery.rs", // 发现数据面（活）
+        "src-tauri/src/discovery", // Routed 配置解析（活）
       ],
       invariants: ["INV-P21"],
-      // ⚠️ 双家：**旧家是活路径**，新家整体未接线。
       activeHome: "src-tauri/src/network/discovery.rs",
       secondHome: "src-tauri/src/discovery",
-      secondHomeStatus: "未接线",
+      secondHomeStatus: "配置解析（活）",
       enforce: false,
       consumes: ["routing", "messaging", "transport", "observability", "persistence"], // 实测:discovery/* 用 mesh(→routing) + protocol(→messaging)；旧家 network/discovery.rs 还用 network::transport(→transport)
       // ↑ 第 4 项是 5.15.26（DUP-03 墙上时钟收一家）加的：`sweep_peers` 要的"现在几点"改从

@@ -943,6 +943,7 @@ async fn cancel_group_receive_side(
             status: None,
         },
     );
+    crate::network::file::emit_group_file_activity(s, transfer_id);
     s.logger.info(
         "group_file",
         format!("群文件接收已按取消收尾 transfer={transfer_id} by={by} stopped={stopped} ledger_committed={ledger_committed}"),
@@ -1112,6 +1113,7 @@ pub(crate) async fn apply_local_cancel(
             status: None,
         },
     );
+    crate::network::file::emit_group_file_activity(s, transfer_id);
 
     s.logger.info(
         "file",

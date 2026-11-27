@@ -30,27 +30,82 @@ pub(crate) fn maybe_update_friend(
     }
 }
 
-/// 群成员公钥选择：peers 表优先、friends 表回落（纯逻辑，便于单测）。
-/// peers 表由 announce / Hello 实时维护，几乎总是最新；
-/// friends 表可能缺失——accept 方路径此前不补写公钥，
-/// 且公钥不变时 key_changed 不触发 maybe_update_friend。
-fn pick_member_x25519(peers_key: Option<String>, friends_key: Option<String>) -> Option<String> {
-    peers_key.or(friends_key)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PeerIdentityBundle {
+    pub x25519_pubkey: String,
+    pub ed25519_pubkey: String,
 }
 
-/// 解析群成员的 X25519 公钥：peers 优先、friends 回落，都缺失才返回 None。
-/// 群密钥分发（distribute_group_key / resend_group_key_to）统一走这里，
-/// 避免 friends 表公钥缺失导致 GroupKey 被静默跳过、成员永久拿不到群密钥。
-pub(crate) fn resolve_member_x25519(state: &AppState, member_id: &str) -> Option<String> {
-    let peers_key = {
-        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        peers.get(member_id).and_then(|p| p.x25519_pubkey.clone())
+fn peer_identity_snapshot(state: &AppState, device_id: &str) -> (Option<String>, Option<String>) {
+    let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+    let peer = peers.get(device_id);
+    (
+        peer.and_then(|p| p.x25519_pubkey.clone()),
+        peer.and_then(|p| p.ed25519_pubkey.clone()),
+    )
+}
+
+fn friend_keys_conflict(
+    friend: &(Option<String>, Option<String>),
+    peer: &(Option<String>, Option<String>),
+) -> bool {
+    matches!((&friend.0, &peer.0), (Some(anchor), Some(cached)) if anchor != cached)
+        || matches!((&friend.1, &peer.1), (Some(anchor), Some(cached)) if anchor != cached)
+}
+
+fn effective_x25519(friend_x: Option<String>, peer_x: Option<String>) -> Option<String> {
+    friend_x.or(peer_x)
+}
+
+fn complete_identity_bundle(
+    friend: Option<(Option<String>, Option<String>)>,
+    peer: (Option<String>, Option<String>),
+) -> Option<PeerIdentityBundle> {
+    let (x25519_pubkey, ed25519_pubkey) = match friend {
+        Some((None, None)) => peer,
+        Some((friend_x, friend_e)) => (friend_x, friend_e),
+        None => peer,
     };
-    let friends_key = {
+    Some(PeerIdentityBundle {
+        x25519_pubkey: x25519_pubkey?,
+        ed25519_pubkey: ed25519_pubkey?,
+    })
+}
+
+pub(crate) fn resolve_peer_identity_bundle(
+    state: &AppState,
+    device_id: &str,
+) -> rusqlite::Result<Option<PeerIdentityBundle>> {
+    let peer = peer_identity_snapshot(state, device_id);
+    let friend = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_friend_x25519(&dbc, member_id)
+        db::get_friend_pubkeys_checked(&dbc, device_id)?
     };
-    pick_member_x25519(peers_key, friends_key)
+    let Some((friend_x, friend_e)) = friend else {
+        return Ok(complete_identity_bundle(None, peer));
+    };
+    if friend_keys_conflict(&(friend_x.clone(), friend_e.clone()), &peer) {
+        crate::network::transport::warn_key_conflict_once(state, device_id);
+    }
+    Ok(complete_identity_bundle(Some((friend_x, friend_e)), peer))
+}
+
+pub(crate) fn resolve_effective_x25519(
+    state: &AppState,
+    device_id: &str,
+) -> rusqlite::Result<Option<String>> {
+    let peer = peer_identity_snapshot(state, device_id);
+    let friend = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_friend_pubkeys_checked(&dbc, device_id)?
+    };
+    let Some((friend_x, friend_e)) = friend else {
+        return Ok(peer.0);
+    };
+    if friend_keys_conflict(&(friend_x.clone(), friend_e), &peer) {
+        crate::network::transport::warn_key_conflict_once(state, device_id);
+    }
+    Ok(effective_x25519(friend_x, peer.0))
 }
 
 pub async fn touch_peer(state: &AppState, device_id: &str) {

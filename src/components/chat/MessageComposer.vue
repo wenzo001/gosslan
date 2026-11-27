@@ -12,6 +12,13 @@ import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { buildQuoteHeader } from "@/utils/quote";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { clearComposerDraft, getComposerDraft, saveComposerDraft } from "@/utils/composerDrafts";
+import {
+  beginComposerDraftTransition,
+  completeComposerDraftTransition,
+  isComposerDraftTransitionCurrent,
+  saveComposerDraftIfOwned,
+  type ComposerDraftOwnership,
+} from "@/utils/composerDraftOwnership";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import { haptic } from "@/utils/haptics";
 import { shouldRunThrottled } from "@/utils/defer";
@@ -368,6 +375,8 @@ watch(
  * 这样即使拖入或历史版本留下奇怪标记，也不会被当成 HTML 重新解析执行。
  */
 const DRAFT_TAGS = new Set(["BR", "DIV", "P", "SPAN"]);
+/** DOM 草稿的当前所有者；A→B→C 交错时只有最新切换允许恢复。 */
+let draftOwnership: ComposerDraftOwnership = { owner: null, generation: 0 };
 
 /**
  * 表情 token：输入框里直接显示**表情图形**（与消息气泡同一套资源），
@@ -439,7 +448,7 @@ function currentDraftHtml(): string {
  * 每个按键都重建一遍会把 50k 草稿的解析成本摊到每次输入上。
  */
 function persistDraft() {
-  saveComposerDraft(props.convId, editorRef.value?.innerHTML ?? "");
+  saveComposerDraftIfOwned(draftOwnership, props.convId, editorRef.value?.innerHTML ?? "", saveComposerDraft);
 }
 function restoreDraft(convId: string | null) {
   const el = editorRef.value;
@@ -449,14 +458,20 @@ function restoreDraft(convId: string | null) {
 }
 watch(
   () => props.convId,
-  async (next, prev) => {
-    if (prev) saveComposerDraft(prev, currentDraftHtml());
+  async () => {
+    const transition = beginComposerDraftTransition(draftOwnership);
+    draftOwnership = transition.state;
+    // 先摘走旧 DOM 的所有权；下一次 B→C 切换不会再把同一份 A 内容保存进 B。
+    if (transition.saveFrom) saveComposerDraft(transition.saveFrom, currentDraftHtml());
     // 待发送图片属于"这个会话的临时草稿"，切走即丢弃，避免把 A 会话的图发进 B 会话。
     clearPendingImages();
     await nextTick();
+    if (!isComposerDraftTransitionCurrent(draftOwnership, transition.generation)) return;
     measureComposerMax();
-    restoreDraft(next);
+    restoreDraft(props.convId);
+    draftOwnership = completeComposerDraftTransition(draftOwnership, transition.generation, props.convId);
     await nextTick();
+    if (draftOwnership.generation !== transition.generation) return;
     if (!app.isMobile) focusEditor();
     autoResize();
   },
@@ -542,6 +557,8 @@ function draftMentionIds(text: string): string[] {
 
 /** 发送：立即清空输入框（optimistic UI，不等 IPC 返回）。引用消息在首行拼接引用头。 */
 function send(kind?: MsgKind, content?: string) {
+  // 切换尚未恢复完时 DOM 仍可能属于旧会话；不许把旧内容发进新会话。
+  if (draftOwnership.owner !== props.convId) return;
   let text = content ?? serializeDraft();
   const k = kind ?? (codeMode.value ? "code" : "text");
   // 围栏只是输入时的语法；落库的代码消息不带 ```lang。
@@ -1213,7 +1230,7 @@ useEventListener(document, "selectionchange", onSelectionChange);
 onUnmounted(() => {
   if (shakeTimer) clearTimeout(shakeTimer);
   // 卸载是少数路径：这里仍走白名单重建（与按输入事件那条原始 innerHTML 路径内容等价）。
-  saveComposerDraft(props.convId, currentDraftHtml());
+  saveComposerDraftIfOwned(draftOwnership, props.convId, currentDraftHtml(), saveComposerDraft);
   // 待发送图片的预览 URL 是浏览器对象 URL，不 revoke 会一直占着 Blob。
   clearPendingImages();
   // 量高度用的屏外镜像挂在 body 上，组件卸载时必须摘掉。

@@ -55,12 +55,16 @@ async fn try_send_group_key(
     peer_id: &str,
     group_id: &str,
 ) -> Result<(), GroupKeySendErr> {
-    let pubkey = {
-        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        peers.get(peer_id).and_then(|p| p.x25519_pubkey.clone())
-    };
-    let Some(pubkey) = pubkey else {
-        return Err(GroupKeySendErr::Fatal);
+    let pubkey = match resolve_effective_x25519(state, peer_id) {
+        Ok(Some(pubkey)) => pubkey,
+        Ok(None) => return Err(GroupKeySendErr::Fatal),
+        Err(e) => {
+            state.logger.warn(
+                "group",
+                format!("code=GROUP_KEY_PEER_READ_FAILED peer={peer_id} group={group_id} err={e}"),
+            );
+            return Err(GroupKeySendErr::DbUnreadable);
+        }
     };
     let found_group = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());

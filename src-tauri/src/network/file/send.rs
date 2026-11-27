@@ -299,7 +299,16 @@ pub async fn send_file_from_path_at(
             let _ = state.app.emit("message-received", &rec);
         }
     }
-    let receiver_pubkey = resolve_member_x25519(state, peer_id);
+    let receiver_pubkey = match resolve_effective_x25519(state, peer_id) {
+        Ok(pubkey) => pubkey,
+        Err(e) => {
+            state.logger.error(
+                "file",
+                format!("code=FILE_KEY_READ_FAILED transfer={transfer_id} peer={peer_id} err={e}"),
+            );
+            return Err(SendFileError::retryable("读取对方身份密钥失败，请稍后重试"));
+        }
+    };
     let sealed_key_b64 = (|| {
         let pubkey = receiver_pubkey.as_deref()?;
         let shared = state.identity.dh(pubkey)?;

@@ -56,6 +56,10 @@ ACK: 可重复发送
 ```
 
 - 钩子：`db::tests::repeated_delivery_of_same_msg_id_yields_single_side_effect` `db::tests::unread_and_event_fire_only_for_the_winning_insert` `db::tests::group_msg_id_duplicate_counts_unread_and_event_once` `db::tests::late_ack_never_regresses_a_read_message`
+- **Gossip 重复副本仍必须补 Ack**：Mesh 与业务两层重复路径都先核对已存行的 `sender_id + conv_id + receiver_id`，
+  匹配才补 GroupAck/ChatAck；只查 `msg_id` 可能把另一会话的同名消息误确认。DB 错误、身份不匹配、验签失败、
+  非成员或目标不是本机一律零 Ack；重复路径不得再 emit、计未读或改摘要。
+- 钩子：`db::tests::receipt_identity_returns_the_full_durable_identity` `network::transport::tests::receipt_identity_requires_the_same_sender_and_conversation` `tests::duplicate_receipts_are_wired_through_the_checked_identity_fast_path` `e2e:group-ackdrop 首 Ack 丢弃后重复副本补 Ack`
 
 ### 推荐测试
 
@@ -378,7 +382,7 @@ warn
 
 当前实现若尚未具备完整 key rotation，应记录为已知限制，而不是让 AI 自行决定。
 
-- 钩子：`tests::friend_identity_anchor_has_one_binding_rule` `db::tests::update_friend_pubkeys_never_overwrites_a_bound_key` `guards:身份锚点的打标点必须留在 handle_message 的 Hello 分支` `guards:打标必须排在` `network::transport::tests::gossip_anchor_ignores_unverified_announced_keys` `network::transport::tests::friend_accept_only_lands_when_we_asked_or_already_friends` `tests::network_friend_accept_must_prove_we_asked_first`
+- 钩子：`tests::friend_identity_anchor_has_one_binding_rule` `db::tests::update_friend_pubkeys_never_overwrites_a_bound_key` `guards:身份锚点的打标点必须留在 handle_message 的 Hello 分支` `guards:打标必须排在` `network::transport::tests::gossip_anchor_ignores_unverified_announced_keys` `network::transport::tests::friend_accept_only_lands_when_we_asked_or_already_friends` `tests::network_friend_accept_must_prove_we_asked_first` `network::transport::tests::complete_identity_bundle_never_mixes_friend_and_peer_keys` `network::transport::tests::effective_x25519_prefers_the_friend_anchor` `tests::identity_consumers_share_the_anchored_resolver`
 
 ### 现在的决定（2026-09-13 实装，用户真机反馈后）
 
@@ -401,7 +405,11 @@ warn
    聊天库里出现"好友发的"伪造消息，且真实好友的 Hello 之后会被判「密钥不符」而再也连不上。
    现在两条路径共用 `verified_peer_anchor`：未验签条目等同**不认识**，回落到 `friends`
    表那份持久锚点 ⇒ 只靠中继、从未直连的好友照旧能收消息。
-2. **网络路径的 `FriendAccept` 只校验"from 是链路对端、to 是本机"**（SEC-01）：`to` 的值
+3. **同一用途的身份束不能跨表拼装**（2026-11-27 F-02）：已绑定好友的 X25519 锚点优先于 peers 缓存；
+   安全码必须同时使用 friends 的 X25519 + Ed25519，缺一把就返回“算不出”，不能拼 `friends.X + peers.Ed`。
+   群密钥发送、待发补发、收端解封与文件链统一走 `resolve_effective_x25519`；DB 读错不得回落缓存。
+   冲突仍保留好友锚点并走既有密钥变化提示，确认前绝不覆盖。
+4. **网络路径的 `FriendAccept` 只校验"from 是链路对端、to 是本机"**（SEC-01）：`to` 的值
    在 Hello 里就回给了对端 ⇒ 任何能连上来的节点发一条 `{type:friend_accept, from, to}`
    就能把自己写进 `friends` 表，等价于**对端自助获得本机信任**（文件接收、共享目录、
    内容寻址、中继电路都以 `friends` 为输入）。用户点"同意"那条命令路径本来就查了 pending，
@@ -1352,13 +1360,8 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 此时收到的 @ 按已读那条正确地不判已读，却按红点那条**不亮红点**
 ⇒ 用户回到窗口只看到「N 条未读」，**看不出自己被 @ 过，必须点开那个群才知道** ——
 而这恰好是这条提醒存在的唯一理由。
-★ **本条只管"该不该抑制"，不管"错过就没了"那半件事（2026-09-28 实测分界）**：这枚红点是
-**摄入那一刻的一次性判定**，全仓只有一个写入点、没有任何重算路径 ⇒ **软件刚打开那一两秒里到达的 @
-不会点亮**（同轮对照：把投递推迟到界面被证明渲染过之后 ⇒ 真 WKWebView 里读到 `[有人@我]`；
-开机同一秒投的那条读不到）。未读数照涨（那是后端算的），所以后果是"少一条提醒"而不是"少一条消息"。
-⇒ 这不是口径不一致，是**这条提醒的持久性缺口**：要不要在加载时按已落库的 `mention_targets` 补点亮一次
-= 会推翻"重启不该再亮一次红点"那条既定口径（INV-P24 第 3 条的那一半），**属语义决定、不在本条授权范围内**，
-拍板之前不改判定逻辑。
+★ **本条只管"该不该抑制"**；错过事件后的恢复由 durable mention receipt 负责：实时 @ 与消息同事务写入
+`mention_receipts`，打开/标记已读同事务清除；启动监听就绪后只恢复未清除 receipt，不重放历史 @，也不重放系统通知。
 
 规则：
 
@@ -1376,7 +1379,7 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 
 * 本条只管**抑制**。气泡里高亮的那串 `@名字` 仍是当时发出去的原文，不随可见性、也不随改名回写
   （INV-P24 第 3 条）。
-* 红点是**摄入时刻的一次性判定**、不落库 ⇒ 重启不重放；本条不许它落库。
+* 红点的**抑制判定**仍是摄入时刻的一次性判断；持久恢复只读未清除 receipt，历史行不回填。
 * "用户真的在看"**不等于**"消息已送达"；送达状态另有自己的证据链，两者不许互相顶。
 
 判据与反证（四条各测一件事，去掉任何一条都会有一种坏法静默通过）：
@@ -1387,8 +1390,10 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 | 会话开着且真在看时收到 @ | 红点**不许亮**（反向对照：不许把抑制整条放开） |
 | 调用点不再把可见性传进纯函数 | 接缝守卫报红（退回"开着就等于看着"） |
 | 已读那条把条件手写回去、口径分出第二个家 | 形状守卫报红（那个组合出现 2 次） |
+| 启动监听前/中/快照前/后到达 @ | durable receipt 恰好恢复一次；历史 @ 不点亮；重复投递不重复 |
+| 监听失败 | `eventBridgeOk=false` 保持降级，初始快照与 receipt 恢复仍执行 |
 
-- 钩子：`src/utils/messages.test.ts#用户其实没在看` `src/utils/messages.test.ts#仍然不点亮` `src/utils/designGuards.test.ts#只许走 messageMentionsMe` `src/utils/channelState.test.ts#聊天视图真的可见`
+- 钩子：`src/utils/messages.test.ts#用户其实没在看` `src/utils/messages.test.ts#仍然不点亮` `src/utils/designGuards.test.ts#只许走 messageMentionsMe` `src/utils/channelState.test.ts#聊天视图真的可见` `db::tests::mention_receipt_is_atomic_idempotent_and_cleared_on_read` `src/utils/storeContract.test.ts#启动提及恢复必须先于 initialized，last 恢复必须避开深链`
 
 ### INV-P28 — 摘表与判据必须同一次持锁，收尾只吃已摘出来的那一件
 

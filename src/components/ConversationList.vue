@@ -3,6 +3,9 @@ import Icon from "@/components/ui/Icon.vue";
 import { currentLocale, t } from "@/i18n";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
+import { useQueryClient } from "@tanstack/vue-query";
+import { useBotsQuery } from "@/composables/useBotsQuery";
+import { invalidateBots } from "@/utils/botsQuery";
 import { useEventListener } from "@vueuse/core";
 import {
   DropdownMenuContent,
@@ -465,22 +468,16 @@ function isOnline(id: string): boolean | null {
  * 从搜索结果跳转那一步由弹窗自己带着 msgId 调 `chat.locateMessageInConv`。
  */
 /** 机器人也进通讯录（用户 2026-11-17）：与好友同一入口，样式专属、点击直接开会话。 */
-const botContacts = ref<BotView[]>([]);
-async function loadBotContacts() {
-  try {
-    const list = await api.botList();
-    // 只列个人机器人：群机器人属于那个群，入口在群成员面板（用户 2026-11-18）。
-    botContacts.value = list.filter((b) => b.status !== "revoked" && b.target?.kind !== "group");
-  } catch {
-    // 机器人列表拉取失败不该拖垮通讯录（好友仍正常显示）。
-  }
-}
+const botsQuery = useBotsQuery();
+const queryClient = useQueryClient();
+const botContacts = computed(() =>
+  (botsQuery.data.value ?? []).filter((b) => b.status !== "revoked" && b.target?.kind !== "group"),
+);
 const botScope = createInitScope();
 onMounted(() => {
-  void loadBotContacts();
-  // 改头像/名字后立刻同步（用户 2026-11-18）。
+  // 改头像/名字后立刻同步；多个入口失效同键由 QueryClient 合并。
   void api
-    .onBotChanged(() => { void loadBotContacts(); })
+    .onBotChanged(() => { void invalidateBots(queryClient); })
     .then((off) => botScope.onDispose(off))
     .catch(() => {});
 });
@@ -495,6 +492,18 @@ function openBotContact(b: BotView) {
 // ---- 通讯录里的机器人：点头像看详情 / 右键删除 / 删除后立即消失（用户 2026-11-18）
 const botDetail = ref<BotView | null>(null);
 const botDetailOpen = ref(false);
+watch(
+  () => botsQuery.data.value,
+  (bots) => {
+    if (!bots || !botDetail.value) return;
+    const updated = bots.find((b) => b.botId === botDetail.value?.botId);
+    if (updated) botDetail.value = updated;
+    else {
+      botDetail.value = null;
+      botDetailOpen.value = false;
+    }
+  },
+);
 const botMenu = ref<{ x: number; y: number; bot: BotView } | null>(null);
 const pendingRemoveBot = ref<BotView | null>(null);
 const removingBot = ref(false);
@@ -518,7 +527,7 @@ async function confirmRemoveBot() {
   removingBot.value = true;
   try {
     await api.botDelete(b.botId);
-    botContacts.value = botContacts.value.filter((x) => x.botId !== b.botId);
+    void invalidateBots(queryClient);
     // 后端把会话也删了 ⇒ 正看着它就先回列表，再刷新（否则停在已删会话上）。
     if (chat.activeConv === `bot:${b.botId}`) {
       chat.activeConv = null;
@@ -534,7 +543,7 @@ async function confirmRemoveBot() {
 }
 /** 详情页里删的：同步从通讯录列表移除。 */
 function onBotDeletedFromDetail(botId: string) {
-  botContacts.value = botContacts.value.filter((x) => x.botId !== botId);
+  void invalidateBots(queryClient);
   if (chat.activeConv === `bot:${botId}`) {
     chat.activeConv = null;
     void router.push({ name: "chats" });

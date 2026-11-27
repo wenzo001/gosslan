@@ -606,56 +606,38 @@ pub async fn get_message_render_langs(
 /// 「库里那把与在线自报的不一致」告警 —— 重发走另一份实现时，那条 2026-10-13 的
 /// "密钥换了但一直显示已发送"的静默故障会重新长出来一半。
 async fn peer_x25519(s: &AppState, friend_id: &str) -> Option<String> {
-    let from_db = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_friend_x25519(&dbc, friend_id)
-    };
-    let from_peers = s
-        .peers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(friend_id)
-        .and_then(|p| p.x25519_pubkey.clone());
-    // ⚠️ 库里那把**优先**，而它一旦是错的就一直是错的（好友表只填空、绝不覆盖，
-    // 见 `db/friends.rs` 与 `network/transport/e2ee_payload.rs` 同一条说明）。
-    // 两份都在且不同 ⇒ 本机正在用的这把，**不是**界面那串安全码所依据的那一份
-    // ⇒ 「双方安全码对得上」这时并不能证明消息解得开。
-    // 没有这一行时，"我发的他收不到"在发送端日志里完全 invisible：对端解不开是不回
-    // 送达确认的静默丢弃，本机只会一直显示"已发送"（用户 2026-10-13 撞的正是这个形状）。
-    // 只报布尔量与 peer，不报密钥本身（日志会进报告产物）。持续不一致时每条发送各记一行。
-    if let (Some(db_key), Some(peer_key)) = (&from_db, &from_peers) {
-        if db_key != peer_key {
+    let first = match resolve_effective_x25519(s, friend_id) {
+        Ok(key) => key,
+        Err(e) => {
             s.logger.warn(
                 "dispatch",
-                format!("单聊密封用的密钥与在线自报的不一致（取库里那把）peer={friend_id}"),
+                format!("code=CHAT_KEY_READ_FAILED peer={friend_id} err={e} —— 本次不密封"),
             );
+            return None;
         }
+    };
+    if first.is_some() {
+        return first;
     }
-    match from_db.or(from_peers) {
-        Some(k) => Some(k),
-        None => {
-            let triggered =
-                if let Some(tx) = s.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-                    let next = tx.borrow().saturating_add(1);
-                    let _ = tx.send(next);
-                    true
-                } else {
-                    false
-                };
-            if triggered {
-                tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-            }
-            let again_db = {
-                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::get_friend_x25519(&dbc, friend_id)
-            };
-            let again_peers = s
-                .peers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(friend_id)
-                .and_then(|p| p.x25519_pubkey.clone());
-            again_db.or(again_peers)
+    let triggered =
+        if let Some(tx) = s.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            let next = tx.borrow().saturating_add(1);
+            let _ = tx.send(next);
+            true
+        } else {
+            false
+        };
+    if triggered {
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    }
+    match resolve_effective_x25519(s, friend_id) {
+        Ok(key) => key,
+        Err(e) => {
+            s.logger.warn(
+                "dispatch",
+                format!("code=CHAT_KEY_READ_FAILED peer={friend_id} err={e} —— 探测后仍不密封"),
+            );
+            None
         }
     }
 }
@@ -1756,6 +1738,19 @@ pub async fn set_conversation_pinned(
 /// 起名字是为了给下面那个阻塞池闭包的返回类型签名用 —— 内联写 `Result<Vec<(String, (String, i64))>, String>`
 /// 会被 clippy 的 `type_complexity` 判红（形状本身不改，只是别再让签名读三遍括号）。
 type MemberLastRead = (String, (String, i64));
+
+#[tauri::command(async)]
+pub async fn get_active_mention_convs(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<String>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::list_active_mention_convs(&dbc).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("读取未读提及失败：{e}"))?
+}
 
 /// 标记会话已读；单聊时向对方发送已读回执（触发对方界面的「已读绿勾」）。
 #[tauri::command(async)]

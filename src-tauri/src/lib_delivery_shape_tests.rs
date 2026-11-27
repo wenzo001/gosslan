@@ -481,9 +481,14 @@
             "async fn handle_group_key",
         ));
         assert!(
-            body.contains("db::rename_group(&dbc,&group_id,&display_name)"),
-            "群关系同步里没有把当前群名落到会话行 ⇒ 离线成员上线后聊天列表仍是旧群名（#22）。\
-             要修的是调用点，不许在别处再写一份 UPDATE conversations 的 SQL（那会长出第二个家）。"
+            body.contains("db::apply_group_key_snapshot("),
+            "群关系同步必须走单一快照事务，不能再拆成逐表写入"
+        );
+        let db_groups = include_str!("db/groups.rs");
+        assert!(
+            rust_fn_body(db_groups, "pub fn apply_group_key_snapshot(")
+                .contains("rename_group_in_tx("),
+            "群快照事务必须把当前群名落到已存在会话行"
         );
         assert!(
             !body.contains("ensure_conversation("),
@@ -874,9 +879,61 @@ fn dm_recipient_friend_check_keeps_read_errors_and_undoes_dedupe() {
 /// 每个臂都必须写一行 `code=GROUP_KEY_MEMBER_SKIPPED` 且带 reason。
 /// 删掉任一臂的留痕、或把 reason 合并成一句，这里立刻红。
 #[test]
+fn pending_recall_replay_is_wired_to_rejection_transfer_target_and_startup() {
+    let src = crate::network::transport_src_for_guards();
+    let gossip = rust_fn_body(&src, "async fn handle_gossip(");
+    assert!(gossip.contains("db::enqueue_pending_group_recall("));
+    assert!(gossip.contains("db::replay_pending_recall_for_message("));
+    assert!(gossip.contains("replay_pending_recalls_for_group(state, &gid).await"));
+
+    let membership = include_str!("network/transport/group_membership.rs");
+    let transfer = rust_fn_body(membership, "async fn handle_group_creator_changed(");
+    assert!(transfer.contains("replay_pending_recalls_for_group(state, &group_id).await"));
+
+    let lib = include_str!("lib.rs");
+    assert!(lib.contains("crate::db::list_pending_recall_groups("));
+    assert_eq!(
+        lib.matches("replay_pending_recalls_for_group(").count(),
+        1,
+        "启动重放必须恰好接一处"
+    );
+}
+
+#[test]
+fn group_snapshots_use_one_transaction_and_emit_only_after_success() {
+    let src = crate::network::transport_src_for_guards();
+    let key = rust_fn_body(&src, "async fn handle_group_key(");
+    assert!(key.contains("db::apply_group_key_snapshot("));
+    let db_lock_at = key.find("let dbc = state.db.lock").expect("GroupKey 快照必须持 DB 锁");
+    let snapshot_at = key.find("db::apply_group_key_snapshot(").unwrap();
+    let cache_at = key.find(".group_keys").expect("GroupKey 提交后必须回填内存");
+    let match_at = key.find("match snapshot").expect("GroupKey 快照必须有结果分支");
+    assert!(db_lock_at < snapshot_at && snapshot_at < cache_at && cache_at < match_at,
+        "DB 提交与内存回填必须在同一次 DB 持锁内完成，避免并发换序");
+    assert!(!key[..snapshot_at].contains("db::set_setting("), "gk: 不得绕开快照事务单独写");
+    assert!(key.contains("Some(&STANDARD.encode(k))"), "密钥必须随 GroupKey 快照一起持久化");
+    for forbidden in [
+        "db::upsert_group(",
+        "db::replace_group_members(",
+        "db::replace_group_admins(",
+        "db::rename_group(",
+    ] {
+        assert!(!key.contains(forbidden), "GroupKey 快照不得再拆成独立写：{forbidden}");
+    }
+    assert!(key.contains("Ok(outcome) if outcome.applied"));
+    assert!(key.contains("state.app.emit(\"groups-updated\""));
+
+    let gossip = rust_fn_body(&src, "async fn handle_gossip(");
+    assert!(gossip.contains("db::apply_group_gossip_snapshot("));
+    assert!(!gossip.contains("db::upsert_group("));
+    assert!(!gossip.contains("db::replace_group_members("));
+    assert!(gossip.contains("Ok(outcome) if outcome.applied"));
+}
+
+#[test]
 fn group_key_fanout_never_skips_a_member_silently() {
     let src = include_str!("commands/groups.rs");
-    let sites = src.matches("resolve_member_x25519(s, m)").count();
+    let sites = src.matches("resolve_effective_x25519(s,").count();
     assert_eq!(sites, 2, "扇出点数量变了（{sites}）⇒ 本判据的分母要跟着改");
     let codes = src.matches("code=GROUP_KEY_MEMBER_SKIPPED").count();
     assert_eq!(
@@ -1019,8 +1076,8 @@ fn mobile_picker_failures_carry_named_codes() {
     // 再加撤回帧发送的返回值出口 ⇒ 常量共出现 4 次，且日志那句必须是 `code={}` 拼出来的。
     assert_eq!(
         src.matches("crate::error_codes::E2EE_PUBKEY_MISSING").count(),
-        4,
-        "缺公钥的常量出现次数变了（三个 coded 出口 + 一个日志出口 = 4）"
+        5,
+        "缺公钥的常量出现次数变了（四个 coded 出口 + 一个日志出口 = 5）"
     );
     assert!(
         src.contains("code={} 同意好友但缺对端公钥"),

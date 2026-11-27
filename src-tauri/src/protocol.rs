@@ -1755,7 +1755,7 @@ pub fn creator_recall_hint(unsupported_names: &[String], unknown: usize) -> Stri
         // 这句是**纯文本 toast**（消费点 `useChatStore` 的 `app.toast(p.hint)`），
         // 所以这里不许出现 markdown 强调 —— 星号会被用户看见。
         parts.push(format!(
-            "{who}的 Gosslan 版本还不认「群主撤回」，这条在那些人那里不会消失"
+            "{who}的 Gosslan 版本还不认「群主/管理员撤回」，这条在老版本设备上不会消失"
         ));
     }
     if unknown > 0 {

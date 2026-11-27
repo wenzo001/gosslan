@@ -393,7 +393,7 @@ test("时间线过滤只有一份判据，且 todo 卡片真的在渲染链里",
   const chat = read("../../src/components/ChatWindow.vue");
   assert.match(
     chat,
-    /filter\(\(m\) => isRenderedInTimeline\(m\.kind\)\)/,
+    /reconcileRenderedMessages\(messages\.value, source, \(m\) => isRenderedInTimeline\(m\.kind\)\)/,
     "ChatWindow 的时间线过滤不再走 isRenderedInTimeline ⇒ 与 store 侧算未读分割线的那份会漂移",
   );
   const item = read("../../src/components/MessageItem.vue");

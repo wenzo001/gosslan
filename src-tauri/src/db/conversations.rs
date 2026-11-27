@@ -173,10 +173,13 @@ pub fn set_conversation_pinned(conn: &Connection, conv_id: &str, pinned: bool) -
 }
 
 pub fn mark_read(conn: &Connection, conv_id: &str) -> Result<()> {
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "UPDATE conversations SET unread = 0 WHERE id = ?1",
         params![conv_id],
     )?;
+    clear_mention_receipts(&tx, conv_id, now_ms())?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -258,6 +261,8 @@ pub fn delete_conversation(conn: &Connection, conv_id: &str) -> Result<()> {
         "DELETE FROM group_recalled_messages WHERE conv_id = ?1",
         params![conv_id],
     )?;
+    tx.execute("DELETE FROM mention_receipts WHERE conv_id = ?1", params![conv_id])?;
+    delete_pending_group_recalls(&tx, conv_id)?;
     // 渲染切换的 LWW 状态随消息一起走（否则同名 msg_id 的迟到事件会命中墓碑之外的旧状态）。
     tx.execute(
         &format!("DELETE FROM message_render WHERE msg_id IN ({doomed})"),

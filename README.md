@@ -117,7 +117,7 @@ cargo test --features bluetooth   # Rust tests (run inside src-tauri)
 ```
 
 Build installers with `npm run dist:mac`, `npm run dist:win`, or
-`npm run android:build:release`. CI runs the full verification matrix on every push and tag.
+`npm run android:build:release`. CI runs frontend, Rust, Android, and build gates on every push and tag. Multi-instance E2E and the production WebView2 scroll smoke run in their dedicated local/package layers; see the verification scripts for actual coverage.
 
 Before changing code, read [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) and
 [AI_RULES.md](AI_RULES.md). They describe the architecture, invariants and the required

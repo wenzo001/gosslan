@@ -2151,8 +2151,8 @@ mod group_history_engine_tests {
                 .count()
         );
         assert!(
-            transport.contains("ifknown_group.is_none(){"),
-            "GroupKey 那一路必须由『本机还没有这个群』挡着：否则群主每次重发密钥都重补一遍"
+            transport.contains("ifoutcome.first_membership{"),
+            "GroupKey 那一路必须由事务返回的 first_membership 挡着：否则群主每次重发密钥都重补一遍"
         );
         assert_eq!(
             gossip.matches("note_new_membership(state,&gid)").count(),
@@ -2161,16 +2161,27 @@ mod group_history_engine_tests {
             gossip.matches("note_new_membership(state,&gid)").count()
         );
         assert!(
-            gossip.contains("iffirst_membership{"),
-            "这一路同样要有守卫（`first_membership` = 本机第一次建这个群的记录）"
+            gossip.contains("ifoutcome.first_membership{"),
+            "这一路同样要有事务返回的 first_membership 守卫"
+        );
+        assert!(
+            gossip
+                .find("db::apply_group_gossip_snapshot(")
+                .map(|i| i < gossip
+                    .find("note_new_membership(state,&gid)")
+                    .unwrap_or(usize::MAX))
+                .unwrap_or(false),
+            "Gossip 那一路必须先完成群快照事务，再喊历史同步"
         );
         // 喊话必须在放掉 db 锁之后（INV-P25：持锁 emit / 持锁起一个会再取锁的活）
         assert!(
-            gossip
-                .find("drop(dbc)")
-                .map(|i| i < gossip.find("iffirst_membership{").unwrap_or(usize::MAX))
+            transport
+                .find("db::apply_group_key_snapshot(")
+                .map(|i| i < transport
+                    .find("note_new_membership(state,&group_id)")
+                    .unwrap_or(usize::MAX))
                 .unwrap_or(false),
-            "gossip 那一路的喊话要在 `drop(dbc)` 之后：`note_new_membership` 自己还要取那把锁"
+            "GroupKey 那一路必须先完成群快照事务，再喊历史同步（事务内会重新取 db）"
         );
     }
 

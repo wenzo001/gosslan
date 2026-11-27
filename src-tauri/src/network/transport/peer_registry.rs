@@ -60,7 +60,7 @@ pub(crate) fn record_key_rotation_candidate(
 ///
 /// 安全行为不变：冲突时**绝不覆盖**已绑定的公钥（见 `upsert_peer` 的 key_conflict 分支），
 /// 因此最坏情况只是对方真的重装后我方需要重新建立信任，而不会把消息发给冒充者的密钥。
-fn warn_key_conflict_once(state: &AppState, device_id: &str) {
+pub(crate) fn warn_key_conflict_once(state: &AppState, device_id: &str) {
     {
         let mut warned = state
             .key_conflict_warned

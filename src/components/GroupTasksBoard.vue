@@ -19,6 +19,9 @@
  * `canArchiveOrReopenTodo` 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from "vue";
+import { useQueryClient } from "@tanstack/vue-query";
+import { useBotsQuery } from "@/composables/useBotsQuery";
+import { invalidateBots } from "@/utils/botsQuery";
 import OverlayScroll from "@/components/ui/OverlayScroll.vue";
 import { useEventListener, useResizeObserver } from "@vueuse/core";
 import {
@@ -61,7 +64,7 @@ import TodoAttrDateField from "@/components/TodoAttrDateField.vue";
 import TodoAttrTypeField from "@/components/TodoAttrTypeField.vue";
 import TodoAttrTagsField from "@/components/TodoAttrTagsField.vue";
 import CharCounter from "@/components/ui/CharCounter.vue";
-import type { BotView, TodoFocusRequest } from "@/types";
+import type { TodoFocusRequest } from "@/types";
 import type { TodoTagCandidate } from "@/api";
 import {
   TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, autoArchiveDaysLeft, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, foldTodoReplies, foldTodoRepliesByTodo, isBotOwnedTodo, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
@@ -169,17 +172,18 @@ const groupMembers = computed<string[]>(() => group.value?.members ?? []);
  * 本群机器人（假身份 `bot:<id>`）——机器人发的任务负责人就是它，也要出现在候选里（2026-11-19）。
  * 与 GroupMemberPanel 同源：scope=group 且 target.groupId 匹配本群。
  */
-const groupBots = ref<BotView[]>([]);
-async function loadGroupBots() {
-  try {
-    const all = await api.botList();
-    groupBots.value = all.filter((b) => b.scope === "group" && b.target.groupId === props.groupId);
-  } catch {
-    groupBots.value = [];
-  }
-}
-onMounted(() => void loadGroupBots());
-watch(() => props.groupId, () => void loadGroupBots());
+const botsQuery = useBotsQuery();
+const queryClient = useQueryClient();
+const botScope = createInitScope();
+onMounted(() => {
+  void api
+    .onBotChanged(() => { void invalidateBots(queryClient); })
+    .then((off) => botScope.onDispose(off))
+    .catch(() => {});
+});
+const groupBots = computed(() =>
+  (botsQuery.data.value ?? []).filter((b) => b.scope === "group" && b.target.groupId === props.groupId),
+);
 const groupBotAssignees = computed<string[]>(() => groupBots.value.map((b) => `bot:${b.botId}`));
 
 /** bot 假身份显示成机器人名（memberProfile 只认真实 device_id，bot: 会落到「未知成员」）。 */
@@ -413,6 +417,7 @@ useEventListener(window, "scroll", onScrollOrResize, true);
 useEventListener(window, "resize", onScrollOrResize);
 onUnmounted(() => {
   closeRowMenu();
+  botScope.dispose();
 });
 
 function isAssignedToMe(x: TodoItem): boolean {

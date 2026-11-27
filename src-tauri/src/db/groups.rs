@@ -70,6 +70,7 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<Group>> {
 /// 注意：这只是**持久层的兜底**，调用点还应校验 `env.sender_id == creator` ——
 /// 否则成员只要把 `group_creator` 填成真群主的 id，creator 就对得上，闸门又会失效。
 /// 合法的改名走 `rename_group`（已由 `handle_group_rename` 限群主）。
+#[cfg(test)]
 pub fn upsert_group(
     conn: &Connection,
     id: &str,
@@ -77,17 +78,25 @@ pub fn upsert_group(
     creator: &str,
     members: &[String],
 ) -> Result<()> {
-    // UPSERT + 逐成员写入必须原子（审计 P1 #4）：半写会留下「群在、成员表缺一半」，
-    // 而成员视图没有对账机制。`unchecked_transaction` 与同册其它多笔写同一写法
-    // （调用方已持有 db 锁，这里只需要 savepoint 语义而不是再拿锁）。
     let tx = conn.unchecked_transaction()?;
+    upsert_group_in_tx(&tx, id, name, creator, members)?;
+    tx.commit()
+}
+
+pub(crate) fn upsert_group_in_tx(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    creator: &str,
+    members: &[String],
+) -> Result<()> {
     if name.is_empty() {
-        tx.execute(
+        conn.execute(
             "INSERT OR IGNORE INTO groups(id, name, creator, created_at) VALUES(?1, ?2, ?3, ?4)",
             params![id, name, creator, now_ms()],
         )?;
     } else {
-        tx.execute(
+        conn.execute(
             "INSERT INTO groups(id, name, creator, created_at) VALUES(?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET name = CASE
                  WHEN groups.creator = excluded.creator THEN excluded.name
@@ -97,12 +106,11 @@ pub fn upsert_group(
         )?;
     }
     for m in members {
-        tx.execute(
+        conn.execute(
             "INSERT OR IGNORE INTO group_members(group_id, device_id) VALUES(?1, ?2)",
             params![id, m],
         )?;
     }
-    tx.commit()?;
     Ok(())
 }
 
@@ -112,17 +120,21 @@ pub fn upsert_group(
 /// 聊天列表标题还是旧名」，而没有任何代码对账这两张表 ⇒ 永不自愈。
 pub fn rename_group(conn: &Connection, id: &str, name: &str) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
-    let changed = tx.execute(
+    rename_group_in_tx(&tx, id, name)?;
+    tx.commit()
+}
+
+pub(crate) fn rename_group_in_tx(conn: &Connection, id: &str, name: &str) -> Result<()> {
+    let changed = conn.execute(
         "UPDATE groups SET name = ?1 WHERE id = ?2",
         params![name, id],
     )?;
     if changed > 0 {
-        tx.execute(
+        conn.execute(
             "UPDATE conversations SET name = ?1 WHERE id = ?2",
             params![name, format!("group:{id}")],
         )?;
     }
-    tx.commit()?;
     Ok(())
 }
 
@@ -164,25 +176,35 @@ pub fn remove_group_member(conn: &Connection, group_id: &str, device_id: &str) -
 /// `GroupMemberLeft` 的客户端会永久保留已退群成员（群任务指派仍能选中他们）。
 /// 只给发送方已被证明是群主的路径用：`handle_group_key`（上方已拒绝 `from != creator`）
 /// 与群主签名且自称群主的群 Gossip 信封；普通成员的成员表仍走只增不减。
+#[cfg(test)]
 pub fn replace_group_members(conn: &Connection, group_id: &str, members: &[String]) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
-    tx.execute(
+    replace_group_members_in_tx(&tx, group_id, members)?;
+    tx.commit()
+}
+
+pub(crate) fn replace_group_members_in_tx(
+    conn: &Connection,
+    group_id: &str,
+    members: &[String],
+) -> Result<()> {
+    conn.execute(
         "DELETE FROM group_members WHERE group_id = ?1",
         params![group_id],
     )?;
     for m in members {
-        tx.execute(
+        conn.execute(
             "INSERT OR IGNORE INTO group_members(group_id, device_id) VALUES(?1, ?2)",
             params![group_id, m],
         )?;
     }
     // 成员表收敛后，管理员名单里不再是成员的人也要摘掉（管理员必先是成员）。
-    tx.execute(
+    conn.execute(
         "DELETE FROM group_admins WHERE group_id = ?1 AND device_id NOT IN
          (SELECT device_id FROM group_members WHERE group_id = ?1)",
         params![group_id],
     )?;
-    tx.commit()
+    Ok(())
 }
 
 /// 任命管理员（调用方负责校验：仅群主、目标是成员、未超上限）。幂等。
@@ -206,21 +228,31 @@ pub fn remove_group_admin(conn: &Connection, group_id: &str, device_id: &str) ->
 /// 用群主权威的管理员名单**替换**本地集合（随 GroupKey 下发）。
 /// 只保留仍是成员的人（管理员必先是成员），与 `replace_group_members` 同一收敛口径。
 /// 仅群主分发的密钥帧可调用（管理员踢人帧携带的名单不覆盖本地——任免权只归群主）。
+#[cfg(test)]
 pub fn replace_group_admins(conn: &Connection, group_id: &str, admins: &[String]) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
-    tx.execute(
+    replace_group_admins_in_tx(&tx, group_id, admins)?;
+    tx.commit()
+}
+
+pub(crate) fn replace_group_admins_in_tx(
+    conn: &Connection,
+    group_id: &str,
+    admins: &[String],
+) -> Result<()> {
+    conn.execute(
         "DELETE FROM group_admins WHERE group_id = ?1",
         params![group_id],
     )?;
     for a in admins {
-        tx.execute(
+        conn.execute(
             "INSERT OR IGNORE INTO group_admins(group_id, device_id)
              SELECT ?1, ?2 WHERE EXISTS
              (SELECT 1 FROM group_members WHERE group_id = ?1 AND device_id = ?2)",
             params![group_id, a],
         )?;
     }
-    tx.commit()
+    Ok(())
 }
 
 /// 严格取单个群（含成员）：`Ok(None)` ＝ **这个群不存在**，`Err` ＝ **这一次没读出来**。
@@ -296,6 +328,105 @@ pub fn list_group_reads(conn: &Connection, group_id: &str) -> Result<Vec<(String
     rows.collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupSnapshotOutcome {
+    pub applied: bool,
+    pub first_membership: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn apply_group_key_snapshot(
+    conn: &Connection,
+    group_id: &str,
+    sender_id: &str,
+    receiver_id: &str,
+    display_name: &str,
+    members: &[String],
+    admins: &[String],
+    clock: i64,
+    got_group_name: bool,
+    group_key_b64: Option<&str>,
+) -> Result<GroupSnapshotOutcome> {
+    let tx = conn.unchecked_transaction()?;
+    let known = get_group_checked(&tx, group_id)?;
+    let first_membership = known.is_none();
+    let is_manager = known
+        .as_ref()
+        .map_or(true, |group| group.is_manager(sender_id));
+    if !is_manager
+        || !members.iter().any(|m| m == sender_id)
+        || !members.iter().any(|m| m == receiver_id)
+        || known
+            .as_ref()
+            .is_some_and(|group| !members.iter().any(|m| m == &group.creator))
+    {
+        return Ok(GroupSnapshotOutcome {
+            applied: false,
+            first_membership,
+        });
+    }
+    let is_owner = known
+        .as_ref()
+        .map_or(true, |group| group.creator == sender_id);
+    upsert_group_in_tx(&tx, group_id, display_name, sender_id, members)?;
+    replace_group_members_in_tx(&tx, group_id, members)?;
+    if is_owner {
+        replace_group_admins_in_tx(&tx, group_id, admins)?;
+    }
+    if got_group_name {
+        rename_group_in_tx(&tx, group_id, display_name)?;
+    }
+    if let Some(key_b64) = group_key_b64 {
+        set_setting(&tx, &format!("gk:{group_id}"), key_b64)?;
+    }
+    observe_clock(&tx, &format!("group:{group_id}"), clock)?;
+    tx.commit()?;
+    Ok(GroupSnapshotOutcome {
+        applied: true,
+        first_membership,
+    })
+}
+
+pub fn apply_group_gossip_snapshot(
+    conn: &Connection,
+    group_id: &str,
+    sender_id: &str,
+    declared_creator: &str,
+    display_name: &str,
+    members: &[String],
+    authoritative_members: bool,
+) -> Result<GroupSnapshotOutcome> {
+    let tx = conn.unchecked_transaction()?;
+    let known = get_group_checked(&tx, group_id)?;
+    let first_membership = known.is_none();
+    let is_manager = known
+        .as_ref()
+        .map_or(sender_id == declared_creator, |group| group.is_manager(sender_id));
+    let removes_owner = known
+        .as_ref()
+        .is_some_and(|group| !members.iter().any(|m| m == &group.creator));
+    if (authoritative_members && !is_manager) || (is_manager && removes_owner) {
+        return Ok(GroupSnapshotOutcome {
+            applied: false,
+            first_membership,
+        });
+    }
+    let effective_name = known
+        .as_ref()
+        .filter(|_| !is_manager)
+        .map(|group| group.name.as_str())
+        .unwrap_or(display_name);
+    upsert_group_in_tx(&tx, group_id, effective_name, declared_creator, members)?;
+    if is_manager {
+        replace_group_members_in_tx(&tx, group_id, members)?;
+    }
+    tx.commit()?;
+    Ok(GroupSnapshotOutcome {
+        applied: true,
+        first_membership,
+    })
+}
+
 /// 彻底删除一个群：群表 + 成员关系 + 会话 + 群文件投递数据 + 聊天历史与其投递残留。
 /// 被移除的成员端收到通知后调用；退群（leave_group）复用同一收口。
 ///
@@ -344,6 +475,8 @@ pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
         "DELETE FROM group_recalled_messages WHERE conv_id = ?1",
         params![conv_id],
     )?;
+    tx.execute("DELETE FROM mention_receipts WHERE conv_id = ?1", params![conv_id])?;
+    delete_pending_group_recalls(&tx, &conv_id)?;
     tx.execute(
         "DELETE FROM settings WHERE key = ?1",
         params![crate::db::clear_boundary_key(group_id)],

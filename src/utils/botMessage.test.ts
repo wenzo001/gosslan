@@ -328,8 +328,8 @@ test("机器人会话展示：无在线状态、头像常亮、通讯录可见�
   // 会话行专属样式：主色环 + 列表标记
   assert.ok(item.includes('isBot ? \'ring-2 ring-[var(--gosslan-primary)]\''), "机器人头像没有常亮专属样式");
   assert.ok(item.includes('v-if="isBot"'), "机器人列表缺专属标记");
-  // 通讯录分组（点起来源 = api.botList）
-  assert.ok(/\.botList\(\)/.test(list), "通讯录没拉机器人列表");
+  // 通讯录分组（同窗统一走 Vue Query ["bots"]）
+  assert.ok(list.includes("useBotsQuery()"), "通讯录没接统一机器人查询");
   assert.ok(list.includes('bot:${b.botId}'), "通讯录点击没打开机器人会话");
   // 资料编辑：后端字段 + 命令 + 会话表同步；前端入口
   assert.ok(db.includes('pub avatar: String,'), "BotRecord 缺 avatar 字段");
@@ -382,7 +382,7 @@ test("通讯录机器人：只列个人、点头像看详情、右键删除且�
   assert.ok(list.includes('@contextmenu.prevent="onBotContext(b, $event)"'), "机器人行没有右键入口");
   assert.ok(menu.includes('t("bot.action.delete")'), "右键菜单里没有删除项");
   assert.ok(list.includes("await api.botDelete(b.botId)"), "确认后没有真的删除");
-  assert.ok(list.includes("botContacts.value = botContacts.value.filter"), "删除后没有从列表移除（会残留）");
+  assert.ok(list.includes("void invalidateBots(queryClient)"), "删除后没有失效机器人查询（会残留）");
   assert.ok(list.includes("void chat.refreshConversations()"), "删除后没刷新会话列表");
   // 群机器人删除：后端必须校验群主/管理员（fail-closed）
   assert.ok(
@@ -552,5 +552,5 @@ test("群成员行的「移除」也能删机器人（不只在详情页）", ()
   assert.ok(panel.includes("askRemoveBot(row.bot!)"), "「移除」没有分派到机器人删除");
   assert.ok(panel.includes('kind: "removeBot"'), "没有机器人删除的确认类型");
   assert.ok(panel.includes("await api.botDelete(a.botId)"), "确认后没有真的撤销机器人");
-  assert.ok(panel.includes("groupBots.value = groupBots.value.filter"), "删除后没有从成员列表移除");
+  assert.ok(panel.includes("void invalidateBots(queryClient)"), "删除后没有失效机器人查询（会残留）");
 });

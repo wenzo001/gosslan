@@ -1001,6 +1001,15 @@ if (groupFlag === "local") {
     },
     {
       group: "local",
+      name: "双实例 E2E：Gossip 首 Ack 丢失后重复副本必须补 Ack",
+      why: `F-01：接收端只丢弃首条 GroupAck，发送方继续重投同一 msg_id；重复副本必须核对持久化身份后补 Ack，` +
+        `数据库仍恰好一行、通知/未读/摘要不重复、发送队列最终清空。故障注入与重复快路径各有具名日志读数。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=group-ackdrop"],
+    },
+    {
+      group: "local",
       name: "双实例 E2E：局域网开关的隔离判据（关掉 ⇒ 对端学不到我，翻回来 ⇒ 重新学得到）",
       why: `#89 剩下的那一半：**全程带着 GOSSLAN_AUTOSTART=1 跑**，证的就是"预置说关"连强制联网的环境变量都不许越过。` +
         `三条腿——开着先学到 → 关掉之后 A 的 announce 计数一字不涨 → 把键翻回开又涨回来；` +

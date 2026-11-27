@@ -120,19 +120,44 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
             // 去重前置：真实 msg_id 已落库 == 这条消息我此前已成功接收并持久化，
             // 于是只回 Ack。必须早于解密——否则对方轮换密钥后重投的那份「已收好的」
             // 消息会因当前密钥打不开旧密文而被误判为失败。
-            let exists = {
+            let existing = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::message_exists(&dbc, &msg_id)
+                db::message_receipt_identity(&dbc, &msg_id)
             };
-            if exists {
-                // 重复投递也要回 Ack（否则一次丢 ACK = 发送方永远"发送中"）：
-                // 留痕区分"没收到"与"收到了但 ACK 丢了"。
-                state.logger.info(
-                    "ble",
-                    format!("[ACK] 重复消息仍回执 msg_id={msg_id} ← peer={peer_id}"),
-                );
-                let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
-                return;
+            match existing {
+                Ok(Some(identity))
+                    if identity.conv_id == from
+                        && identity.sender_id == from
+                        && identity.receiver_id == state.device_id =>
+                {
+                    // 重复投递也要回 Ack（否则一次丢 ACK = 发送方永远"发送中"）：
+                    // 留痕区分"没收到"与"收到了但 ACK 丢了"。
+                    state.logger.info(
+                        "ble",
+                        format!("[ACK] 重复消息仍回执 msg_id={msg_id} ← peer={peer_id}"),
+                    );
+                    let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
+                    return;
+                }
+                Ok(Some(_)) => {
+                    state.logger.warn(
+                        "ack",
+                        format!(
+                            "code=DIRECT_RECEIPT_IDENTITY_CONFLICT msg={msg_id} peer={peer_id} —— 已有同名消息属于其他会话，不确认"
+                        ),
+                    );
+                    return;
+                }
+                Err(e) => {
+                    state.logger.warn(
+                        "ack",
+                        format!(
+                            "code=DIRECT_RECEIPT_LOOKUP_FAILED msg={msg_id} peer={peer_id} err={e} —— 不确认"
+                        ),
+                    );
+                    return;
+                }
+                Ok(None) => {}
             }
             // 好友关系检查：非好友消息不落库、不 Ack、通知发送方
             let is_friend = {
@@ -241,11 +266,32 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
             };
             // 真数据库错误 ⇒ 消息没有持久化 ⇒ 既不投递也绝不 Ack：Ack 会让发送方删除
             // outbox 行，把一次临时故障变成永久丢消息（与 P0-2 同源的红线）。
-            if !may_ack(&inserted) {
-                // 落库失败必须留痕（审计 2026-10-16 五家的第六家）：**行为一字未改** —— 仍然既不投递
-                // 也绝不 Ack（Ack 会让发送方删掉 outbox 行，把一次临时故障变成永久丢消息）。
-                // 补的只是"对方为什么永远收不到"这一格在日志里有没有据可查。
-                // `may_ack` 为假 ⇔ 落库返回 Err（重复那条仍为真 ⇒ 走不到这里），见 dispatch_tests 三态。
+            let receipt_ok = match &inserted {
+                Ok(true) => true,
+                Ok(false) => {
+                    let identity = {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        db::message_receipt_identity(&dbc, &msg_id)
+                    };
+                    match identity {
+                        Ok(Some(identity)) => {
+                            identity.conv_id == from
+                                && identity.sender_id == from
+                                && identity.receiver_id == state.device_id
+                        }
+                        Ok(None) => false,
+                        Err(e) => {
+                            state.logger.warn(
+                                "ack",
+                                format!("code=DIRECT_RECEIPT_LOOKUP_FAILED msg={msg_id} peer={peer_id} err={e}"),
+                            );
+                            false
+                        }
+                    }
+                }
+                Err(_) => false,
+            };
+            if !receipt_ok {
                 if let Err(e) = &inserted {
                     state.logger.error(
                         "dispatch",
@@ -253,6 +299,11 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
                             "1:1 入站消息落库失败 msg={}：{e} —— 不回 Ack，发送方 outbox 保留待补发",
                             msg_id
                         ),
+                    );
+                } else {
+                    state.logger.warn(
+                        "ack",
+                        format!("code=DIRECT_RECEIPT_IDENTITY_CONFLICT msg={msg_id} peer={peer_id} —— 重复落库裁决命中其他身份，不确认"),
                     );
                 }
                 return;

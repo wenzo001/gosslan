@@ -41,22 +41,66 @@
             "transport.rs 里又出现内联的第二份判据"
         );
     }
-    /// 群密钥分发的公钥选择规则：peers 表优先（announce/Hello 实时维护）、
-    /// friends 表回落、两边都缺才返回 None（安全跳过）。
+    /// 加密取钥：好友锚点优先；好友没有 X25519 锚点时才允许 peers 回落。
     #[test]
-    fn pick_member_x25519_prefers_peers_then_friends() {
-        // peers 有 → 用 peers（即使 friends 也有）
+    fn effective_x25519_prefers_the_friend_anchor() {
         assert_eq!(
-            pick_member_x25519(Some("pk-peer".into()), Some("pk-friend".into())).as_deref(),
-            Some("pk-peer")
-        );
-        // peers 无、friends 有 → 回落 friends
-        assert_eq!(
-            pick_member_x25519(None, Some("pk-friend".into())).as_deref(),
+            effective_x25519(Some("pk-friend".into()), Some("pk-peer".into())).as_deref(),
             Some("pk-friend")
         );
-        // 两边都无 → None（调用方 continue 安全跳过）
-        assert_eq!(pick_member_x25519(None, None), None);
+        assert_eq!(
+            effective_x25519(None, Some("pk-peer".into())).as_deref(),
+            Some("pk-peer")
+        );
+        assert_eq!(effective_x25519(None, None), None);
+    }
+
+    /// 安全码必须使用完整同源身份束；好友缺一把时绝不与 peers 拼成混合束。
+    #[test]
+    fn complete_identity_bundle_never_mixes_friend_and_peer_keys() {
+        let peer = (Some("peer-x".into()), Some("peer-e".into()));
+        let friend = Some((Some("friend-x".into()), Some("friend-e".into())));
+        assert_eq!(
+            complete_identity_bundle(friend.clone(), peer.clone()),
+            Some(PeerIdentityBundle {
+                x25519_pubkey: "friend-x".into(),
+                ed25519_pubkey: "friend-e".into(),
+            })
+        );
+        assert_eq!(
+            complete_identity_bundle(Some((Some("friend-x".into()), None)), peer.clone()),
+            None
+        );
+        assert_eq!(
+            complete_identity_bundle(Some((None, Some("friend-e".into()))), peer.clone()),
+            None
+        );
+        assert_eq!(
+            complete_identity_bundle(None, peer),
+            Some(PeerIdentityBundle {
+                x25519_pubkey: "peer-x".into(),
+                ed25519_pubkey: "peer-e".into(),
+            })
+        );
+        assert_eq!(
+            complete_identity_bundle(
+                Some((None, None)),
+                (Some("peer-x".into()), Some("peer-e".into())),
+            ),
+            Some(PeerIdentityBundle {
+                x25519_pubkey: "peer-x".into(),
+                ed25519_pubkey: "peer-e".into(),
+            }),
+            "好友行尚无任何公钥锚点时保留 peers 回落，避免老记录安全码消失",
+        );
+    }
+
+    #[test]
+    fn friend_key_conflict_checks_both_purposes() {
+        let friend = (Some("fx".into()), Some("fe".into()));
+        assert!(!friend_keys_conflict(&friend, &(Some("fx".into()), Some("fe".into()))));
+        assert!(friend_keys_conflict(&friend, &(Some("other-x".into()), Some("fe".into()))));
+        assert!(friend_keys_conflict(&friend, &(Some("fx".into()), Some("other-e".into()))));
     }
 
     /// respond_friend_request accept 路径的公钥补写（对齐 FriendAccept 接收路径）：
