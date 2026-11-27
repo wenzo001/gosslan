@@ -86,7 +86,8 @@
 - **恢复能力**：失败重试；**进程重启后重查重下** —— 启动时 `restore_update_intent` 读意图并灌回 `resumable`，**不恢复字节、不恢复 installing 相位**；前端自动检查重新查清单，用户点「重新下载」走已有的 `updater_check` + `updater_download` 整包重下。官方更新器整块内存下载、验签后一次返回，**没有续传 API**（用户 2026-11-14 拍板）。
 - **边界资源**：离线/清单读失败**不清意图**（那条待办不能因一次抖动消失）；装完、取消、稍后处理、清单说已是最新均清意图；坏意图解析失败关闭并留 `code=UPDATE_INTENT_*` 痕迹；意图写失败不阻断下载。
 - **验收证据**：`src-tauri/src/commands/updater.rs` 的 `intent_tests`（编解码与坏值反例、启动接线顺序、不造假的 installing、写/清覆盖全部相位、来源 host 与同源校验、两命令共用实现、自动回落不绕过安全裁决）、`src/utils/taskCenter.test.ts` 与 `src/utils/updater.test.ts` 的 A/B 对照用例、`src/utils/designGuards.test.ts` 的端点常量对账与切源链路判据。
-- **来源契约**：清单从哪个平台取，安装包就只能从哪个平台下。指定源时 `check_once` 只挂那一个端点，并按 `download_url` 的 host 复核（不一致即 `code=UPDATE_SOURCE_MISMATCH` 拒绝）；GitHub 连不上自动回落 Gitee，下载缓慢只提示不自动切，下载失败自动切 Gitee 整包重下。Rust 端点常量与 `src-tauri/tauri.conf.json` 的配置由判据逐字对账。
+- **来源契约**：清单从哪个平台取，安装包就只能从哪个平台下。指定源时 `check_once` 只挂那一个端点，并按 `download_url` 的 host 复核（不一致即 `code=UPDATE_SOURCE_MISMATCH` 拒绝）。Rust 端点常量与 `src-tauri/tauri.conf.json` 的配置由判据逐字对账。
+  > 2026-11-27 更新：显式选源改为**严格按该源查**，检查与下载两阶段都不再自动回落；换源只能由用户点「换到另一源重试」。自动模式改为双源并发、按版本最高裁决。
 - **本轮改进**：#34 与更新源同源/切换已落地。此前这一节写的是**决策**而不是已实现，现补齐实现与证据。
 
 ### 9. 搜索 / 设置 / 只读面板

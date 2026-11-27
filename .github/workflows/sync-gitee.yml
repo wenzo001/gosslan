@@ -17,15 +17,18 @@ name: Sync release to Gitee
 #
 # 安全：
 # - GITEE_TOKEN 只从 secret 读，第一步就 ::add-mask::，脚本任何错误都会把 token 替换成 ***；
-# - Gitee 侧单附件 100MB、仓库附件总量 1G ⇒ WebView2 内置包（~180MB）跳过；旧 release 按
-#   `keep` 清理（2026-11-25 起默认 3：一个版本约 245MB 附件，8 个会撑爆 1G 配额）；
-# - 当前 tag 的 release 永不进入清理清单，固定清单所在分支的提交也不受影响。
+# - Gitee 只承载 **Windows/macOS 正常版（≤10MB）与 Android APK（≤20MB）**；WebView2 内置包
+#   （177–189MB）与 Linux 包（AppImage/deb）只走 GitHub。单版 Gitee 占用约 75MB，
+#   keep=3 约 225MB，远低于仓库 1G 配额；当前 tag 永不进入清理清单。
 #
-# 大文件为什么现在也能由 CI 传（2026-11-25 探针推翻旧结论）：以前 ≥6MB 全 400，
-# 被误判成"跨境传不动"。真因是**并发数**：v7.2.8 那次 12 分片 × 3 并发 = 36 路同时
-# 打 Gitee，单连接被压到 ~2KB/s、最后 400。同一台 runner 实测：单路 7.8MB 201
-# （18KB/s）；**4 路并发** 4 个 7.4–8.4MB 包全部 201（13.5–20.3KB/s/路）。
-# 所以并发固定 4 路（4 分片 × 每片串行），CI 自己传全部 ≤100MB 的附件。
+# 为什么收紧白名单（2026-11-27 v7.4.2 事故）：按「100MB 以内都传」把 ~245MB 交给 4 个分片，
+# 结果 4 个分片全部 HTTP 400（6MB 的 exe 都传了 99 分钟），所有二进制缺失；更糟的是
+# finalize 先提交 latest.json 再校验，客户端看到「有更新」却下载 404。现在：
+# - 白名单由 `sync-gitee.mjs::skipReason` 单点定义，下载预筛与上传共用；
+# - 成功判据只看 4 个桌面正常版 + Android APK；Linux/WebView2 缺失不判红；
+# - finalize 先验资产、后提交清单，失败时保留上一版。
+#
+# 历史上 4 路并发是探针验证过的上限（单路 7.8MB 18KB/s；4 路全部 201）；分片数不要调大。
 
 on:
   workflow_call:
@@ -142,14 +145,25 @@ jobs:
             sleep $((attempt * 3))
           done
           jq -r '.assets[] | [.id, .name, .size] | @tsv' /tmp/release.json > /tmp/assets.tsv
-          while IFS=$'\t' read -r id name size; do
-            if [ "$size" -gt 104857600 ]; then
-              echo "跳过 >100MB：${name}（$size 字节）"
-              continue
-            fi
+          # 与 sync-gitee.mjs 的 skipReason 共用同一份白名单：只下载 Gitee 承载的
+          # Win/Mac 正常版（≤10MB）、Android APK（≤20MB）与签名；Linux/WebView2 不拉。
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import { skipReason } from "./scripts/sync-gitee.mjs";
+            for (const line of fs.readFileSync("/tmp/assets.tsv", "utf8").trim().split("\n")) {
+              if (!line) continue;
+              const [id, name, size] = line.split("\t");
+              if (name === "latest.json" || !skipReason(name, Number(size))) console.log(`${id}\t${name}`);
+            }
+          ' > /tmp/keep.tsv
+          while IFS=$'\t' read -r id name; do
             gh api "repos/$GITHUB_REPO/releases/assets/$id" \
               -H "Accept: application/octet-stream" -H "Cache-Control: no-cache" > "assets/$name"
-          done < /tmp/assets.tsv
+          done < /tmp/keep.tsv
+          # gh api 失败会留下 0 字节文件；不拦就会把空附件传上去，finalize 也看不出来。
+          while IFS=$'\t' read -r id name; do
+            test -s "assets/$name" || { echo "下载失败/空文件：$name"; exit 1; }
+          done < /tmp/keep.tsv
           test -s assets/latest.json
           echo "下载完成：$(find assets -type f | wc -l | tr -d ' ') 个文件"
 
@@ -164,11 +178,9 @@ jobs:
   upload:
     needs: prepare
     runs-on: ubuntu-latest
-    # 2026-11-23（v7.2.5 实测）：50 分钟不够——Linux 包（两个 ~100MB AppImage + 两个 deb）
-    # 进场后，承运大文件的分片 2/4 跑到 50 分整被取消、finalize 随之跳过，Gitee 停在半套。
-    # 2026-11-25 起大文件真的由 CI 传（4 路实测 13.5–20.3KB/s/路）：本版最大 84MB 独占
-    # 一片约 80–100 分钟，加上同片小文件与重试余量 ⇒ 给 240 分钟（GitHub 单 job 上限 6 小时）。
-    timeout-minutes: 240
+    # 白名单后单版只有 ~75MB（Win/Mac 正常版 + Android APK），4 片串行约 20 分钟；
+    # 留 90 分钟给 Gitee 限速抖动。
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -189,6 +201,7 @@ jobs:
           ref: ${{ github.event_name == 'release' && github.event.repository.default_branch || github.sha }}
           sparse-checkout: |
             scripts/sync-gitee.mjs
+            scripts/updater-manifest.mjs
           fetch-depth: 1
 
       - name: Download GitHub release assets
@@ -211,13 +224,25 @@ jobs:
             sleep $((attempt * 3))
           done
           jq -r '.assets[] | [.id, .name, .size] | @tsv' /tmp/release.json > /tmp/assets.tsv
-          while IFS=$'\t' read -r id name size; do
-            if [ "$size" -gt 104857600 ]; then
-              continue
-            fi
+          # 与 sync-gitee.mjs 的 skipReason 共用同一份白名单：只下载 Gitee 承载的
+          # Win/Mac 正常版（≤10MB）、Android APK（≤20MB）与签名；Linux/WebView2 不拉。
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import { skipReason } from "./scripts/sync-gitee.mjs";
+            for (const line of fs.readFileSync("/tmp/assets.tsv", "utf8").trim().split("\n")) {
+              if (!line) continue;
+              const [id, name, size] = line.split("\t");
+              if (name === "latest.json" || !skipReason(name, Number(size))) console.log(`${id}\t${name}`);
+            }
+          ' > /tmp/keep.tsv
+          while IFS=$'\t' read -r id name; do
             gh api "repos/$GITHUB_REPO/releases/assets/$id" \
               -H "Accept: application/octet-stream" -H "Cache-Control: no-cache" > "assets/$name"
-          done < /tmp/assets.tsv
+          done < /tmp/keep.tsv
+          # gh api 失败会留下 0 字节文件；不拦就会把空附件传上去，finalize 也看不出来。
+          while IFS=$'\t' read -r id name; do
+            test -s "assets/$name" || { echo "下载失败/空文件：$name"; exit 1; }
+          done < /tmp/keep.tsv
           test -s assets/latest.json
 
       - name: Upload shard
@@ -248,6 +273,7 @@ jobs:
           ref: ${{ github.event_name == 'release' && github.event.repository.default_branch || github.sha }}
           sparse-checkout: |
             scripts/sync-gitee.mjs
+            scripts/updater-manifest.mjs
           fetch-depth: 1
 
       - name: Download GitHub release assets
@@ -270,16 +296,28 @@ jobs:
             sleep $((attempt * 3))
           done
           jq -r '.assets[] | [.id, .name, .size] | @tsv' /tmp/release.json > /tmp/assets.tsv
-          while IFS=$'\t' read -r id name size; do
-            if [ "$size" -gt 104857600 ]; then
-              continue
-            fi
+          # 与 sync-gitee.mjs 的 skipReason 共用同一份白名单：只下载 Gitee 承载的
+          # Win/Mac 正常版（≤10MB）、Android APK（≤20MB）与签名；Linux/WebView2 不拉。
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import { skipReason } from "./scripts/sync-gitee.mjs";
+            for (const line of fs.readFileSync("/tmp/assets.tsv", "utf8").trim().split("\n")) {
+              if (!line) continue;
+              const [id, name, size] = line.split("\t");
+              if (name === "latest.json" || !skipReason(name, Number(size))) console.log(`${id}\t${name}`);
+            }
+          ' > /tmp/keep.tsv
+          while IFS=$'\t' read -r id name; do
             gh api "repos/$GITHUB_REPO/releases/assets/$id" \
               -H "Accept: application/octet-stream" -H "Cache-Control: no-cache" > "assets/$name"
-          done < /tmp/assets.tsv
+          done < /tmp/keep.tsv
+          # gh api 失败会留下 0 字节文件；不拦就会把空附件传上去，finalize 也看不出来。
+          while IFS=$'\t' read -r id name; do
+            test -s "assets/$name" || { echo "下载失败/空文件：$name"; exit 1; }
+          done < /tmp/keep.tsv
           test -s assets/latest.json
 
-      - name: Commit manifest, verify, prune
+      - name: Verify assets, commit manifest, prune
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |

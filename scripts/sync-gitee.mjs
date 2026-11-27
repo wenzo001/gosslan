@@ -27,8 +27,11 @@ import { fileURLToPath } from "node:url";
 import { REQUIRED_PLATFORMS } from "./updater-manifest.mjs";
 
 const API = "https://gitee.com/api/v5";
-const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
-const DEFAULT_KEEP = 8;
+/** Gitee 只承载「桌面正常版」：Windows/macOS 的自动更新包都在 10MB 以内。 */
+export const GITEE_DESKTOP_MAX_BYTES = 10 * 1024 * 1024;
+/** Android APK 13–18MB，必须留在 Gitee，否则国内 Android 更新只能走 GitHub。 */
+export const GITEE_ANDROID_MAX_BYTES = 20 * 1024 * 1024;
+const DEFAULT_KEEP = 3;
 const REQUIRED_ANDROID_PLATFORMS = ["android-aarch64", "android-armv7"];
 const MANIFEST_PATH = "updates/latest.json";
 
@@ -63,22 +66,60 @@ export function androidPlatformFor(name) {
 }
 
 /**
- * Gitee 单附件 100MB，且固定清单不重复上传。返回跳过原因，`null` 表示要上传。
- * 这是纯函数，工作流里“按大小预筛”和脚本里“再筛一遍”共用同一口径。
+ * Gitee 承载白名单（2026-11-27 用户拍板）。返回跳过原因，`null` 表示要上传。
+ *
+ * 只镜像：
+ * - Windows / macOS **正常版**（≤10MB）：`*-setup.exe`、`*.app.tar.gz`、`*.dmg`；
+ * - Android APK（≤20MB）：13–18MB 的包必须留在 Gitee，否则国内 Android 更新只能走 GitHub；
+ * - 对应的 `.sig` / `.sha256` 跟随主文件。
+ *
+ * 明确不镜像：WebView2 内置包（177–189MB）、Linux 包（AppImage/deb/rpm）。
+ *
+ * 为什么不是「100MB 以内都传」：v7.4.2 的 4 个分片在 Gitee 上全部 HTTP 400，
+ * 6MB 的 exe 传了 99 分钟 —— 限速下体积越小越稳；Gitee 仓库总配额也只有 1G。
+ * 工作流用同一个函数预筛下载，脚本里再筛一遍，两边不会漂。
  */
 export function skipReason(name, size) {
   if (name === "latest.json") return "固定清单单独提交，不重复上传";
-  if (/webview2/i.test(name)) return "WebView2 内置包超过 Gitee 单附件 100MB 上限";
-  if (size > MAX_ATTACHMENT_BYTES) {
-    return `单文件 ${size} 字节超过 100MB 上限`;
+  if (/webview2/i.test(name)) return "WebView2 内置包只走 GitHub（Gitee 不承载）";
+
+  // `.sig` / `.sha256` 跟随主文件判定；主文件不进白名单，签名也不进。
+  const base = name.endsWith(".sig")
+    ? name.slice(0, -4)
+    : name.endsWith(".sha256")
+      ? name.slice(0, -7)
+      : name;
+
+  if (isDesktopNormal(base)) {
+    return size <= GITEE_DESKTOP_MAX_BYTES
+      ? null
+      : `桌面正常版 ${(size / 1048576).toFixed(1)}MB 超过 Gitee 10MB 上限，只走 GitHub`;
   }
-  return null;
+  if (isAndroidApk(base)) {
+    return size <= GITEE_ANDROID_MAX_BYTES
+      ? null
+      : `Android APK ${(size / 1048576).toFixed(1)}MB 超过 Gitee 20MB 上限，只走 GitHub`;
+  }
+  if (/\.(AppImage|deb|rpm)$/i.test(base)) {
+    return "Linux 包只走 GitHub（Gitee 仅承载 Win/Mac 正常版与 Android APK）";
+  }
+  return "不在 Gitee 承载白名单（只镜像 Win/Mac 正常版与 Android APK）";
+}
+
+/** Windows/macOS 的正常版安装包（不含 WebView2）。 */
+function isDesktopNormal(name) {
+  return /-setup\.exe$/i.test(name) || /\.app\.tar\.gz$/i.test(name) || /\.dmg$/i.test(name);
+}
+
+function isAndroidApk(name) {
+  return /-release\.apk$/i.test(name);
 }
 
 /**
  * 用 GitHub 的 latest.json 生成 Gitee 清单：
  * - 四个桌面平台的 url 改指 Gitee 附件地址，签名原样复用；
- * - 追加 Android 平台（url + sha256 + size），Android 客户端据此校验 APK。
+ * - Android 平台**可选**：传了 `androidAssets` 才写；没传就不写，Android 客户端会
+ *   因为缺 android 平台而回退 GitHub API（`android_updater.rs:405-415`）。
  *
  * Tauri 的静态清单平台对象只读 `url` / `signature`，额外字段和额外平台会被忽略；
  * Android 的 `signature` 留空是刻意的：Android 不用 minisign，改用 `sha256` 校验。
@@ -105,7 +146,6 @@ export function buildGiteeManifest({ githubManifest, tag, repo, androidAssets = 
     };
   }
 
-  const androidSeen = new Set();
   for (const a of androidAssets) {
     if (!a?.platform || !a?.name || !a?.sha256) {
       throw new Error(`Android 资产条目不完整：${JSON.stringify(a)}`);
@@ -117,11 +157,6 @@ export function buildGiteeManifest({ githubManifest, tag, repo, androidAssets = 
       sha256: a.sha256,
       size: a.size,
     };
-    androidSeen.add(a.platform);
-  }
-  const missingAndroid = REQUIRED_ANDROID_PLATFORMS.filter((p) => !androidSeen.has(p));
-  if (missingAndroid.length) {
-    throw new Error(`Gitee 清单缺 Android 平台：${missingAndroid.join(", ")}`);
   }
 
   return {
@@ -315,21 +350,6 @@ async function ensureRelease(repo, tag, branch, body) {
 }
 
 /**
- * **CI 能传的附件上限 = Gitee 单附件配额 100MB**（2026-11-25 探针推翻旧结论）。
- *
- * 旧结论（2026-11-24）：几 MB 的 body 会被 Gitee 网关直接 400 ⇒ CI 只传 ≤5MB、
- * 大包交本机补传。**「大小」这个归因是错的**。同一台 GitHub runner 上的三次实测：
- *   · 单路 7.8MB，带 `Expect: 100-continue` ⇒ 201，18.0KB/s；
- *   · 单路 7.8MB，关掉这个头           ⇒ 201，12.7KB/s（不是它，已排除）；
- *   · **4 路并发**（4 个 7.4–8.4MB 包同时传）⇒ 全部 201，13.5–20.3KB/s/路。
- * 而 v7.2.8 失败那次是 **12 分片 × 3 并发 = 36 路**同时打一个 IP：单连接被压到
- * ~2KB/s、7.8MB 传 56 分钟后 400 —— 真因是并发数把 Gitee 的 per-IP 限速打到拒绝，
- * 不是文件体积。所以现在：**CI 自己传全部 ≤100MB 的附件**，并发固定 4 路
- * （4 分片 × 每片串行）；本机 `gitee-backfill.mjs` 只作为应急兜底。
- */
-export const CI_UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
-
-/**
  * 附件上传走 `curl`，不走 `fetch`。
  *
  * 现场（2026-11-07 演练 v5.18.78）：7MB 的 `Gosslan-arm64.app.tar.gz` 在 GitHub
@@ -448,8 +468,12 @@ async function verifyPublic({ repo, tag, manifest, assetsDir }) {
       if (got.version !== manifest.version) {
         throw new Error(`公开清单版本 ${got.version} ≠ ${manifest.version}`);
       }
-      for (const p of [...REQUIRED_PLATFORMS, ...REQUIRED_ANDROID_PLATFORMS]) {
+      // 桌面四平台是硬要求；Android 是可选平台（APK 没镜像就不写，客户端回退 GitHub）。
+      for (const p of REQUIRED_PLATFORMS) {
         if (!got.platforms?.[p]?.url) throw new Error(`公开清单缺平台 ${p}`);
+      }
+      for (const p of REQUIRED_ANDROID_PLATFORMS) {
+        if (got.platforms?.[p] && !got.platforms[p].url) throw new Error(`公开清单缺平台 ${p}`);
       }
       console.log(`公开清单可读：${rawUrl}（version ${got.version}）`);
       return got;
@@ -463,14 +487,13 @@ async function verifyPublic({ repo, tag, manifest, assetsDir }) {
 }
 
 /**
- * **两仓逐个文件对齐**（2026-11-23，用户口径：「所有的更新一定要两个仓库都要同步」）。
+ * **Gitee 白名单逐个文件对齐**（2026-11-27 策略调整）。
  *
- * `verifyAssets` 只看 manifest 里列出的平台（windows/mac/android）——Linux 包**不在
- * 清单里**，某个分片取消导致它们没传上去也照样绿。这里按「GitHub 上有哪些资产」逐个
- * 对 Gitee 的同名附件点名：缺一个就红，大小不一致也红（上传截断最常见的形状）。
+ * 只核 `skipReason === null` 的文件：Win/Mac 正常版（≤10MB）+ Android APK（≤20MB）
+ * 及其签名。Linux 包、WebView2 内置包明确只走 GitHub，缺失不算失败，只记账。
  * 清单 `latest.json` 在 Gitee 是 commit 不是附件，跳过。
  */
-async function verifyAllAssetsMirrored(repo, tag, filesByName, localOnly) {
+async function verifyAllAssetsMirrored(repo, tag, filesByName, githubOnly) {
   const releases = await listAll(`/repos/${repo}/releases`);
   const rel = releases.find((r) => r.tag_name === tag);
   if (!rel) throw new Error(`Gitee 上没有 ${tag}（镜像未建）`);
@@ -480,14 +503,13 @@ async function verifyAllAssetsMirrored(repo, tag, filesByName, localOnly) {
   let checked = 0;
   for (const [name, f] of filesByName) {
     if (name === "latest.json") continue;
+    const reason = skipReason(name, f.size);
+    if (reason) {
+      githubOnly.push(`${name}：${reason}`);
+      continue;
+    }
     const a = byName.get(name);
     if (!a) {
-      // 超过 Gitee 单附件 100MB 上限的包（目前只有 WebView2 内置安装包）永远传不上去：
-      // 只记账、不判红（判红等于每次发版都挂一条无法修复的红）。其余缺口一律判红。
-      if (f.size > CI_UPLOAD_MAX_BYTES) {
-        localOnly.push(`${name}（${Math.round(f.size / 1048576)}MB）`);
-        continue;
-      }
       problems.push(`${name}：Gitee 缺`);
       continue;
     }
@@ -499,25 +521,22 @@ async function verifyAllAssetsMirrored(repo, tag, filesByName, localOnly) {
   }
   if (problems.length) {
     throw new Error(
-      `两仓资产不一致（${problems.length} 项，已核 ${checked} 个一致）：\n  ${problems.join("\n  ")}\n` +
-        // 2026-11-25 v7.2.11 现场：Linux 腿的「挂资产」因发布门禁只等 10 分钟被拒（Verify 要 24 分钟），
-        // 重跑后才把 2 个 AppImage + 2 个 .sig + 2 个 deb 补上；而本次同步的 prepare 早在 11:41
-        // 就取过资产快照（14 个），这 6 个它从没见过 ⇒ 现象是"分片全绿、finalize 说缺"。
-        // 门禁上限已抬到 30 分钟，但这条兜底提示留着：看到"缺的正好是某一个平台的全套"，
-        // 先去看那个平台的 Build 运行有没有重跑过，再重跑一次本 workflow 即可（已存在的不重传）。
-        "提示：若缺口正好是某个平台的全套（例如 Linux 的 AppImage/deb），多半是该平台的" +
-        "「挂资产」步骤刚重跑过、资产晚于本工作流的快照才挂上 —— 再跑一次本 workflow 补齐即可。",
+      `Gitee 白名单资产不一致（${problems.length} 项，已核 ${checked} 个一致）：\n  ${problems.join("\n  ")}\n` +
+        // 2026-11-25 v7.2.11 现场：某平台「挂资产」晚于 prepare 的快照，现象是"分片全绿、finalize 说缺"。
+        // 看到缺口正好是某个平台的全套，先确认该平台 Build 有没有重跑，再重跑本 workflow（已存在的不重传）。
+        "提示：若缺口正好是某个平台的全套，多半是该平台刚重跑过、资产晚于本工作流的快照 —— " +
+        "再跑一次本 workflow 补齐即可。",
     );
   }
-  console.log(`  两仓逐个文件对齐：${checked} 个资产在 Gitee 全部存在且大小一致`);
-  const uniq = [...new Set(localOnly)];
+  console.log(`  白名单逐个文件对齐：${checked} 个资产在 Gitee 全部存在且大小一致`);
+  const uniq = [...new Set(githubOnly)];
   if (uniq.length > 0) {
-    console.log(`  ⚠️ ${uniq.length} 个附件超过 Gitee 单附件 100MB 上限，镜像里不提供（请从 GitHub Release 下载）：`);
+    console.log(`  ℹ️ ${uniq.length} 个附件按策略只走 GitHub（Gitee 不承载）：`);
     console.log(`     ${uniq.join("\n     ")}`);
   }
 }
 
-async function verifyAssets(manifest, assetsDir, filesByName, localOnly) {
+async function verifyAssets(manifest, assetsDir, filesByName) {
   for (const [platform, entry] of Object.entries(manifest.platforms)) {
     const name = basenameFromUrl(entry.url);
     const local = filesByName.get(name);
@@ -525,13 +544,7 @@ async function verifyAssets(manifest, assetsDir, filesByName, localOnly) {
     try {
       head = await checkAnonymous(entry.url, { minBytes: 1 });
     } catch (e) {
-      // 超过 Gitee 单附件 100MB 上限的包（WebView2 内置）匿名访问必然 404：
-      // 记账、不判红；其余匿名不可达就是真的没传上去，照旧抛错。
-      if (local && local.size > CI_UPLOAD_MAX_BYTES) {
-        localOnly.push(`${name}（${Math.round(local.size / 1048576)}MB）`);
-        console.log(`  ${platform}: 超过 Gitee 单附件上限，镜像不提供（${String(e?.message ?? e).slice(0, 80)}）${name}`);
-        continue;
-      }
+      // 白名单里的资产匿名访问不到 = 真没传上去，直接判红；不再有「超 100MB 降级」这一档。
       throw e;
     }
     console.log(`  ${platform}: 匿名可达（HTTP ${head.status}，${head.type}）${name}`);
@@ -605,14 +618,8 @@ async function main(argv) {
   }
   const githubManifest = JSON.parse(fs.readFileSync(latestFile, "utf8"));
 
-  const androidAssets = [];
-  for (const f of files) {
-    const platform = androidPlatformFor(f.name);
-    if (platform) androidAssets.push({ platform, name: f.name, size: f.size, sha256: f.sha256 });
-  }
-  const manifest = buildGiteeManifest({ githubManifest, tag, repo, androidAssets });
-  const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
-
+  // 先按白名单分出「Gitee 承载」与「只走 GitHub」，Android 清单只从承载集合里取 ——
+  // 否则一个 >20MB 的 APK 会写进清单却传不上去，客户端下载 404。
   const uploads = [];
   const skipped = [];
   for (const f of files) {
@@ -620,6 +627,29 @@ async function main(argv) {
     if (reason) skipped.push({ ...f, reason });
     else uploads.push(f);
   }
+
+  // 清单里的四个桌面平台必须**都在承载集合里**：包一旦超过 10MB 被白名单排除，
+  // 清单还指向 Gitee 就等于把 404 推给客户端（v7.4.2 的形态）。这里提前失败，
+  // 并说清是哪个包超限，而不是等到 finalize 的匿名 404 才红。
+  const uploadNames = new Set(uploads.map((f) => f.name));
+  for (const p of REQUIRED_PLATFORMS) {
+    const src = githubManifest.platforms?.[p]?.url;
+    if (!src) throw new Error(`GitHub 清单缺平台 ${p}`);
+    const name = basenameFromUrl(src);
+    if (!uploadNames.has(name)) {
+      throw new Error(
+        `桌面平台 ${p} 的包 ${name} 不在 Gitee 承载集合（超过 10MB？），清单不能指向 Gitee`,
+      );
+    }
+  }
+
+  const androidAssets = [];
+  for (const f of uploads) {
+    const platform = androidPlatformFor(f.name);
+    if (platform) androidAssets.push({ platform, name: f.name, size: f.size, sha256: f.sha256 });
+  }
+  const manifest = buildGiteeManifest({ githubManifest, tag, repo, androidAssets });
+  const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
   console.log(`待上传 ${uploads.length} 个文件，跳过 ${skipped.length} 个`);
   for (const s of skipped) console.log(`  跳过 ${s.name}（${s.size} 字节）：${s.reason}`);
 
@@ -627,9 +657,11 @@ async function main(argv) {
   const tags = await listAll(`/repos/${repo}/tags`);
   await ensureTag(repo, tag, branch, tags);
 
-  const skippedNote = skipped.some((s) => /webview2/i.test(s.name))
-    ? "\n\n> WebView2 内置安装包超过 Gitee 单附件 100MB 上限，未镜像；需要该版本请从 GitHub Release 下载。"
-    : "";
+  // 无论本轮有没有跳过文件，都在 Gitee release 说明里写清承载范围 ——
+  // CI 的下载预筛已经把 Linux/WebView2 排除了，`skipped` 在 CI 里通常是空的。
+  const skippedNote =
+    "\n\n> Gitee 仅镜像 Windows/macOS 正常版（≤10MB）与 Android APK（≤20MB）；" +
+    "Linux 包与 WebView2 内置版请从 GitHub Release 下载。";
   const body =
     `${String(githubManifest.notes ?? "").trim()}\n\n---\n\n` +
     `Gitee 镜像：https://gitee.com/${repo}/releases/tag/${tag}\n` +
@@ -712,16 +744,9 @@ async function main(argv) {
 
     // **单片尽量传完**：一个文件挂了不打断后面的（原先直接抛 ⇒ 该片剩下的一律不传，
     // 一次 run 的产出最少化）。缺口由 finalize 的 verifyAllAssetsMirrored 逐个点名。
-    const tooBigForCi = mine.filter((f) => f.size > CI_UPLOAD_MAX_BYTES);
-    const mineCi = mine.filter((f) => f.size <= CI_UPLOAD_MAX_BYTES);
-    if (tooBigForCi.length > 0) {
-      console.log(
-        `本片 ${tooBigForCi.length} 个文件超过 Gitee 单附件上限（${CI_UPLOAD_MAX_BYTES / 1048576}MB），` +
-          `镜像里不提供：${tooBigForCi.map((f) => f.name).join("、")}`,
-      );
-    }
+    // 能走到这里的文件都已过 `skipReason` 白名单（最大 20MB），不需要再按体积二次筛选。
     const failures = [];
-    for (const f of mineCi) {
+    for (const f of mine) {
       try {
         await uploadOne(f, release.id);
       } catch (e) {
@@ -742,18 +767,21 @@ async function main(argv) {
     }
   }
 
+  // ★ 顺序是安全边界（2026-11-27 v7.4.2 事故）：先把资产验齐，再提交清单。
+  //   旧顺序先 commit 再 verify ⇒ 资产没传全时清单已经指向 404，客户端看到「有更新」却下载失败。
+  const githubOnly = [];
+  await verifyAllAssetsMirrored(repo, tag, filesByName, githubOnly);
+  console.log("匿名校验固定清单与附件：");
+  await verifyAssets(manifest, assetsDir, filesByName);
+
+  // 资产全部通过后才推进公开清单；失败时保留上一版，客户端最多「暂无更新」。
   await commitManifest(
     repo,
     branch,
     manifestText,
     `chore(release): latest.json ${tag}（Gitee 固定清单）`,
   );
-
-  console.log("匿名校验固定清单与附件：");
-  const localOnly = [];
-  const publicManifest = await verifyPublic({ repo, tag, manifest, assetsDir });
-  await verifyAssets(publicManifest, assetsDir, filesByName, localOnly);
-  await verifyAllAssetsMirrored(repo, tag, filesByName, localOnly);
+  await verifyPublic({ repo, tag, manifest, assetsDir });
 
   const releases = await listAll(`/repos/${repo}/releases`);
   const plan = prunePlan(releases, tag, keep);

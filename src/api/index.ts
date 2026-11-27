@@ -1042,7 +1042,7 @@ export const api = {
     invoke<UpdaterInfo | null>("updater_check_source", { source }),
   /**
    * **记住**用户选的更新源（落盘）：下次打开应用默认用它。
-   * 与 `updaterCheckSource` 的区别：后者只是本次换源（下载失败后的自动回落走它）。
+   * 与 `updaterCheckSource` 的区别：后者只是本次换源（界面的「换到另一源重试」按钮走它）。
    */
   updaterSetSourcePref: (source: string) =>
     invoke<UpdaterInfo | null>("updater_set_source_pref", { source }),

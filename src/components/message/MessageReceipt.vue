@@ -51,6 +51,8 @@ const props = defineProps<{
    * 不再转圈（转圈＝"正在发"，而它并没有在发）。
    */
   waiting?: boolean;
+  /** 超过 7 天仍在等：只换文案/图标颜色，不新增回执层（探针钉死 5 层）。 */
+  longWaiting?: boolean;
 }>();
 const emit = defineEmits<{ (e: "retry"): void; (e: "cancel"): void }>();
 
@@ -359,11 +361,16 @@ function readerAvatar(id: string): string | null {
            仍然保留勾：内容本身是完整的，只是还没送出去。 -->
       <span
         class="receipt-layer" :data-active="state === 'sending' && !!waiting"
-        data-receipt-state="sending-waiting" aria-hidden="true"
+        data-receipt-state="sending-waiting"
+        aria-hidden="true"
       >
         <span class="relative flex items-center">
           <Icon name="check" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-          <Icon name="clock3" class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5 text-[var(--gosslan-text-2)]" />
+          <Icon
+            name="clock3"
+            class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5"
+            :class="longWaiting ? 'text-[var(--gosslan-warning)]' : 'text-[var(--gosslan-text-2)]'"
+          />
         </span>
       </span>
       <span

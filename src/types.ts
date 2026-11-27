@@ -746,8 +746,6 @@ export interface UpdaterStatus {
   resumable: boolean;
   /** 本次清单/安装包实际来源：`auto | gitee | github | unknown`；移动端为空串。 */
   source: string;
-  /** 后端自动切源留下的短码（如 `auto_switched_to_gitee`），界面翻成人话。 */
-  sourceEvent: string | null;
 }
 
 export type UpdaterDownloadEvent =

@@ -20,10 +20,16 @@ export type UpdaterPhase =
 export type UpdaterErrorCode =
   | "timeout"
   | "network"
+  /** 源上缺包：清单说有新版本，下载 URL 却 404（v7.4.2 Gitee 事故的典型形状）。 */
+  | "asset-missing"
+  /** 代理层失败：SOCKS/HTTP 代理拒绝、tunnel 失败、407。 */
+  | "proxy"
   | "signature"
   | "manifest"
   | "busy"
   | "downgrade"
+  /** 清单/安装包与所选源不匹配，或两个源都不可用。 */
+  | "source-unavailable"
   | "unknown";
 
 export interface UpdateInfo {
@@ -32,6 +38,8 @@ export interface UpdateInfo {
   notes?: string | null;
   /** Unix seconds（Rust 侧给的是时间戳，不在后端格式化文案）。 */
   publishedAt?: number | null;
+  /** 清单实际来源；显式选源时就是用户选的那个，自动模式用于回写界面。 */
+  source?: string | null;
 }
 
 export type DownloadEvent =
@@ -49,8 +57,8 @@ export interface UpdaterAdapter {
   /**
    * **记住**用户选的源（落盘）：下次打开应用、或者自动检查更新时，默认用它。
    *
-   * 与 `checkSource` 的区别：后者只是「这一次换源查清单」（下载失败后的自动回落走它），
-   * 不该改掉用户的偏好；这一条是用户自己点的 ⇒ 落盘。
+   * 与 `checkSource` 的区别：后者只是「这一次换源查清单」（用户点「换到另一源重试」走它），
+   * 不该改掉用户的偏好；这一条是用户在源选择里显式选的 ⇒ 落盘。
    */
   setSourcePref?(source: string): Promise<UpdateInfo | null>;
   download(onEvent: (event: DownloadEvent) => void): Promise<void>;
@@ -80,8 +88,6 @@ export interface UpdaterState {
   notice: "superseded" | null;
   /** 清单/安装包实际来源：`auto | gitee | github | unknown`。界面据此说「正在从哪下」。 */
   source: string;
-  /** 后端自动切源留下的短码（如 `auto_switched_to_gitee`），由界面翻成人话；null = 没有。 */
-  sourceEvent: string | null;
   /**
    * 下载慢到该给用户一个「换源」入口了。
    * 刻意**只提示不自动切**：正在飞的几十 MB 说丢就丢，这个决定要用户自己点。
@@ -101,11 +107,19 @@ function errorCode(e: unknown): UpdaterErrorCode {
   // 要在其余关键词之前判：后端文案是「清单版本 … 不高于当前 …，已拒绝」，
   // 落到 unknown 只会显示「更新失败，请稍后重试」，用户不知道发生了什么（也重试不好）。
   if (/UPDATER_DOWNGRADE_BLOCKED|禁止降级/i.test(text)) return "downgrade";
+  // 源上缺包必须在通用 http/network 之前判：v7.4.2 的 Gitee 清单指向 404，
+  // 以前被归成 network，界面提示「网络不可用」——其实网络是通的，是源上没包。
+  if (/\b404\b|not found|asset.{0,12}missing|文件不存在/i.test(text)) return "asset-missing";
+  if (/proxy|tunnel|SOCKS|407|代理/i.test(text)) return "proxy";
+  if (/正在进行|已在下载|正在下载|busy|IN_PROGRESS|ALREADY_DOWNLOADING/i.test(text)) return "busy";
   if (/timeout|timed? ?out|超时/i.test(text)) return "timeout";
   if (/签名|signature|verify/i.test(text)) return "signature";
   if (/json|manifest|清单|格式/i.test(text)) return "manifest";
-  if (/正在进行|已在下载|正在下载|busy/i.test(text)) return "busy";
-  if (/network|dns|http|连接|下载失败|不可达|unreachable/i.test(text)) return "network";
+  if (/UPDATE_SOURCE_MISMATCH|SOURCE_UNAVAILABLE|来源不一致|源不可用/i.test(text)) {
+    return "source-unavailable";
+  }
+  // 注意不要再用裸 `http`：后端错误串里几乎必带 URL，会把 404/清单坏全归成 network。
+  if (/network|dns|连接|下载失败|不可达|unreachable|请求失败/i.test(text)) return "network";
   return "unknown";
 }
 
@@ -138,7 +152,6 @@ export function createUpdaterService(
     dismissedVersion: null,
     notice: null,
     source: "auto",
-    sourceEvent: null,
     slow: false,
   });
 
@@ -150,8 +163,6 @@ export function createUpdaterService(
   let checkInFlight: Promise<void> | null = null;
   let downloadInFlight: Promise<void> | null = null;
   let cancelRequested = false;
-  /** 下载失败后自动换源重下，只允许一次，避免两个源轮流失败时无限打转。 */
-  let pendingAutoSwitch = false;
   let slowTimer: ReturnType<typeof setTimeout> | null = null;
 
   function clearSlowTimer() {
@@ -205,6 +216,8 @@ export function createUpdaterService(
       try {
         const info = await withTimeout(adapter.check(), checkTimeoutMs);
         if (id !== attempt) return;
+        // 后端会把实际命中的源带回（自动模式尤其需要）：界面不能「写着 GitHub、实际用 Gitee」。
+        if (info?.source) state.source = info.source;
         if (info && info.version !== state.currentVersion) {
           state.info = info;
           state.dismissedVersion = null;
@@ -243,7 +256,7 @@ export function createUpdaterService(
     return runCheck(manual);
   }
 
-  function download(autoRetried = false): Promise<void> {
+  function download(): Promise<void> {
     if (downloadInFlight) return downloadInFlight;
     if (!state.info || state.phase === "downloading" || state.phase === "installing") {
       return Promise.resolve();
@@ -278,42 +291,25 @@ export function createUpdaterService(
           state.phase = "available";
           state.error = null;
         } else {
-          const code = errorCode(e);
-          // 先落终态：`switchSource` 看到 error 就不会再对这份已结束的下载发一次 cancel。
           state.phase = "error";
-          state.error = code;
-          // GitHub 连不上/太慢导致下载失败 ⇒ 直接换 Gitee 整包重下，只试一次。
-          if (
-            !autoRetried &&
-            (code === "network" || code === "timeout") &&
-            state.source === "github" &&
-            adapter.checkSource
-          ) {
-            await switchSource("gitee");
-            if (state.info) pendingAutoSwitch = true;
-          }
+          state.error = errorCode(e);
+          // 显式选源必须严格：下载失败不再偷偷换到另一家。界面会给「换到另一源重试」
+          // 按钮，由用户决定；自动模式的重试入口也在那里。
         }
       } finally {
         downloadInFlight = null;
         cancelRequested = false;
         clearSlowTimer();
-        if (pendingAutoSwitch) {
-          pendingAutoSwitch = false;
-          // 旧下载的 Promise 到这里才收口，此刻才允许发起整包重下。
-          void download(true);
-        }
       }
     })();
     return downloadInFlight;
   }
 
   /**
-   * 手动（或下载失败自动）换源：先停掉在飞的下载，再用那一个端点重新查清单。
+   * 按当前源之外的另一家重查（界面的「换到另一源重试」按钮走这里）。
    * 官方更新器整块内存下载、验签后一次返回 ⇒ 换源没有续传，只能整包重下。
    *
-   * ⚠️ **不落盘**：调用它的地方有两类 —— 用户在设置页手动点（走 `chooseSource`，
-   * 那条会落盘）与**下载失败后的自动回落**（这里）。后者是网络抖动，
-   * 绝不该把用户记住的偏好改掉。
+   * ⚠️ **不落盘**：这是「这一次试试另一家」，不是用户改默认源；改默认源走 `chooseSource`。
    */
   async function switchSource(source: string): Promise<void> {
     await applySource(source, false);
@@ -348,7 +344,6 @@ export function createUpdaterService(
     state.downloaded = 0;
     state.total = null;
     state.source = source;
-    state.sourceEvent = null;
     try {
       // 记住的那条路走后端落盘；其余（含自动回落）只换这一次。
       const info =
@@ -439,7 +434,6 @@ export function createUpdaterService(
     for (const t of timers) clearTimeout(t);
     timers.clear();
     clearSlowTimer();
-    pendingAutoSwitch = false;
     checkInFlight = null;
     downloadInFlight = null;
   }
@@ -460,14 +454,12 @@ export function createUpdaterService(
     error?: string | null;
     /** #34：后端在启动时从 settings 表恢复出来的更新意图。 */
     resumable?: boolean;
-    /** 后端实际命中的清单/安装包来源，以及自动切源留下的短码。 */
+    /** 后端实际命中的清单/安装包来源。 */
     source?: string;
-    sourceEvent?: string | null;
   }) {
-    // 来源与自动切源短码是**事实**，不是相位投影：即便本窗口正在下载（下面会提前返回），
-    // 这两格也必须跟着后端走，否则自动回落到 Gitee 之后界面还写着 GitHub。
+    // 来源是**事实**，不是相位投影：即便本窗口正在下载（下面会提前返回），
+    // 这一格也必须跟着后端走，否则界面写的源与实际下载的源会不一致。
     if (snapshot.source) state.source = snapshot.source;
-    state.sourceEvent = snapshot.sourceEvent ?? null;
     if (state.phase !== "idle") return;
     const info = snapshot.version
       ? { currentVersion: state.currentVersion, version: snapshot.version, notes: null, publishedAt: null }

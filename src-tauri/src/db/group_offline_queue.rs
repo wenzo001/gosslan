@@ -20,12 +20,24 @@ pub fn insert_group_outbox(
 }
 
 /// 取某成员的待补发群消息（只取 `pending`；墓碑不参与 flush）。
+#[allow(dead_code)] // 完整视图：测试 / 诊断用；生产 flush 走 `list_group_outbox_batch` 限流
 pub fn list_group_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(i64, String)>> {
+    list_group_outbox_batch(conn, peer_id, i64::MAX)
+}
+
+/// 单次群 flush 每对端最多补发多少条（2026-11-27，与单聊 `OUTBOX_FLUSH_BATCH` 同口径）。
+pub const GROUP_OUTBOX_FLUSH_BATCH: i64 = 200;
+
+pub fn list_group_outbox_batch(
+    conn: &Connection,
+    peer_id: &str,
+    limit: i64,
+) -> Result<Vec<(i64, String)>> {
     let mut stmt = conn.prepare(
         "SELECT id, payload FROM group_outbox
-          WHERE peer_id = ?1 AND status = 'pending' ORDER BY id",
+          WHERE peer_id = ?1 AND status = 'pending' ORDER BY id LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![peer_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let rows = stmt.query_map(params![peer_id, limit], |r| Ok((r.get(0)?, r.get(1)?)))?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -493,14 +505,9 @@ pub fn list_expired_group_outbox(
 ///
 /// 不能把一条消息的所有行 `all()` 成一个结论（P1-04）：群里只要有一个成员长期离线，
 /// 在线成员的行也会被一起保留 ⇒ 每 5s 重发一次、最长 7 天。逐行判定后，在线成员
-/// 30 分钟就独立放弃，离线成员仍按 7 天保留（INV-P04 不受影响）。
+/// 30 分钟就独立放弃，离线成员一直保留到真正送达（INV-P04 例外）。
 pub fn group_outbox_row_expired(peer_reachable: bool, age_ms: i64) -> bool {
-    should_fail_expired(
-        peer_reachable,
-        age_ms,
-        GROUP_OUTBOX_FAIL_DEADLINE_MS,
-        OUTBOX_OFFLINE_HOLD_MS,
-    )
+    should_fail_expired(peer_reachable, age_ms, GROUP_OUTBOX_FAIL_DEADLINE_MS)
 }
 
 /// 按 msg_id 删除**所有** peer 的 group_outbox 行。
@@ -950,7 +957,7 @@ mod group_outbox_removal_tests {
     /// P1-04 回归：群 outbox 必须**逐行**判死。
     ///
     /// 旧实现 `rows.iter().all(...)` 把结论聚合到消息级：一条消息里只要有一个成员离线，
-    /// 在线成员的行也被保留 ⇒ 每 5s 重发一次、最长 7 天。
+    /// 在线成员的行也被保留 ⇒ 每 5s 重发一次。2026-11-27 起离线行不再按 7 天判死。
     #[test]
     fn group_outbox_expiry_is_per_row_not_per_message() {
         let min = 60_000i64;
@@ -967,8 +974,12 @@ mod group_outbox_removal_tests {
             "在线成员未到 30min 不放弃"
         );
         assert!(
-            group_outbox_row_expired(false, OUTBOX_OFFLINE_HOLD_MS + 1),
-            "离线成员超过 7 天才是僵尸行"
+            !group_outbox_row_expired(false, OUTBOX_OFFLINE_HOLD_MS + 1),
+            "离线成员超过 7 天也不再判死：一直保留到真正送达（2026-11-27 产品裁决）"
+        );
+        assert!(
+            !group_outbox_row_expired(false, OUTBOX_OFFLINE_HOLD_MS * 100),
+            "永久离线也保留；队列上界由 flush 分批与人工清理兜底"
         );
     }
 

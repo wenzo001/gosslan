@@ -120,7 +120,7 @@ export function groupResendNotice(res: {
       return { key: "msg.groupResend.allDelivered", kind: "info" };
     // 只剩 failed 行 = 本端已放弃的那批成员：不许悄悄退回"整条重发"（那会给对端一条重复内容）。
     case "already_failed":
-      return { key: "msg.groupResend.allDelivered", kind: "info" };
+      return { key: "msg.groupResend.allFailed", kind: "info" };
     case "not_found":
       return { key: "msg.cancelSend.notFound", kind: "info" };
     // no_ledger（升级前发出的消息）/ unsupported（文件等）：调用方应退回整条重发。

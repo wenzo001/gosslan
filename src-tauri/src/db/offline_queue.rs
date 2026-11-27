@@ -15,11 +15,9 @@ pub const OUTBOX_FAIL_DEADLINE_MS: i64 = 120_000;
 
 /// 离线对端的 outbox 保留窗口（毫秒）。
 ///
-/// 产品承诺「对方离线时消息自动暂存，上线建链后自动补发」（README / INV-P04）：
-/// 好友关机两分钟就把行删掉、置 failed，等于用 sweeper 击穿这条承诺
-///（2026-09-19 审计 P0：sweeper 不区分「发出去没 Ack」和「对端根本不在网上」）。
-/// 离线行保留 7 天后才当僵尸清理 —— 这是防止永久离场节点让队列无限增长的兜底，
-/// 不是补发期限。
+/// 产品承诺「对方离线时消息自动暂存，上线建链后自动补发」（README / INV-P04）。
+/// 2026-11-27 产品裁决：**离线行不再按时间判死**，一直保留到真正 Ack；
+/// 这个常量只保留给「长期待补发」的展示分档与历史测试，不再作为失败期限。
 pub const OUTBOX_OFFLINE_HOLD_MS: i64 = 7 * 24 * 3600 * 1000;
 
 /// 群 outbox 行的判死窗口：**30 分钟**，不是单聊那 120 秒。
@@ -34,25 +32,19 @@ pub const GROUP_OUTBOX_FAIL_DEADLINE_MS: i64 = 30 * 60 * 1000;
 /// sweeper 判定：一条已过 `OUTBOX_FAIL_DEADLINE_MS` 的候选行现在该不该判 failed。
 ///
 /// 可达（当前有 TCP 链路）⇒ 等了至少 120s 仍无 Ack，再等也没有意义 → 放弃；
-/// 不可达（对端离线）⇒ 保留，直到超出 `OUTBOX_OFFLINE_HOLD_MS`。
+/// **不可达（对端离线）⇒ 永远保留**，等对端上线后补发（2026-11-27 产品裁决）。
+/// 7 天不再是失败期限，所以这里只吃「可达性 + 年龄 + 放弃窗口」三个入参。
 pub fn should_fail_expired_outbox(peer_reachable: bool, age_ms: i64) -> bool {
-    should_fail_expired(peer_reachable, age_ms, OUTBOX_FAIL_DEADLINE_MS, OUTBOX_OFFLINE_HOLD_MS)
+    should_fail_expired(peer_reachable, age_ms, OUTBOX_FAIL_DEADLINE_MS)
 }
 
-/// 通用版：不同队列的放弃窗口不同（单聊/群 120s，文件 30min），离线保留窗口统一。
-/// sweeper 的三条队列都从这一个判据出（2026-09-19 自审建议#5：
-/// 文件 outbox 曾维持 30min 无条件 failed，离线对端的文件补发被同样击穿）。
-pub fn should_fail_expired(
-    peer_reachable: bool,
-    age_ms: i64,
-    deadline_ms: i64,
-    hold_ms: i64,
-) -> bool {
-    if peer_reachable {
-        age_ms >= deadline_ms
-    } else {
-        age_ms >= hold_ms
-    }
+/// 通用版：不同队列的放弃窗口不同（单聊/群 120s，文件 30min）。
+/// sweeper 的三条队列都从这一个判据出。
+///
+/// ⚠️ 离线分支恒为 `false`：行只有在「可达但超时无 Ack」或收到 Ack 时才出队。
+/// 这意味着 outbox 的「必然排空」有了一个显式例外（见 `protocol-invariants` INV-P04）。
+pub fn should_fail_expired(peer_reachable: bool, age_ms: i64, deadline_ms: i64) -> bool {
+    peer_reachable && age_ms >= deadline_ms
 }
 
 #[allow(dead_code)]
@@ -74,16 +66,34 @@ pub fn list_outbox_peers(conn: &Connection) -> Result<Vec<String>> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+#[allow(dead_code)] // 完整视图：测试 / 诊断用；生产 flush 走 `list_outbox_batch` 限流
 pub fn list_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(i64, String, String)>> {
+    list_outbox_batch(conn, peer_id, i64::MAX)
+}
+
+/// 单次 flush 每对端最多补发多少条（2026-11-27，永久保留的上界护栏）。
+///
+/// 离线行不再按 7 天判死后，一个 peer 的积压可能是上万条；`flush_outbox` 原本一次全取
+/// 全发，对端一上线就会瞬间构造并写出上万帧（内存 + 链路双峰）。每轮 200 条由 5s
+/// retrier / 心跳自然续传，积压仍会排空，但不会把一个会话的洪峰压到主线程上。
+pub const OUTBOX_FLUSH_BATCH: i64 = 200;
+
+pub fn list_outbox_batch(
+    conn: &Connection,
+    peer_id: &str,
+    limit: i64,
+) -> Result<Vec<(i64, String, String)>> {
     // 队列行自身的身份与载荷。**不 JOIN `messages`**：flush 期要拿业务 kind 做能力协商
     // （5.16.92），但 `outbox` 的本职只到"哪条、发给谁、发了什么"；kind 由
     // `message_gating()` 单独问（老队列行对应消息已清理时返回 `None`，按"不需要能力位"放行）。
     // 这条查询因此对最小测试库也成立 —— 上一版 JOIN 在只建 `messages(msg_id …)` 的
     // 测试库里会直接报 "no such column: m.kind"。
     let mut stmt = conn.prepare(
-        "SELECT id, msg_id, payload FROM outbox WHERE peer_id = ?1 ORDER BY id",
+        "SELECT id, msg_id, payload FROM outbox WHERE peer_id = ?1 ORDER BY id LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![peer_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    let rows = stmt.query_map(params![peer_id, limit], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -191,31 +201,16 @@ mod offline_queue_tests {
             "群窗口必须严格长于单聊窗口，否则这条改动等于没做"
         );
         let flap = OUTBOX_FAIL_DEADLINE_MS + 1; // 刚过单聊窗口：单聊该放弃，群不该
-        assert!(should_fail_expired(true, flap, OUTBOX_FAIL_DEADLINE_MS, OUTBOX_OFFLINE_HOLD_MS));
+        assert!(should_fail_expired(true, flap, OUTBOX_FAIL_DEADLINE_MS));
         assert!(
-            !should_fail_expired(
-                true,
-                flap,
-                GROUP_OUTBOX_FAIL_DEADLINE_MS,
-                OUTBOX_OFFLINE_HOLD_MS
-            ),
+            !should_fail_expired(true, flap, GROUP_OUTBOX_FAIL_DEADLINE_MS),
             "链路抖动 3 分钟内就删群行 ⇒ 那条群消息永久无人补发"
         );
         // 到点仍然要放弃：不许把窗口改成"永不放弃"
         let past = GROUP_OUTBOX_FAIL_DEADLINE_MS + 1;
-        assert!(should_fail_expired(
-            true,
-            past,
-            GROUP_OUTBOX_FAIL_DEADLINE_MS,
-            OUTBOX_OFFLINE_HOLD_MS
-        ));
-        // 离线对端仍按 7 天保留（这条改动不许顺手削弱离线补发）
-        assert!(!should_fail_expired(
-            false,
-            Duration::from_secs(86_400).as_millis() as i64,
-            GROUP_OUTBOX_FAIL_DEADLINE_MS,
-            OUTBOX_OFFLINE_HOLD_MS
-        ));
+        assert!(should_fail_expired(true, past, GROUP_OUTBOX_FAIL_DEADLINE_MS));
+        // 离线对端一直保留（这条改动不许顺手削弱离线补发）
+        assert!(!should_fail_expired(false, Duration::from_secs(86_400).as_millis() as i64, GROUP_OUTBOX_FAIL_DEADLINE_MS));
     }
 
     #[test]
@@ -226,9 +221,13 @@ mod offline_queue_tests {
         // 离线：120s / 1 小时都不构成失败理由（承诺是上线后补发）
         assert!(!should_fail_expired_outbox(false, OUTBOX_FAIL_DEADLINE_MS));
         assert!(!should_fail_expired_outbox(false, 3_600_000));
-        // 离线保留窗口的意义是防僵尸行：到点才清
+        // 2026-11-27 产品裁决：7 天不再是失败期限，行一直保留到真正 Ack。
         assert!(!should_fail_expired_outbox(false, OUTBOX_OFFLINE_HOLD_MS - 1));
-        assert!(should_fail_expired_outbox(false, OUTBOX_OFFLINE_HOLD_MS));
+        assert!(!should_fail_expired_outbox(false, OUTBOX_OFFLINE_HOLD_MS));
+        assert!(!should_fail_expired_outbox(
+            false,
+            OUTBOX_OFFLINE_HOLD_MS * 100
+        ));
     }
 
     #[test]
@@ -261,6 +260,33 @@ mod offline_queue_tests {
         // 「对端离线（保留）」与「可达无 Ack（放弃）」——回归 2026-09-19 P0。
         assert_eq!(peer_id, "peer-a");
         assert_eq!(*created_at, 0);
+    }
+
+    #[test]
+    fn list_outbox_batch_bounds_a_reconnect_flood() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                msg_id TEXT NOT NULL UNIQUE,
+                peer_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        for i in 0..250 {
+            insert_outbox(&conn, &format!("m-{i}"), "peer-a", "{}").unwrap();
+        }
+        // 全量读仍是 250（其它调用点/测试需要完整视图）；
+        // flush 走 batch，一轮最多 200 —— 永久保留后积压上万条时不会上线即洪泛。
+        assert_eq!(list_outbox(&conn, "peer-a").unwrap().len(), 250);
+        assert_eq!(
+            list_outbox_batch(&conn, "peer-a", OUTBOX_FLUSH_BATCH)
+                .unwrap()
+                .len(),
+            200
+        );
     }
 
     /// **读数型判据**（10-23 审计 A3 要的那一份）：队列 N 行时，一轮到期扫描读多久。

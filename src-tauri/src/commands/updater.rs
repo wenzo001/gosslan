@@ -30,6 +30,9 @@ pub struct UpdateInfo {
     pub version: String,
     pub notes: Option<String>,
     pub published_at: Option<i64>,
+    /// 这份清单实际来自哪个源（`gitee | github | unknown`）。
+    /// 显式选源时它就是用户选的那个；自动模式会把它写回界面，避免「显示 GitHub、实际用 Gitee」。
+    pub source: Option<String>,
 }
 
 /// 更新这件事的**可查询状态**（B5）。
@@ -63,9 +66,6 @@ pub struct UpdaterStatus {
     /// 本次清单/安装包实际来自哪个平台：`gitee` / `github` / `unknown`（auto 且还没查到时）。
     /// 界面据此显示「正在从哪个源下载」，也据此判断切换按钮该指向哪里。
     pub source: String,
-    /// 一次**自动**切源的稳定短码（如 `auto_switched_to_gitee`），前端翻成人话提示。
-    /// 手动切源不写这一格 —— 那是用户自己做的，不用再解释一遍。
-    pub source_event: Option<String>,
 }
 
 // ---------------- 跨重启的更新意图（#34） ----------------
@@ -175,13 +175,6 @@ pub fn artifact_matches_source(manifest_source: &str, download_url: &str) -> boo
     matches!(source_of_url(download_url), Some(s) if s == manifest_source)
 }
 
-/// 只有「网络 / 清单读取」类失败才允许自动换源；降级拦截与同源校验是安全裁决，
-/// 换个源重试等于绕过它。纯函数放在顶层，跨平台单测都能直接钉。
-#[cfg_attr(not(desktop), allow(dead_code))]
-pub fn is_safe_to_fallback(e: &str) -> bool {
-    !e.contains("UPDATER_DOWNGRADE_BLOCKED") && !e.contains("UPDATE_SOURCE_MISMATCH")
-}
-
 // 移动端只用它做命令参数类型，不会构造任何变体；桌面端由下载闭包构造。
 #[cfg_attr(not(desktop), allow(dead_code))]
 #[derive(Debug, Clone, Serialize)]
@@ -205,7 +198,7 @@ pub enum DownloadEvent {
 mod desktop {
     use super::{
         artifact_matches_source, encode_update_intent, endpoint_for_source,
-        is_safe_to_fallback, is_valid_update_source, parse_update_intent, source_of_url,
+        is_valid_update_source, parse_update_intent, source_of_url,
         DownloadEvent, UpdateInfo,
         UpdateIntent, UpdaterStatus, UPDATE_ENDPOINT_GITEE, UPDATE_ENDPOINT_GITHUB,
         UPDATE_INTENT_KEY, UPDATE_SOURCE_PREF_KEY,
@@ -256,12 +249,22 @@ mod desktop {
         last_emit_ms: Arc<std::sync::atomic::AtomicI64>,
     }
 
+    /// 忙碌位的 Drop 守卫：命令 future 被丢弃（窗口关闭 / 调用方取消 await）时
+    /// 也必须复位，否则后续检查/下载会一直收到 `*_IN_PROGRESS`，用户只能重启应用。
+    /// 安装相位早就有 `InstallingPhase` 守卫；检查/下载这两格是 2026-11-27 补的。
+    struct BusyFlag<'a>(&'a AtomicBool);
+
+    impl Drop for BusyFlag<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+
     impl UpdaterSession {
         fn clear(&self) {
             *self.update.lock().unwrap_or_else(|e| e.into_inner()) = None;
             *self.bytes.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
-
         /// 改状态并广播（跃迁用，不节流）。广播本身只走 [`emit_now`] 那一处。
         fn set_status(&self, app: &AppHandle, f: impl FnOnce(&mut UpdaterStatus)) {
             {
@@ -400,7 +403,6 @@ mod desktop {
             st.resumable = true;
             // 来源要等这一轮重新查清单才知道，先标 auto；不继承上次进程里的偏好。
             st.source = "auto".to_string();
-            st.source_event = None;
         });
         log_updater_info(
             app,
@@ -462,8 +464,25 @@ mod desktop {
             .map_err(|e| format!("code=UPDATE_SOURCE_PREF_SAVE_FAILED：{e}"))
     }
 
+    /// 代理诊断：只记录「有没有设置」，**不打印值**（可能带账号密码）。
+    /// 用户报「开了系统代理仍更新失败」时，先看这一行就能区分「进程根本没看到代理」
+    /// 与「看到了但代理不覆盖 gitee.com / github.com」。
+    fn has_env(name: &str) -> bool {
+        std::env::var_os(name).map(|v| !v.is_empty()).unwrap_or(false)
+    }
+
     /// 按**一个**端点查清单（并发比较的那一半）。
     async fn fetch_manifest(app: &AppHandle, endpoint: &str) -> Result<Option<Update>, String> {
+        log_updater_info(
+            app,
+            &format!(
+                "code=UPDATE_PROXY env_http={} env_https={} env_all={} env_no={}",
+                has_env("HTTP_PROXY") || has_env("http_proxy"),
+                has_env("HTTPS_PROXY") || has_env("https_proxy"),
+                has_env("ALL_PROXY") || has_env("all_proxy"),
+                has_env("NO_PROXY") || has_env("no_proxy"),
+            ),
+        );
         let url = Url::parse(endpoint)
             .map_err(|e| format!("code=UPDATE_ENDPOINT_INVALID：{e}"))?;
         let updater = app
@@ -476,40 +495,122 @@ mod desktop {
         updater.check().await.map_err(|e| e.to_string())
     }
 
-    /// 「自动」= **两个端点同时查，谁先回就用谁**（用户 2026-11-15：「看哪个连接的快就用哪个」）。
+    /// 「自动」= **两个端点同时查，等两边都有结论后再挑**（2026-11-27 修正）。
     ///
-    /// 旧行为是「按配置顺序 Gitee 优先、GitHub 兜底」—— 那不是「挑快的」，
-    /// 只是「挑配置里第一个能连上的」。并发之后：
-    /// · 谁先成功用谁（快的赢；清单与安装包同源仍由 #34 那条保证）；
-    /// · 一个失败不等它，继续用另一个；
-    /// · 两个都失败 ⇒ 报最后一个错误。
+    /// 旧行为是「谁先回 `Ok` 用谁」，而 `Ok(None)`（清单成功但无更新）也会立刻赢：
+    /// Gitee 镜像发布后 30–35 分钟才追上，这段窗口里它先回「已是最新」，
+    /// 自动模式就不再等 GitHub —— 用户被卡在旧版本，且永远等不到更新。
     ///
-    /// ⚠️ 已知边界：Gitee 镜像是**发布后延迟传播**的（分片上传约 30–35 分钟），
-    /// 那个窗口里它手里的清单还是上一版 ⇒ 谁快用谁可能挑到「旧清单」。
-    /// 这与旧行为（Gitee 优先）同源，不是本次引入的退化；真要「又新又快」得等镜像追上。
+    /// 现在的裁决：
+    /// · 只把**真正可升级**的 `Ok(Some)` 当候选（`Some` 的旧清单不算）；
+    /// · 多个候选取**版本最高**的，版本相同取**先回**的（快者胜）；
+    /// · 没有任何候选、但至少一家明确说「已是最新」⇒ `Ok(None)`；
+    /// · 两家都失败才报错（保留最后一个错误）。
+    ///
+    /// 这样「自动」默认就是「最新且能连上的源」，而不是「碰巧先回话的源」。
     async fn check_auto_race(app: &AppHandle) -> Result<Option<Update>, String> {
         let (tx, mut rx) = tokio::sync::mpsc::channel(2);
         for endpoint in [UPDATE_ENDPOINT_GITEE, UPDATE_ENDPOINT_GITHUB] {
             let app = app.clone();
             let tx = tx.clone();
             tokio::spawn(async move {
+                let started = std::time::Instant::now();
                 let r = fetch_manifest(&app, endpoint).await;
-                let _ = tx.send(r).await;
+                let _ = tx.send((endpoint, started.elapsed(), r)).await;
             });
         }
         drop(tx);
+
+        let mut best: Option<(Option<Version>, Update, std::time::Duration, String)> = None;
+        let mut saw_authoritative_none = false;
         let mut last_err: Option<String> = None;
-        while let Some(r) = rx.recv().await {
+        while let Some((endpoint, elapsed, r)) = rx.recv().await {
+            let source = source_of_url(endpoint).unwrap_or("unknown").to_string();
             match r {
-                Ok(v) => return Ok(v),
-                Err(e) => last_err = Some(e),
+                Ok(Some(update)) => {
+                    // 旧清单（版本不高于当前）不是候选，也不能覆盖另一家的「已是最新」。
+                    if is_not_an_upgrade(&update.current_version, &update.version) {
+                        log_updater_info(
+                            app,
+                            &format!(
+                                "code=UPDATE_AUTO_STALE source={source} version={} current={}",
+                                update.version, update.current_version
+                            ),
+                        );
+                        saw_authoritative_none = true;
+                        continue;
+                    }
+                    // 不用 `.ok()`：这里不是「静默丢弃」，解析失败要显式记成 None，
+                    // 才能走下面「不可解析版本只做兜底」的分支（棘轮也不许涨）。
+                    #[allow(clippy::manual_ok_err)] // 棘轮禁止 `.ok();`，只能显式匹配
+                    let version = match Version::parse(&update.version) {
+                        Ok(v) => Some(v),
+                        Err(_) => None,
+                    };
+                    let replace = match (&best, &version) {
+                        (None, _) => true,
+                        // 两家都能解析：版本高者胜；同版本先回者胜。
+                        (Some((Some(best_ver), _, best_elapsed, _)), Some(v)) => {
+                            v > best_ver || (v == best_ver && elapsed < *best_elapsed)
+                        }
+                        // 当前候选可解析、新候选不可解析：不拿它换掉。
+                        (Some((Some(_), _, _, _)), None) => false,
+                        // 当前候选不可解析：可解析的优先；都不可解析就比谁先回。
+                        (Some((None, _, _, _)), Some(_)) => true,
+                        (Some((None, _, best_elapsed, _)), None) => elapsed < *best_elapsed,
+                    };
+                    if replace {
+                        best = Some((version, update, elapsed, source.clone()));
+                    }
+                    log_updater_info(
+                        app,
+                        &format!(
+                            "code=UPDATE_AUTO_CANDIDATE source={source} elapsed_ms={}",
+                            elapsed.as_millis()
+                        ),
+                    );
+                }
+                Ok(None) => {
+                    saw_authoritative_none = true;
+                    log_updater_info(
+                        app,
+                        &format!(
+                            "code=UPDATE_AUTO_NO_UPDATE source={source} elapsed_ms={}",
+                            elapsed.as_millis()
+                        ),
+                    );
+                }
+                Err(e) => {
+                    log_updater_info(
+                        app,
+                        &format!(
+                            "code=UPDATE_AUTO_FAILED source={source} elapsed_ms={} err={e}",
+                            elapsed.as_millis()
+                        ),
+                    );
+                    last_err = Some(e);
+                }
             }
         }
-        Err(last_err
-            .unwrap_or_else(|| "code=UPDATE_CHECK_FAILED：两个更新源都没查通".to_string()))
+
+        if let Some((_, update, elapsed, source)) = best {
+            log_updater_info(
+                app,
+                &format!(
+                    "code=UPDATE_AUTO_WINNER source={source} version={} elapsed_ms={}",
+                    update.version,
+                    elapsed.as_millis()
+                ),
+            );
+            return Ok(Some(update));
+        }
+        if saw_authoritative_none {
+            return Ok(None);
+        }
+        Err(last_err.unwrap_or_else(|| "code=UPDATE_CHECK_FAILED：两个更新源都没查通".to_string()))
     }
 
-    /// 按指定来源查**一次**清单。`auto` 两个端点并发（谁快用谁），
+    /// 按指定来源查**一次**清单。`auto` 两个端点并发后按版本裁决（见 `check_auto_race`），
     /// 指定源则只把那一个端点交给官方插件 ⇒ 清单与安装包天然同源。
     async fn check_once(
         app: &AppHandle,
@@ -553,6 +654,7 @@ mod desktop {
             version: update.version.clone(),
             notes: update.body.clone(),
             published_at: update.date.map(|d| d.unix_timestamp()),
+            source: Some(actual.clone()),
         };
         *state.update.lock().unwrap_or_else(|e| e.into_inner()) = Some(update);
         Ok(Some((info, actual)))
@@ -585,6 +687,7 @@ mod desktop {
                 "更新检查正在进行",
             ));
         }
+        let _busy = BusyFlag(&state.checking);
         state.clear();
         state.set_status(&app, |st| {
             st.phase = "checking".to_string();
@@ -592,43 +695,24 @@ mod desktop {
             st.total = None;
             st.version = None;
             st.error = None;
-            st.source_event = None;
         });
-        // GitHub 连不上 / 清单读不到 ⇒ 直接改用 Gitee，不把一次网络抖动变成用户的故障单。
-        // 安全裁决（降级、同源）不参与回落，见 `is_safe_to_fallback`。
-        let (checked, effective, switched) = match check_once(&app, state, &requested).await {
-            Ok(v) => (Ok(v), requested.clone(), None),
-            Err(e) if requested == "github" && is_safe_to_fallback(&e) => {
-                log_updater_info(&app, "code=UPDATE_SOURCE_FALLBACK from=github to=gitee");
-                match check_once(&app, state, "gitee").await {
-                    Ok(v) => (
-                        Ok(v),
-                        "gitee".to_string(),
-                        Some("auto_switched_to_gitee".to_string()),
-                    ),
-                    Err(e2) => (
-                        Err(e2),
-                        "gitee".to_string(),
-                        Some("auto_switched_to_gitee_failed".to_string()),
-                    ),
-                }
-            }
-            Err(e) => (Err(e), requested.clone(), None),
-        };
-        state.checking.store(false, Ordering::SeqCst);
+        // 显式选源必须**严格**按该源查（2026-11-27 用户口径）。
+        // 旧行为是 GitHub 失败静默改查 Gitee —— 用户以为自己选的是 GitHub，实际拿到了
+        // Gitee 的结果；Gitee 失败时又没有反向回落，行为完全不对称。现在只查用户选的源，
+        // 失败就如实报错，由界面给「换到另一源重试」按钮（不偷偷改选择）。
+        let checked = check_once(&app, state, &requested).await;
+        let effective = requested.clone();
         let mut result: Result<Option<UpdateInfo>, String> = Ok(None);
         match &checked {
             Ok(Some((info, actual))) => {
                 let v = info.version.clone();
                 let src = actual.clone();
-                let ev = switched.clone();
                 // #34：查到更新就记下意图。重启后这一格还在，任务中心据此列「重新下载」。
                 save_update_intent(&app, &v, "available");
                 state.set_status(&app, move |st| {
                     st.phase = "idle".to_string();
                     st.version = Some(v);
                     st.source = src;
-                    st.source_event = ev;
                     // `resumable` 刻意不清：自动检查也会走到这里，用户还没重新发起下载，
                     // 那一行不许被这次检查抹掉（离线时更是只剩这一份意图）。
                 });
@@ -648,12 +732,10 @@ mod desktop {
             Err(e) => {
                 let msg = e.clone();
                 let src = effective.clone();
-                let ev = switched.clone();
                 state.set_status(&app, move |st| {
                     st.phase = "failed".to_string();
                     st.error = Some(msg);
                     st.source = src;
-                    st.source_event = ev;
                 });
                 result = Err(e.clone());
             }
@@ -729,6 +811,7 @@ mod desktop {
                 "更新已在下载",
             ));
         }
+        let _busy = BusyFlag(&state.downloading);
         let result = async {
             let update = state
                 .update
@@ -825,7 +908,6 @@ mod desktop {
             }
         }
         .await;
-        state.downloading.store(false, Ordering::SeqCst);
         result
     }
 
@@ -929,6 +1011,7 @@ mod desktop {
             version: update.version.clone(),
             notes: update.body.clone(),
             published_at: update.date.map(|d| d.unix_timestamp()),
+            source: source_of_url(update.download_url.as_str()).map(|s| s.to_string()),
         };
         // 过期了：丢掉旧字节，并把清单换成新的那份，用户点"下载"就能直接开始。
         state.clear();
@@ -1122,8 +1205,7 @@ mod desktop {
             st.version = None;
             st.error = None;
             st.resumable = false;
-            // 偏好留着（用户选过就别重置），一次性提示清掉。
-            st.source_event = None;
+            // 偏好留着（用户选过就别重置）。
         });
         Ok(())
     }
@@ -1335,22 +1417,34 @@ mod status_tests {
         assert!(!super::is_valid_update_source(""));
     }
 
-    /// 「自动」= **两个端点并发查，谁快用谁**（用户 2026-11-15：「看哪个连接的快就用哪个」）。
+    /// 「自动」= **两个端点并发查，等两边都有结论后挑版本最高的**（2026-11-27 修正）。
     ///
-    /// 旧行为是「按配置顺序 Gitee 优先、GitHub 兜底」—— 那不是挑快的，
-    /// 只是挑配置里第一个能连上的。判据钉住三件事：两个源都在查、
-    /// **并发**（串行就退回旧行为了）、以及 auto 分支确实走这条。
+    /// 旧行为是「第一个回 `Ok` 的赢」，而 `Ok(None)`（清单成功但无更新）也会立刻赢：
+    /// Gitee 镜像延迟窗口里会先回「已是最新」，自动模式就不再等 GitHub。
+    /// 判据钉住：两个源都查、并发、候选要过滤「不可升级」、多候选取最高版本。
     #[test]
-    fn auto_mode_races_both_endpoints_instead_of_using_a_fixed_order() {
+    fn auto_mode_waits_for_both_endpoints_and_picks_the_newest() {
         let src = include_str!("updater.rs");
         let race = body_of(src, "async fn check_auto_race(");
         assert!(
             race.contains("UPDATE_ENDPOINT_GITEE") && race.contains("UPDATE_ENDPOINT_GITHUB"),
-            "两个源都要查（只查一个就不是「挑快的」）"
+            "两个源都要查（只查一个就会漏掉更新）"
         );
         assert!(
             race.contains("tokio::spawn("),
-            "必须**并发**查（串行就还是「第一个能连上的那个」）"
+            "必须**并发**查（串行会把检查时间翻倍）"
+        );
+        assert!(
+            race.contains("is_not_an_upgrade(") && race.contains("Version::parse("),
+            "候选必须过滤「不高于当前」的旧清单，并按版本挑最高"
+        );
+        assert!(
+            race.contains("saw_authoritative_none") && race.contains("UPDATE_AUTO_WINNER"),
+            "没有候选时才能回「已是最新」；有候选时要记录赢家"
+        );
+        assert!(
+            !race.contains("Ok(v) => return Ok(v)"),
+            "不许再「第一个 Ok 就返回」——Ok(None) 也会赢，正是旧 bug"
         );
         let once = body_of(src, "async fn check_once(");
         assert!(
@@ -1467,7 +1561,7 @@ mod status_tests {
 #[cfg(test)]
 mod intent_tests {
     use super::{
-        artifact_matches_source, encode_update_intent, endpoint_for_source, is_safe_to_fallback,
+        artifact_matches_source, encode_update_intent, endpoint_for_source,
         is_valid_update_source, parse_update_intent, source_of_url, UpdateIntent,
     };
 
@@ -1681,16 +1775,28 @@ mod intent_tests {
         );
     }
 
-    /// GitHub 连不上要自动落到 Gitee，但降级/同源这两类安全裁决不许被换源绕过。
+    /// 显式选源必须**严格**：GitHub 失败不许偷偷改查 Gitee（2026-11-27 用户口径）。
+    /// 换源只能由用户点界面按钮触发；检查与下载两个阶段都没有跨源回落。
     #[test]
-    fn github_failure_falls_back_to_gitee_without_bypassing_safety_verdicts() {
+    fn explicit_source_is_strict_and_never_falls_back() {
         let src = include_str!("updater.rs");
         let core = body_of(src, "async fn check_with_source(");
-        assert!(core.contains("auto_switched_to_gitee"), "自动切源要留下可见短码");
-        assert!(core.contains("is_safe_to_fallback(&e)"), "回落必须先过安全闸门");
-        // A/B 对照：普通网络错误允许回落，安全裁决不允许。
-        assert!(is_safe_to_fallback("dns error: connection refused"));
-        assert!(!is_safe_to_fallback("code=UPDATER_DOWNGRADE_BLOCKED"));
-        assert!(!is_safe_to_fallback("code=UPDATE_SOURCE_MISMATCH"));
+        assert!(
+            !core.contains("auto_switched_to_gitee"),
+            "显式选源失败不许自动切源（旧行为会让用户以为选的是 GitHub、实际拿到 Gitee）"
+        );
+        assert!(
+            !core.contains("is_safe_to_fallback(&e)"),
+            "检查阶段不再有回落分支"
+        );
+        assert!(
+            core.contains("check_once(&app, state, &requested).await"),
+            "检查必须只查用户选的那一个源"
+        );
+        // 降级拦截与同源校验仍是硬失败：它们只能由用户显式换源，不能被任何重试绕过。
+        assert!(
+            body_of(src, "async fn check_with_source(").contains("check_once(&app, state, &requested).await"),
+            "只查用户选的源"
+        );
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "7.4.2"
+version = "7.4.3"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -109,6 +109,11 @@ tauri-plugin-autostart = "2"
 machine-uid = "0.5"
 # 桌面端应用内更新：插件只支持 Windows/macOS/Linux；移动端由命令桩返回不支持。
 tauri-plugin-updater = "2.14"
+# 只为一件事：**给 updater 的 reqwest 0.13 打开 socks feature**（Cargo 的 feature 按包版本
+# 合并，与依赖名无关）。插件 2.14 用 reqwest 0.13 但没暴露 socks；不打开它，Clash/Surge
+# 这类 SOCKS5 系统代理会被静默忽略 —— 用户「开了代理仍更新失败」的现场之一。
+# 重命名避免与本仓自己的 reqwest 0.12 冲突（两者互不影响）。
+reqwest_updater_socks = { package = "reqwest", version = "0.13", default-features = false, features = ["socks"] }
 # 「禁止降级」的显式版本判据（2026-10-24 产品裁决，见审计 §13）。
 # 官方插件的 `check()` 自己也会比较版本，但那条判据住在上游、我们无法在本仓钉住；
 # 这里用自己的比较做第二道，并留下 `code=UPDATER_DOWNGRADE_BLOCKED` 的可检索痕迹。

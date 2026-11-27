@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isWaitingForPeer, isTransferBacked, countWaitingTexts, WAITING_FOR_PEER_AFTER_MS } from "./sendWaiting.ts";
+import { isWaitingForPeer, isLongHoldWaiting, isTransferBacked, countWaitingTexts, WAITING_FOR_PEER_AFTER_MS, LONG_HOLD_AFTER_MS } from "./sendWaiting.ts";
 
 const T0 = 1_790_000_000_000;
 
@@ -72,6 +72,17 @@ test("对端明确离线 ⇒ 立即翻，不等 2 分钟", () => {
 });
 
 // J2-3：对端上线时说得出「排队的 N 条将陆续送达」—— 计数与 isWaitingForPeer 同一排除口径。
+// 2026-11-27：离线行不再按 7 天判死，7 天只是**展示分档**（长期待补发）。
+test("长期待补发：7 天前是普通等待，7 天后升级文案，但状态仍是 sending", () => {
+  const at = (ago: number, extra: Partial<{ status: string; msgId: string }> = {}) =>
+    isLongHoldWaiting({ status: "sending", ts: T0 - ago, ...extra }, T0);
+  assert.equal(at(LONG_HOLD_AFTER_MS - 1), false, "差 1ms 仍是普通等待");
+  assert.equal(at(LONG_HOLD_AFTER_MS), true, "到 7 天升级为长期待补发");
+  assert.equal(at(30 * 24 * 3600_000), true, "30 天后仍然保留，不许变成失败");
+  assert.equal(at(LONG_HOLD_AFTER_MS, { status: "failed" }), false, "真失败不冒充长期等待");
+  assert.equal(at(LONG_HOLD_AFTER_MS, { msgId: "file-x" }), false, "文件传输不适用");
+});
+
 test("countWaitingTexts：只数文本类 sending，文件与终态不算", () => {
   const msgs = [
     { status: "sending", msg_id: "m-1" },

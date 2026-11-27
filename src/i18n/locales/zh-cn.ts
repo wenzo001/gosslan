@@ -597,21 +597,24 @@ export const zhCN: MessageDict = {
   "settings.updates.mobile": "移动端不支持应用内更新，请从 GitHub Releases 手动下载新版本。",
   // 更新来源：清单与安装包必须同源；慢速只提示、连不上才自动切。
   "settings.updates.source": "更新来源：{source}",
-  "settings.updates.sourceAuto": "自动（Gitee 优先）",
+  "settings.updates.sourceAuto": "自动（选最新且可用的源）",
   "settings.updates.sourceGitee": "Gitee",
   "settings.updates.sourceGithub": "GitHub",
   "settings.updates.sourceRemembered": "选了就记住：下次更新默认用它",
   "settings.updates.switchTo": "切换到{source}",
   "settings.updates.switchToGitee": "切换到 Gitee 重新下载",
-  "settings.updates.slowHint": "下载缓慢或连接失败，可切换到 Gitee 重新下载整包（不会续传）。",
-  "settings.updates.autoSwitched": "GitHub 连接失败，已自动切换到 Gitee。",
-  "settings.updates.autoSwitchFailed": "GitHub 与 Gitee 暂时都不可用，请稍后重试。",
+  "settings.updates.switchToGithub": "切换到 GitHub 重新下载",
+  "settings.updates.slowHint": "下载缓慢或连接失败，可切换到另一来源重新下载整包（不会续传）。",
+  "settings.updates.giteeFailedHint": "当前已是 Gitee，仍然连接失败；可换到 GitHub 重试，或检查系统代理是否覆盖 gitee.com。",
   "settings.updates.error.timeout": "检查更新超时，请稍后重试",
   "settings.updates.error.network": "网络不可用或更新服务器暂不可达",
+  "settings.updates.error.asset-missing": "更新源上缺少安装包（清单已更新、文件尚未同步），请换个源或稍后重试",
+  "settings.updates.error.proxy": "代理连接失败，请检查系统代理设置（SOCKS5 需客户端支持）",
   "settings.updates.error.signature": "更新包签名校验未通过，已拒绝安装",
   "settings.updates.error.manifest": "更新清单格式不正确",
   "settings.updates.error.busy": "已有更新任务在进行，请稍后再试",
   "settings.updates.error.downgrade": "更新清单指向更旧的版本，已拒绝安装（禁止降级）",
+  "settings.updates.error.source-unavailable": "所选更新源暂不可用，请换个源重试",
   "settings.updates.error.unknown": "更新失败，请稍后重试",
   // ---- 安卓应用内升级（检查 → 下载 → 校验 → 唤起系统安装器）----
   "settings.androidUpdate.verifying": "正在校验安装包…",
@@ -759,7 +762,7 @@ export const zhCN: MessageDict = {
 
   // ---- 聊天输入区 ----
   "chat.composer.inputAria": "消息输入框",
-  "chat.composer.peerOffline": "对方当前离线：消息会先保留在本地（最长 7 天），对方上线后自动送达",
+  "chat.composer.peerOffline": "对方当前离线：消息会先保留在本地，对方上线后自动送达",
   "chat.composer.queuedOffline": "对方不在线，这条消息已保留，上线后会自动送达",
   "chat.offlineQueue.resume": "对方已上线，之前排队的 {n} 条消息将陆续送达",
   "chat.composer.emoji": "表情",
@@ -1073,9 +1076,10 @@ export const zhCN: MessageDict = {
   // Block 3：失败要拆两类并给出下一步。这一格是「对方在线，但当时没有可用的直连或中转」。
   "msg.fail.retryExpired":
     "这条消息没能送达：对方在线，但当时没有可用的直连或中转。下一步：让对方和中间节点保持在线（或在对方网络设置里加入同一中继），然后在传输队列点「重新发送」。",
-  // Block 3 另一格：对方全程离线（熬满 7 天保留窗口），下一步是等对方上线再重发。
+  // 历史上「离线熬满 7 天」会落这个码；2026-11-27 起离线行不再判死，只在老数据里出现。
+  // 下一步仍是等对方上线后重发（队列行仍在，重发会复用原 msg_id）。
   "msg.fail.peerOfflineExpired":
-    "这条消息没能送达：对方一直离线（已保留 7 天）。下一步：等对方上线、打开应用后，在传输队列点「重新发送」。",
+    "这条消息还没送达：对方长期离线，消息已保留在本地。下一步：等对方上线、打开应用后，在传输队列点「重新发送」。",
   "msg.fail.kindUnsupported": "对方这个版本的小院儿不支持这种内容，再等也不会送达；对方升级后可在传输队列点「重新发送」",
   "msg.fail.peerKeyMissing": "还没拿到对方的加密公钥，这条发不出去；等对方上线一次再点「重新发送」",
   "msg.fail.orphanAtStart": "本机重启时这条还卡在发送中，且已没有待发队列，按未送达处理",
@@ -1181,6 +1185,7 @@ export const zhCN: MessageDict = {
   // 说"没有可补发的成员"而不是"已送达全部"：台账里还可能有 failed 行（本端已放弃），
   // 那句"全部送达"会把放弃说成成功（复审抓出）。
   "msg.groupResend.allDelivered": "这条消息没有可补发的成员（都已送达或已放弃）",
+  "msg.groupResend.allFailed": "有成员已被标记为发送失败，无法在这里补发；请稍后重试或整条重发",
   "msg.groupResend.noLedger": "这条消息没有成员级台账（升级前发出），只能整条重发",
   "msg.groupResend.unsupported": "这种消息不支持按成员补发",
   // 群气泡旁的成员级投递摘要（台账口径）。全部送达时后端清墓碑 ⇒ 这几句都不会出现。
@@ -1200,7 +1205,8 @@ export const zhCN: MessageDict = {
   "msg.noMessage": "还没有消息",
   "msg.mentioned": "[有人{'@'}我]",
   "msg.sending": "发送中…",
-  "msg.waitingForPeer": "等待对方上线：对方上线后会自动补发，这条消息最多保留 7 天",
+  "msg.waitingForPeer": "等待对方上线：对方上线后会自动补发（消息会一直保留）",
+  "msg.waitingForPeerLong": "长期待补发：对方已离线超过 7 天，消息会一直保留，等对方上线后自动补发",
   "msg.delivered": "对方已收到，未读",
   "msg.read": "对方已读",
   // 群消息的「部分送达后被取消」：一部分成员已经收到，剩下的人在用户取消时还没收到。

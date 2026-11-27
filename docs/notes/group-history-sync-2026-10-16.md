@@ -237,7 +237,7 @@ npm run test:e2e:ghsync-selfproof                                      # 反证�
 | 2 | 全新的小群，谁都没说过话 | 问了 N 台、每台都答 `total=0` ⇒ 选不出源 ⇒ `NoSource` | **静默**（一条 info 日志，无横幅无提示）；标记留 `pending`，60s 后再问 | `peers_without_any_history_are_not_eligible`（空群不许参与选源，也就不会被写成 `done`） |
 | 3 | 一个候选都连不上（都离线 / 都还没升级） | `eligible_peers` 为空 ⇒ 立刻 `NoSource`，**一个字节都不发** | 静默，同上 | `empty_candidate_list_has_no_source` + 门控那一族（INV-P24「不门控不许发」） |
 | 4 | 群里有历史、本机一格都没有（需求主场景） | 摘要 → 选源 → `(seq,id)` 分页 → 解封 → 幂等落库 → 收口 `done` | 一条细横幅随页数前进，跑完自己消失 | 跨实例正向轮 `--round=ghsync`（本步 14 条）+ 三条归因 |
-| 5 | 中途进群、手里已有几条（老版本同步来的） | 自动那趟**不再跑**（只认第一次知道这个群）；补齐靠手动那颗按钮 ⇒ 全量重扫 + `msg_id` 去重 ⇒ 只补缺口 | 点一下：一句"已开始…"，随后横幅随页数前进 | `a_second_full_pass_fills_the_hole_and_touches_nothing_already_there`、`applying_the_same_page_twice_inserts_once` |
+| 5 | 中途进群、手里已有几条（老版本同步来的） | **Hello 重连会自动补**（2026-10-27 的 catch-up：`peer_is_ahead` ⇒ 重扫）；手动那颗按钮仍可强制全量重扫 + `msg_id` 去重 ⇒ 只补缺口 | 自动那趟一条细横幅；手动点一下也是一句"已开始…" | `a_second_full_pass_fills_the_hole_and_touches_nothing_already_there`、`applying_the_same_page_twice_inserts_once` |
 | 6 | 群密钥还在路上（只先收到过群消息的那类新成员） | 第一页就 `NoKey` ⇒ **不喊"未完成"**（此刻横幅还没露过面），标记留 `pending`，密钥落地后下一轮清扫自己补 | 静默 | `a_key_that_has_not_arrived_is_not_reported_as_a_failure`（本轮新加：两行结局 + 两条接线计数） |
 | 7 | 群里只剩自己（单成员群） | 同 3：候选为空 | 静默 | 同 3 |
 | 8 | 标记还在、群已经没了（退群/删群赶在前面） | `NoGroup` ⇒ **删掉标记**而不是写 `done`（对不存在的群，两个都不是事实） | 群已从列表里没了，无动静 | `leaving_a_group_drops_its_sync_marker_too` |

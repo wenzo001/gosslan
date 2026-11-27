@@ -230,3 +230,34 @@ test("Shift+Enter 换行后把 caret 滚进可视区（删掉这句会红）", (
     "反例自证：删掉后仍匹配 ⇒ 判据在读注释",
   );
 });
+
+/**
+ * @ 候选列表的键盘滚动跟随（2026-11-27 用户实测：↑↓ 选到下面，列表还停在顶部）。
+ *
+ * 三条一起才成立：① 拿到 OverlayScroll 暴露的**真正滚动层**（宿主 overflow:hidden）；
+ * ② 用 rect 差值做「居中」，不碰外层聊天流；③ ↑↓ 两个分支都在 nextTick 后调用。
+ * 删掉任意一条，用户能选到看不见的候选人。
+ */
+test("@ 候选列表：↑↓ 选中项必须居中跟随滚动", () => {
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "components/chat/MessageComposer.vue"),
+    "utf8",
+  );
+  assert.match(src, /ref="mentionScrollRef"/, "OverlayScroll 上没有 ref，拿不到滚动层");
+  assert.match(src, /data-mention-index/, "候选项没有定位锚点");
+  assert.match(src, /function scrollMentionActiveIntoView\(\)/, "滚动帮助函数不存在");
+  assert.match(src, /scrollElement\(\)/, "必须用 OverlayScroll.expose 的 scrollElement()");
+  assert.match(
+    src,
+    /er\.top \+ er\.height \/ 2 - \(vr\.top \+ vr\.height \/ 2\)/,
+    "居中口径：项中心对齐视口中心",
+  );
+  assert.equal(
+    (src.match(/void nextTick\(scrollMentionActiveIntoView\);/g) ?? []).length,
+    2,
+    "↑ 与 ↓ 两个分支都必须在 nextTick 后滚动（少一个就有一半方向不跟随）",
+  );
+  // 反例自证：把两处调用都删掉后，判据不再成立（证明不是命中注释）。
+  const broken = src.split("void nextTick(scrollMentionActiveIntoView);").join("");
+  assert.equal((broken.match(/void nextTick\(scrollMentionActiveIntoView\);/g) ?? []).length, 0);
+});

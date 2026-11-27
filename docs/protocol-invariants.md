@@ -146,6 +146,11 @@ delete outbox
 ```
 
 - 钩子：`db::tests::message_and_outbox_are_written_atomically` `db::tests::outbox_offline_queue_dedup_and_delete` `tests::the_outbox_retry_decision_has_exactly_one_judge_and_one_caller` `tests::outbox_sweeper_emits_only_after_db_write_succeeds`
+- **2026-11-27 例外（产品裁决）**：离线对端的 outbox 行**不再按 7 天判死**，一直保留到
+  真正 ACK。因此「outbox 必然排空」只对「可达但超时」与「对端重新上线」成立；
+  永久离场节点的行会一直留着（`OUTBOX_FLUSH_BATCH` 分批补发，队列上界靠人工清理兜底）。
+  钩子：`db::offline_queue_tests::offline_peer_is_held_while_reachable_peer_fails_at_deadline`
+  （7 天后仍为 `false`）、`group_outbox_expiry_is_per_row_not_per_message`。
 
 ### 绝对禁止
 

@@ -24,7 +24,12 @@ export const POPOVER_EDGE_TOKEN = "--gosslan-pop-edge";
  * 自绘 @成员下拉的高度上限（2026-11-07 审查 M-6：`max-h-44` 也收进本文件）。
  *
  * 它锚在输入卡**上方**（`bottom-full`），不能吃 `.gosslan-pop-clamp` 的
- * `100dvh` 兜底 —— 那会向上顶出窗口而不是内部滚动。固定 11 行 × 16px：
- * 足够看清候选，又不会盖住半屏消息。改这一档就改这里，别在组件里写 `max-h-44`。
+ * `100dvh` 兜底 —— 那会向上顶出窗口而不是内部滚动。
+ *
+ * 实际口径（2026-11-27 对齐）：候选最多 8 项（`MessageComposer` 的 `slice(0, 8)`），
+ * 每项约 36px（`py-1.5` 12px + 头像 `h-6` 24px），另加标题约 24px 与内边距 8px。
+ * 176px 大约露出 4 个候选；超出部分由列表内部滚动，键盘 ↑↓ 选中项用
+ * `scrollElement()` 居中跟随（不滚外层聊天流）。
+ * 改这一档就改这里，别在组件里写 `max-h-44`。
  */
 export const MENTION_POP_MAX_H = 176;

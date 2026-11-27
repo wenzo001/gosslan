@@ -677,12 +677,14 @@ function onKeydown(e: KeyboardEvent) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
       mentionActive.value = (mentionActive.value + 1) % mentionFiltered.value.length;
+      void nextTick(scrollMentionActiveIntoView);
       return;
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
       mentionActive.value =
         (mentionActive.value - 1 + mentionFiltered.value.length) % mentionFiltered.value.length;
+      void nextTick(scrollMentionActiveIntoView);
       return;
     }
     if (e.key === "Enter") {
@@ -716,6 +718,34 @@ function onKeydown(e: KeyboardEvent) {
 /** 触发态：caret 前最近的 @query（无空白隔断）；startIndex 是 @ 在所在文本节点内的偏移。 */
 const mention = ref<{ query: string; startIndex: number } | null>(null);
 const mentionActive = ref(0);
+const mentionScrollRef = ref<InstanceType<typeof OverlayScroll> | null>(null);
+
+/**
+ * 让当前高亮的 @ 候选保持在可视区（2026-11-27 用户实测：↑↓ 选到下面，列表还停在顶部）。
+ *
+ * 真正滚动的是 OverlayScroll 内部的 `.n-scrollbar-container`（宿主 `overflow:hidden`），
+ * 所以必须走 `scrollElement()`；用 rect 差值做「居中」，不碰外层聊天流。
+ * 居中在首尾会被 `[0, maxScroll]` 夹住 —— 短列表不产生滚动。
+ */
+function scrollMentionActiveIntoView() {
+  const vp = mentionScrollRef.value?.scrollElement();
+  if (!vp) return;
+  const el = vp.querySelector<HTMLElement>(`[data-mention-index="${mentionActive.value}"]`);
+  if (!el) return;
+  const vr = vp.getBoundingClientRect();
+  const er = el.getBoundingClientRect();
+  const delta = er.top + er.height / 2 - (vr.top + vr.height / 2);
+  const max = Math.max(0, vp.scrollHeight - vp.clientHeight);
+  const next = Math.max(0, Math.min(max, vp.scrollTop + delta));
+  if (Math.abs(next - vp.scrollTop) < 1) return;
+  vp.scrollTop = next;
+}
+
+/** 新开/重置 @ 列表时回顶（v-if 会重建实例，但同一实例内 query 变短时也要回）。 */
+function resetMentionScroll() {
+  const vp = mentionScrollRef.value?.scrollElement();
+  if (vp) vp.scrollTop = 0;
+}
 
 /**
  * 「所有人」是**虚拟成员**：本组件内用它做 key 与展示，发送出去的仍是纯文本 `@所有人`
@@ -790,7 +820,11 @@ function updateMentionState() {
   if (q) {
     const sameAt = mention.value?.startIndex === q.startIndex;
     mention.value = q;
-    if (!sameAt) mentionActive.value = 0;
+    if (!sameAt) {
+      mentionActive.value = 0;
+      // 换了 @ 位置（或刚打开）⇒ 列表回顶，别沿用上一次的 scrollTop。
+      void nextTick(resetMentionScroll);
+    }
   } else {
     mention.value = null;
   }
@@ -1413,6 +1447,7 @@ async function onPaste(e: ClipboardEvent) {
       <!-- 群聊 @ 成员选择：输入 @ 后浮出，↑↓ 导航 / Enter 或点击选中 -->
       <OverlayScroll
         v-if="mention && mentionFiltered.length > 0"
+        ref="mentionScrollRef"
         class="frost absolute bottom-full left-2 right-2 z-30 mb-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1 shadow-[var(--gosslan-glass-2-shadow)]"
         :style="{ maxHeight: `${MENTION_POP_MAX_H}px` }"
       >
@@ -1420,6 +1455,7 @@ async function onPaste(e: ClipboardEvent) {
         <button
           v-for="(m, i) in mentionFiltered"
           :key="m.id"
+          :data-mention-index="i"
           class="tap-safe flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-2 py-1.5 text-left text-body transition"
           :class="i === mentionActive ? 'bg-[var(--gosslan-list-active)]' : 'hover:bg-[var(--gosslan-hover)]'"
           @mousedown.prevent

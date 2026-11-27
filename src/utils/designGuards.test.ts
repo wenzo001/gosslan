@@ -6103,7 +6103,7 @@ test("自动更新：端点/公钥/插件/命令/单飞/取消/发布链都真�
       "https://gitee.com/fwdq/gosslan-releases/raw/master/updates/latest.json",
       "https://github.com/wenzo001/gosslan/releases/latest/download/latest.json",
     ],
-    "更新端点必须只有 Gitee 镜像 + GitHub Releases 两条 latest.json（Gitee 优先）",
+    "更新端点必须只有 Gitee 镜像 + GitHub Releases 两条 latest.json（顺序不参与快慢裁决）",
   );
   const pubkey = String(conf.plugins?.updater?.pubkey ?? "");
   assert.ok(pubkey.length > 80, "pubkey 不能为空/占位");
@@ -6228,21 +6228,18 @@ test("更新来源：切源命令从界面一路接到后端（链路不许断�
     /"updater_set_source_pref", \{ source \}\)/,
     "门面没 invoke「记住用户选择」的后端命令",
   );
-  // ⚠️ 自动回落（下载失败后的换源）必须走**不落盘**那条：网络抖动不是用户的选择。
+  // 显式选源必须严格（2026-11-27 用户口径）：下载失败后**不许**自动改查另一家。
+  // 换源只能由用户点界面按钮触发（`switchSource` 仍保留给手动换源）。
   const service = read("updater/service.ts");
-  // 只截「下载失败后的自动回落」那一段（从判据到下一个函数定义之前）——
-  // 截到文件末尾会把后面 `chooseSource` 的定义也圈进来，断言就变成自相矛盾。
-  const from = service.indexOf('state.source === "github"');
-  const to = service.indexOf("/**\n   * 手动（或下载失败自动）换源");
-  assert.ok(from > 0 && to > from, "找不到自动回落那一段（源码形状变了，判据要同步）");
-  const autoFallback = service.slice(from, to);
-  assert.ok(
-    autoFallback.includes('switchSource("gitee")'),
-    "下载失败后的自动回落必须走 switchSource（不落盘）",
+  assert.equal(
+    /switchSource\("gitee"\)/.test(service),
+    false,
+    "下载失败后不许自动切源：显式选源必须严格按该源查，换源只由用户点按钮触发",
   );
-  assert.ok(
-    !autoFallback.includes("chooseSource"),
-    "自动回落不许走 chooseSource（那会把网络抖动写成用户的选择）",
+  assert.match(
+    read("components/settings/UpdatePanel.vue"),
+    /emit\('switch-source', switchTarget\)/,
+    "错误态必须给用户「换到另一源」入口，而不是偷偷改源",
   );
 });
 

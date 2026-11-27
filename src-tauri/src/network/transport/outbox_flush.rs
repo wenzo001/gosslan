@@ -51,7 +51,7 @@ pub async fn flush_outbox_via_relay(state: &AppState, peer_id: &str) {
     }
     let pending = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_outbox(&dbc, peer_id)
+        db::list_outbox_batch(&dbc, peer_id, db::OUTBOX_FLUSH_BATCH)
     };
     let pending = match pending {
         Ok(v) => v,
@@ -142,7 +142,7 @@ pub async fn flush_outbox_via_relay(state: &AppState, peer_id: &str) {
 pub async fn flush_outbox(state: &AppState, peer_id: &str) {
     let pending = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_outbox(&dbc, peer_id)
+        db::list_outbox_batch(&dbc, peer_id, db::OUTBOX_FLUSH_BATCH)
     };
     let pending = match pending {
         Ok(v) => v,
@@ -268,7 +268,7 @@ pub async fn flush_outbox(state: &AppState, peer_id: &str) {
 pub async fn flush_group_outbox(state: &AppState, peer_id: &str) {
     let pending = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_group_outbox(&dbc, peer_id)
+        db::list_group_outbox_batch(&dbc, peer_id, db::GROUP_OUTBOX_FLUSH_BATCH)
     };
     let pending = match pending {
         Ok(v) => v,

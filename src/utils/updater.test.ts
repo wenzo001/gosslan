@@ -451,7 +451,6 @@ test("手动切源：只查那一个端点，来源落到可查询状态上", as
   await svc.switchSource("gitee");
   assert.equal(f.calls.checkSource, 1);
   assert.equal(svc.state.source, "gitee");
-  assert.equal(svc.state.sourceEvent, null, "手动切换不该显示自动切源横幅");
   assert.equal(svc.state.phase, "available");
   assert.equal(svc.state.info?.version, INFO.version);
   assert.equal(svc.state.slow, false);
@@ -470,7 +469,7 @@ test("用户显式选源：走「记住」那条路（落盘），不是只换�
   assert.equal(svc.state.phase, "available");
 });
 
-test("恢复快照带来源与自动切源短码", () => {
+test("恢复快照带来源（自动模式回写实际命中的那一家）", () => {
   const svc = service(fake().adapter);
   svc.restore({
     phase: "idle",
@@ -478,21 +477,18 @@ test("恢复快照带来源与自动切源短码", () => {
     total: null,
     version: null,
     source: "gitee",
-    sourceEvent: "auto_switched_to_gitee",
   });
   assert.equal(svc.state.source, "gitee");
-  assert.equal(svc.state.sourceEvent, "auto_switched_to_gitee");
 });
 
-test("GitHub 下载失败自动切到 Gitee 整包重下，只试一次", async () => {
+test("显式选源必须严格：下载失败后不自动换源，只把错误交给界面", async () => {
   let downloads = 0;
   const f = fake({
     check: async () => INFO,
     checkSource: async () => INFO,
-    download: async (onEvent) => {
+    download: async () => {
       downloads += 1;
-      if (downloads === 1) throw new Error("network unreachable");
-      onEvent({ event: "Finished" });
+      throw new Error("network unreachable");
     },
   });
   const svc = service(f.adapter);
@@ -502,43 +498,30 @@ test("GitHub 下载失败自动切到 Gitee 整包重下，只试一次", async 
     total: null,
     version: null,
     source: "github",
-    sourceEvent: null,
   });
   await svc.check(true);
   assert.equal(svc.state.phase, "available");
   await svc.download();
   await new Promise((r) => setTimeout(r, 30));
-  assert.equal(f.calls.checkSource, 1, "GitHub 下载失败要自动改查 Gitee");
-  assert.equal(
-    f.calls.setSourcePref,
-    0,
-    "自动回落是网络抖动，**不许**改掉用户记住的偏好（用户 2026-11-15）",
-  );
-  assert.equal(downloads, 2, "换源后必须整包重下");
-  assert.equal(svc.state.source, "gitee");
-  assert.equal(svc.state.phase, "ready");
+  assert.equal(f.calls.checkSource, 0, "显式选 GitHub 时不许偷偷改查 Gitee");
+  assert.equal(downloads, 1, "不许自动整包重下");
+  assert.equal(svc.state.source, "github", "来源必须停在用户选的那个");
+  assert.equal(svc.state.phase, "error");
+  assert.equal(svc.state.error, "network", "网络类失败要如实标成 network");
+});
 
-  // 对照：本来就在 Gitee 还失败 ⇒ 不许再切一次打转。
-  const f2 = fake({
+test("源上缺包（404）必须与网络失败区分开", async () => {
+  const f = fake({
     check: async () => INFO,
-    checkSource: async () => INFO,
     download: async () => {
-      throw new Error("network unreachable");
+      throw new Error("下载 Gosslan_7.4.2_x64-setup.exe 返回 HTTP 404");
     },
   });
-  const svc2 = service(f2.adapter);
-  svc2.restore({
-    phase: "idle",
-    downloaded: 0,
-    total: null,
-    version: null,
-    source: "gitee",
-    sourceEvent: null,
-  });
-  await svc2.check(true);
-  await svc2.download();
-  assert.equal(f2.calls.checkSource, 0, "非 GitHub 来源不触发自动切源");
-  assert.equal(svc2.state.phase, "error");
+  const svc = service(f.adapter);
+  await svc.check(true);
+  await svc.download();
+  assert.equal(svc.state.phase, "error");
+  assert.equal(svc.state.error, "asset-missing", "404 是源上缺包，不是网络不可用");
 });
 
 /**

@@ -1,14 +1,20 @@
 /**
  * 「这条 `sending` 到底是在发，还是在等对端上线」的判据（纯函数，可单测）。
  *
- * 为什么需要它：对端离线时消息会留在离线队列里等（`OUTBOX_OFFLINE_HOLD_MS` = 7 天，
- * 日志里的 `reason=peer_offline(hold_7d)`）。这期间 `messages.status` 一直是 `sending`，
- * 界面就一直是「转圈」—— 2026-10-29 真机现场实测有消息这样挂了 27 小时，
- * 用户看到的是"卡住了"。这里只做**可见文案**的判据，数据层状态一律不动。
+ * 为什么需要它：对端离线时消息会留在离线队列里等。2026-11-27 起离线行**不再按 7 天判死**，
+ * 会一直保留到真正送达（`protocol-invariants` INV-P04 例外）。这期间 `messages.status`
+ * 一直是 `sending`，界面若一直转圈，用户会以为卡住了。
+ * 这里只做**可见文案**的判据，数据层状态一律不动。
  */
 
 /** 超过这么久还停在 sending，就不再假装"正在发"。 */
 export const WAITING_FOR_PEER_AFTER_MS = 2 * 60_000;
+
+/**
+ * 超过 7 天仍在等 ⇒ 从「等待对方」升级为「长期待补发」。
+ * 只是**展示分档**：7 天不再是失败期限，行仍留在队列里等对端上线。
+ */
+export const LONG_HOLD_AFTER_MS = 7 * 24 * 3600 * 1000;
 
 /**
  * 文件类消息在整个传输期间本来就是 `sending`（`file-{transfer_id}` / `gfile-{transfer_id}`），
@@ -42,6 +48,19 @@ export function isWaitingForPeer(
   // 保持原时间口径（在线时 2 分钟内的转圈仍然说得通：可能真的正在发）。
   if (input.peerOnline === false) return true;
   return now - input.ts >= WAITING_FOR_PEER_AFTER_MS;
+}
+
+/**
+ * 是否已经进入「长期待补发」：仍满足等待判据，且已超过 7 天。
+ * 只影响文案/图标颜色；不改变消息状态，也不触发任何重发。
+ */
+export function isLongHoldWaiting(
+  input: Parameters<typeof isWaitingForPeer>[0],
+  now: number,
+): boolean {
+  if (!isWaitingForPeer(input, now)) return false;
+  if (!(input.ts > 0)) return false;
+  return now - input.ts >= LONG_HOLD_AFTER_MS;
 }
 
 /**

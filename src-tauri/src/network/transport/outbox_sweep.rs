@@ -219,7 +219,7 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                             "outbox",
                             format!(
                                 "code=OUTBOX_OFFLINE_HELD kind=single msg_id={msg_id} peer={peer_id} \
-                                 age_ms={} reason=peer_offline(hold_7d)",
+                                 age_ms={} reason=peer_offline(retained)",
                                 now - created_at
                             ),
                         );
@@ -297,7 +297,7 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                     .collect();
                 let all_give_up = expired_peers.len() == rows.len();
                 if !all_give_up {
-                    // 在线成员的行独立放弃；离线成员的行继续按 7 天保留（INV-P04）。
+                    // 在线成员的行独立放弃；离线成员的行一直保留到真正送达（INV-P04 例外）。
                     // 行改成 failed（不是删掉）——删掉就再也说不清“谁没收到”。
                     if !expired_peers.is_empty() {
                         let (failures, marked) = {
@@ -346,7 +346,7 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                                 "outbox",
                                 format!(
                                     "code=OUTBOX_OFFLINE_HELD kind=group msg_id={msg_id} \
-                                     peer={peer} age_ms={} reason=peer_offline(hold_7d)",
+                                     peer={peer} age_ms={} reason=peer_offline(retained)",
                                     now - created
                                 ),
                             );
@@ -446,14 +446,13 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                     reachable,
                     now - created_at,
                     crate::db::FILE_OUTBOX_FAIL_DEADLINE_MS,
-                    crate::db::OUTBOX_OFFLINE_HOLD_MS,
                 ) {
                     if !reachable && log_throttled("outbox_hold_offline", 300_000) {
                         state.logger.info(
                             "outbox",
                             format!(
                                 "code=OUTBOX_OFFLINE_HELD kind=file transfer_id={transfer_id} \
-                                 peer={peer_id} age_ms={} reason=peer_offline(hold_7d)",
+                                 peer={peer_id} age_ms={} reason=peer_offline(retained)",
                                 now - created_at
                             ),
                         );

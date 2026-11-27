@@ -8,7 +8,7 @@ import { shouldShowTimeDivider } from "@/utils/previewMetrics";
 import { shouldShowNickname, type MessageGroupSide } from "@/utils/messageKinds";
 import { normalizeSendState } from "@/utils/messages";
 import { fileFailReasonText } from "@/utils/fileFailReason";
-import { isWaitingForPeer } from "@/utils/sendWaiting";
+import { isLongHoldWaiting, isWaitingForPeer } from "@/utils/sendWaiting";
 import { useNowMs } from "@/utils/nowTick";
 import type { MessageRecord } from "@/types";
 
@@ -177,7 +177,7 @@ export function useMessageDisplay(opts: {
 
   const sendState = computed(() => normalizeSendState(message.value.status));
   /**
-   * 停在这一格太久 ⇒ 它其实是在等对端上线（离线队列最长留 7 天），不是在发。
+   * 停在这一格太久 ⇒ 它其实是在等对端上线（2026-11-27 起不再按 7 天判死）。
    * 判据在 `utils/sendWaiting`（纯函数、有边界用例）；这里把"现在几点"与
    * "对端在线状态"喂给它 —— J2-5：明确离线时排队态不再等满 2 分钟才可分。
    */
@@ -194,10 +194,26 @@ export function useMessageDisplay(opts: {
       nowMs.value,
     ),
   );
+  /** 超过 7 天仍在等：文案/图标升级为「长期待补发」，但不改任何数据状态。 */
+  const longWaiting = computed(() =>
+    isLongHoldWaiting(
+      {
+        status: message.value.status,
+        ts: message.value.ts,
+        msgId: message.value.msg_id,
+        peerOnline: chat.peerOnlineOf(message.value.conv_id),
+      },
+      nowMs.value,
+    ),
+  );
   const receiptTitle = computed(() => {
     switch (sendState.value) {
       case "sending":
-        return sendWaiting.value ? t("msg.waitingForPeer") : t("msg.sending");
+        return longWaiting.value
+          ? t("msg.waitingForPeerLong")
+          : sendWaiting.value
+            ? t("msg.waitingForPeer")
+            : t("msg.sending");
       case "sent":
         return t("msg.sending");
       case "delivered":
@@ -237,6 +253,7 @@ export function useMessageDisplay(opts: {
     fullTime,
     timeDividerText,
     sendState,
+    longWaiting,
     receiptTitle,
   };
 }

@@ -597,21 +597,24 @@ export const enUS: MessageDict = {
   "settings.updates.mobile": "In-app updates aren't available on mobile. Download the new version from GitHub Releases.",
   // Update source: manifest and package must share the same host. Slow links only prompt; unreachable links switch automatically.
   "settings.updates.source": "Update source: {source}",
-  "settings.updates.sourceAuto": "Auto (Gitee first)",
+  "settings.updates.sourceAuto": "Auto (newest reachable source)",
   "settings.updates.sourceGitee": "Gitee",
   "settings.updates.sourceGithub": "GitHub",
   "settings.updates.sourceRemembered": "Remembered: your choice becomes the default next time",
   "settings.updates.switchTo": "Switch to {source}",
   "settings.updates.switchToGitee": "Switch to Gitee and download again",
-  "settings.updates.slowHint": "This download is slow or failing. Switch to Gitee to download the package again (no resume).",
-  "settings.updates.autoSwitched": "Couldn't reach GitHub, so the update switched to Gitee automatically.",
-  "settings.updates.autoSwitchFailed": "Neither GitHub nor Gitee is reachable right now. Try again later.",
+  "settings.updates.switchToGithub": "Switch to GitHub and download again",
+  "settings.updates.slowHint": "This download is slow or failing. Switch to the other source to download the package again (no resume).",
+  "settings.updates.giteeFailedHint": "You are already on Gitee and it still fails. Try GitHub, or check whether your system proxy covers gitee.com.",
   "settings.updates.error.timeout": "Update check timed out. Try again later.",
   "settings.updates.error.network": "Network unavailable or update server unreachable",
+  "settings.updates.error.asset-missing": "The update source is missing the package (manifest updated, files not synced yet). Switch sources or retry later.",
+  "settings.updates.error.proxy": "Proxy connection failed. Check your system proxy settings (SOCKS5 requires client support).",
   "settings.updates.error.signature": "Update signature verification failed; installation was refused",
   "settings.updates.error.manifest": "The update manifest is malformed",
   "settings.updates.error.busy": "Another update task is running; try again shortly",
   "settings.updates.error.downgrade": "The update manifest points to an older version; installation was refused (downgrades are disabled)",
+  "settings.updates.error.source-unavailable": "The selected update source is unavailable. Try the other source.",
   "settings.updates.error.unknown": "Update failed. Try again later.",
   // ---- Android in-app update (check -> download -> verify -> system installer) ----
   "settings.androidUpdate.verifying": "Verifying the package...",
@@ -746,7 +749,7 @@ export const enUS: MessageDict = {
 
   // ---- Composer ----
   "chat.composer.inputAria": "Message input",
-  "chat.composer.peerOffline": "The other side is offline: the message will be kept locally (up to 7 days) and delivered automatically once they come back online",
+  "chat.composer.peerOffline": "The other side is offline: the message is kept locally and delivered automatically once they come back online",
   "chat.composer.queuedOffline": "They are offline - the message is kept and will be delivered automatically once they are back",
   "chat.offlineQueue.resume": "They are back online - {n} queued messages will be delivered shortly",
   "chat.composer.emoji": "Emoji",
@@ -1058,7 +1061,7 @@ export const enUS: MessageDict = {
   "msg.fail.retryExpired":
     "Not delivered: the recipient is online, but there was no usable direct link or relay at the time. Next: keep the recipient and the relay nodes online (or add the same relay in the recipient's network settings), then tap Retry in the transfer queue.",
   "msg.fail.peerOfflineExpired":
-    "Not delivered: the recipient stayed offline the whole time (kept for 7 days). Next: once they are online with the app open, tap Retry in the transfer queue.",
+    "Not delivered yet: the recipient has been offline for a long time; the message is kept locally. Next: once they are online with the app open, tap Retry in the transfer queue.",
   "msg.fail.kindUnsupported": "This version of Gosslan on the other side doesn't support this content type, so waiting won't help. After they upgrade, tap Resend in the transfer queue.",
   "msg.fail.peerKeyMissing": "We don't have the other side's encryption key, so this can't be sent. Tap Resend once they have been online.",
   "msg.fail.orphanAtStart": "This was still sending when the app restarted with no pending queue, so it is treated as undelivered",
@@ -1143,7 +1146,9 @@ export const enUS: MessageDict = {
   "msg.mentioned": "[Mentioned you]",
   "msg.sending": "Sending…",
   "msg.waitingForPeer":
-    "Waiting for the recipient to come online. It will be sent automatically once they do; the message is kept for up to 7 days.",
+    "Waiting for the recipient to come online. It will be sent automatically once they do; the message is kept indefinitely.",
+  "msg.waitingForPeerLong":
+    "Waiting to resend: the recipient has been offline for over 7 days. The message is kept indefinitely and will be sent automatically when they come online.",
   "msg.delivered": "Delivered, unread",
   "msg.read": "Read",
   "msg.partialCanceled": "Some members received it; the rest were cancelled",
@@ -1163,6 +1168,7 @@ export const enUS: MessageDict = {
   "msg.groupResend.queued": "Resent: {online} online member(s) sending now; {offline} offline member(s) will get it when they come online",
   "msg.groupResend.alreadyPending": "{remaining} member(s) are still being resent",
   "msg.groupResend.allDelivered": "This message has no recipients left to resend (all delivered or given up)",
+  "msg.groupResend.allFailed": "Some members are marked as failed and can't be resent from here. Retry later or resend the whole message.",
   "msg.groupResend.noLedger": "This message has no per-member ledger (it was sent before the upgrade), so it can only be resent as a whole",
   "msg.groupResend.unsupported": "This kind of message can't be resent per member",
   "msg.delivery.pending": "{delivered}/{total} received",

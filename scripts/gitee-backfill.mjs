@@ -1,21 +1,23 @@
 #!/usr/bin/env node
 /**
- * **本机补传 Gitee**（应急兜底，国内链路几秒补齐）。正常发版已由 CI 自动同步全部附件。
+ * **本机补传 Gitee**（应急兜底，国内链路通常几分钟补齐）。
  *
- * ## 定位的变化（2026-11-25 更正）
+ * ## 承载策略（2026-11-27 用户拍板）
  *
- * 2026-11-24 曾把「CI 传不动几 MB 的大包」当成结论，于是把大包全推给这条命令。**那个归因错了**：
- * GitHub runner 上的探针显示单路 7.8MB = 201（18KB/s）、4 路并发 4 个 7.4–8.4MB 包全部 201；
- * v7.2.8 的 400 是 **12 分片 × 3 并发 = 36 路**并发把 Gitee 的 per-IP 限速打到拒绝。
- * 现在 CI 上限已回到 Gitee 单附件配额（100MB），正常发版不再需要本机介入。
+ * Gitee 只镜像 Windows/macOS 正常版（≤10MB）与 Android APK（≤20MB）；
+ * WebView2 内置包（177–189MB）与 Linux 包（AppImage/deb）只走 GitHub。
+ * 本脚本用 `sync-gitee.mjs::skipReason` 同一份白名单，**不会**去补 Linux/WebView2。
+ *
+ * 为什么收紧：v7.4.2 按「100MB 以内都传」把 ~245MB 交给 4 个分片，全部 HTTP 400，
+ * 6MB 的 exe 都传了 99 分钟；而 finalize 先提交清单再校验，客户端看到「有更新」却 404。
  *
  * 这条命令留给三种情况：CI 同步 job 挂掉/被取消、需要给历史版本补齐、或 Gitee 临时抖动。
  * 补完之后两边逐个文件对齐（同名 + 同大小才算齐）。
  *
  * ## 用法
  *
- *     GITEE_TOKEN=xxxx node scripts/gitee-backfill.mjs --tag v7.2.9
- *     GITEE_TOKEN=xxxx node scripts/gitee-backfill.mjs --tag v7.2.9 --dry-run   # 只看缺口
+ *     GITEE_TOKEN=xxxx node scripts/gitee-backfill.mjs --tag v7.4.2
+ *     GITEE_TOKEN=xxxx node scripts/gitee-backfill.mjs --tag v7.4.2 --dry-run   # 只看缺口
  *
  * `--min-size` 可调（默认 0 = 全补；只想补大包就写 `--min-size 5`，单位 MB）。
  * 令牌只从环境变量读，不进命令行（避免落到 shell 历史里）。
@@ -24,6 +26,8 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, existsSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { skipReason } from "./sync-gitee.mjs";
 
 const GITEE_API = "https://gitee.com/api/v5";
 const GH_REPO = process.env.GOSSLAN_GH_REPO || "wenzo001/gosslan";
@@ -123,7 +127,13 @@ const main = async () => {
   })();
 
   const remote = new Map(attachments.map((a) => [a.name, Number(a.size ?? -1)]));
-  const wanted = githubAssets().filter((a) => a.size >= minSizeMb * 1024 * 1024);
+  // 只补 Gitee 承载白名单（Win/Mac 正常版 ≤10MB、Android APK ≤20MB）。
+  // Linux 与 WebView2 内置包按策略只走 GitHub，不算「缺」。
+  const githubOnly = githubAssets().filter((a) => skipReason(a.name, a.size) !== null);
+  const wanted = githubAssets()
+    .filter((a) => a.size >= minSizeMb * 1024 * 1024)
+    .filter((a) => skipReason(a.name, a.size) === null);
+  console.log(`按策略只走 GitHub、不补传：${githubOnly.length} 个`);
   const missing = [];
   let ok = 0;
   for (const a of wanted) {

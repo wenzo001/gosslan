@@ -6,27 +6,28 @@
 > 1. `https://gitee.com/fwdq/gosslan-releases/raw/master/updates/latest.json`
 > 2. `https://github.com/wenzo001/gosslan/releases/latest/download/latest.json`
 >
-> ⚠️ **怎么用这两条（2026-11-15 起）**：默认是「**自动**」—— 两个端点**并发**查，
-> **谁快用谁**（旧行为是「按配置顺序 Gitee 优先、GitHub 兜底」，那不是挑快的，
-> 只是挑配置里第一个能连上的）。
+> ⚠️ **怎么用这两条（2026-11-27 起）**：默认是「**自动**」—— 两个端点**并发**查，
+> **等两边都有结论**后再裁决：有可升级版本者胜，多个候选取**版本最高**的，同版本取先回的；
+> 没有任何候选、但至少一家明确说「已是最新」⇒ 无更新；两家都失败才报错。
+> 旧行为是「第一个回 `Ok` 的赢」，而 `Ok(None)` 也会立刻赢 ⇒ Gitee 镜像延迟窗口里
+> 自动模式会误报「已是最新」，永远等不到 GitHub 的新版本。
+>
 > 用户在设置页**显式**选了 Gitee 或 GitHub 之后，那个选择会被**记住**
 > （`settings` 里的 `update_source_pref`），下次打开应用默认就走他选的那条；
-> 没选过 / 选回「自动」 ⇒ 回到并发挑快的。
+> 没选过 / 选回「自动」 ⇒ 回到上面的双源裁决。
+> **显式选源严格按那一个源查**：失败如实报错，不再静默改查另一家。
+> 下载失败也**不自动换源**：界面给「换到另一源重试」按钮，由用户决定（网络抖动不该改选择）。
 >
-> 下载失败后的**自动回落**（GitHub 连不上 ⇒ 改用 Gitee 整包重下）**不会**改掉用户记住的偏好
-> —— 那是网络抖动，不是用户的选择。
->
-> ⚠️ 已知边界：Gitee 镜像是**发布后延迟传播**的（分片上传约 30–35 分钟），
-> 那个窗口里它手里的清单还是上一版 ⇒「谁快用谁」可能挑到**旧清单**，更新会晚一会儿出现。
-> 这与旧行为同源，不是新退化；真要「又新又快」得等镜像追上。
+> ⚠️ Gitee 镜像是**发布后延迟传播**的（约 30–35 分钟）；现在它只影响 Gitee 自己的清单，
+> 不会再让自动模式错过 GitHub 的新版本。
 
 ## 1. 架构与平台范围
 
 | 平台 | 分发渠道 | 应用内更新 | 状态 |
 |---|---|---|---|
-| Windows x64 / arm64 | Gitee Release（镜像）+ GitHub Release（备份） | 官方 updater（NSIS），Gitee 清单优先 | 已配置；**真实安装重启未验** |
-| Windows（内置 WebView2 档） | GitHub Release（**Gitee 不镜像**，单文件 >100MB） | 不进入更新清单 | 手动更新；需从 GitHub 下载；见 §7 |
-| macOS arm64 / x86_64 | Gitee Release（镜像）+ GitHub Release（备份） | 官方 updater，Gitee 清单优先 | 已配置；**真实安装重启、公证未验** |
+| Windows x64 / arm64 | Gitee Release（镜像）+ GitHub Release（备份） | 官方 updater（NSIS）；自动模式双源并发取版本最高 | 已配置；**真实安装重启未验** |
+| Windows（内置 WebView2 档） | GitHub Release（**按策略 Gitee 不镜像**，177–189MB） | 不进入更新清单 | 手动更新；需从 GitHub 下载；见 §7 |
+| macOS arm64 / x86_64 | Gitee Release（镜像）+ GitHub Release（备份） | 官方 updater；自动模式双源并发取版本最高 | 已配置；**真实安装重启、公证未验** |
 | Linux | 无发布 workflow | 未配置 | 暂不支持（无发布产物/渠道） |
 | Android | Gitee Release（镜像）+ GitHub Release（备份） | 应用内更新先读 Gitee 固定清单，失败/清单过期退 GitHub API | 已配置；**真机安装未验** |
 | iOS | 无发布 workflow | 不支持 | 暂不支持 |
@@ -93,13 +94,19 @@
    然后才 `--draft=false` 发布，最后用公开 URL 校验 200 与四平台齐全。
    草稿对 `releases/tags/<tag>` 会 404，所以这一步全程用列表 API 按 release id 读写。
 5. **Gitee 镜像**（`updater-manifest.yml` → `sync-gitee` job，或手工 `sync-gitee.yml`）：
-   - 从 GitHub Release 下载同一批资产；`>100MB` 的 WebView2 内置包跳过（Gitee 单附件上限 100MB）；
+   - 只承载 **Windows/macOS 正常版（≤10MB）与 Android APK（≤20MB）**；WebView2 内置包
+     （177–189MB）与 Linux 包（AppImage/deb）**只走 GitHub**，减少 Gitee 存储与上传压力；
+   - 从 GitHub Release 只下载白名单内的资产（`sync-gitee.mjs::skipReason` 单点定义，
+     下载预筛与上传共用同一份判据）；
    - 在 `fwdq/gosslan-releases` 建同名 tag/release 并上传附件（幂等：同名旧附件先删再传）；
    - 用 GitHub 的 `latest.json` 重写四个桌面 URL 为 Gitee 下载地址，签名原样复用；
-   - 追加 `android-aarch64` / `android-armv7`，带 `url + size + sha256`，供 Android 客户端校验；
-   - 把结果提交到 **固定路径** `updates/latest.json`（`master` 分支，每次覆盖）；
-   - 匿名拉回固定清单、逐个平台 URL 探测、完整下载一个桌面产物与一个 APK 并比对 sha256；
-   - 清理更早的 Gitee release，只保留最近 `keep` 个（默认 8），**当前 tag 永不删**。
+   - Android 平台**可选**：APK 已镜像才追加 `android-aarch64` / `android-armv7`（带
+     `url + size + sha256`）；没镜像就不写，Android 客户端回退 GitHub API；
+   - **先校验、后提交**：逐个文件核对 Gitee 附件（同名 + 同大小）与平台 URL 匿名可达，
+     全部通过才把结果提交到固定路径 `updates/latest.json`（`master` 分支）；
+     校验失败保留上一版清单，客户端最多「暂无更新」，不会拿到 404；
+   - 完整下载一个桌面产物与一个 APK 并比对 sha256；
+   - 清理更早的 Gitee release，只保留最近 `keep` 个（默认 3），**当前 tag 永不删**。
 6. 校验：
    ```bash
    curl -fsSL https://gitee.com/fwdq/gosslan-releases/raw/master/updates/latest.json
@@ -151,14 +158,16 @@ Gitee 侧的 `scripts/sync-gitee.mjs` 不重新生成桌面清单，而是**复�
 
 ## 4.1 Gitee 配额、清理与边界
 
-- **单附件 100MB / 仓库附件总量 1G**（Gitee Help）。每个 release 不传 WebView2 时约 74MB，
-  所以默认只保留最近 8 个 release（约 590MB），更早的 release 自动删除，GitHub 全量保留。
+- **单附件 100MB / 仓库附件总量 1G**（Gitee Help）。白名单收紧后单版约 **75MB**
+  （Win/Mac 正常版约 43.5MB + Android APK 约 31MB），默认保留最近 3 个约 225MB，
+  远低于 1G；GitHub 全量保留。
 - 清理前会打印完整 dry-run 计划；当前 tag 的 release 被硬编码排除，固定清单在仓库分支上，
   不在 release 附件里，所以清理不会碰 `latest.json`。
 - `workflow_dispatch` 默认 `dry_run=true`：**只跳过清理**，镜像、上传与清单提交照常执行；
   要真正删旧 release 时必须显式传 `dry_run=false`，并先看一遍 dry-run 打印的删除计划。
-- WebView2 内置档（`*-webview2-bundled.exe`）**不镜像到 Gitee**；国内需要该档的用户
-  走 GitHub Release 或其它渠道。它本来也不进入更新清单。
+- **只走 GitHub、Gitee 不承载**：WebView2 内置档（`*-webview2-bundled.exe`，177–189MB）、
+  Linux AppImage/deb、以及任何超过白名单上限（桌面 10MB / APK 20MB）的包。
+  它们本来也不进入桌面更新清单；WebView2 档用户需手动从 GitHub 更新。
 
 ## 5. 过渡版本与老用户
 
@@ -169,7 +178,7 @@ Gitee 侧的 `scripts/sync-gitee.mjs` 不重新生成桌面清单，而是**复�
 - 在它的 `latest.json` 生成之前，客户端检查会 404/网络失败 → 静默（符合离线零打扰）。
 - Windows 内置 WebView2 档（`-webview2-bundled.exe`）不进入清单：它接近 200MB，
   走官方 `Update::download` 会让客户端内存峰值过大；这一档用户需手动更新，或后续单开通道。
-  它也超过 Gitee 单附件 100MB，**不会镜像到 Gitee**，只能从 GitHub Release 下载。
+  它按策略**只从 GitHub Release 下载**，Gitee 不镜像。
 
 ### 5.1 Gitee 优先的过渡与摘除条件
 
@@ -251,6 +260,10 @@ Gitee 侧的 `scripts/sync-gitee.mjs` 不重新生成桌面清单，而是**复�
   - 真实 Gitee 演练结果见 §6.1；**真机安装与桌面真实签名校验仍未验**。
 
 ### 6.1 Gitee 端到端演练（2026-11-07，tag v5.18.78）
+
+> 历史记录：当时的承载策略是「≤100MB 全传、只跳过 WebView2」。2026-11-27 已收紧为
+> 「Win/Mac 正常版 ≤10MB + Android APK ≤20MB，其余只走 GitHub」，下面的资产数量与
+> 分片数只反映当时现场。
 
 用 `workflow_dispatch` 直接跑 `sync-gitee.yml`
 （[run 42395461687](https://github.com/wenzo001/gosslan/actions/runs/42395461687)），

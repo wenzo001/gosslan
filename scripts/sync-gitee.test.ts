@@ -80,7 +80,7 @@ test("Gitee 清单：桌面 URL 改指 Gitee，签名原样复用，并追加 An
   assert.equal(out.platforms["android-armv7"].signature, "", "Android 用 sha256，不用 minisign");
 });
 
-test("Gitee 清单：版本不一致、缺桌面平台、缺 Android 平台都必须拒绝", () => {
+test("Gitee 清单：版本不一致、缺桌面平台必须拒绝；Android 可选", () => {
   assert.throws(
     () =>
       buildGiteeManifest({
@@ -105,24 +105,69 @@ test("Gitee 清单：版本不一致、缺桌面平台、缺 Android 平台都�
     /缺平台/,
   );
 
-  assert.throws(
-    () =>
-      buildGiteeManifest({
-        githubManifest: githubManifest(),
-        tag: "v5.18.78",
-        repo: "fwdq/gosslan-releases",
-        androidAssets: androidAssets().filter((a) => a.platform !== "android-armv7"),
-      }),
-    /缺 Android 平台/,
+  // Android 是可选平台：APK 没镜像就不写 android 键，客户端会回退 GitHub API。
+  const noAndroid = buildGiteeManifest({
+    githubManifest: githubManifest(),
+    tag: "v5.18.78",
+    repo: "fwdq/gosslan-releases",
+    androidAssets: [],
+  });
+  assert.equal(
+    Object.keys(noAndroid.platforms).some((p) => p.startsWith("android-")),
+    false,
+    "没有 APK 时不许写 android 平台（写了就会指向 404）",
   );
+  for (const p of REQUIRED_PLATFORMS) assert.ok(noAndroid.platforms[p]?.url);
 });
 
-test("跳过策略：只跳过固定清单、WebView2 与超 100MB 文件", () => {
+test("跳过策略：Gitee 只承载 Win/Mac 正常版（≤10MB）与 Android APK（≤20MB）", () => {
+  const MB = 1024 * 1024;
   assert.match(String(skipReason("latest.json", 100)), /固定清单/);
-  assert.match(String(skipReason("Gosslan_5.18.78_x64-setup-webview2-bundled.exe", 197850616)), /WebView2/);
-  assert.match(String(skipReason("big.bin", 100 * 1024 * 1024 + 1)), /100MB/);
-  assert.equal(skipReason("Gosslan_5.18.78_x64-setup.exe", 5973178), null);
-  assert.equal(skipReason("gosslan-5.18.78-arm64-v8a-release.apk", 17521727), null);
+  assert.match(
+    String(skipReason("Gosslan_7.4.2_x64-setup-webview2-bundled.exe", 189 * MB)),
+    /WebView2/,
+  );
+
+  // 承载集合
+  assert.equal(skipReason("Gosslan_7.4.2_x64-setup.exe", 6.15 * MB), null);
+  assert.equal(skipReason("Gosslan_7.4.2_arm64-setup.exe", 5.7 * MB), null);
+  assert.equal(skipReason("Gosslan-arm64.app.tar.gz", 7.46 * MB), null);
+  assert.equal(skipReason("Gosslan_7.4.2_x64.dmg", 8.45 * MB), null);
+  assert.equal(skipReason("Gosslan_7.4.2_x64-setup.exe.sig", 400), null, "签名跟随主文件");
+  assert.equal(skipReason("gosslan-7.4.2-arm64-v8a-release.apk", 17.77 * MB), null);
+  assert.equal(skipReason("gosslan-7.4.2-arm64-v8a-release.apk.sha256", 64), null);
+
+  // 只走 GitHub
+  assert.match(String(skipReason("Gosslan_7.4.2_amd64.AppImage", 84 * MB)), /Linux/);
+  assert.match(String(skipReason("Gosslan_7.4.2_amd64.deb", 8.39 * MB)), /Linux/);
+  assert.match(String(skipReason("Gosslan_7.4.2_amd64.AppImage.sig", 400)), /Linux/);
+  assert.match(
+    String(skipReason("gosslan-7.4.2-arm64-v8a-release.apk", 21 * MB)),
+    /20MB/,
+  );
+  assert.match(
+    String(skipReason("Gosslan_7.4.2_x64-setup.exe", 11 * MB)),
+    /10MB/,
+  );
+  // 白名单之外的一律不传（不再有「100MB 以内都传」那一档）
+  assert.match(String(skipReason("big.bin", 100 * MB + 1)), /不在 Gitee 承载白名单/);
+});
+
+test("桌面包超限时宁可失败，也不许清单指向 Gitee 的 404", () => {
+  // v7.4.2 的形态：清单先推进、包没传上去 ⇒ 客户端「有更新」但下载 404。
+  // 现在即使某个桌面包涨到 >10MB 被白名单排除，也要在**提交清单之前**显式失败。
+  const src = readFileSync(new URL("./sync-gitee.mjs", import.meta.url), "utf8");
+  assert.match(
+    src,
+    /if \(!uploadNames\.has\(name\)\)/,
+    "四个桌面平台必须逐个按「承载集合」核对，不能只看 GitHub 清单形状",
+  );
+  assert.match(src, /清单不能指向 Gitee/, "失败信息要说清是清单会指向缺包");
+  assert.equal(
+    /for \(const p of REQUIRED_PLATFORMS\) \{\s*const src = githubManifest/.test(src),
+    true,
+    "核对必须覆盖 REQUIRED_PLATFORMS 全部四个平台",
+  );
 });
 
 test("保留策略：最近 N 个 + 当前 tag 永不删", () => {
@@ -234,32 +279,57 @@ test("上传调度：分片按字节装箱、每片串行、失败分类重试�
   );
 });
 
-test("大包也由 CI 传：上限与 Gitee 单附件配额一致（100MB），只有 WebView2 内置包跳过", () => {
-  // 2026-11-25 探针推翻了 2026-11-24 的「几 MB 必 400」结论：同一台 runner 上，
-  // 单路 7.8MB（带/不带 Expect）= 201；4 路并发 4 个 7.4–8.4MB 包 = 全部 201。
-  // v7.2.8 失败那次是 12 分片 × 3 并发 = 36 路，把 per-IP 限速打到拒绝。
+test("白名单是唯一上传判据：Android 清单只从承载集合里取", () => {
   const src = readFileSync(new URL("./sync-gitee.mjs", import.meta.url), "utf8");
   assert.match(
     src,
-    /export const CI_UPLOAD_MAX_BYTES = 100 \* 1024 \* 1024;/,
-    "CI 上传上限必须回到 Gitee 单附件配额（100MB），否则大包又要靠人补",
+    /const uploads = \[\];[\s\S]*?const reason = skipReason\(f\.name, f\.size\);[\s\S]*?uploads\.push\(f\);/,
+    "上传集合必须由 skipReason 判定，不能回到「按 100MB 全传」",
   );
   assert.match(
     src,
-    /mineCi = mine\.filter\(\(f\) => f\.size <= CI_UPLOAD_MAX_BYTES\)/,
-    "超过 Gitee 硬上限的文件才该跳过",
+    /for \(const f of uploads\) \{\s*\n\s*const platform = androidPlatformFor\(f\.name\);/,
+    "Android 清单只能从 uploads 里取——从 files 里取会把未上传的 APK 写进清单",
   );
   assert.match(
     src,
-    /超过 Gitee 单附件 100MB 上限，镜像里不提供/,
-    "超限包必须明说只能从 GitHub 下载",
+    /const reason = skipReason\(name, f\.size\);\s*\n\s*if \(reason\) \{/,
+    "verifyAllAssetsMirrored 必须按同一份白名单核对，Linux/WebView2 缺失不算失败",
+  );
+});
+
+test("finalize 必须先验资产、后提交清单（v7.4.2 事故的根因顺序）", () => {
+  const src = readFileSync(new URL("./sync-gitee.mjs", import.meta.url), "utf8");
+  const verifyAt = src.indexOf("await verifyAllAssetsMirrored(repo, tag, filesByName, githubOnly);");
+  const verifyAssetsAt = src.indexOf("await verifyAssets(manifest, assetsDir, filesByName);");
+  const commitAt = src.indexOf("await commitManifest(");
+  assert.ok(verifyAt > 0 && verifyAssetsAt > 0 && commitAt > 0, "锚点漂了");
+  assert.ok(
+    verifyAt < commitAt && verifyAssetsAt < commitAt,
+    "必须先校验资产再提交清单；先提交会让客户端看到「有更新」却下载 404",
+  );
+  assert.match(
+    src,
+    /资产全部通过后才推进公开清单/,
+    "提交前必须有注释说明这条顺序是安全边界",
+  );
+});
+
+test("工作流用同一份 skipReason 预筛下载（别把 Linux/WebView2 也拉下来）", () => {
+  const wf = readFileSync(
+    new URL("../.github/workflows/sync-gitee.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    wf,
+    /skipReason\(name, Number\(size\)\)/,
+    "下载预筛必须调用 sync-gitee.mjs 的 skipReason，避免两份白名单漂移",
   );
   assert.equal(
-    /node scripts\/gitee-backfill\.mjs --tag/.test(src),
+    wf.includes('if [ "$size" -gt 104857600 ]'),
     false,
-    "超过 100MB 的包给「本机补传」是假出路：本机同样传不上去",
+    "旧的 100MB 预筛必须删掉（它不是承载策略）",
   );
-  assert.match(src, /localOnly\.push\(/, "超限包缺口仍要记账（不能静默）");
 });
 
 test("上传并发固定 4 路（36 路并发是 400 的真因）", () => {
@@ -275,14 +345,21 @@ test("上传并发固定 4 路（36 路并发是 400 的真因）", () => {
   );
 });
 
-test("finalize 的匿名校验对超限大包降级（与上传用同一把尺子）", () => {
-  // v7.2.8 的 finalize 红在：`✗ 匿名访问 …/Gosslan-arm64.app.tar.gz 返回 HTTP 404`
-  // —— 那是 7MB 的包，当时被误判成"CI 传不动"。现在只有 >100MB 的 WebView2 包会缺。
+test("finalize 的匿名 404 必须判红（白名单内没有「超限降级」这一档）", () => {
   const src = readFileSync(new URL("./sync-gitee.mjs", import.meta.url), "utf8");
   assert.match(
     src,
-    /if \(local && local\.size > CI_UPLOAD_MAX_BYTES\) \{\s*\n\s*localOnly\.push/,
-    "manifest 平台的匿名 404 遇到超限包必须记账降级，否则每次发版都红",
+    /async function verifyAssets\(manifest, assetsDir, filesByName\)/,
+    "verifyAssets 只看白名单清单，不再接 localOnly 降级参数",
   );
-  assert.match(src, /verifyAssets\(publicManifest, assetsDir, filesByName, localOnly\)/, "localOnly 必须跨两个校验共享");
+  assert.match(
+    src,
+    /白名单里的资产匿名访问不到 = 真没传上去，直接判红/,
+    "404 必须判红；v7.4.2 就是「校验红了但清单已提交」才把 404 推给用户",
+  );
+  assert.equal(
+    /local\.size > CI_UPLOAD_MAX_BYTES/.test(src),
+    false,
+    "旧的「超 100MB 就记账不判红」必须删掉（白名单里最大只有 20MB）",
+  );
 });

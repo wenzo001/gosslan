@@ -89,19 +89,26 @@ const SOURCE_LABELS: Record<string, string> = {
 const sourceText = computed(() =>
   t(SOURCE_LABELS[props.state.source] ?? "settings.updates.sourceAuto"),
 );
-/** 后端自动切源是一次状态跃迁，界面必须看得见，否则用户不知道包从哪来。 */
-const autoSwitchText = computed(() => {
-  if (props.state.sourceEvent === "auto_switched_to_gitee") {
-    return t("settings.updates.autoSwitched");
-  }
-  if (props.state.sourceEvent === "auto_switched_to_gitee_failed") {
-    return t("settings.updates.autoSwitchFailed");
-  }
-  return "";
-});
 /** 慢速或失败时把「换源」摆到明面上；平时只留一行来源说明。 */
-const showSwitchHint = computed(
-  () => props.state.slow || props.state.phase === "error" || !!autoSwitchText.value,
+const canOfferSwitch = computed(
+  () => props.state.slow || props.state.phase === "error",
+);
+/**
+ * 当前源已经是 Gitee 时，绝不提示「切换到 Gitee」——那是 2026-11-27 用户实测的 bug：
+ * 点了「切 Gitee」还是失败，界面却继续让他切 Gitee。目标源永远指向**另一家**。
+ */
+const switchTarget = computed<"gitee" | "github">(() =>
+  props.state.source === "gitee" ? "github" : "gitee",
+);
+const switchHintText = computed(() =>
+  props.state.source === "gitee"
+    ? t("settings.updates.giteeFailedHint")
+    : t("settings.updates.slowHint"),
+);
+const switchButtonLabel = computed(() =>
+  switchTarget.value === "gitee"
+    ? t("settings.updates.switchToGitee")
+    : t("settings.updates.switchToGithub"),
 );
 
 const showUpdateCard = computed(
@@ -205,22 +212,22 @@ function formatDate(seconds: number | null | undefined): string {
     </div>
 
     <!-- 慢速/失败给的是「提醒 + 可点的换源」，不是偷偷把在飞的整包丢掉；
-         自动切源（GitHub 连不上）则必须把发生过的跃迁说清楚。 -->
+         换源永远由用户点，按钮目标指向**当前源之外**的那一家。 -->
     <p
-      v-if="showSwitchHint"
+      v-if="canOfferSwitch"
       class="mt-2 rounded-[var(--gosslan-radius-xs)] bg-[var(--gosslan-hover)] px-2 py-1.5 text-caption leading-relaxed text-[var(--gosslan-text)]"
       role="status"
       aria-live="polite"
     >
-      {{ autoSwitchText || t("settings.updates.slowHint") }}
+      {{ switchHintText }}
     </p>
     <button
-      v-if="state.slow || state.phase === 'error'"
+      v-if="canOfferSwitch"
       type="button"
       class="tap-safe mt-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-meta text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-      @click="emit('switch-source', 'gitee')"
+      @click="emit('switch-source', switchTarget)"
     >
-      {{ t("settings.updates.switchToGitee") }}
+      {{ switchButtonLabel }}
     </button>
 
     <div
@@ -233,23 +240,6 @@ function formatDate(seconds: number | null | undefined): string {
       <p v-if="state.info?.publishedAt" class="mt-0.5 text-caption text-[var(--gosslan-text-2)]">
         {{ t("settings.updates.published", { date: formatDate(state.info.publishedAt) }) }}
       </p>
-      <p v-if="state.info?.notes" class="mt-2 text-caption font-medium text-[var(--gosslan-text-2)]">
-        {{ t("settings.updates.notes") }}
-      </p>
-      <!-- 说明是 Markdown（我们自己的 CHANGELOG 片段）⇒ 渲染成标题/列表/粗体，
-           不再原样显示 `###` 与 `**`。内容来自网络 ⇒ `MarkdownText` 里过白名单消毒。 -->
-      <!-- 统一滚动容器（轨道不可见 / hover 才显 / 不占布局宽度）；小段文本用最细一档滑块。 -->
-      <OverlayScroll
-        v-if="state.info?.notes"
-        size="thin"
-        class="mt-1 max-h-36"
-      >
-        <MarkdownText
-          :source="state.info.notes"
-          class="text-caption leading-relaxed text-[var(--gosslan-text-2)]"
-        />
-      </OverlayScroll>
-
       <div v-if="state.phase === 'downloading'" class="mt-3">
         <div
           class="h-1.5 overflow-hidden rounded-full bg-[var(--gosslan-hover)]"
@@ -323,6 +313,24 @@ function formatDate(seconds: number | null | undefined): string {
           {{ t("settings.updates.later") }}
         </button>
       </div>
+
+      <!-- 更新说明放在操作按钮**之后**（2026-11-27 用户口径）：说明可以不看，
+           不能为了看说明才滚到最下面才点得到下载/安装。说明自己 144px 内滚动。 -->
+      <p v-if="state.info?.notes" class="mt-3 text-caption font-medium text-[var(--gosslan-text-2)]">
+        {{ t("settings.updates.notes") }}
+      </p>
+      <!-- 说明是 Markdown（我们自己的 CHANGELOG 片段）⇒ 渲染成标题/列表/粗体，
+           不再原样显示 `###` 与 `**`。内容来自网络 ⇒ `MarkdownText` 里过白名单消毒。 -->
+      <OverlayScroll
+        v-if="state.info?.notes"
+        size="thin"
+        class="mt-1 max-h-36"
+      >
+        <MarkdownText
+          :source="state.info.notes"
+          class="text-caption leading-relaxed text-[var(--gosslan-text-2)]"
+        />
+      </OverlayScroll>
     </div>
 
     <p v-if="state.phase === 'installing'" class="mt-2 flex items-center gap-1.5 text-caption text-[var(--gosslan-text-2)]">
