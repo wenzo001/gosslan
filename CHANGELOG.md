@@ -14,6 +14,13 @@
 
 ## [Unreleased]
 
+## [7.4.9] - 2026-11-28
+
+### 修复：Android Gradle 模板与 Windows CLI 兼容
+- Tauri CLI 升级到 2.12.6，采用上游修复后的 Android `RustPlugin`/`BuildTask` 模板，
+  补齐 `projectDir`，避免 `rustBuildArm64Release` 在 Gradle 配置阶段失败。
+- 保留 `appDirectoriesOverride` 支持与 7.4.8 的 Windows/Android 失败现场诊断。
+
 ## [7.4.8] - 2026-11-28
 
 ### 修复：远程 CI 可诊断性

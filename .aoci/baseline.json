@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-28T01:55:12Z",
+  "updated_at": "2026-11-28T02:38:53Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -107,9 +107,9 @@
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "395f606a3d24b47afd90a1c500133e441e3a17c89417badd16ab25d121e24fb9",
-      "size": 114261,
-      "normalized_sha256": "395f606a3d24b47afd90a1c500133e441e3a17c89417badd16ab25d121e24fb9"
+      "sha256": "427fc279fd97a031f7c694caff32d67d0375b416b41a88e6d1b39f211737cc4a",
+      "size": 114623,
+      "normalized_sha256": "427fc279fd97a031f7c694caff32d67d0375b416b41a88e6d1b39f211737cc4a"
     },
     "CONTEXT.md": {
       "role": "index",
@@ -137,9 +137,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "12b7b8bef953de236e00e3141739d923dffccb029638f97051865d5d2b5b23a9",
-      "size": 565625,
-      "normalized_sha256": "12b7b8bef953de236e00e3141739d923dffccb029638f97051865d5d2b5b23a9"
+      "sha256": "fb9e2d9e1a8cbf950394165862d0e9b750852dd15158e469e680a1a1efa56173",
+      "size": 565826,
+      "normalized_sha256": "fb9e2d9e1a8cbf950394165862d0e9b750852dd15158e469e680a1a1efa56173"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2597,15 +2597,15 @@
     },
     "package-lock.json": {
       "role": "index",
-      "sha256": "01d34626d9ad79cc580cfc0dbeb0d0fbecb2e57052f11a537d69cb6c68c3f5ae",
+      "sha256": "e9f4c6c1a0ae5022cd02fce9136f3a080e7b6dbc70c645758ed7ee726e6d7297",
       "size": 162910,
-      "normalized_sha256": "01d34626d9ad79cc580cfc0dbeb0d0fbecb2e57052f11a537d69cb6c68c3f5ae"
+      "normalized_sha256": "e9f4c6c1a0ae5022cd02fce9136f3a080e7b6dbc70c645758ed7ee726e6d7297"
     },
     "package.json": {
       "role": "index",
-      "sha256": "ac2dc3b7c1b991fa5bc06890cd0c17edf4e37054c496038220733ad5550c155e",
+      "sha256": "87fd0b1a334df8bfb694565606804d6a4f4841693236556902ae01fe87bc12f5",
       "size": 9779,
-      "normalized_sha256": "ac2dc3b7c1b991fa5bc06890cd0c17edf4e37054c496038220733ad5550c155e"
+      "normalized_sha256": "87fd0b1a334df8bfb694565606804d6a4f4841693236556902ae01fe87bc12f5"
     },
     "perf/README.md": {
       "role": "index",
@@ -3815,15 +3815,15 @@
     },
     "src-tauri/Cargo.lock": {
       "role": "index",
-      "sha256": "2b1feb8d352530de56d510bc3bdf0876f7390916a35069126c3c939fef7ae95f",
+      "sha256": "440663f9123caabdae4892b67fc1a96b49b9d49ca51189ce8917c258a6b0d6bb",
       "size": 162185,
-      "normalized_sha256": "2b1feb8d352530de56d510bc3bdf0876f7390916a35069126c3c939fef7ae95f"
+      "normalized_sha256": "440663f9123caabdae4892b67fc1a96b49b9d49ca51189ce8917c258a6b0d6bb"
     },
     "src-tauri/Cargo.toml": {
       "role": "index",
-      "sha256": "eeafa97f510648c89319277e7e6935347e12a8b17df47c95400f84bc1107d008",
+      "sha256": "ce79e146f34653851227e1efa7e423830273cebaaf64bc7c689df96fb7c46933",
       "size": 20960,
-      "normalized_sha256": "eeafa97f510648c89319277e7e6935347e12a8b17df47c95400f84bc1107d008"
+      "normalized_sha256": "ce79e146f34653851227e1efa7e423830273cebaaf64bc7c689df96fb7c46933"
     },
     "src-tauri/Info.plist": {
       "role": "index",
@@ -4130,15 +4130,15 @@
     },
     "src-tauri/gen/android/buildSrc/src/main/java/com/gosslan/app/kotlin/BuildTask.kt": {
       "role": "index",
-      "sha256": "4dab5a7ad55564f032bbb7957c4df48867faa5cfd5e0d6db650b4fcb78d06d58",
-      "size": 2231,
-      "normalized_sha256": "4dab5a7ad55564f032bbb7957c4df48867faa5cfd5e0d6db650b4fcb78d06d58"
+      "sha256": "a1cf46b967aadf941f6673162743190c411eff0c6aeac7c975f2c46ab0a8686d",
+      "size": 2381,
+      "normalized_sha256": "a1cf46b967aadf941f6673162743190c411eff0c6aeac7c975f2c46ab0a8686d"
     },
     "src-tauri/gen/android/buildSrc/src/main/java/com/gosslan/app/kotlin/RustPlugin.kt": {
       "role": "index",
-      "sha256": "3488450f755ee6ed9eeaaad99e7adcc27de827f98f4657d9a4fb4af47c2f8663",
-      "size": 3336,
-      "normalized_sha256": "3488450f755ee6ed9eeaaad99e7adcc27de827f98f4657d9a4fb4af47c2f8663"
+      "sha256": "00ea433f5330296860585eb81b80111ce72aec4860a7cf646b91c9e80010012c",
+      "size": 3405,
+      "normalized_sha256": "00ea433f5330296860585eb81b80111ce72aec4860a7cf646b91c9e80010012c"
     },
     "src-tauri/gen/android/gradle.properties": {
       "role": "index",
@@ -5824,9 +5824,9 @@
     },
     "src-tauri/tauri.conf.json": {
       "role": "index",
-      "sha256": "f35b3411634f0a7cbd28bb2eb00aeb51c6abd23e0a34e7fcc77db391f35f8ec6",
+      "sha256": "220d5e67386e0da8216b911c5cd4a2eadffc1a05ad911da6597ac8fd47ecf545",
       "size": 3010,
-      "normalized_sha256": "f35b3411634f0a7cbd28bb2eb00aeb51c6abd23e0a34e7fcc77db391f35f8ec6"
+      "normalized_sha256": "220d5e67386e0da8216b911c5cd4a2eadffc1a05ad911da6597ac8fd47ecf545"
     },
     "src-tauri/tauri.nodrop.conf.json": {
       "role": "index",
