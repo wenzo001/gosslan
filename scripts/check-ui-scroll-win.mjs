@@ -29,7 +29,13 @@ const SELF = process.argv.includes("--selfproof") || process.argv.includes("--se
 const num = (name, fallback) => Number(process.env[name] || fallback);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const sha256 = (file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-const windowsPath = (p) => p.split(path.sep).join("/");
+
+export function windowsPathIsWithin(root, candidate) {
+  const key = (value) => path.win32.resolve(value).replace(/^\\\\\?\\/i, "").replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+  const base = key(root);
+  const target = key(candidate);
+  return target === base || target.startsWith(`${base}/`);
+}
 
 export function cspProblems(csp) {
   const directives = new Map(csp.split(";").map((part) => {
@@ -169,6 +175,7 @@ export function runStaticSelfProof() {
     ["content min-height rollback rejected", () => flexGeometryProblems(mutateRule(".gosslan-os .n-scrollbar-content", (rule) => rule.append({ prop: "min-height", value: "100%" }))).length > 0],
     ["rail stacking regression rejected", () => flexGeometryProblems(mutateRule(".gosslan-os .n-scrollbar-rail", (rule) => rule.walkDecls("z-index", (d) => { d.value = "1"; }))).length > 0],
     ["group todo seed assigns a real member", () => groupTodoSeedArgs("group", "self", 0).assignees.join(",") === "self"],
+    ["Windows extended paths cannot fake or defeat isolation", () => windowsPathIsWithin("C:\\Temp\\run", "\\\\?\\C:\\Temp\\run\\app\\logs") && !windowsPathIsWithin("C:\\Temp\\run", "C:\\Temp\\run-other\\logs")],
   ];
   for (const [name, mutate] of cases) {
     if (!mutate()) throw new Error(`negative control did not fire: ${name}`);
@@ -368,22 +375,22 @@ async function seedPeer(groupName, messages, todos, files, runRoot, timeoutMs, p
     const group = await invoke(a, "create_group", { name: groupName, members: [db.device_id] });
     await invoke(a, "distribute_group_key", { groupId: group.id });
     await waitFor(async () => (await invoke(b, "get_groups")).some((g) => g.id === group.id), "group key delivery", timeoutMs);
-    for (let i = 0; i < messages; i++) {
-      await invoke(a, "send_group_message", {
-        groupId: group.id,
-        content: `SCROLL-MSG-${String(i).padStart(4, "0")} ${"长会话滚动验收 ".repeat(6)}`,
-        kind: "text", mentions: [], localId: `scroll-msg-${i}`, lang: null,
-      });
-    }
-    for (let i = 0; i < todos; i++) {
-      await invoke(a, "send_group_todo", groupTodoSeedArgs(group.id, da.device_id, i));
-    }
     const fileDir = path.join(runRoot, "seed-files");
     fs.mkdirSync(fileDir, { recursive: true });
     for (let i = 0; i < files; i++) {
       const file = path.join(fileDir, `SCROLL-FILE-${String(i).padStart(4, "0")}.txt`);
       fs.writeFileSync(file, `F-06 group file ${i}\n`);
       await invoke(a, "send_group_file", { groupId: group.id, path: file, scope: "chat", todoId: null, msgId: null });
+    }
+    for (let i = 0; i < todos; i++) {
+      await invoke(a, "send_group_todo", groupTodoSeedArgs(group.id, da.device_id, i));
+    }
+    for (let i = 0; i < messages; i++) {
+      await invoke(a, "send_group_message", {
+        groupId: group.id,
+        content: `SCROLL-MSG-${String(i).padStart(4, "0")} ${"长会话滚动验收 ".repeat(6)}`,
+        kind: "text", mentions: [], localId: `scroll-msg-${i}`, lang: null,
+      });
     }
     const seededFiles = await invoke(a, "list_group_files", { groupId: group.id });
     if (seededFiles.length < files) throw new Error(`IPC file seed only produced ${seededFiles.length}/${files}`);
@@ -472,9 +479,9 @@ async function checkScroller(cdp, ledger, artifactDir, label, selector, options 
   return { before, first, wheeled, last };
 }
 
-async function clickSvgButton(cdp, svgClass) {
-  const clicked = await cdp.eval(`(() => { const b=[...document.querySelectorAll('button')].find(x=>x.querySelector('svg.${svgClass}')); if(!b)return false; b.click(); return true; })()`);
-  if (!clicked) throw new Error(`button not found: ${svgClass}`);
+async function clickButtonByTitle(cdp, titles) {
+  const clicked = await cdp.eval(`(() => { const wanted=${JSON.stringify(titles)}; const b=[...document.querySelectorAll('button')].find(x=>wanted.includes(x.title)); if(!b)return false; b.click(); return true; })()`);
+  if (!clicked) throw new Error(`button not found by title: ${titles.join(" / ")}`);
 }
 
 async function openGroup(cdp, groupName) {
@@ -565,8 +572,7 @@ async function runtimeSmoke(exeA, exeB, report, artifactDir, ledger) {
     const isolatedDb = path.join(path.dirname(locations.dir), `gosslan-${instanceA}.db`);
     const isolatedDbB = path.join(path.dirname(locationsB.dir), `gosslan-${instanceB}.db`);
     report.isolatedDb = [isolatedDb, isolatedDbB];
-    const runRootPrefix = path.resolve(runRoot) + path.sep;
-    const insideThrowawayRoot = [locations.dir, locationsB.dir].every((p) => path.resolve(p).startsWith(runRootPrefix));
+    const insideThrowawayRoot = [locations.dir, locationsB.dir].every((p) => windowsPathIsWithin(runRoot, p));
     ledger.add("all app data stays inside the throwaway run directory", insideThrowawayRoot, [locations.dir, locationsB.dir]);
     ledger.add("both instances use separate database files", fs.existsSync(isolatedDb) && fs.existsSync(isolatedDbB) && isolatedDb !== isolatedDbB, report.isolatedDb);
     ledger.add("real IPC: distinct instance identities and group/file seeds", seeded.deviceA !== seeded.deviceB && seeded.seededFiles >= fileCount, { deviceA: seeded.deviceA, deviceB: seeded.deviceB, files: seeded.seededFiles });
@@ -585,7 +591,7 @@ async function runtimeSmoke(exeA, exeB, report, artifactDir, ledger) {
     await pageToSeededHead(a, ".vlist-no-anchor", "SCROLL-MSG-0000");
     await checkScroller(a, ledger, artifactDir, "long-session", ".vlist-no-anchor", { overflow: true, startText: "SCROLL-MSG-0000", endText: `SCROLL-MSG-${String(messageCount - 1).padStart(4, "0")}` });
 
-    await clickSvgButton(a, "lucide-folder-open");
+    await clickButtonByTitle(a, ["Group Files", "群文件"]);
     await waitFor(() => a.eval("document.body.innerText.includes('SCROLL-FILE-0000.txt')"), "group files modal", 30_000);
     await checkScroller(a, ledger, artifactDir, "group-files", ".gosslan-dialog-card .gosslan-os", { overflow: true, startText: `SCROLL-FILE-${String(fileCount - 1).padStart(4, "0")}.txt`, endText: "SCROLL-FILE-0000.txt" });
     const menuPoint = await a.eval(`(() => { const e=[...document.querySelectorAll('.gosslan-dialog-card .gosslan-os .n-scrollbar-content > div')].find(x=>x.textContent.includes('SCROLL-FILE-0000.txt')); if(!e)return null; const r=e.getBoundingClientRect(); return {x:r.left+80,y:r.top+20}; })()`);
@@ -602,7 +608,7 @@ async function runtimeSmoke(exeA, exeB, report, artifactDir, ledger) {
     await invoke(a, "plugin:window|set_size", { label: "main", value: { Logical: { width: 360, height: 640 } } });
     await waitFor(() => a.eval("document.documentElement.classList.contains('is-mobile') && innerWidth<=767 && innerHeight<=700"), "short desktop window/mobile layout", 20_000);
     report.shortWindow = await a.eval("({width:innerWidth,height:innerHeight,mobile:document.documentElement.classList.contains('is-mobile')})");
-    await clickSvgButton(a, "lucide-list-checks");
+    await clickButtonByTitle(a, ["Group Tasks", "群任务"]);
     await waitFor(() => a.eval("!!document.querySelector('[data-todo-row]')"), "embedded task board", 45_000);
     await checkScroller(a, ledger, artifactDir, "task-board-short-window", ".gosslan-dialog-page .gosslan-os", { overflow: true, startText: `SCROLL-TODO-${String(todoCount - 1).padStart(4, "0")}`, endText: "SCROLL-TODO-0000" });
     await a.eval(`(() => { const b=document.querySelector('[data-todo-row] button'); if(!b)throw new Error('todo row button missing'); b.click(); })()`);
