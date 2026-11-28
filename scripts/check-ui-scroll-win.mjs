@@ -41,7 +41,7 @@ export function windowsPathIsWithin(root, candidate) {
   return target === base || target.startsWith(`${base}/`);
 }
 
-const VISIBLE_MATCHES = `(selector) => [...document.querySelectorAll(selector)].filter(e => { const r=e.getBoundingClientRect(); const s=getComputedStyle(e); return r.width>0 && r.height>0 && s.visibility!=='hidden' && s.display!=='none'; })`;
+const VISIBLE_MATCHES = `((selector) => [...document.querySelectorAll(selector)].filter(e => { const r=e.getBoundingClientRect(); const s=getComputedStyle(e); return r.width>0 && r.height>0 && s.visibility!=='hidden' && s.display!=='none'; }))`;
 
 export function cspProblems(csp) {
   const directives = new Map(csp.split(";").map((part) => {
@@ -182,6 +182,7 @@ export function runStaticSelfProof() {
     ["rail stacking regression rejected", () => flexGeometryProblems(mutateRule(".gosslan-os .n-scrollbar-rail", (rule) => rule.walkDecls("z-index", (d) => { d.value = "1"; }))).length > 0],
     ["group todo seed assigns a real member", () => groupTodoSeedArgs("group", "self", 0).assignees.join(",") === "self"],
     ["Windows extended paths cannot fake or defeat isolation", () => windowsPathIsWithin("C:\\Temp\\run", "\\\\?\\C:\\Temp\\run\\app\\logs") && !windowsPathIsWithin("C:\\Temp\\run", "C:\\Temp\\run-other\\logs")],
+    ["visible selector fragments compose into valid page scripts", () => spawnSync(process.execPath, ["--check", "-"], { input: `const hosts=${VISIBLE_MATCHES}(".vlist-no-anchor");`, encoding: "utf8" }).status === 0],
   ];
   for (const [name, mutate] of cases) {
     if (!mutate()) throw new Error(`negative control did not fire: ${name}`);
