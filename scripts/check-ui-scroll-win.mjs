@@ -168,6 +168,7 @@ export function runStaticSelfProof() {
     ["percentage container rollback rejected", () => flexGeometryProblems(mutateRule(".gosslan-os .n-scrollbar-container", (rule) => { rule.walkDecls("flex", (d) => d.remove()); rule.walkDecls("height", (d) => { d.value = "100%"; }); })).length > 0],
     ["content min-height rollback rejected", () => flexGeometryProblems(mutateRule(".gosslan-os .n-scrollbar-content", (rule) => rule.append({ prop: "min-height", value: "100%" }))).length > 0],
     ["rail stacking regression rejected", () => flexGeometryProblems(mutateRule(".gosslan-os .n-scrollbar-rail", (rule) => rule.walkDecls("z-index", (d) => { d.value = "1"; }))).length > 0],
+    ["group todo seed assigns a real member", () => groupTodoSeedArgs("group", "self", 0).assignees.join(",") === "self"],
   ];
   for (const [name, mutate] of cases) {
     if (!mutate()) throw new Error(`negative control did not fire: ${name}`);
@@ -304,7 +305,9 @@ async function stopInstance(proc) {
 }
 
 async function invoke(cdp, command, args = {}) {
-  return cdp.eval(`window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`);
+  const result = await cdp.eval(`(async () => { try { return { ok: true, value: await window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)}) }; } catch (error) { return { ok: false, error: typeof error === "string" ? error : String(error?.message ?? error) }; } })()`);
+  if (!result.ok) throw new Error(`${command} failed: ${result.error}`);
+  return result.value;
 }
 
 async function waitFor(fn, label, timeoutMs = 60_000) {
@@ -336,6 +339,14 @@ async function ready(cdp, requireConversation = false) {
   }
 }
 
+function groupTodoSeedArgs(groupId, assigneeId, index) {
+  return {
+    groupId, title: `SCROLL-TODO-${String(index).padStart(4, "0")} 任务看板首尾可达`,
+    assignees: [assigneeId], description: "任务详情嵌套浮层滚动验收。".repeat(80), images: null,
+    category: null, customCategory: null, customIcon: null, relatedOn: null, tags: [], linkedFrom: null,
+  };
+}
+
 async function seedPeer(groupName, messages, todos, files, runRoot, timeoutMs, portA, portB) {
   const a = await Cdp.connect(portA, 30_000);
   const b = await Cdp.connect(portB, 30_000);
@@ -365,11 +376,7 @@ async function seedPeer(groupName, messages, todos, files, runRoot, timeoutMs, p
       });
     }
     for (let i = 0; i < todos; i++) {
-      await invoke(a, "send_group_todo", {
-        groupId: group.id, title: `SCROLL-TODO-${String(i).padStart(4, "0")} 任务看板首尾可达`,
-        assignees: [], description: "任务详情嵌套浮层滚动验收。".repeat(80), images: null,
-        category: null, customCategory: null, customIcon: null, relatedOn: null, tags: [], linkedFrom: null,
-      });
+      await invoke(a, "send_group_todo", groupTodoSeedArgs(group.id, da.device_id, i));
     }
     const fileDir = path.join(runRoot, "seed-files");
     fs.mkdirSync(fileDir, { recursive: true });
