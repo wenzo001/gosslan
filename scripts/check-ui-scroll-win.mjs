@@ -187,6 +187,7 @@ export function runStaticSelfProof() {
     ["Windows CI invokes the production entry", /^\s*npm run test:ui-scroll:win\s*$/m.test(workflow) && workflow.includes("gosslan-windows-scroll-smoke")],
     ["launcher isolates instance DB and WebView2 UDF", launcher.includes("GOSSLAN_INSTANCE") && launcher.includes("WEBVIEW2_USER_DATA_FOLDER") && launcher.includes("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")],
     ["smoke config and copied exe isolate the whole app directory", smokeConfig.app?.appDirectoriesOverride === "scroll-smoke-data" && buildBody.includes('"--config"') && launcher.includes("Copy-Item -LiteralPath $Exe") && launcher.includes("Start-Process -FilePath $smokeExe")],
+    ["startup diagnostics preserve the override root, output and exit state", launcher.includes("$dataRoot") && launcher.includes("RedirectStandardOutput") && launcher.includes("$exited") && smoke.includes("captureInstanceDiagnostics")],
     ["dev probe disclaims production evidence", devProbe.includes("DEV PROBE —— 不是生产态证据") && devProbe.includes("本结果不是生产态/WebView2 证据")],
     ["fresh empty databases boot before conversation rows exist", smoke.includes("async function ready(cdp, requireConversation = false)") && smoke.includes("if (requireConversation)") && smoke.includes("await ready(a, true); await ready(b, true)")],
   ];
@@ -477,6 +478,26 @@ async function closeTop(cdp) {
   await sleep(400);
 }
 
+async function captureInstanceDiagnostics(instances, artifactDir) {
+  const captured = [];
+  for (const inst of instances.filter(Boolean)) {
+    const dir = path.join(artifactDir, `instance-${inst.instance}`);
+    fs.mkdirSync(dir, { recursive: true });
+    for (const key of ["stdout", "stderr"]) {
+      const source = inst[key];
+      if (source && fs.existsSync(source)) fs.copyFileSync(source, path.join(dir, path.basename(source)));
+    }
+    const logs = path.join(inst.dataRoot || path.dirname(inst.exe), "logs");
+    if (fs.existsSync(logs)) fs.cpSync(logs, path.join(dir, "logs"), { recursive: true });
+    let process = "";
+    try {
+      process = powershell(`Get-Process -Id ${inst.pid} -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,HasExited,ExitCode | ConvertTo-Json -Compress`);
+    } catch (e) { process = String(e); }
+    captured.push({ instance: inst.instance, pid: inst.pid, exited: inst.exited, exitCode: inst.exitCode, process, logs });
+  }
+  return captured;
+}
+
 async function runtimeSmoke(exe, report, artifactDir, ledger) {
   const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gosslan-ui-scroll-"));
   const instanceA = 960061 + (process.pid % 1000);
@@ -489,6 +510,8 @@ async function runtimeSmoke(exe, report, artifactDir, ledger) {
     pa = await launch(exe, runRoot, instanceA, portA);
     pb = await launch(exe, runRoot, instanceB, portB);
     report.instances = [pa, pb];
+    const exited = report.instances.filter((inst) => inst.exited);
+    if (exited.length) throw new Error(`smoke instance exited during startup: ${JSON.stringify(exited)}`);
     const browser = await waitFor(() => fetch(`http://127.0.0.1:${portA}/json/version`).then((r) => r.json()).catch(() => null), "WebView2 version endpoint", 30_000);
     report.webview2 = { ...(report.webview2 || {}), browser: browser?.Browser, protocol: browser?.["Protocol-Version"] };
     ledger.add("WebView2 runtime version is recorded", !!browser?.Browser, report.webview2);
@@ -563,6 +586,7 @@ async function runtimeSmoke(exe, report, artifactDir, ledger) {
   } finally {
     if (seeded) { seeded.a.close(); seeded.b.close(); }
     await stopInstance(pa); await stopInstance(pb);
+    report.diagnostics = await captureInstanceDiagnostics([pa, pb], artifactDir);
     fs.rmSync(runRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 }

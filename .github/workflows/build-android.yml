@@ -124,11 +124,20 @@ jobs:
           for f in /tmp/gosslan-android-*.log; do
             [ -f "$f" ] || continue
             echo "::group::$(basename "$f")"
-            grep -E "FAILURE:|What went wrong|Execution failed|Caused by:|Could not |Unable to |A problem occurred|error:|Error:|Exception|Out of memory|No space left|❌" "$f" 2>/dev/null | head -20 | cut -c1-400
+            grep -E "FAILURE:|What went wrong|Execution failed|Caused by:|Could not |Unable to |A problem occurred|error:|Error:|Exception|Out of memory|No space left|❌" "$f" 2>/dev/null | head -40 | cut -c1-2000
             echo "::endgroup::"
           done
-          echo "::error::Android 构建失败（上面是 Gradle 关键行；完整日志在 runner 的 /tmp/gosslan-android-*.log）"
+          echo "::error::Android 构建失败（上面是 Gradle 关键行；完整日志见 gosslan-android-build-logs artifact）"
           exit 1
+
+      - name: Upload Android build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosslan-android-build-logs
+          path: /tmp/gosslan-android-*.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

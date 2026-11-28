@@ -14,6 +14,13 @@
 
 ## [Unreleased]
 
+## [7.4.8] - 2026-11-28
+
+### 修复：远程 CI 可诊断性
+- Windows smoke 启动前预建 `appDirectoriesOverride` 目录，重定向 stdout/stderr，并在失败报告中保留
+  进程退出状态、应用日志与 WebView2 启动现场，避免只看到 CDP 超时。
+- Android 构建失败不再把 Gradle 真错误截断到 200 字符，同时上传完整构建日志 artifact。
+
 ## [7.4.7] - 2026-11-28
 
 ### 修复：Windows 生产滚动 smoke 发布阻断

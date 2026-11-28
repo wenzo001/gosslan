@@ -195,9 +195,9 @@ print_gradle_failure() {
   # ② 模式里的 `error:` 放宽成 `error`：冒号后面可能跟空格/换行符，锚死冒号不值当。
   perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$log" 2>/dev/null \
     | grep -E "FAILURE:|What went wrong|Execution failed|Caused by:|Could not |Unable to |A problem occurred|error|Error|Exception|Out of memory|No space left" \
-    | head -20 | cut -c1-200 | sed 's/^/    ❌ /'
-  echo "    ❌ 日志尾部（逐字，最后 12 行）："
-  tail -12 "$log" 2>/dev/null | perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' | cut -c1-200 | sed 's/^/    /'
+    | head -40 | cut -c1-2000 | sed 's/^/    ❌ /'
+  echo "    ❌ 日志尾部（逐字，最后 20 行）："
+  tail -20 "$log" 2>/dev/null | perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' | cut -c1-2000 | sed 's/^/    /'
 }
 
 LOG="/tmp/gosslan-android-$ABI.log"

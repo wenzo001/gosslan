@@ -11,7 +11,8 @@ if (-not (Test-Path -LiteralPath $Exe)) { throw "release exe not found: $Exe" }
 $udf = Join-Path $RunRoot "webview2-$Instance"
 $appData = Join-Path $RunRoot "appdata-$Instance"
 $appRoot = Join-Path $RunRoot "app-$Instance"
-New-Item -ItemType Directory -Force -Path $udf, $appData, $appRoot | Out-Null
+$dataRoot = Join-Path $appRoot "scroll-smoke-data"
+New-Item -ItemType Directory -Force -Path $udf, $appData, $appRoot, $dataRoot | Out-Null
 # tauri.scroll-smoke.conf.json resolves appDirectoriesOverride relative to the binary.
 # Copying the release exe into this per-instance run directory gives each process a whole
 # throwaway app directory, not just a uniquely named DB inside the user's normal profile.
@@ -26,5 +27,10 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$CdpPort -
 # whole-app isolation, while GOSSLAN_INSTANCE and the UDF keep identities and renderer state separate.
 $env:APPDATA = $appData
 $env:LOCALAPPDATA = $appData
-$p = Start-Process -FilePath $smokeExe -ArgumentList @("--instance", "$Instance") -WorkingDirectory $RunRoot -PassThru
-@{ pid = $p.Id; instance = $Instance; cdpPort = $CdpPort; userDataDir = $udf; exe = $smokeExe } | ConvertTo-Json -Compress
+$stdout = Join-Path $RunRoot "stdout-$Instance.log"
+$stderr = Join-Path $RunRoot "stderr-$Instance.log"
+$p = Start-Process -FilePath $smokeExe -ArgumentList @("--instance", "$Instance") -WorkingDirectory $RunRoot -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+Start-Sleep -Seconds 2
+$exited = $p.HasExited
+$exitCode = if ($exited) { [int]$p.ExitCode } else { $null }
+@{ pid = $p.Id; instance = $Instance; cdpPort = $CdpPort; userDataDir = $udf; exe = $smokeExe; dataRoot = $dataRoot; stdout = $stdout; stderr = $stderr; exited = $exited; exitCode = $exitCode } | ConvertTo-Json -Compress
