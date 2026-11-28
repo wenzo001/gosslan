@@ -211,7 +211,7 @@ export function runStaticSelfProof() {
     ["startup diagnostics and temp cleanup are bounded", launcher.includes("$dataRoot") && launcher.includes("RedirectStandardOutput") && launcher.includes("$exited") && smoke.includes("captureInstanceDiagnostics") && smoke.includes('spawnSync("cmd.exe"') && smoke.includes("5 * 1024 * 1024") && smoke.includes("timeout: 30_000")],
     ["dev probe disclaims production evidence", devProbe.includes("DEV PROBE —— 不是生产态证据") && devProbe.includes("本结果不是生产态/WebView2 证据")],
     ["fresh empty databases boot before conversation rows exist", smoke.includes("async function ready(cdp, requireConversation = false)") && smoke.includes("if (requireConversation)") && smoke.includes("await ready(a, true); await ready(b, true)")],
-    ["history paging uses a visible viewport and reports failure state", (smoke.match(/VISIBLE_MATCHES/g) || []).length >= 8 && smoke.includes("timeline did not page back to seeded head") && smoke.includes("JSON.stringify(state)") && smoke.includes("deltaY: atTop ? 1 : -1200")],
+    ["history paging uses a visible viewport and reports failure state", (smoke.match(/VISIBLE_MATCHES/g) || []).length >= 8 && smoke.includes("timeline did not page back to seeded head") && smoke.includes("JSON.stringify({ state, database, pageText })") && smoke.includes("deltaY: atTop ? 1 : -1200")],
   ];
   for (const [name, ok] of wiring) {
     if (!ok) throw new Error(`wiring control failed: ${name}`);
@@ -498,7 +498,7 @@ async function openGroup(cdp, groupName) {
   await sleep(1000);
 }
 
-async function pageToSeededHead(cdp, selector, text) {
+async function pageToSeededHead(cdp, selector, text, convId) {
   const read = `(() => {
     const hosts=${VISIBLE_MATCHES}(${JSON.stringify(selector)});
     const h=hosts[0]; if(!h)return {visible:false,reason:'no visible host',hostCount:0};
@@ -526,7 +526,14 @@ async function pageToSeededHead(cdp, selector, text) {
     }
     await sleep(150);
   }
-  throw new Error(`timeline did not page back to seeded head ${text}: ${JSON.stringify(state)}`);
+  let database;
+  try {
+    const count = await invoke(cdp, "get_message_count", { convId });
+    const firstPage = await invoke(cdp, "get_messages", { convId, limit: 500, offset: 0 });
+    database = { count, firstPageCount: firstPage.length, hasTarget: firstPage.some((m) => String(m.content).includes(text)), first: firstPage[0]?.content };
+  } catch (error) { database = { error: String(error?.message ?? error) }; }
+  const pageText = await cdp.eval("document.body.innerText.slice(0, 4000)");
+  throw new Error(`timeline did not page back to seeded head ${text}: ${JSON.stringify({ state, database, pageText })}`);
 }
 
 async function closeTop(cdp) {
@@ -619,7 +626,7 @@ async function runtimeSmoke(exeA, exeB, report, artifactDir, ledger) {
     ledger.add("runtime resources come from dist, not Vite source", resources.length > 0 && resources.every((u) => !/\/(?:src|node_modules\/\.vite)\//.test(u) && !u.includes("@vite/client")), resources.slice(0, 12));
 
     await openGroup(a, "F06-SCROLL-GROUP");
-    await pageToSeededHead(a, ".vlist-no-anchor", "SCROLL-MSG-0000");
+    await pageToSeededHead(a, ".vlist-no-anchor", "SCROLL-MSG-0000", `group:${seeded.group.id}`);
     await checkScroller(a, ledger, artifactDir, "long-session", ".vlist-no-anchor", { overflow: true, startText: "SCROLL-MSG-0000", endText: `SCROLL-MSG-${String(messageCount - 1).padStart(4, "0")}` });
 
     await clickButtonByTitle(a, ["Group Files", "群文件"]);
