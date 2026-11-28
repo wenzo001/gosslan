@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-28T00:19:43Z",
+  "updated_at": "2026-11-28T01:12:27Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -107,9 +107,9 @@
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "4fc3079f404f9fe1dc0f11340aaee3c129a294698d2c3f9aef549edf2143134f",
-      "size": 113480,
-      "normalized_sha256": "4fc3079f404f9fe1dc0f11340aaee3c129a294698d2c3f9aef549edf2143134f"
+      "sha256": "36c9df200baace76a05241be02747c97c307260c2a59a37089bf8bf7b71df713",
+      "size": 113872,
+      "normalized_sha256": "36c9df200baace76a05241be02747c97c307260c2a59a37089bf8bf7b71df713"
     },
     "CONTEXT.md": {
       "role": "index",
@@ -137,9 +137,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "ce9fc764acdb10c34dd7079ec9e7e9d7a048e6411d034c8838a3a326153e4d88",
-      "size": 564939,
-      "normalized_sha256": "ce9fc764acdb10c34dd7079ec9e7e9d7a048e6411d034c8838a3a326153e4d88"
+      "sha256": "635d1c46225e69b82ed8c57a5db9455fec236b256c58f8d0a0b3be8e986b7350",
+      "size": 565471,
+      "normalized_sha256": "635d1c46225e69b82ed8c57a5db9455fec236b256c58f8d0a0b3be8e986b7350"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2597,15 +2597,15 @@
     },
     "package-lock.json": {
       "role": "index",
-      "sha256": "cdb1edbebd7be9af5557dcf3e6e4e2b75351dc53d6d65dc827fbed556684d9a1",
-      "size": 162909,
-      "normalized_sha256": "cdb1edbebd7be9af5557dcf3e6e4e2b75351dc53d6d65dc827fbed556684d9a1"
+      "sha256": "b7aca44009b656c55c7e9f869f6530bcde6a2044c4b457e707f3b337c0d0066c",
+      "size": 162910,
+      "normalized_sha256": "b7aca44009b656c55c7e9f869f6530bcde6a2044c4b457e707f3b337c0d0066c"
     },
     "package.json": {
       "role": "index",
-      "sha256": "e06fb55f890316946274209217d4523e16ab4078f305578dfb0dc181a0f81d6e",
-      "size": 9778,
-      "normalized_sha256": "e06fb55f890316946274209217d4523e16ab4078f305578dfb0dc181a0f81d6e"
+      "sha256": "b3688c838d95b8b04ce05ca3689f7997b55b753a98450a37e56ff7707400e95c",
+      "size": 9779,
+      "normalized_sha256": "b3688c838d95b8b04ce05ca3689f7997b55b753a98450a37e56ff7707400e95c"
     },
     "perf/README.md": {
       "role": "index",
@@ -3275,9 +3275,9 @@
     },
     "scripts/check-ui-scroll-win.mjs": {
       "role": "index",
-      "sha256": "f5c2e2bb02ab1ee14c3b706594acafb55d74f52f83e8eb05b322582a7f7aa08b",
-      "size": 41211,
-      "normalized_sha256": "f5c2e2bb02ab1ee14c3b706594acafb55d74f52f83e8eb05b322582a7f7aa08b"
+      "sha256": "63139fe96958b215bfd9540ec0efe484366b349c79c5077b5ec750c33703cbc7",
+      "size": 41865,
+      "normalized_sha256": "63139fe96958b215bfd9540ec0efe484366b349c79c5077b5ec750c33703cbc7"
     },
     "scripts/ci-run.sh": {
       "role": "index",
@@ -3731,9 +3731,9 @@
     },
     "scripts/start-ui-scroll-smoke.ps1": {
       "role": "index",
-      "sha256": "89e8afe3792de148e8bf2320ac55297fadd96579511b39ce373b09afba9b668b",
-      "size": 1829,
-      "normalized_sha256": "89e8afe3792de148e8bf2320ac55297fadd96579511b39ce373b09afba9b668b"
+      "sha256": "cde468643a763c79ffa9df346e08dfe5d7a7cdc3f7c85c4eae3039c211e78751",
+      "size": 1935,
+      "normalized_sha256": "cde468643a763c79ffa9df346e08dfe5d7a7cdc3f7c85c4eae3039c211e78751"
     },
     "scripts/sync-gitee.mjs": {
       "role": "index",
@@ -3815,15 +3815,15 @@
     },
     "src-tauri/Cargo.lock": {
       "role": "index",
-      "sha256": "c6e428aaecdcf244cf9bc4a7987b918864843878b43be12865e8bd3b7013acf5",
+      "sha256": "05c58c36215d43521fa11a7895753dfd462636d5e3db2d2ed5eb2ce1dc0f72ec",
       "size": 162185,
-      "normalized_sha256": "c6e428aaecdcf244cf9bc4a7987b918864843878b43be12865e8bd3b7013acf5"
+      "normalized_sha256": "05c58c36215d43521fa11a7895753dfd462636d5e3db2d2ed5eb2ce1dc0f72ec"
     },
     "src-tauri/Cargo.toml": {
       "role": "index",
-      "sha256": "30ef57e35fddd3bf45cae497d448619e8f6d24737e5f781bbd98bf4929c3c4fc",
+      "sha256": "ef9416b42098a15b43382a132b5e1c1b95d9e0c414c11f2f1263fe7b5088de45",
       "size": 20960,
-      "normalized_sha256": "30ef57e35fddd3bf45cae497d448619e8f6d24737e5f781bbd98bf4929c3c4fc"
+      "normalized_sha256": "ef9416b42098a15b43382a132b5e1c1b95d9e0c414c11f2f1263fe7b5088de45"
     },
     "src-tauri/Info.plist": {
       "role": "index",
@@ -5824,9 +5824,9 @@
     },
     "src-tauri/tauri.conf.json": {
       "role": "index",
-      "sha256": "572b170b7d8265c2068910314b9320f3063bb13b061ae355ca37984f95e10683",
+      "sha256": "51bd35d889aeb253faf446d2f2a754e42ddf94bd1e575a9568d6ef3d5aaeab2c",
       "size": 3010,
-      "normalized_sha256": "572b170b7d8265c2068910314b9320f3063bb13b061ae355ca37984f95e10683"
+      "normalized_sha256": "51bd35d889aeb253faf446d2f2a754e42ddf94bd1e575a9568d6ef3d5aaeab2c"
     },
     "src-tauri/tauri.nodrop.conf.json": {
       "role": "index",

@@ -12,8 +12,9 @@ $udf = Join-Path $RunRoot "webview2-$Instance"
 $appData = Join-Path $RunRoot "appdata-$Instance"
 $appRoot = Join-Path $RunRoot "app-$Instance"
 New-Item -ItemType Directory -Force -Path $udf, $appData, $appRoot | Out-Null
-# Copy the release exe into this per-instance run directory. Database/device isolation comes
-# from GOSSLAN_INSTANCE below; renderer state is isolated by the per-instance WebView2 UDF.
+# tauri.scroll-smoke.conf.json resolves appDirectoriesOverride relative to the binary.
+# Copying the release exe into this per-instance run directory gives each process a whole
+# throwaway app directory, not just a uniquely named DB inside the user's normal profile.
 $smokeExe = Join-Path $appRoot "gosslan.exe"
 Copy-Item -LiteralPath $Exe -Destination $smokeExe -Force
 # GOSSLAN_INSTANCE is the application's existing isolation contract: separate DB,
@@ -21,8 +22,8 @@ Copy-Item -LiteralPath $Exe -Destination $smokeExe -Force
 $env:GOSSLAN_INSTANCE = "$Instance"
 $env:WEBVIEW2_USER_DATA_FOLDER = $udf
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$CdpPort --remote-allow-origins=* --user-data-dir=$udf"
-# Best-effort redirection for child processes; the authoritative isolation is the
-# instance DB + UDF above (Windows KnownFolder APIs do not promise to honour env vars).
+# Best-effort redirection for child processes; appDirectoriesOverride is the authoritative
+# whole-app isolation, while GOSSLAN_INSTANCE and the UDF keep identities and renderer state separate.
 $env:APPDATA = $appData
 $env:LOCALAPPDATA = $appData
 $p = Start-Process -FilePath $smokeExe -ArgumentList @("--instance", "$Instance") -WorkingDirectory $RunRoot -PassThru

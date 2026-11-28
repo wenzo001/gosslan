@@ -14,6 +14,13 @@
 
 ## [Unreleased]
 
+## [7.4.7] - 2026-11-28
+
+### 修复：Windows 生产滚动 smoke 发布阻断
+- Tauri CLI 升级到 2.12.4，恢复 `tauri.scroll-smoke.conf.json` 的 `appDirectoriesOverride`；
+  smoke 继续要求全部 app data 位于临时目录，不再用放宽断言掩盖隔离缺失。
+- self-proof 精确检查 smoke 构建确实加载专用配置，CI 继续执行真实 WebView2 滚动验收。
+
 ## [7.4.6] - 2026-11-28
 
 ### 修复：权限、广播与发布门禁
