@@ -213,6 +213,7 @@ export function runStaticSelfProof() {
     ["fresh empty databases boot before conversation rows exist", smoke.includes("async function ready(cdp, requireConversation = false)") && smoke.includes("if (requireConversation)") && smoke.includes("await ready(a, true); await ready(b, true)")],
     ["history paging uses a visible viewport and reports failure state", (smoke.match(/VISIBLE_MATCHES/g) || []).length >= 8 && smoke.includes("timeline did not page back to seeded head") && smoke.includes("JSON.stringify({ state, database, pageText })") && smoke.includes("deltaY: atTop ? 1 : -1200")],
     ["long timeline asserts its real seeded head and tail", smoke.includes('const timelineHead = "SCROLL-FILE-0000.txt"') && smoke.includes("startText: timelineHead") && smoke.includes("endText: timelineTail")],
+    ["group files waits for a visible dialog and reports its state", smoke.includes("readFilesModal") && smoke.includes("group files modal not ready") && smoke.includes(".gosslan-dialog-card")],
   ];
   for (const [name, ok] of wiring) {
     if (!ok) throw new Error(`wiring control failed: ${name}`);
@@ -633,8 +634,26 @@ async function runtimeSmoke(exeA, exeB, report, artifactDir, ledger) {
     await checkScroller(a, ledger, artifactDir, "long-session", ".vlist-no-anchor", { overflow: true, startText: timelineHead, endText: timelineTail });
 
     await clickButtonByTitle(a, ["Group Files", "群文件"]);
-    await waitFor(() => a.eval("document.body.innerText.includes('SCROLL-FILE-0000.txt')"), "group files modal", 30_000);
-    await checkScroller(a, ledger, artifactDir, "group-files", ".gosslan-dialog-card .gosslan-os", { overflow: true, startText: `SCROLL-FILE-${String(fileCount - 1).padStart(4, "0")}.txt`, endText: "SCROLL-FILE-0000.txt" });
+    const readFilesModal = () => a.eval(`(() => {
+      const dialogs=${VISIBLE_MATCHES}('.gosslan-dialog-card');
+      const scrollers=dialogs.flatMap(d=>[...d.querySelectorAll('.gosslan-os')]).filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0});
+      return {ready:dialogs.some(d=>d.innerText.includes('SCROLL-FILE-0000.txt')),
+        dialogs:dialogs.map(d=>{const r=d.getBoundingClientRect();return {text:d.innerText.slice(0,1200),rect:{left:r.left,top:r.top,right:r.right,bottom:r.bottom}}}),
+        scrollers:scrollers.map(e=>{const r=e.getBoundingClientRect();return {top:e.scrollTop,scrollH:e.scrollHeight,clientH:e.clientHeight,rect:{left:r.left,top:r.top,right:r.right,bottom:r.bottom}}}),
+        errors:window.__scrollSmoke?.errors??[],bodyText:document.body.innerText.slice(0,2000)};
+    })()`);
+    let filesModal;
+    try {
+      await waitFor(async () => (filesModal = await readFilesModal()).ready, "group files modal", 30_000);
+    } catch (error) {
+      throw new Error(`group files modal not ready: ${JSON.stringify(filesModal)}`);
+    }
+    try {
+      await checkScroller(a, ledger, artifactDir, "group-files", ".gosslan-dialog-card .gosslan-os", { overflow: true, startText: `SCROLL-FILE-${String(fileCount - 1).padStart(4, "0")}.txt`, endText: "SCROLL-FILE-0000.txt" });
+    } catch (error) {
+      filesModal = await readFilesModal();
+      throw new Error(`${error.message}; modal=${JSON.stringify(filesModal)}`);
+    }
     const menuPoint = await a.eval(`(() => { const e=[...document.querySelectorAll('.gosslan-dialog-card .gosslan-os .n-scrollbar-content > div')].find(x=>x.textContent.includes('SCROLL-FILE-0000.txt')); if(!e)return null; const r=e.getBoundingClientRect(); return {x:r.left+80,y:r.top+20}; })()`);
     if (menuPoint) {
       await a.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "right", x: menuPoint.x, y: menuPoint.y, clickCount: 1 });
