@@ -71,6 +71,7 @@ async fn handle_relay_file_offer(
     chunk_size: u32,
     sealed_file_key: String,
     file_sha256: String,
+    sticker: bool,
 ) {
     if to != state.device_id {
         return; // 中继节点无需重组，只转发切片
@@ -237,6 +238,9 @@ async fn handle_relay_file_offer(
             0.0,
         ) {
             crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+        }
+        if let Err(e) = db::set_transfer_sticker(&dbc, &transfer_id, sticker) {
+            crate::logging::log_write_failure(&state.logger, "set_transfer_sticker", e);
         }
     }
     let _ = state.app.emit(
@@ -684,12 +688,14 @@ async fn handle_relay_chunk(
                     crate::logging::log_write_failure(&state.logger, "record_local", e);
                 }
                 let subtype = file::classify_file_subtype(&name);
+                let sticker = db::transfer_is_sticker(&dbc, &transfer_id).unwrap_or(false);
                 let mut content = serde_json::json!({
                     "name": name.clone(),
                     "path": path_str.clone(),
                     "size": expected_size,
                     "sha256": cid.clone(),
                     "subtype": subtype,
+                    "sticker": sticker,
                 });
                 if subtype == "image" {
                     file::attach_image_size(&mut content, std::path::Path::new(&path_str));
@@ -703,7 +709,7 @@ async fn handle_relay_chunk(
                     conv_id: from.clone(),
                     sender_id: from.clone(),
                     receiver_id: state.device_id.clone(),
-                    kind: "file".to_string(),
+                    kind: if subtype == "image" || sticker { "image" } else { "file" }.to_string(),
                     content,
                     ts: db::now_ms(),
                     seq,

@@ -306,8 +306,8 @@
             "FileDone 必须带 attempt —— 陈旧完成帧会把这一轮刚开头的传输判成\"未完成\"并打死"
         );
         assert!(
-            code_flat(&rust_fn_body(file, "pub async fn send_file_from_path_at("))
-                .contains("from_bytes:resume_from,attempt,}"),
+            code_flat(&rust_fn_body(file, "pub async fn send_file_from_path_at_with_sticker("))
+                .contains("from_bytes:resume_from,attempt,sticker,}"),
             "FileOffer 必须带 attempt（它是接收端设定当前轮次的唯一来源）"
         );
         // ② 轮次必须门控，且必须来自**持久化**的 attempts
@@ -1178,6 +1178,10 @@ fn clear_chat_data_covers_every_table_or_says_why_not() {
         (
             "favorites",
             "用户 2026-10-31 决策：普通清理保留收藏；要删必须走独立、明确、有告知的操作（A3/F-CLR-01）",
+        ),
+        (
+            "custom_stickers",
+            "用户 2026-11-28 决策：清除聊天数据保留本机表情库；删除表情走表情面板的显式操作",
         ),
     ];
     for (t, why) in exempt {

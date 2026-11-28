@@ -1221,8 +1221,8 @@ fn every_early_migration_column_check_goes_through_ensure_column() {
     let prod = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
     assert_eq!(
         prod.matches("ensure_column(").count(),
-        6,
-        "一处定义 + 五处调用（v1→v2 / v2→v3 / v3→v4 / v4→v5 / v15→v16）"
+        9,
+        "一处定义 + 八处调用（v1→v2 / v2→v3 / v3→v4 / v4→v5 / v15→v16 / v17→v18 三列）"
     );
     for bad in [
         "skip {col}",
@@ -1503,6 +1503,32 @@ fn transfer_column_names(conn: &Connection) -> Vec<String> {
 }
 
 #[test]
+fn v17_to_v18_adds_sticker_columns_to_a_real_v17_shape() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_transfers (id TEXT PRIMARY KEY);
+         CREATE TABLE file_outbox (transfer_id TEXT PRIMARY KEY);
+         CREATE TABLE group_files (transfer_id TEXT PRIMARY KEY);
+         PRAGMA user_version = 17;",
+    )
+    .unwrap();
+    run_migrations(&conn, 17).expect("v17→v18 必须成功");
+    for table in ["file_transfers", "file_outbox", "group_files"] {
+        let sql = format!("PRAGMA table_info({table})");
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            columns.iter().any(|c| c == "sticker"),
+            "{table} 缺 sticker 列"
+        );
+    }
+}
+
+#[test]
 fn v11_to_v12_adds_cancel_terminal_without_touching_existing_rows() {
     // ① 新装用户：SCHEMA 那份就该有这一列
     let fresh = Connection::open_in_memory().unwrap();
@@ -1534,11 +1560,11 @@ fn v11_to_v12_adds_cancel_terminal_without_touching_existing_rows() {
     )
     .unwrap();
     let mut want = transfer_column_names(&fresh);
-    want.retain(|c| c != "cancel_terminal");
+    want.retain(|c| c != "cancel_terminal" && c != "sticker");
     assert_eq!(
         transfer_column_names(&conn),
         want,
-        "本用例手抄的 v11 形状 ≠ 新 SCHEMA 去掉 cancel_terminal ⇒ SCHEMA 改过了，这里要一起改"
+        "本用例手抄的 v11 形状 ≠ 新 SCHEMA 去掉 cancel_terminal/sticker ⇒ SCHEMA 改过了，这里要一起改"
     );
 
     // 既有行：一条自动失败（必须还能续传）、一条已完成（终态不许被动）
@@ -3126,7 +3152,11 @@ fn v16_to_v17_backfills_todo_tags_and_enforces_unique_constraint() {
     drop(conn);
 
     let conn = init(&path).expect("re-init v16 db");
-    assert_eq!(read_user_version(&conn), 17, "v16 旧库应升到 17");
+    assert_eq!(
+        read_user_version(&conn),
+        DB_VERSION,
+        "v16 旧库应升到当前 DB_VERSION"
+    );
     // 回填：`bug` 与 `Bug` 按小写判等只留一行，关联 2 行、候选池 2 行，写法保留首次的 `Bug`。
     let assoc: i64 = conn
         .query_row(

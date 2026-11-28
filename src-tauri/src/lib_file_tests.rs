@@ -105,7 +105,7 @@ fn no_whole_file_scan_before_the_file_bubble() {
     // 视图读"一个家"`network::file_src_for_guards()`（2026-10-07 file.rs 按角色切成 include! 分册）：
     // 读单个文件只会看见主册 ⇒ 形状守卫对分册失明（假绿形状）。登记对账由 lib_source_view_tests 第四个用例钉两侧。
     let file = &crate::network::file_src_for_guards();
-    let body = rust_fn_body(file, "pub async fn send_file_from_path_at(");
+    let body = rust_fn_body(file, "pub async fn send_file_from_path_at_with_sticker(");
     assert!(
         body.contains("spawn_blocking"),
         "整文件哈希必须在阻塞线程池：占住 async worker 会连带拖慢其它传输"
@@ -597,7 +597,7 @@ fn already_have_shortcut_shares_the_send_finalization() {
         "1 处定义 + 2 处调用（stream_file 成功回执 / Offer 的 received≥size 捷径）。\
              少于 3 = 又出现一条「发送成功却没落终态」的出口 —— 用户看到的是文件气泡一直转圈"
     );
-    let arm = rust_fn_body(file, "pub async fn send_file_from_path_at(");
+    let arm = rust_fn_body(file, "pub async fn send_file_from_path_at_with_sticker(");
     // 「对方已收完」用 n == size（恰好等于声明大小）；n > size 是旧/脏台账，走另一条
     // RESUME_OFFSET_STALE 分支整份重发，不能再当 AlreadyHave（否则用户拿到旧字节）。
     let at = arm

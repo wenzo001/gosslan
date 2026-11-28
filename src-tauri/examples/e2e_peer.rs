@@ -658,6 +658,7 @@ async fn main() {
             from_seq: 0,
             from_bytes: 0,
             attempt: None,
+            sticker: false,
         },
     )
     .await;
@@ -796,6 +797,7 @@ async fn main() {
                 from_seq: 0,
                 from_bytes: 0,
                 attempt: None,
+                sticker: false,
             },
         )
         .await;
@@ -888,6 +890,7 @@ async fn main() {
                 todo_id: String::new(),
                 // 模拟**旧端**发送：不带轮次 ⇒ 接收端走 attempt=None 的兼容老路。
                 attempt: None,
+                sticker: false,
             },
         )
         .await;

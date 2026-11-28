@@ -1241,6 +1241,16 @@ watch(emojiOpen, () => {
   if (emojiOpen.value) autoResize();
 });
 
+function sendSticker(stickerId: string) {
+  const convId = props.convId;
+  closeEmoji();
+  if (!convId) return;
+  void chat.sendStickerTo(convId, stickerId);
+  void nextTick(() => {
+    if (document.activeElement !== editorRef.value) editorRef.value?.focus();
+  });
+}
+
 /** 把表情作为原子 token 插入输入框 caret 处（contentEditable=false，退格/选区整体删除，
  *  与 @mention token 同一机制）；caret 不在编辑器内则追加末尾。 */
 function insertEmoji(e: string) {
@@ -1648,7 +1658,7 @@ async function onPaste(e: ClipboardEvent) {
               @open-auto-focus.prevent
               @close-auto-focus.prevent
             >
-              <EmojiPicker :open="emojiOpen" @select="insertEmoji" @close="closeEmoji" />
+              <EmojiPicker :open="emojiOpen" mode="compose" @select="insertEmoji" @send-sticker="sendSticker" @close="closeEmoji" />
             </PopoverContent>
           </PopoverPortal>
         </PopoverRoot>

@@ -184,6 +184,18 @@ pub async fn send_file_from_path_at(
     from_seq: u32,
     from_bytes: u64,
 ) -> Result<(), SendFileError> {
+    send_file_from_path_at_with_sticker(state, peer_id, transfer_id, path, from_seq, from_bytes, false).await
+}
+
+pub async fn send_file_from_path_at_with_sticker(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transfer_id: &str,
+    path: PathBuf,
+    from_seq: u32,
+    from_bytes: u64,
+    sticker: bool,
+) -> Result<(), SendFileError> {
     // 文件名从**原始 path**取：活文件快照会被命名成 <tid>.bin，不能用它当展示名。
     let name = path
         .file_name()
@@ -337,6 +349,9 @@ pub async fn send_file_from_path_at(
         ) {
             crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
         }
+        if let Err(e) = db::set_transfer_sticker(&dbc, transfer_id, sticker) {
+            crate::logging::log_write_failure(&state.logger, "set_transfer_sticker", e);
+        }
         // 内容索引（ADR-0019 Phase 3）：按 cid 记录"本机持有这份完整字节"，
         // 之后任何人发 ContentRequest 都能直接回发（拥有即授权，无需确认）。
         let now = db::now_ms();
@@ -395,6 +410,7 @@ pub async fn send_file_from_path_at(
                 from_seq: 0,
                 from_bytes: resume_from,
                 attempt,
+                sticker,
             };
             if let Err(e) = try_send(state, peer_id, &offer).await {
                 state

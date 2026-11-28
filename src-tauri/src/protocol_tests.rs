@@ -1740,6 +1740,61 @@ mod tests {
     }
 
     #[test]
+    fn sticker_flag_defaults_false_and_roundtrips_for_all_offers() {
+        let legacy_file = serde_json::json!({
+            "type": "file_offer", "transfer_id": "t", "from": "p", "name": "a.png",
+            "size": 1, "sealed_file_key": "k", "file_sha256": "h"
+        });
+        match serde_json::from_value::<Message>(legacy_file).unwrap() {
+            Message::FileOffer { sticker, .. } => assert!(!sticker),
+            other => panic!("期望 FileOffer，实得 {other:?}"),
+        }
+        let legacy_relay = serde_json::json!({
+            "type": "relay_file_offer", "transfer_id": "t", "from": "p", "to": "me",
+            "name": "a.png", "size": 1, "total_chunks": 1, "chunk_size": 1,
+            "sealed_file_key": "k", "file_sha256": "h"
+        });
+        match serde_json::from_value::<Message>(legacy_relay).unwrap() {
+            Message::RelayFileOffer { sticker, .. } => assert!(!sticker),
+            other => panic!("期望 RelayFileOffer，实得 {other:?}"),
+        }
+        let legacy_group = serde_json::json!({
+            "type": "group_file_offer", "transfer_id": "t", "group_id": "g", "sender_id": "p",
+            "name": "a.png", "size": 1, "sha256": "h", "sealed_file_key": "k"
+        });
+        match serde_json::from_value::<Message>(legacy_group).unwrap() {
+            Message::GroupFileOffer { sticker, .. } => assert!(!sticker),
+            other => panic!("期望 GroupFileOffer，实得 {other:?}"),
+        }
+
+        let offers = [
+            Message::FileOffer {
+                transfer_id: "t".into(), from: "p".into(), name: "a.png".into(), size: 1,
+                sealed_file_key: "k".into(), file_sha256: "h".into(), from_seq: 0,
+                from_bytes: 0, attempt: None, sticker: true,
+            },
+            Message::RelayFileOffer {
+                transfer_id: "t".into(), from: "p".into(), to: "me".into(), name: "a.png".into(),
+                size: 1, total_chunks: 1, chunk_size: 1, sealed_file_key: "k".into(),
+                file_sha256: "h".into(), sticker: true,
+            },
+            Message::GroupFileOffer {
+                transfer_id: "t".into(), group_id: "g".into(), sender_id: "p".into(),
+                name: "a.png".into(), size: 1, sha256: "h".into(), sealed_file_key: "k".into(),
+                scope: "chat".into(), todo_id: String::new(), attempt: None, sticker: true,
+            },
+        ];
+        for offer in offers {
+            let json = serde_json::to_string(&offer).unwrap();
+            let back = serde_json::from_str::<Message>(&json).unwrap();
+            match back {
+                Message::FileOffer { sticker, .. } | Message::RelayFileOffer { sticker, .. } | Message::GroupFileOffer { sticker, .. } => assert!(sticker),
+                other => panic!("期望文件 Offer，实得 {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn recall_verdict_covers_author_conversation_and_window() {
         let now = 1_000_000;
         let author = RecallAuthority::Author;

@@ -1357,6 +1357,8 @@ pub struct AppState {
     ///
     /// 自己发的媒体是"用户明确给过的东西"，与收藏同一档：只计入占用、不参与自动清理。
     pub sent_dir: PathBuf,
+    /// 自定义表情库原件与缩略图（app_data/stickers），不参与缓存清理。
+    pub stickers_dir: PathBuf,
     /// SQLite 数据库文件路径（存储页展示占用用；含 -wal/-shm 伴生文件）。
     pub db_path: PathBuf,
     /// 应用级运行日志（内存 ring buffer + 落盘文件），供「运行日志」页读取与排查。
@@ -2295,6 +2297,9 @@ impl AppState {
         // 自己发出的媒体：独立于 cache/downloads（见字段注释），清理器不碰。
         let sent_dir = app_data.join("sent");
         make_private_dir(&sent_dir)?;
+        let stickers_dir = app_data.join("stickers");
+        make_private_dir(&stickers_dir)?;
+        make_private_dir(&stickers_dir.join("thumbs"))?;
 
         // 多开支持：`--instance N`（或环境变量 GOSSLAN_INSTANCE）→ 独立数据库 / 端口 / 设备指纹
         let instance = instance_id();
@@ -2320,8 +2325,40 @@ impl AppState {
             // 验不过就原地留着 pending、主库不动 —— 宁可这次不恢复，也不换一个打不开的库。
             match restore_pending_is_trustworthy(&pending_restore) {
                 Ok(()) => {
-                    let bak = swap_in_pending_restore(&db_path, &pending_restore)?;
-                    eprintln!("[backup] 已从备份恢复主库（现库留作 {}）", bak.display());
+                    if crate::commands::restore_journal_matches_pending(&db_path, &pending_restore)?
+                    {
+                        // v2 的表情必须先于换库提交；换库失败则精确回滚，不能出现新库指向旧表情。
+                        let has_staging = crate::commands::pending_staging_path(&db_path).exists();
+                        let old_stickers = if has_staging {
+                            crate::commands::commit_staged_stickers(&db_path).map_err(|why| {
+                                StartupError::BackupRestore {
+                                    context: format!("提交恢复表情失败：{why}"),
+                                }
+                            })?
+                        } else {
+                            None
+                        };
+                        match swap_in_pending_restore(&db_path, &pending_restore) {
+                            Ok(bak) => {
+                                crate::commands::finalize_staged_stickers(&db_path);
+                                if let Some(old) = old_stickers {
+                                    let _ = std::fs::remove_dir_all(old);
+                                }
+                                eprintln!(
+                                    "[backup] 已从备份恢复主库（现库留作 {}）",
+                                    bak.display()
+                                );
+                            }
+                            Err(e) => {
+                                crate::commands::rollback_staged_stickers(&db_path, old_stickers);
+                                return Err(Box::new(e));
+                            }
+                        }
+                    } else {
+                        eprintln!(
+                            "[backup] 待恢复文件与表情 journal 不属于同一批，本次不替换主库；请重新导入备份"
+                        );
+                    }
                 }
                 // 验不过就原地留着 pending、主库不动 —— 宁可这次不恢复，也不换一个打不开的库。
                 Err(why) => {
@@ -2329,6 +2366,9 @@ impl AppState {
                 }
             }
         }
+        // 崩溃可能发生在「pending 已换成主库」与「journal finalize」之间；此时 pending
+        // 已不存在，只在 committed journal 上补做收尾，绝不能再次触碰主库或表情。
+        crate::commands::finalize_orphaned_staged_stickers(&db_path);
         // 必须在 `db::init` **之前**取：init 会把不存在的文件创建出来、写出 schema，
         // 之后再 stat 永远 > 0 —— 那个读数**不能**用来判「主库是否可用」。
         // 返回值同时供两处用：`db_preexisting` 只进日志，`pre_init_bytes` 决定
@@ -2685,6 +2725,7 @@ impl AppState {
             cache_dir,
             favorites_dir,
             sent_dir,
+            stickers_dir,
             db_path,
             logger,
             previous_exit,

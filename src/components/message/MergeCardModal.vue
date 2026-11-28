@@ -24,6 +24,7 @@ import { IMAGE_PREVIEW_MAX_BYTES } from "@/utils/filePreview";
 import { sleep } from "@/utils/defer";
 import { fmtConversationTime } from "@/utils/time";
 import { mediaCid, mediaName, mergeItemLine, parseMergePayload, type MergedItem } from "@/utils/mergeCard";
+import { isStickerMeta, parseFileMeta } from "@/utils/fileMeta";
 
 const props = defineProps<{
   open: boolean;
@@ -32,6 +33,7 @@ const props = defineProps<{
   senderId?: string;
 }>();
 const emit = defineEmits<{ (e: "close"): void }>();
+const isSticker = (item: MergedItem) => isStickerMeta(parseFileMeta(item.content));
 
 const parsed = computed(() => parseMergePayload(props.content));
 const items = computed(() => parsed.value?.items ?? []);
@@ -239,8 +241,9 @@ onBeforeUnmount(() => {
               <img
                 loading="lazy" decoding="async"
                 :src="imageSlots[i]?.url"
-                class="mx-auto block max-h-64 max-w-full rounded-[var(--gosslan-radius-lg)] object-contain"
-                :alt="t('msg.imageMessage')"
+                class="mx-auto block rounded-[var(--gosslan-radius-lg)] object-contain"
+                :class="isSticker(it) ? 'max-h-[168px] max-w-[168px]' : 'max-h-64 max-w-full'"
+                :alt="isSticker(it) ? t('sticker.preview') : t('msg.imageMessage')"
               />
             </button>
             <div

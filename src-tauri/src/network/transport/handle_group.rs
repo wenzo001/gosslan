@@ -173,6 +173,7 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             scope,
             todo_id,
             attempt,
+            sticker,
         } => {
             handle_group_file_offer(
                 state,
@@ -187,6 +188,7 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
                 scope,
                 todo_id,
                 attempt,
+                sticker,
             )
             .await;
         }

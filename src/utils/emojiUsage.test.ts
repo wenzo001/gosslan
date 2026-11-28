@@ -189,15 +189,17 @@ test("常用计数挂在面板自己那一次 select 上（不是某个调用点
  * （「下面表情不随上面常用变化」）⇒ 现在常用与矩阵是同一序列的前后两段、同一表情会出现两格，
  * 那条"摘走"的老写法反而会让上面那四条 `pickerCells` 判据红。
  */
-test("面板只有一块八列网格，常用与矩阵是同一个 cells 序列的前后两段", () => {
-  // ⚠️ 分母只数**真挂到 class 上**的那个：组件里 `COLS` 那行注释也写着 `grid-cols-8`，
-  // 拿裸字符串数会得到 2 —— 那条红量的是我自己的注释，不是布局。
+test("两个页签各一块八列网格，键盘步长与当前网格一致", () => {
   const grids = [...PICKER.matchAll(/class="[^"]*?grid-cols-(\d+)/g)];
-  assert.equal(grids.length, 1, `出现 ${grids.length} 个网格 class ⇒ 键盘步长 COLS 会对不上真实布局`);
+  assert.equal(grids.length, 2, `系统表情与自定义表情应各一块网格，实测 ${grids.length}`);
   const cols = PICKER.match(/const COLS = (\d+)/);
   assert.ok(cols, "找不到 COLS 常数 ⇒ 上面那条判据的落点没了，判据要跟着改");
-  assert.equal(Number(cols[1]), Number(grids[0][1]), "COLS 与模板里的列数不同步 ⇒ 上下键跳错行");
-  assert.match(PICKER, /v-for="\(e, i\) in cells"/, "格子不是从统一的 cells 序列渲染 ⇒ 两段各画一份");
+  for (const grid of grids) {
+    assert.equal(Number(cols[1]), Number(grid[1]), "COLS 与模板里的列数不同步 ⇒ 上下键跳错行");
+  }
+  assert.match(PICKER, /v-for="\(e, i\) in cells"/, "系统表情不是从统一的 cells 序列渲染 ⇒ 两段各画一份");
+  assert.match(PICKER, /v-for="sticker in visibleStickers"/, "自定义表情没有独立网格");
+  assert.match(PICKER, /querySelectorAll<HTMLButtonElement>\("button\[data-emoji-cell\]"\)/, "键盘收集把页签按钮也算进格子 ⇒ 步长会错");
   assert.equal(
     PICKER.includes(String.raw`v-for="e in EMOJIS"`),
     false,
@@ -234,10 +236,12 @@ test("两段都有小标题：常用那一节可消失、全部表情那一节�
   // `t("emoji.frequent")` 在脚本里也出现一次（读屏标签「常用 · [微笑]」），
   // 拿裸串去 indexOf 会先撞上那一处，切出来的"元素"根本不是标题。
   for (const key of ["emoji.frequent", "emoji.all"]) {
-    const at = PICKER.indexOf(`{{ t("${key}") }}`);
-    assert.ok(at >= 0, `${key} 没有作为标题插值出现`);
+    const anchor = key === "emoji.all" ? "data-emoji-all-title" : `{{ t("${key}") }}`;
+    const at = PICKER.indexOf(anchor);
+    assert.ok(at >= 0, `${key} 没有作为标题锚点出现`);
     const start = PICKER.lastIndexOf("<", at);
-    const tag = PICKER.slice(start, at);
+    const end = PICKER.indexOf(">", at);
+    const tag = PICKER.slice(start, end + 1);
     assert.ok(/^<div\b/.test(tag), `${key} 的标题元素不是 div ⇒ 它可能算进 buttons() 的下标`);
     assert.ok(/col-span-8/.test(tag), `${key} 的标题没占满一整行`);
   }

@@ -7,10 +7,11 @@ import {
   IMAGE_BUBBLE_HEIGHT,
   codeBlockHeight,
   imageBubbleHeight,
+  stickerBubbleBox,
   shouldShowTimeDivider,
   textBubbleHeight,
 } from "@/utils/previewMetrics";
-import { parseFileMeta } from "@/utils/fileMeta";
+import { isStickerMeta, parseFileMeta } from "@/utils/fileMeta";
 // 可见图片数的唯一家（卡片画几张、这里按几行估高，同一个常量）
 import { TODO_CARD_IMAGE_VISIBLE } from "@/utils/todos";
 import type { FontSizeKey } from "@/utils/chatStyle";
@@ -213,6 +214,7 @@ function computeBubbleHeight(
       return codeBlockHeight(m.content);
     case "image": {
       const meta = parseFileMeta(m.content);
+      if (isStickerMeta(meta)) return stickerBubbleBox(meta?.w, meta?.h).height;
       return meta?.w && meta?.h ? imageBubbleHeight(meta.w, meta.h) : IMAGE_BUBBLE_HEIGHT;
     }
     case "file": {

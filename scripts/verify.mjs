@@ -1081,6 +1081,17 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--round=dmreaction"],
     },
+    {
+      group: "local",
+      name: "双实例 E2E：自定义表情必须跨进程保留 sticker 身份与原始字节",
+      why: `自定义表情复用图片通道，但 sticker 标记必须穿过 file_outbox → FileOffer → 接收台账 → FileDone。`
+        + `这一轮在真实双进程链路里入队一张 PNG，判 B 侧恰好一条 image 消息、subtype=image、sticker=true、`
+        + `摘要与源一致、接收台账 done 且 sticker=1、A 侧 done 且 outbox 清零、最终路径不是 .part。`
+        + `反向 --round=sticker-lie 只翻判据读的期望摘要，预置与时序一字不动。每轮条数由 check-doc-numbers 现算。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=sticker"],
+    },
   );
   steps.push(
     {

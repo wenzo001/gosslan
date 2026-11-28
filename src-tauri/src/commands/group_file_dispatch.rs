@@ -233,6 +233,11 @@ async fn dispatch_group_file_to_peer(
         scope: gf.scope.clone(),
         todo_id: gf.todo_id.clone(),
         attempt: send_attempt,
+        sticker: crate::db::group_file_is_sticker(
+            &state.db.lock().unwrap_or_else(|e| e.into_inner()),
+            transfer_id,
+        )
+        .unwrap_or(false),
     };
     // Offer 也要吃一个期限（10-22 审计 R-10）：下面整段流式发送被 `timeout(deadline, …)` 罩着，
     // 而这一次 `send_on_link` 在罩外 —— 队列满（对端一直不收）时它没有上限地等下去，

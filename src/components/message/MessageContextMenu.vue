@@ -34,6 +34,7 @@ const props = defineProps<{
   canRevealFile?: boolean;
   /** 自己发的、可提醒的消息 —— 显示「强提醒」入口 */
   canRemind?: boolean;
+  canAddSticker?: boolean;
   x: number;
   y: number;
   kind: MsgKind;
@@ -65,6 +66,7 @@ const emit = defineEmits<{
   (e: "pin"): void;
   (e: "forward"): void;
   (e: "favorite"): void;
+  (e: "add-sticker"): void;
   (e: "cancel-send"): void;
   /** 对本条消息发起强提醒（群聊由 MessageItem 再弹受众选择）。 */
   (e: "remind"): void;
@@ -200,6 +202,10 @@ const hasCopyOps = computed(
     <DropdownMenuItem v-if="favoritable(kind)" class="gosslan-menu-item" @select="emit('favorite')">
       <Icon name="star" />
       {{ t("favorite.add") }}
+    </DropdownMenuItem>
+    <DropdownMenuItem v-if="canAddSticker" class="gosslan-menu-item" @select="emit('add-sticker')">
+      <Icon name="smile" />
+      {{ t("sticker.addFromMessage") }}
     </DropdownMenuItem>
     <!-- 强提醒：对自己发的消息点名提醒对方（私聊默认对方；群聊由外层再选受众） -->
     <DropdownMenuItem v-if="canRemind" class="gosslan-menu-item" @select="emit('remind')">

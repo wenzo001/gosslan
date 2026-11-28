@@ -287,6 +287,18 @@ pub async fn send_group_file(
     todo_id: Option<String>,
     msg_id: Option<String>,
 ) -> Result<String, String> {
+    send_group_file_impl(state, group_id, path, scope, todo_id, msg_id, false).await
+}
+
+pub(crate) async fn send_group_file_impl(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    path: String,
+    scope: Option<String>,
+    todo_id: Option<String>,
+    msg_id: Option<String>,
+    sticker: bool,
+) -> Result<String, String> {
     let s = state.inner();
     // `msg_id` 给了 ⇒ 这是"转发一条已有群文件消息"：路径必须归那条消息（SEC-01 同一判据）。
     // 不给 ⇒ 用户自己挑的文件（对话框授权）或待办图片（本机生成的落盘文件）。
@@ -393,6 +405,7 @@ pub async fn send_group_file(
         };
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
         db::insert_group_file(&tx, &gf).map_err(|e| e.to_string())?;
+        db::set_group_file_sticker(&tx, &transfer_id, sticker).map_err(|e| e.to_string())?;
         for m in &members {
             db::insert_group_file_recipient(&tx, &transfer_id, m).map_err(|e| e.to_string())?;
         }
@@ -450,7 +463,7 @@ pub async fn send_group_file(
         let subtype = file::classify_file_subtype(&name);
         let kind = if subtype == "image" { "image" } else { "file" };
         let content = {
-            let mut c = serde_json::json!({ "name": name, "path": path, "size": size, "sha256": sha256, "subtype": subtype });
+            let mut c = serde_json::json!({ "name": name, "path": path, "size": size, "sha256": sha256, "subtype": subtype, "sticker": sticker });
             if kind == "image" {
                 file::attach_image_size(&mut c, std::path::Path::new(&path));
             }
@@ -504,7 +517,9 @@ pub async fn send_group_file(
             let group_name = db::get_group(&dbc, &group_id)
                 .map(|g| g.name)
                 .unwrap_or_default();
-            let preview = if kind == "image" {
+            let preview = if sticker {
+                "[表情]".to_string()
+            } else if kind == "image" {
                 "[图片]".to_string()
             } else {
                 format!("[群文件] {name}")
@@ -568,6 +583,7 @@ pub async fn send_group_file(
             scope: scope.clone(),
             todo_id: todo_id.clone(),
             attempt: None,
+            sticker,
         };
         // 这里**不写 `sending`**：投递任务可能还在并发闸（`group_file_permits`）后面排队，
         // 提前写 sending 会让 10 分钟的 stale-sending 清扫器把排队成员当卡死重投

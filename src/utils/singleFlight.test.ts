@@ -75,7 +75,7 @@ test("remove 只摘那一个键，reset 清全部", async () => {
   assert.equal(await fly.run("a", async () => "a-again"), "a-again");
 });
 
-test("公共层不许再手抄单飞：这六行在 src/utils 下只有一个家", () => {
+test("公共层不许再手抄单飞：这些入口在 src/utils 下只有一个家", () => {
   // 只量**公共层**这一维：utils 是别人要复用的地方，那里出现第二份实现就等于下一个需求又抄一遍。
   // store 里还有两处同形状的表（useChatStore 的 groupTodoRowsInflight / loadingMore），
   // 它们不在这一维上 —— 是否要挪进 helper 得先证明行为等价，已登记成下一批，不在这里糊过去。
@@ -107,9 +107,10 @@ test("公共层不许再手抄单飞：这六行在 src/utils 下只有一个家
   // 所以这里数的是「所有走 helper 的地方」，新增消费者必须同批改这个分母。
   // 2026-10-28 新增第 6 处：群文件投递摘要的 TTL 缓存（审计 P1 #19：滚动回收后重挂
   // 不再重复打 `get_group_file_delivery_summary`）。
+  // 自定义表情预览复用同一闸门，避免同一张缩略图并发读取。
   assert.equal(
     total,
-    6,
-    `走 helper 的地方应有 6 处（4 预览 + 1 高亮 + 1 群投递摘要），实测 ${total}（${[...wired]}）`,
+    7,
+    `走 helper 的地方应有 7 处（5 预览 + 1 高亮 + 1 群投递摘要），实测 ${total}（${[...wired]}）`,
   );
 });

@@ -214,6 +214,7 @@ mod tests {
             from_seq: 0,
             from_bytes: 0,
             attempt: None,
+            sticker: false,
         };
         assert_eq!(message_priority(&msg), MessagePriority::Normal);
     }

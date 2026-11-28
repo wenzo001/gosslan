@@ -19,7 +19,7 @@ import { resendChannelFor } from "@/utils/resendChannel";
 import { EMPTY_REACTION_CHIPS, EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { localizeQuoteHeader, parseQuote, stripQuoteMsgId } from "@/utils/quote";
 import { QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
-import { parseFileMeta } from "@/utils/fileMeta";
+import { isStickerMeta, parseFileMeta } from "@/utils/fileMeta";
 import { fileFailReasonText } from "@/utils/fileFailReason";
 import { isWindows } from "@/utils/platform";
 import { openLocalFile } from "@/utils/localFile";
@@ -307,6 +307,7 @@ const {
   revealFile,
   canRevealFile,
 } = useMessageFile(() => props.message, () => sendState.value);
+const isSticker = computed(() => props.message.kind === "image" && isStickerMeta(fileMeta.value));
 const { copiedKey, copyContent } = useClipboard();
 
 /**
@@ -894,7 +895,7 @@ async function saveImage() {
 
 /** 引用片段：文本取前 40 字，其它类型用占位标签。 */
 function quoteSnippet(kind: MsgKind, content: string): string {
-  if (kind === "image") return t("msg.image");
+  if (kind === "image") return isStickerMeta(parseFileMeta(content)) ? t("sticker.preview") : t("msg.image");
   if (kind === "code") return t("msg.code");
   if (kind === "file") return t("msg.file");
   // 合并转发：引用它是"引用一张聊天记录卡片"，正文是 JSON，不能截进引用块
@@ -1039,7 +1040,7 @@ const cardLikeBubble = computed(
     props.message.kind === "file" ||
     props.message.kind === "merge" ||
     props.message.kind === "todo" ||
-    props.message.kind === "image",
+    (props.message.kind === "image" && !isSticker.value),
 );
 /**
  * 正文「长文本」画出来的是**卡片配色**：`MessageTextBubble` 在 `clamped` 时把
@@ -1077,6 +1078,7 @@ const stripBorderColor = computed(() => {
   return mine.value ? "transparent" : "var(--gosslan-border)";
 });
 const reactionSurface = computed(() => {
+  if (isSticker.value) return "transparent";
   if (props.message.kind === "code") return app.dark ? CODE_SURFACE.dark : CODE_SURFACE.light;
   if (cardLikeBubble.value || textUsesCardSurface.value) {
     return String(cardStyle.value["--bubble-bg"] ?? "var(--gosslan-card)");
@@ -1386,6 +1388,17 @@ function doFavorite() {
   emit("favorite");
 }
 
+async function addToStickers() {
+  closeActionSheet();
+  closeContextMenu();
+  try {
+    await api.addStickerFromMessage(props.message.msg_id);
+    app.toast(t("sticker.added"), "success");
+  } catch (e) {
+    app.toastError(e, t("sticker.addFail"));
+  }
+}
+
 /**
  * 进入多选模式（微信式批量操作）。
  *
@@ -1577,6 +1590,10 @@ async function retrySend() {
       // 重发被如实拒绝（已送达/状态已变）或入队失败：说原因，不静默。
       app.toastError(e, t("msg.resendFail"));
     }
+    return;
+  }
+  if (isSticker.value) {
+    await chat.forwardStickerTo(msg.conv_id, msg.msg_id);
     return;
   }
   // 文件与图片**只能回到造它们的那条通道**（`send_file_auto` / `send_group_file`）。
@@ -1929,6 +1946,7 @@ async function copyFileToClipboard() {
             >
               <EmojiPicker
                 :open="reactionPickerOpen"
+                mode="react"
                 @select="onReactionPick"
                 @close="closeReactionPicker"
               />
@@ -2064,7 +2082,7 @@ async function copyFileToClipboard() {
                —— 光标保持默认、没有 hover、也不进 Tab 序（2026-11-10 用户：
                「自己发的图片，假设坏掉了，也不应该有什么点击重试这种」）。 -->
           <button
-            v-else-if="message.kind === 'image' && attachmentMissing"
+            v-else-if="message.kind === 'image' && attachmentMissing && !isSticker"
             type="button"
             class="flex w-52 flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-caption text-[var(--gosslan-text-2)] transition focus-visible:outline-none"
             :class="[
@@ -2081,6 +2099,19 @@ async function copyFileToClipboard() {
                  向它要一份既拿不到原图也没有意义。自己这一支只说清「为什么看不见了」。 -->
             <span class="opacity-70">{{ mine ? t("msg.imageCleanedMineHint") : t("msg.imageReRequest") }}</span>
           </button>
+
+          <MessageImageBubble
+            v-else-if="message.kind === 'image' && isSticker"
+            :class="mine ? 'self-end' : 'self-start'"
+            appearance="sticker"
+            :src="imageDataUrl"
+            :mine="mine"
+            :width="fileMeta?.w"
+            :height="fileMeta?.h"
+            @open="openImageLightbox"
+            @refetch="refetchContent"
+            @content-inset="imageContentInset = $event"
+          />
 
           <!-- 图片 -->
           <MessageImageBubble
@@ -2319,6 +2350,8 @@ async function copyFileToClipboard() {
     :pinned="!!pinned"
     :can-cancel-send="canCancelSend"
     :can-remind="canRemindEntry"
+    :can-add-sticker="message.kind === 'image'"
+    @add-sticker="addToStickers"
     @pin="emit('pin')"
     @recall="doRecall"
     @render="doRender"
@@ -2367,6 +2400,13 @@ async function copyFileToClipboard() {
         >
           <Icon name="save" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
           {{ t("common.saveImage") }}
+        </button>
+        <button
+          class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          @click="addToStickers"
+        >
+          <Icon name="smile" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          {{ t("sticker.addFromMessage") }}
         </button>
       </template>
       <template v-if="message.kind === 'file'">

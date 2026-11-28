@@ -6,6 +6,7 @@ import {
   isKnownKind,
 } from "./messageKinds.ts";
 import { mergeSummary } from "./mergeCard.ts";
+import { isStickerMeta, parseFileMeta } from "./fileMeta.ts";
 import { isSupersededProjection } from "./optimistic.ts";
 import { localizeQuoteHeader } from "./quote.ts";
 import { t } from "../i18n/index.ts";
@@ -525,6 +526,7 @@ export function syncProfileFromPeers(
 export const PREVIEW_LABEL_KEYS = {
   file: "msg.file",
   image: "msg.image",
+  sticker: "sticker.preview",
   code: "msg.code",
   merge: "msg.preview.merge",
   todo: "msg.preview.todo",
@@ -544,7 +546,7 @@ export function previewBody(kind: string, content: string, textLimit = 30): stri
     case "file":
       return t(PREVIEW_LABEL_KEYS.file);
     case "image":
-      return t(PREVIEW_LABEL_KEYS.image);
+      return isStickerMeta(parseFileMeta(content)) ? t(PREVIEW_LABEL_KEYS.sticker) : t(PREVIEW_LABEL_KEYS.image);
     case "code":
       return t(PREVIEW_LABEL_KEYS.code);
     // 合并转发：卡片是 JSON，截前 30 字符会得到 '{"title":"群聊的聊天记录"' 这种东西。

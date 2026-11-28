@@ -568,6 +568,7 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
             chunk_size,
             sealed_file_key,
             file_sha256,
+            sticker,
         } => {
             handle_relay_file_offer(
                 state,
@@ -581,6 +582,7 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
                 chunk_size,
                 sealed_file_key,
                 file_sha256,
+                sticker,
             )
             .await;
         }

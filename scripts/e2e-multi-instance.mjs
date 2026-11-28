@@ -250,6 +250,7 @@ const GFILE = ROUND === "gfile" || ROUND === "gfile-lie";
 /// 1:1 的表情回应今天只有单元级判据（位图门控、载荷校验、前端接线各自绿），
 /// 而**两个真实进程之间送一条静默事件**从没被判过 —— 这一轮补的就是那一格。
 const DMREACT = ROUND === "dmreaction" || ROUND === "dmreaction-lie";
+const STICKER = ROUND === "sticker" || ROUND === "sticker-lie";
 // §三 点名的「大文件之后继续发送普通消息」与 §五 那张"文件层失败/走完都不许波及消息层"。
 // 默认轮的顺序是**先文本（J1）再文件（J2）** ⇒ 它判的是"文件之前聊天能用"，
 // 从来没有一条判据把那条文本放到**一份文件走完之后**再投。这一轮补的就是那一半。
@@ -285,6 +286,7 @@ import * as group from "./e2e/rounds/group.mjs";
 import * as task from "./e2e/rounds/task.mjs";
 import * as posttext from "./e2e/rounds/posttext.mjs";
 import * as dmreact from "./e2e/rounds/dmreact.mjs";
+import * as sticker from "./e2e/rounds/sticker.mjs";
 import * as chain from "./e2e/rounds/chain.mjs";
 import * as late from "./e2e/rounds/late.mjs";
 import * as lanoff from "./e2e/rounds/lanoff.mjs";
@@ -608,6 +610,7 @@ step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一
 // 旅程轮的**本体**（起实例之后跑；顺序就是这里的顺序，判据在各分册里）：
 // 单聊表情 → 续发 → 任务 → 群聊。
 if (DMREACT) await dmreact.run();
+if (STICKER) await sticker.run();
 if (POSTTEXT) await posttext.run();
 if (TASK) await task.run();
 if (GROUP) await group.run();

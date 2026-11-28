@@ -14,6 +14,20 @@ export interface ImageBox {
   cover: boolean;
 }
 
+export const STICKER_BUBBLE_MAX = 168;
+
+export function stickerBubbleBox(w?: number | null, h?: number | null): ImageBox {
+  if (!w || !h || w <= 0 || h <= 0) {
+    return { width: STICKER_BUBBLE_MAX, height: STICKER_BUBBLE_MAX, cover: false };
+  }
+  const scale = STICKER_BUBBLE_MAX / Math.max(w, h);
+  return {
+    width: Math.max(1, Math.round(w * scale)),
+    height: Math.max(1, Math.round(h * scale)),
+    cover: false,
+  };
+}
+
 export function clampImageBox(
   w: number,
   h: number,

@@ -689,6 +689,7 @@ test("跨语言契约：会话预览的固定文案两侧一致（DUP-12）", ()
   const rsLabels = [
     ...new Set([
       ...[...rsBody.matchAll(/=> "(\[[^\]]{1,8}\])"(?:\.to_string\(\))?/g)].map((m) => m[1]),
+      ...[...rsBody.matchAll(/"(\[[^\]]{1,8}\])"\.to_string\(\)/g)].map((m) => m[1]),
       unsupported,
     ]),
   ].sort();

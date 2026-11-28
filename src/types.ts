@@ -307,6 +307,8 @@ export interface FileMeta {
   size: number;
   /** 后端按扩展名分类的附件子类型；历史消息缺省按 file 处理。 */
   subtype: string;
+  /** 自定义表情身份；wire 仍是 image，老端忽略此字段。 */
+  sticker?: boolean;
   /** 内容指纹（= cid，明文 sha256，ADR-0019）。合并转发卡片按它按需拉取；旧版本消息可能没有。 */
   sha256?: string;
   /**
@@ -317,7 +319,24 @@ export interface FileMeta {
   h?: number;
 }
 
-/** 统一内容传输状态（ADR-0019）：前端气泡据此显示发送中/等待/重试/完成。 */export interface ContentTransfer {
+/** 本机自定义表情库条目。 */
+export interface StickerEntry {
+  id: string;
+  sha256: string;
+  path: string;
+  thumbPath: string;
+  name: string;
+  mime: string;
+  width: number;
+  height: number;
+  frameCount: number;
+  size: number;
+  sortAt: number;
+  sourceMsgId: string | null;
+}
+
+/** 统一内容传输状态（ADR-0019）：前端气泡据此显示发送中/等待/重试/完成。 */
+export interface ContentTransfer {
   cid: string;
   peerId: string;
   groupId: string | null;

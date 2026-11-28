@@ -514,6 +514,7 @@ fn build_file_message(
     kind: &str,
     subtype: &str,
     local_id: Option<&str>,
+    sticker: bool,
 ) -> MessageRecord {
     // cid = 明文 sha256，接收方据此按 cid 拉取（ADR-0019 Phase 3）。
     // ⚠️ **这里不计算**：整文件哈希是 O(体积) 的，放在建记录这一步就等于把气泡挡在哈希之后
@@ -526,6 +527,7 @@ fn build_file_message(
         "size": size,
         "sha256": "",
         "subtype": subtype,
+        "sticker": sticker,
     });
     if kind == "image" {
         file::attach_image_size(&mut content, std::path::Path::new(path));
@@ -626,7 +628,7 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
         // 折成空列表本轮就一条都不补发，而日志里什么都没有 ⇒ 用户只看到"文件一直不发"。
         // 这里不改成上抛：调用方是链路事件驱动的补发臂，没有能承接错误的界面，
         // 保持"本轮不补发"的既有行为，只把**这一跳变成可查**。
-        match db::list_pending_file_outbox(&dbc, peer_id) {
+        match db::list_pending_file_outbox_rows(&dbc, peer_id) {
             Ok(rows) => rows,
             Err(e) => {
                 if crate::logging::log_throttled("file_outbox_read_failed", 300_000) {
@@ -650,7 +652,7 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
         // 旧写法把 remove 手写在下面那个循环之后，panic 会跳过它 ⇒ 这个 peer
         // 之后的所有文件永远抢不到槽位，界面只停在「发送中 0%」且不报任何错。
         let _gate = PeerSendGuard::new(&st.file_sending, &peer);
-        for (transfer_id, local_path) in pending {
+        for (transfer_id, local_path, sticker) in pending {
             if !st.has_link(&peer).await {
                 break;
             }
@@ -717,11 +719,14 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
                     continue;
                 }
             }
-            match file::send_file_from_path(
+            match file::send_file_from_path_at_with_sticker(
                 &st,
                 &peer,
                 &transfer_id,
                 std::path::PathBuf::from(local_path),
+                0,
+                0,
+                sticker,
             )
             .await
             {
@@ -1781,6 +1786,7 @@ async fn send_file(
     friend_id: String,
     path: String,
     local_id: Option<String>,
+    sticker: bool,
 ) -> Result<String, String> {
     let s = state.inner();
     // 「和自己聊天」暂不支持附件（用户 2026-09-16：先只支持文本）。这里给明确原因，
@@ -1838,10 +1844,13 @@ async fn send_file(
         kind,
         subtype,
         local_id.as_deref(),
+        sticker,
     );
     // 注意：不能在持有 db 锁时调用 resolve_nickname（其内部会再次锁 db）。
     let nm = resolve_nickname(s, &friend_id);
-    let preview = if kind == "image" {
+    let preview = if sticker {
+        "[表情]".to_string()
+    } else if kind == "image" {
         "[图片]".to_string()
     } else {
         format!("[文件] {name}")
@@ -1884,7 +1893,13 @@ async fn send_file(
                 format!("本机没能登记文件传输：{e}"),
             )
         })?;
-        db::insert_file_outbox(&tx, &transfer_id, &friend_id, None, &path, &name, size).map_err(
+        db::set_transfer_sticker(&tx, &transfer_id, sticker).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                format!("本机没能登记表情标记：{e}"),
+            )
+        })?;
+        db::insert_file_outbox_with_sticker(&tx, &transfer_id, &friend_id, None, &path, &name, size, sticker).map_err(
             |e| {
                 crate::error_codes::coded(
                     crate::error_codes::SEND_LOCAL_WRITE_FAILED,
@@ -1997,7 +2012,16 @@ pub async fn send_file_auto(
             ));
         }
     }
-    send_file(state, friend_id, path, local_id).await
+    send_file(state, friend_id, path, local_id, false).await
+}
+
+pub(crate) async fn send_file_auto_with_sticker(
+    state: State<'_, Arc<AppState>>,
+    friend_id: String,
+    path: String,
+    local_id: Option<String>,
+) -> Result<String, String> {
+    send_file(state, friend_id, path, local_id, true).await
 }
 
 /// 传输表快照（10-22 审计 R-18 的一处）：整读进阻塞池。

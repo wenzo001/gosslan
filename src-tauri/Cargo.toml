@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "7.4.10"
+version = "7.5.0"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -58,15 +58,19 @@ thiserror = "2"
 # `storage/cache_cleaner.rs` 的手写深度栈换成 walkdir（仍不跟随软链），`logging.rs` 的
 # 手写 civil_from_days 换成 time。决策记录：docs/architecture/backend-modernization.md §B8。
 walkdir = "2"
+# 用户全量备份 v2 的单一 tar 容器；此前仅作为间接依赖存在，这里声明直接依赖。
+tar = "0.4"
 time = { version = "0.3", default-features = false, features = ["std", "parsing", "formatting"] }
 socket2 = { version = "0.5", features = ["all"] }
 # `hooks` feature：给 SQLite 装 `sqlite3_progress_handler`（决策 2 的 VACUUM 时间预算靠它
 # 在语句执行途中中止）。它是 `hooks = []` —— 不引入任何新依赖，Cargo.lock 不变。
-rusqlite = { version = "0.31", features = ["bundled", "hooks"] }
+# serialize：v2 在内存中校验并改写恢复库路径，避免先落明文临时库。
+rusqlite = { version = "0.31", features = ["bundled", "hooks", "serialize"] }
 tokio = { version = "1", features = ["full"] }
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
+image = { version = "0.24.9", default-features = false, features = ["png", "gif", "webp"] }
 hostname = "0.3"
 if-addrs = "0.13"
 base64 = "0.22"

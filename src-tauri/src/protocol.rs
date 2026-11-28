@@ -1036,7 +1036,17 @@ pub fn preview_text(kind: &str, content: &str) -> String {
     let kind = display_kind(kind);
     match kind.as_str() {
         "file" => "[文件]".to_string(),
-        "image" => "[图片]".to_string(),
+        "image" => {
+            if serde_json::from_str::<serde_json::Value>(content)
+                .ok()
+                .and_then(|v| v.get("sticker").and_then(|s| s.as_bool()))
+                .unwrap_or(false)
+            {
+                "[表情]".to_string()
+            } else {
+                "[图片]".to_string()
+            }
+        }
         "code" => "[代码]".to_string(),
         "merge" => merge_summary(content),
         "todo" | "todo_update" => todo_preview(content),
@@ -2340,6 +2350,9 @@ pub enum Message {
         /// 见该常量的文档：它存在的唯一理由是"上一轮还堵在链路队列里的分片必须可识别"。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         attempt: Option<u32>,
+        /// 自定义表情身份；老端缺省 false，仍按普通图片处理。
+        #[serde(default)]
+        sticker: bool,
     },
     FileAccept {
         transfer_id: String,
@@ -2477,6 +2490,9 @@ pub enum Message {
         /// `None` = 旧端 / 本字段上线前的发送方 ⇒ 接收端按"当前轮次"处理（与旧行为一致）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         attempt: Option<u64>,
+        /// 自定义表情身份；老端缺省 false，仍按普通图片处理。
+        #[serde(default)]
+        sticker: bool,
     },
     /// 群文件分片。`data` = Base64(nonce || AEAD(file_key, plaintext))，
     /// file_key 仅存在于收发双方内存（AppState.group_file_keys），
@@ -2624,6 +2640,9 @@ pub enum Message {
         chunk_size: u32,
         sealed_file_key: String,
         file_sha256: String,
+        /// 自定义表情身份；老端缺省 false。
+        #[serde(default)]
+        sticker: bool,
     },
     // ---- Phase 8（ADR-0017）：外部 mesh（BitChat）的不透明帧 ----
     /// 外部 mesh 的包：Gosslan **只当中继** —— 收得到 / 去得掉重 / TTL 递减后转发，

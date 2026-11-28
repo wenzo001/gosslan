@@ -19,7 +19,7 @@ use crate::state::{
 /// 建表 / 建索引不需要 step：`init()` 在版本分支**之前**跑 `execute_batch(SCHEMA)`，
 /// 而 SCHEMA 全是 `IF NOT EXISTS` ⇒ 新老库每次启动都会被补齐。
 /// 同一条索引同时写在 SCHEMA 与 MIGRATIONS 里 = 两个家（历史上有过，v8→v9 起收敛）。
-pub const DB_VERSION: u32 = 17;
+pub const DB_VERSION: u32 = 18;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -812,6 +812,33 @@ const MIGRATIONS: &[Migration] = &[
         description: "回填群任务标签关联与候选池（从历史 todo 消息）",
         run: |conn| rebuild_todo_tags_from_messages(conn),
     },
+    Migration {
+        from: 17,
+        to: 18,
+        description: "文件与群文件台账增加自定义表情标记",
+        run: |conn| {
+            let tx = conn.unchecked_transaction()?;
+            ensure_column(
+                &tx,
+                "file_transfers",
+                "sticker",
+                "ALTER TABLE file_transfers ADD COLUMN sticker INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                &tx,
+                "file_outbox",
+                "sticker",
+                "ALTER TABLE file_outbox ADD COLUMN sticker INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                &tx,
+                "group_files",
+                "sticker",
+                "ALTER TABLE group_files ADD COLUMN sticker INTEGER NOT NULL DEFAULT 0",
+            )?;
+            tx.commit()
+        },
+    },
 ];
 
 /// 建表脚本 —— 表结构的**唯一真源**（另有一张 `content` 表由
@@ -1007,6 +1034,7 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     -- 1 = 用户/对端主动取消，终态墓碑：之后的进度/attempt/续传不得把 status 写回 active/done。
     -- 自动超时/重试耗尽仍是 0（保留断点续传的复活能力）。迁移 v11→v12 补列。
     cancel_terminal INTEGER NOT NULL DEFAULT 0,
+    sticker    INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
 -- 传输面板首屏是 `ORDER BY created_at DESC` —— 零索引时每次打开都要全表扫 +
@@ -1032,6 +1060,7 @@ CREATE TABLE IF NOT EXISTS file_outbox (
     status          TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'failed' | 'cancelled'（后者=用户主动取消，见 INV-P26）
     attempts        INTEGER NOT NULL DEFAULT 0,
     next_attempt_at INTEGER NOT NULL,
+    sticker         INTEGER NOT NULL DEFAULT 0,
     created_at      INTEGER NOT NULL
 );
 -- 取某 peer 待投递的文件是「每次建链 / 每次心跳」都跑一遍的读：判据是
@@ -1054,7 +1083,8 @@ CREATE TABLE IF NOT EXISTS group_files (
     status      TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'completed' | 'failed' | 'cancelled'（后者=用户主动取消整条群文件，B2 的硬终态，见 INV-P26）
     created_at  INTEGER NOT NULL,
     scope       TEXT NOT NULL DEFAULT 'chat',      -- 'chat' | 'todo'
-    todo_id     TEXT NOT NULL DEFAULT ''
+    todo_id     TEXT NOT NULL DEFAULT '',
+    sticker     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_group_files_group ON group_files(group_id);
 
@@ -1130,6 +1160,22 @@ CREATE TABLE IF NOT EXISTS favorites (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_favorites_msg  ON favorites(msg_id);
 CREATE INDEX        IF NOT EXISTS idx_favorites_time ON favorites(favorited_at DESC);
+
+CREATE TABLE IF NOT EXISTS custom_stickers (
+    id            TEXT PRIMARY KEY,
+    sha256        TEXT NOT NULL UNIQUE,
+    path          TEXT NOT NULL,
+    thumb_path    TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    mime          TEXT NOT NULL,
+    width         INTEGER NOT NULL,
+    height        INTEGER NOT NULL,
+    frame_count   INTEGER NOT NULL DEFAULT 1,
+    size          INTEGER NOT NULL,
+    sort_at       INTEGER NOT NULL,
+    source_msg_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_custom_stickers_sort ON custom_stickers(sort_at DESC, id DESC);
 
 -- 群任务标签（2026-11-05）：当前关联 + 历史候选池。
 --
@@ -1594,6 +1640,7 @@ include!("db/group_files.rs");
 include!("db/read_receipts.rs");
 
 include!("db/favorites.rs");
+include!("db/stickers.rs");
 
 include!("db/recalls.rs");
 include!("db/pending_recalls.rs");

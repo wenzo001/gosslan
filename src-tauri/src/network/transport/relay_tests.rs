@@ -66,6 +66,7 @@
             total_chunks: 1,
             sealed_file_key: "k".into(),
             file_sha256: "h".into(),
+            sticker: false,
         };
         assert_eq!(directed_relay_target(&offer, me), Some("b"));
         let normal = Message::Heartbeat {

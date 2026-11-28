@@ -229,7 +229,7 @@ async fn relay_push_file(
         crate::logging::FAIL_CODE_FILE_SEND_READ_FAILED.to_string()
     })?;
 
-    {
+    let sticker = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = db::upsert_transfer(
             &dbc,
@@ -244,7 +244,8 @@ async fn relay_push_file(
         ) {
             crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
         }
-    }
+        db::transfer_is_sticker(&dbc, transfer_id).unwrap_or(false)
+    };
 
     let offer = Message::RelayFileOffer {
         transfer_id: transfer_id.to_string(),
@@ -257,6 +258,7 @@ async fn relay_push_file(
         chunk_size: chunk_size as u32,
         sealed_file_key: sealed_key_b64,
         file_sha256,
+        sticker,
     };
 
     let result = tokio::time::timeout(RELAY_FILE_SEND_DEADLINE, async {

@@ -138,6 +138,9 @@ include!("commands/helpers.rs");
 // ---- favorites.rs ----
 include!("commands/favorites.rs");
 
+// ---- stickers.rs ----
+include!("commands/stickers.rs");
+
 // ---- routed.rs ----
 include!("commands/routed.rs");
 

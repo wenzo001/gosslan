@@ -9,6 +9,7 @@
 
 import type { MessageRecord, MsgKind } from "@/types";
 import { parseTodo } from "./todos.ts";
+import { isStickerMeta, parseFileMeta } from "./fileMeta.ts";
 import { t } from "../i18n/index.ts";
 
 /** 卡片里的一条（快照，不是 msg_id 引用 —— 原消息删了卡片也要能展开）。 */
@@ -87,7 +88,7 @@ function mediaLine(prefix: string, content: string): string {
 export function mergeItemLine(item: MergedItem): string {
   switch (item.kind) {
     case "image":
-      return mediaLine(t("msg.image"), item.content);
+      return mediaLine(isStickerMeta(parseFileMeta(item.content)) ? t("sticker.preview") : t("msg.image"), item.content);
     case "file":
       return mediaLine(t("msg.file"), item.content);
     case "code":
@@ -122,8 +123,8 @@ export function mergeItemLine(item: MergedItem): string {
 function mediaSafeContent(m: MessageRecord): string {
   if (m.kind !== "image" && m.kind !== "file") return m.content;
   try {
-    const meta = JSON.parse(m.content) as { name?: string; size?: number; subtype?: string; sha256?: string };
-    return JSON.stringify({ name: meta.name, size: meta.size, subtype: meta.subtype, sha256: meta.sha256 });
+    const meta = JSON.parse(m.content) as { name?: string; size?: number; subtype?: string; sha256?: string; sticker?: boolean; w?: number; h?: number };
+    return JSON.stringify({ name: meta.name, size: meta.size, subtype: meta.subtype, sha256: meta.sha256, sticker: meta.sticker, w: meta.w, h: meta.h });
   } catch {
     // 旧格式（content 直接是 dataURL）等一切解析不出的形态：什么都不带。
     return "{}";

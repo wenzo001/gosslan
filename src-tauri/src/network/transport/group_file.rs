@@ -292,6 +292,7 @@ async fn handle_group_file_offer(
     scope: String,
     todo_id: String,
     attempt: Option<u64>,
+    sticker: bool,
 ) {
     // 链路上报的 sender 必须与 Offer 声明一致，且不能是自己
     if sender_id != peer_id || sender_id == state.device_id {
@@ -419,6 +420,12 @@ async fn handle_group_file_offer(
         ) {
             return;
         }
+        {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(e) = db::set_group_file_sticker(&dbc, &transfer_id, sticker) {
+                crate::logging::log_write_failure(&state.logger, "set_group_file_sticker", e);
+            }
+        }
         // 续传分支也必须建气泡（幂等）：否则接收端整段传输期间没有文件卡片。
         create_group_file_receive_bubble(
             state,
@@ -429,6 +436,7 @@ async fn handle_group_file_offer(
             size,
             &sha256,
             &scope,
+            sticker,
         );
         let usable = existing_gf
             .as_ref()
@@ -731,6 +739,9 @@ async fn handle_group_file_offer(
         if db::upsert_group_file_receive(&dbc, &gf, &state.device_id).is_err() {
             return;
         }
+        if let Err(e) = db::set_group_file_sticker(&dbc, &transfer_id, sticker) {
+            crate::logging::log_write_failure(&state.logger, "set_group_file_sticker", e);
+        }
     }
     create_group_file_receive_bubble(
         state,
@@ -741,6 +752,7 @@ async fn handle_group_file_offer(
         size,
         &sha256,
         &scope,
+        sticker,
     );
     // 会话密钥仅存内存，供下一阶段解密 GroupFileChunk
     state
@@ -765,6 +777,7 @@ fn create_group_file_receive_bubble(
     size: u64,
     sha256: &str,
     scope: &str,
+    sticker: bool,
 ) {
     if scope == "todo" {
         return;
@@ -793,6 +806,7 @@ fn create_group_file_receive_bubble(
             "size": size,
             "sha256": sha256,
             "subtype": subtype,
+            "sticker": sticker,
             "progress": 0.0,
         })
         .to_string(),
@@ -822,13 +836,14 @@ fn create_group_file_receive_bubble(
         // `attempt=None` pre-Offer 与 dispatch 的带轮次 Offer），无条件 touch 会让
         // 同一个群文件把群未读 +2，重试每轮再 +1（标准轴审查 2026-10-21 的回归）。
         if inserted {
+            let preview = if sticker { "[表情]".to_string() } else { format!("[群文件] {name}") };
             if let Err(e) = db::touch_conversation(
                 &dbc,
                 &format!("group:{group_id}"),
                 "group",
                 name,
                 None,
-                &format!("[群文件] {name}"),
+                &preview,
                 1,
             ) {
                 crate::logging::log_write_failure(&state.logger, "touch_conversation", e);
@@ -1347,6 +1362,11 @@ async fn handle_group_file_done(
             .unwrap_or(1)
         };
         let subtype = file::classify_file_subtype(&gf.name);
+        let sticker = db::group_file_is_sticker(
+            &state.db.lock().unwrap_or_else(|e| e.into_inner()),
+            &transfer_id,
+        )
+        .unwrap_or(false);
         // 同口径收敛（完成回填路径的气泡重发也不能再把 kind 打回 video/audio）
         let kind = if subtype == "image" { "image" } else { "file" };
         let done_rec = crate::state::MessageRecord {
@@ -1364,6 +1384,7 @@ async fn handle_group_file_done(
                     "size": gf.size,
                     "sha256": gf.sha256,
                     "subtype": subtype,
+                    "sticker": sticker,
                     "progress": 1.0,
                 });
                 if kind == "image" {

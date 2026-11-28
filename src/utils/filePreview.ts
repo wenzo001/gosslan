@@ -259,6 +259,32 @@ export function loadFilePreview(
   });
 }
 
+export function loadStickerPreview(id: string, thumb: boolean, mime: string): Promise<PreviewResult> {
+  const key = `sticker:${id}:${thumb ? "thumb" : "full"}`;
+  const hit = cache.get(key);
+  if (hit) return Promise.resolve(hit);
+  return inflight.run(key, async (): Promise<PreviewResult> => {
+    try {
+      const raw = await previewGate(() => api.readStickerPreview(id, thumb));
+      const bytes = new Uint8Array(raw);
+      const url = URL.createObjectURL(new Blob([bytes], { type: thumb ? "image/png" : mime }));
+      const result: PreviewResult & { bytes?: number } = { url, bytes: bytes.length };
+      cache.put(key, result);
+      return result;
+    } catch (e) {
+      console.error(`[filePreview] sticker preview failed (id=${id}, thumb=${thumb}):`, e);
+      return {};
+    }
+  });
+}
+
+export function dropStickerPreview(id: string): void {
+  for (const key of [`sticker:${id}:thumb`, `sticker:${id}:full`]) {
+    cache.delete(key);
+    inflight.remove(key);
+  }
+}
+
 /** 按内容指纹（sha256）加载待办描述图片的预览。
  *
  * ⚠️ **失败不缓存**：待办图片的字节是「任务定义先到、文件后到」——

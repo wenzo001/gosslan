@@ -93,7 +93,7 @@ mod clear_data_gate_tests {
         // `favorites` 是 2026-10-31 审计 A3 加进来的那一格：收藏是用户显式存下来的内容，
         // 普通「清除数据」不再连带删它（连 `favorites_dir` 里那份副本一起留），
         // 要整份删必须走收藏面板自己的显式操作。
-        const KEEP: [&str; 3] = ["friends", "settings", "favorites"];
+        const KEEP: [&str; 4] = ["friends", "settings", "favorites", "custom_stickers"];
         let left = residue(&schema, &cleared, &KEEP);
         assert_eq!(
             left,
@@ -117,11 +117,11 @@ mod clear_data_gate_tests {
             vec!["some_new_table".to_string()],
             "新加一张表却没进清单时必须被这条判据抓住"
         );
-        // 反控：保留名单真的在起作用（把它缩小到只剩 `friends`，另外两张必须变成缺口，
-        // 而不是被默认放过）。分母按当前口径现算：`favorites` 是 A3 起才进名单的那一格。
+        // 反控：保留名单真的在起作用（把它缩小到只剩 `friends`，其余保留表必须变成缺口，
+        // 而不是被默认放过）。分母按当前口径现算：favorites 与 custom_stickers 都是显式保留。
         assert_eq!(
             residue(&schema, &cleared, &["friends"]),
-            vec!["favorites".to_string(), "settings".to_string()]
+            vec!["custom_stickers".to_string(), "favorites".to_string(), "settings".to_string()]
         );
 
         // 按行清除的那几张：它的 SQL 必须真在（`PARTIAL` 只是声明，不在这句里就什么都没清）。

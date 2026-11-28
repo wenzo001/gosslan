@@ -476,7 +476,7 @@ export const useChatStore = defineStore("chat", () => {
   const { openTodoByConv, groupTodoRowsErrors, ensureGroupTodoRows, todosLoadedOnce, loadGroupTodos, watchGroupTodos, createTodo, updateTodo, sendTodoReply, pinMessage } = todosModule;
   const { refreshPeers, searchNearbyPeers, refreshFriends, refreshPending, refreshOutgoingRequests, refreshKeyRotations, syncFriendKeys, sendFriendRequest, cancelFriendRequest, removeOutgoingRequest, respondRequest, removeFriend, favorites, refreshFavorites, addFavorite, removeFavorite, addFavorites } = contactsModule;
   const { activeAnnouncements, publishAnnouncement, refreshAnnouncements, deleteAnnouncement, createGroup, renameGroup, addGroupMember, removeGroupMember, appointAdmin, removeAdmin, transferGroupCreator, leaveGroup, handleSelfRemovedFromGroup } = groupsModule;
-  const { sendFileTo, sendGroupFileTo, sendImage, stalledTransfers, isTransferStalled, transferStallReason, setTransferStalled, onFileStalled, updateTransferProgress, onFileDone, onGroupFileLog, onFileFailed, groupFileDiag } = mediaModule;
+  const { sendFileTo, sendGroupFileTo, sendStickerTo, forwardStickerTo, sendImage, stalledTransfers, isTransferStalled, transferStallReason, setTransferStalled, onFileStalled, updateTransferProgress, onFileDone, onGroupFileLog, onFileFailed, groupFileDiag } = mediaModule;
 
   /** 冷启动唯一恢复口：只认 last，不回退首条；布局负责等初始化并避开深链。 */
   function restoreLastConversation() {
@@ -1115,6 +1115,8 @@ export const useChatStore = defineStore("chat", () => {
     handleSelfRemovedFromGroup,
     sendFileTo,
     sendGroupFileTo,
+    sendStickerTo,
+    forwardStickerTo,
     sendImage,
     clearAllData,
     enqueueMessage,

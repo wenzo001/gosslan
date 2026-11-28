@@ -49,6 +49,7 @@ import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { dropFavoritePreview, favoritePreviewUrl, loadFavoritePreview, clearFavoritePreviews } from "@/utils/favoritePreview";
 import { favoritePreviewCandidates, resetFavoritePreviewQueue } from "@/utils/favoritePreviewQueue";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
+import { isStickerMeta, parseFileMeta } from "@/utils/fileMeta";
 import { isForwardableKind, isKnownKind, isTransferKind, kindClass } from "@/utils/messageKinds";
 import { isWindows } from "@/utils/platform";
 import { cardCopyText } from "@/utils/cardText";
@@ -632,6 +633,10 @@ async function doForward(convId: string) {
     // ⚠️ 这里**不传 msgId**：收藏的 media_path 是收藏夹自己的副本，不是原消息那条路径，
     // 后端「路径必须归这条消息」的闸会把它当成越权拒掉（那条闸只适用于"转发原消息"）。
     if (isTransferKind(f.kind)) {
+      if (isStickerMeta(parseFileMeta(f.content))) {
+        await api.forwardFavoriteSticker(convId, f.id);
+        return;
+      }
       if (!f.media_path) {
         app.toast(t("favorite.mediaGone"), "error");
         return;

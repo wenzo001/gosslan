@@ -20,6 +20,7 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
             file_sha256,
             from_bytes,
             attempt,
+            sticker,
             ..
         } => {
             if from != peer_id || from == state.device_id {
@@ -139,6 +140,12 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                     return;
                 }
                 file::OfferDecision::ResumeFrom(held) => {
+                    {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Err(e) = db::set_transfer_sticker(&dbc, &transfer_id, sticker) {
+                            crate::logging::log_write_failure(&state.logger, "set_transfer_sticker", e);
+                        }
+                    }
                     state.logger.info(
                         "file",
                         format!(
@@ -242,6 +249,12 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
             };
             match received {
                 Ok(_) => {
+                    {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Err(e) = db::set_transfer_sticker(&dbc, &transfer_id, sticker) {
+                            crate::logging::log_write_failure(&state.logger, "set_transfer_sticker", e);
+                        }
+                    }
                     // 新建/续建的接收器一律以这份 Offer 的轮次为准（Offer 是权威，见
                     // `file::frame_is_current` 第 3 条）。
                     file::note_offer_attempt(state, &transfer_id, attempt);
@@ -598,6 +611,7 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                     let rec = {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         let subtype = file::classify_file_subtype(&name);
+                        let sticker = db::transfer_is_sticker(&dbc, &transfer_id).unwrap_or(false);
                         // 与发送端同口径（`commands::send_file`，4.22.1 起；现为 send_file_auto 的私有实现）：kind 只区分
                         // image|file，细分留 content.subtype —— 接收端不再按文件名
                         // 重新猜一遍（旧写法把 mp4 标成 kind="video"，前端渲染链
@@ -608,7 +622,19 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                             "path": path.to_string_lossy().to_string(),
                             "size": size,
                             "subtype": subtype,
+                            "sticker": sticker,
                         });
+                        if sticker {
+                            if let Ok(cids) = crate::content::store::cids_for_transfer_id(
+                                &dbc,
+                                &sender_id,
+                                &transfer_id,
+                            ) {
+                                if cids.len() == 1 {
+                                    content["sha256"] = serde_json::json!(cids[0]);
+                                }
+                            }
+                        }
                         if kind == "image" {
                             file::attach_image_size(&mut content, &path);
                         }
@@ -641,7 +667,9 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                         drop(dbc);
                         let nm = resolve_nickname(state, &sender_id);
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        let preview = if kind == "image" {
+                        let preview = if sticker {
+                            "[表情]".to_string()
+                        } else if kind == "image" {
                             "[图片]".to_string()
                         } else {
                             format!("[文件] {name}")

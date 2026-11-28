@@ -264,14 +264,25 @@ export async function run() {
     // 预览文案不在这本手抄 kind→字面量表：从 `protocol::preview_text` 那一个家现解析
     //（TS 侧与 Rust 侧那两组标签已由 `src/utils/messageKinds.test.ts` 的 DUP-12 逐项钉死 ⇒
     //  解析出来的就是界面会画的那一句）。解析不到就把期望写成 null ⇒ 这一格红在仪表上，不静默放行。
-    const previewLabel = (kind) => {
+    const previewLabel = (kind, content) => {
       const src = fs.readFileSync(new URL("../../../src-tauri/src/protocol.rs", import.meta.url), "utf8");
       const at = src.indexOf("pub fn preview_text");
-      const m = at > 0
-        && new RegExp(`"${kind}" => "(\\[[^\\]]{1,8}\\])"`).exec(src.slice(at, src.indexOf("\n}", at)));
-      return m ? m[1] : null;
+      if (at <= 0) return null;
+      const body = src.slice(at, src.indexOf("\n}", at));
+      const armStart = body.indexOf(`"${kind}" =>`);
+      if (armStart < 0) return null;
+      const armEnd = body.indexOf("\n        \"", armStart + 1);
+      const arm = body.slice(armStart, armEnd < 0 ? body.length : armEnd);
+      const labels = [...arm.matchAll(/"(\[[^\]]{1,8}\])"\.to_string\(\)/g)].map((m) => m[1]);
+      if (labels.length === 1) return labels[0];
+      if (kind === "image" && labels.length >= 2) {
+        let sticker = false;
+        try { sticker = JSON.parse(content).sticker === true; } catch { /* 旧载荷不是 JSON */ }
+        return labels[sticker ? 0 : 1];
+      }
+      return null;
     };
-    const wantLabel = headRow ? previewLabel(headRow.kind) : null;
+    const wantLabel = headRow ? previewLabel(headRow.kind, headRow.content) : null;
     check("★ 补齐后 B 那一行的预览 = 真实末条那种 kind 的人话标签（JSON 载荷不许漏进会话列表）",
       !!conv && !!wantLabel && conv.last_msg === wantLabel,
       wantLabel ?? "<从 protocol.rs 解析不到该 kind 的预览标签 ⇒ 仪表坏了>",

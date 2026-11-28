@@ -50,6 +50,7 @@ import { computeEnteringId, ENTER_ANIM_MS } from "@/utils/messageEnter";
 import { launchAuxWindow, isWindowOpening } from "@/composables/useWindowLauncher";
 import { useMentionContext } from "@/composables/useMentionContext";
 import { fileToDataUrl } from "@/utils/imageBytes";
+import { isStickerMeta, parseFileMeta } from "@/utils/fileMeta";
 import { MAX_MERGE_ITEMS, buildMergePayload } from "@/utils/mergeCard";
 // 消息行的空列表 prop 必须是共享常量，见 utils/emptyList.ts（量具一 ?row= 三档现量）
 import { EMPTY_REACTION_CHIPS, EMPTY_STRING_LIST } from "@/utils/emptyList";
@@ -1489,6 +1490,10 @@ async function doForward(convId: string) {
   try {
     // 媒体（文件 + 图片）按本地路径重发一遍；判据只在 `isTransferKind` 一处。
     if (isTransferKind(f.kind)) {
+      if (isStickerMeta(parseFileMeta(f.content)) && f.msgId) {
+        await chat.forwardStickerTo(convId, String(f.msgId));
+        return;
+      }
       // 文件转发＝按本地路径把文件重发一遍（内容 JSON 只是元信息，直接转发会指向本机路径）
       if (!f.filePath) {
         app.toast(t("chat.toast.fileNotForward"), "info");
@@ -1637,6 +1642,10 @@ function filePathOf(rec: MessageRecord): string {
  */
 async function forwardOne(convId: string, m: MessageRecord) {
   if (isTransferKind(m.kind)) {
+    if (isStickerMeta(parseFileMeta(m.content))) {
+      await chat.forwardStickerTo(convId, m.msg_id);
+      return;
+    }
     const path = filePathOf(m);
     if (!path) {
       app.toast(t(m.kind === "image" ? "chat.toast.imageNotForward" : "chat.toast.fileNotForward"), "info");

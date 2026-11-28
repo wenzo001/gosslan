@@ -819,6 +819,7 @@ window.__probe = (() => {
         initialKeyword: state.initialKeyword,
         groupId: state.groupId,
         onSelect: (v) => events.push(['select', v]),
+        onSendSticker: (v) => events.push(['send-sticker', String(v)]),
         onClose: () => events.push(['close']),
         onOpenConversation: (p) => events.push(['open', JSON.stringify(p)]),
         // 任务卡底部那个入口 emit 的是 "open"（载荷是 todo_id）。tag 刻意叫 open-id：
@@ -3485,7 +3486,7 @@ window.__probe = (() => {
       lineHeight: cs.lineHeight, fontSize: cs.fontSize, selfToken: !!tok.classList.contains('mention-token--self'),
     };
   };
-  H.grid = () => Array.from(document.querySelectorAll('button:not(#trigger)'));
+  H.grid = () => Array.from(document.querySelectorAll('[data-emoji-cell]'));
   H.gridInfo = () => {
     const btns = H.grid();
     const el = document.activeElement;
@@ -4763,6 +4764,7 @@ async function main() {
       return on;
     };
     const emoji = want("emoji");
+    const stickers = want("stickers");
     const search = want("search");
     const ctxmenu = want("ctxmenu");
     const todopick = want("todopick");
@@ -5024,6 +5026,7 @@ async function main() {
       }
     };
     await runSegment("emoji", emoji, () => runEmoji(cdp, url));
+    await runSegment("stickers", stickers, () => runStickers(cdp, url));
     await runSegment("search", search, () => runSearch(cdp, url));
     await runSegment("ctxmenu", ctxmenu, () => runCtxMenu(cdp, url));
     await runSegment("todopick", todopick, () => runTodoPick(cdp, url));
@@ -11870,6 +11873,123 @@ async function runOverlay(cdp, url) {
     + "ms / 撤掉后=" + durMs(e5.panelTrans) + "ms（落定态读的是 0s 与那条 !important 的差，不是那 150ms —— "
     + "过渡进行中的时长这台量具读不到，那一半仍未证）；关闭后 focus=" + rdClose.focusId
     + " hit=" + e3.hitId + "（这一组的 ✕ 与 Esc 两条路径都真的走过）");
+}
+
+/** 自定义表情：点击直发、最新加入排序、Reka 右键菜单移到最前/删除、reaction 隔离。 */
+async function runStickers(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII='), c => c.charCodeAt(0)).buffer;
+    const rows = [
+      { id: 'b', sha256: 'b', path: '/stickers/b.png', thumbPath: '/stickers/thumbs/b.png', name: 'New', mime: 'image/png', width: 1, height: 1, frameCount: 1, size: 68, sortAt: 20, sourceMsgId: null },
+      { id: 'a', sha256: 'a', path: '/stickers/a.png', thumbPath: '/stickers/thumbs/a.png', name: 'Old', mime: 'image/png', width: 1, height: 1, frameCount: 1, size: 68, sortAt: 10, sourceMsgId: null },
+    ];
+    window.__stickerCalls = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (cmd, args = {}) => {
+        if (cmd === 'list_custom_stickers') {
+          window.__stickerCalls.push(['list']);
+          return rows.slice().sort((x, y) => y.sortAt - x.sortAt || y.id.localeCompare(x.id));
+        }
+        if (cmd === 'read_sticker_preview') return png;
+        if (cmd === 'move_custom_sticker_to_front') {
+          const row = rows.find((r) => r.id === args.id);
+          if (row) row.sortAt = Math.max(...rows.map((r) => r.sortAt)) + 1;
+          window.__stickerCalls.push(['move', args.id]);
+          return null;
+        }
+        if (cmd === 'delete_custom_sticker') {
+          const at = rows.findIndex((r) => r.id === args.id);
+          if (at >= 0) rows.splice(at, 1);
+          window.__stickerCalls.push(['delete', args.id]);
+          return null;
+        }
+        if (cmd === 'send_custom_sticker') {
+          window.__stickerCalls.push(['send', args.stickerId]);
+          return 'file-sticker';
+        }
+        return null;
+      },
+    };
+  })()`);
+  await cdp.eval(`window.__probe.install('/src/components/EmojiPicker.vue',
+    '<button id="trigger" data-probe-panel>触发按钮</button>', JSON.stringify({ open: true }))`);
+  await sleep(500);
+  const initialLoads = await cdp.eval("window.__stickerCalls.filter((c) => c[0] === 'list').length");
+  check("首次以 open=true 挂载就加载表情库（覆盖真实 Popover 生命周期）",
+    initialLoads === 1, "list_custom_stickers 调用 1 次", `${initialLoads} 次`);
+  await cdp.eval("document.querySelectorAll('[data-emoji-tab]')[0].focus()");
+  await cdp.key("ArrowRight", "ArrowRight", "", 39);
+  await sleep(200);
+  const keyboardTab = await cdp.eval("document.querySelectorAll('[data-emoji-tab]')[1].getAttribute('aria-selected')");
+  check("页签支持左右方向键切换", keyboardTab === "true", "我的表情页签 selected", String(keyboardTab));
+  await sleep(300);
+  const order = () => cdp.eval("[...document.querySelectorAll('[data-emoji-cell]')].map((b) => b.title)");
+  const firstOrder = await order();
+  check("我的表情按 sort_at 倒序：最新加入在最前",
+    JSON.stringify(firstOrder) === JSON.stringify(['New', 'Old']),
+    "New, Old", JSON.stringify(firstOrder));
+
+  await cdp.eval("window.__probe.reset(); document.querySelector('[data-emoji-cell]').click()");
+  await sleep(100);
+  const sent = await cdp.eval("window.__probe.events");
+  check("点击自定义表情直接 send-sticker，不插入文本 token",
+    sent.length === 1 && sent[0][0] === 'send-sticker' && sent[0][1] === 'b',
+    "一次 send-sticker(b)", JSON.stringify(sent));
+
+  await cdp.eval("document.querySelectorAll('[data-emoji-cell]')[1].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 100, clientY: 100 }))");
+  await sleep(200);
+  const menuTexts = await cdp.eval("[...document.querySelectorAll('[role=menuitem]')].map((el) => el.textContent.trim())");
+  check("自定义表情右键菜单包含移到最前与删除",
+    menuTexts.length === 2 && menuTexts[0].length > 0 && menuTexts[1].length > 0,
+    "2 个菜单项", JSON.stringify(menuTexts));
+  await cdp.eval("document.querySelectorAll('[role=menuitem]')[0].click()");
+  await sleep(500);
+  const movedOrder = await order();
+  check("右键移到最前立即刷新顺序",
+    JSON.stringify(movedOrder) === JSON.stringify(['Old', 'New']),
+    "Old, New", JSON.stringify(movedOrder));
+
+  await cdp.eval("document.querySelector('[data-emoji-cell]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 100, clientY: 100 }))");
+  await sleep(200);
+  await cdp.eval("document.querySelectorAll('[role=menuitem]')[1].click()");
+  await sleep(500);
+  const afterDelete = await order();
+  check("右键删除只移除表情库条目",
+    JSON.stringify(afterDelete) === JSON.stringify(['New']),
+    "仅剩 New", JSON.stringify(afterDelete));
+
+  await cdp.eval("window.__probe.app.unmount()");
+  await cdp.eval(`window.__probe.install('/src/components/EmojiPicker.vue',
+    '<button id="trigger" data-probe-panel>触发按钮</button>', JSON.stringify({ mode: 'react' }))`);
+  await cdp.eval("window.__probe.focusTrigger()");
+  await cdp.eval("window.__probe.setOpen(true)");
+  await sleep(300);
+  const reactTabs = await cdp.eval("document.querySelectorAll('[data-emoji-tab]').length");
+  check("reaction 模式不显示我的表情页签",
+    reactTabs === 0, "0 个页签", `${reactTabs} 个页签`);
+
+  await cdp.eval("window.__probe.app.unmount()");
+  await cdp.eval(`window.__probe.install('/src/components/message/MessageImageBubble.vue', '', `
+    + JSON.stringify(JSON.stringify({
+      src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+      width: 320,
+      height: 180,
+      appearance: 'sticker',
+    })) + ")");
+  await sleep(300);
+  const stickerBox = await cdp.eval(`(() => {
+    const frame = document.querySelector('[data-img-frame]');
+    const img = document.querySelector('[data-img-el]');
+    const r = frame.getBoundingClientRect();
+    return { w: Math.round(r.width), h: Math.round(r.height), bg: getComputedStyle(frame).backgroundColor, fit: getComputedStyle(img).objectFit };
+  })()`);
+  check("表情气泡按原比例限制在 168px 内，且保持透明与 contain",
+    stickerBox.w === 168 && stickerBox.h === 95 && stickerBox.bg === 'rgba(0, 0, 0, 0)' && stickerBox.fit === 'contain',
+    "168×95 / 透明 / contain", JSON.stringify(stickerBox));
 }
 
 /** 表情面板那一段：键盘出口（N1）+ 反向对照（不带 text 的 Enter 必须零次激活）。 */

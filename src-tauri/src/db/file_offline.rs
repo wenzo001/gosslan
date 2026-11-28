@@ -3,6 +3,7 @@
 // ---------------- 文件离线投递队列 ----------------
 
 /// 幂等写入一条待发文件记录（transfer_id 唯一）。
+#[cfg(test)]
 pub fn insert_file_outbox(
     conn: &Connection,
     transfer_id: &str,
@@ -12,25 +13,50 @@ pub fn insert_file_outbox(
     name: &str,
     size: u64,
 ) -> Result<()> {
+    insert_file_outbox_with_sticker(conn, transfer_id, peer_id, group_id, local_path, name, size, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn insert_file_outbox_with_sticker(
+    conn: &Connection,
+    transfer_id: &str,
+    peer_id: &str,
+    group_id: Option<&str>,
+    local_path: &str,
+    name: &str,
+    size: u64,
+    sticker: bool,
+) -> Result<()> {
     conn.execute(
-        "INSERT OR IGNORE INTO file_outbox(transfer_id, peer_id, group_id, local_path, name, size, status, attempts, next_attempt_at, created_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7)",
-        params![transfer_id, peer_id, group_id, local_path, name, size as i64, now_ms()],
+        "INSERT OR IGNORE INTO file_outbox(transfer_id, peer_id, group_id, local_path, name, size, status, attempts, next_attempt_at, sticker, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?8, ?7)",
+        params![transfer_id, peer_id, group_id, local_path, name, size as i64, now_ms(), if sticker { 1i64 } else { 0i64 }],
     )?;
     Ok(())
 }
 
 /// 取某 peer 的待投递文件（仅 `pending`，且已到重试时间）。
+#[cfg(test)]
 pub fn list_pending_file_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(String, String)>> {
+    Ok(list_pending_file_outbox_rows(conn, peer_id)?
+        .into_iter()
+        .map(|(id, path, _)| (id, path))
+        .collect())
+}
+
+pub fn list_pending_file_outbox_rows(
+    conn: &Connection,
+    peer_id: &str,
+) -> Result<Vec<(String, String, bool)>> {
     let now = now_ms();
     let mut stmt = conn.prepare(
-        "SELECT transfer_id, local_path FROM file_outbox
+        "SELECT transfer_id, local_path, sticker FROM file_outbox
          WHERE peer_id = ?1 AND status = 'pending' AND next_attempt_at <= ?2 AND attempts < ?3
          ORDER BY created_at, id",
     )?;
     let rows = stmt.query_map(
         params![peer_id, now, crate::network::file::MAX_FILE_OUTBOX_RETRIES],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0)),
     )?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }

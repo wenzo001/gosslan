@@ -245,9 +245,33 @@ export function createMediaModule(ctx: ChatContext) {
       }
     }
   }
+  async function sendStickerTo(convId: string, stickerId: string) {
+    try {
+      const id = await api.sendCustomSticker(convId, stickerId);
+      void refreshTransfers();
+      return id;
+    } catch (e) {
+      app.toastError(e, t("sticker.sendFail"));
+      return null;
+    }
+  }
+
+  async function forwardStickerTo(convId: string, msgId: string) {
+    try {
+      const id = await api.forwardCustomSticker(convId, msgId);
+      void refreshTransfers();
+      return id;
+    } catch (e) {
+      app.toastError(e, t("sticker.forwardFail"));
+      return null;
+    }
+  }
+
   return {
     sendFileTo,
     sendGroupFileTo,
+    sendStickerTo,
+    forwardStickerTo,
     sendImage,
     stalledTransfers,
     isTransferStalled,

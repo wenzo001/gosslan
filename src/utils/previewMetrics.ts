@@ -251,6 +251,8 @@ export const IMAGE_BUBBLE_HEIGHT = 288;
 /** 图片气泡的固定内容宽（与 `MessageImageBubble` 的 `w-52` 同一份）。 */
 export const IMAGE_BUBBLE_WIDTH = 208;
 
+export { STICKER_BUBBLE_MAX, stickerBubbleBox } from "@/utils/imageAspect";
+
 /**
  * 有真实像素尺寸时的预留高度：与 CSS 的 `w-52` 定宽 + `object-contain` 同口径。
  * 旧消息没有 w/h、或图片格式读不出尺寸时回退 `IMAGE_BUBBLE_HEIGHT`（288）。

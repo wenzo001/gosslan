@@ -16,6 +16,10 @@
  */
 import type { FileMeta } from "@/types";
 
+export function isStickerMeta(meta: Partial<FileMeta> | null | undefined): boolean {
+  return meta?.sticker === true;
+}
+
 export function parseFileMeta(content: string): Partial<FileMeta> | null {
   let payload: unknown;
   try {
@@ -30,6 +34,7 @@ export function parseFileMeta(content: string): Partial<FileMeta> | null {
   if (typeof p.path === "string" && p.path) out.path = p.path;
   if (typeof p.size === "number" && Number.isFinite(p.size)) out.size = p.size;
   if (typeof p.subtype === "string" && p.subtype) out.subtype = p.subtype;
+  if (p.sticker === true) out.sticker = true;
   // sha256（= content store 的 cid）只有新格式消息才有
   if (typeof p.sha256 === "string" && p.sha256) out.sha256 = p.sha256;
   // 图片像素尺寸：后端从本机文件头读出；只接受正整数，坏值当没有（回退 288）。

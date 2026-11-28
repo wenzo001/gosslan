@@ -2,7 +2,7 @@
 
 import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, BotCreatedView, BotPullOutcome, BotView,CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, DeviceAuthRevokeOutcome, RpBindingInfo, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, SharePrompt, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo, SentUsage } from "@/types";
+import type { AppSettings, BotCreatedView, BotPullOutcome, BotView,CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceAuthOutcome, DeviceAuthPrompt, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, DeviceAuthRevokeOutcome, RpBindingInfo, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, SharePrompt, StickerEntry, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo, SentUsage } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -605,6 +605,21 @@ export const api = {
       path: pathArg(path, "send_group_file.path"),
       msgId,
     }),
+  listCustomStickers: () => invoke<StickerEntry[]>("list_custom_stickers"),
+  readStickerPreview: (id: string, thumb: boolean, maxBytes = 15 * 1024 * 1024) =>
+    invoke<ArrayBuffer | number[]>("read_sticker_preview", { id, thumb, maxBytes }),
+  importSticker: (path: string, suggestedName?: string) =>
+    invoke<StickerEntry>("import_sticker", { path: pathArg(path, "import_sticker.path"), suggestedName }),
+  addStickerFromMessage: (msgId: string) =>
+    invoke<StickerEntry>("add_sticker_from_message", { msgId }),
+  deleteCustomSticker: (id: string) => invoke<void>("delete_custom_sticker", { id }),
+  moveCustomStickerToFront: (id: string) => invoke<void>("move_custom_sticker_to_front", { id }),
+  sendCustomSticker: (convId: string, stickerId: string) =>
+    invoke<string>("send_custom_sticker", { convId, stickerId }),
+  forwardCustomSticker: (convId: string, msgId: string) =>
+    invoke<string>("forward_custom_sticker", { convId, msgId }),
+  forwardFavoriteSticker: (convId: string, favoriteId: string) =>
+    invoke<string>("forward_favorite_sticker", { convId, favoriteId }),
   saveOutgoingImage: (dataUrl: string) =>
     invoke<{ path: string; name: string; size: number }>("save_outgoing_image", { dataUrl }),
   deleteFile: (path: string) =>

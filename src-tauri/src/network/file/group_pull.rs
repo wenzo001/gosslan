@@ -44,6 +44,11 @@ pub(crate) async fn send_group_file_pull_at(
     if sha256 != cid {
         return Err("源文件摘要与请求的 cid 不一致".to_string());
     }
+    let sticker = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::db::group_file_is_sticker_by_sha(&dbc, group_id, &sha256)
+            .map_err(|e| format!("读取群表情标记失败：{e}"))?
+    };
     let group_key = crate::network::transport::get_group_key(state, group_id)
         .await
         .ok_or_else(|| "群密钥缺失".to_string())?;
@@ -74,6 +79,7 @@ pub(crate) async fn send_group_file_pull_at(
         todo_id: String::new(),
         // 全新 transfer_id ⇒ 不需要续传握手，一律从 0 开始。
         attempt: None,
+        sticker,
     };
     match tokio::time::timeout(
         GROUP_PULL_OFFER_TIMEOUT,
