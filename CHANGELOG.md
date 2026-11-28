@@ -14,6 +14,14 @@
 
 ## [Unreleased]
 
+## [7.4.12] - 2026-11-28
+
+### 修复：Windows WebView2 双固定端口 smoke
+- 分别构建 CDP 端口 9561/9562 的两份 smoke exe，移除当前 WebView2 不生成
+  `DevToolsActivePort` 的端口 0 路径；两个实例仍使用独立数据库、AppData 与 UDF。
+- 运行验收同时检查两个 CDP 端点、两份二进制差异和两个 WebView2 进程的 UDF，
+  自证同步钉住双配置、双构建、双启动与有界实例号，避免单份构建共用端口。
+
 ## [7.4.11] - 2026-11-28
 
 ### 修复：Windows WebView2 CDP 与实例端口

@@ -4,7 +4,7 @@
     "windows": [
       {
         "label": "main",
-        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port=0 --remote-allow-origins=*"
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port=9561 --remote-allow-origins=*"
       }
     ]
   }

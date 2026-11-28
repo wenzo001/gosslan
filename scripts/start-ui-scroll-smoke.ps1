@@ -3,7 +3,8 @@
 param(
   [Parameter(Mandatory = $true)][string]$Exe,
   [Parameter(Mandatory = $true)][string]$RunRoot,
-  [Parameter(Mandatory = $true)][int]$Instance
+  [Parameter(Mandatory = $true)][int]$Instance,
+  [Parameter(Mandatory = $true)][int]$CdpPort
 )
 $ErrorActionPreference = "Stop"
 if (-not (Test-Path -LiteralPath $Exe)) { throw "release exe not found: $Exe" }
@@ -32,15 +33,4 @@ Start-Sleep -Seconds 2
 $exited = $p.HasExited
 $exitCode = if ($exited) { [int]$p.ExitCode } else { $null }
 if ($exited) { throw "smoke instance exited during startup: $exitCode" }
-$portFile = Join-Path $udf "DevToolsActivePort"
-$deadline = (Get-Date).AddSeconds(30)
-$actualPort = 0
-while ((Get-Date) -lt $deadline) {
-  if (Test-Path -LiteralPath $portFile) {
-    $actualPort = [int](Get-Content -LiteralPath $portFile -First 1)
-    break
-  }
-  Start-Sleep -Milliseconds 200
-}
-if ($actualPort -eq 0) { throw "WebView2 did not publish DevToolsActivePort under $udf" }
-@{ pid = $p.Id; instance = $Instance; cdpPort = $actualPort; userDataDir = $udf; exe = $smokeExe; dataRoot = $dataRoot; stdout = $stdout; stderr = $stderr; exited = $exited; exitCode = $exitCode } | ConvertTo-Json -Compress
+@{ pid = $p.Id; instance = $Instance; cdpPort = $CdpPort; userDataDir = $udf; exe = $smokeExe; dataRoot = $dataRoot; stdout = $stdout; stderr = $stderr; exited = $exited; exitCode = $exitCode } | ConvertTo-Json -Compress

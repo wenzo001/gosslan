@@ -9,10 +9,9 @@
  * Windows:
  *   npm run test:ui-scroll:win
  *   npm run test:ui-scroll:win:selfproof   # static/structural negative controls, any OS
- * The default Windows run first builds a release exe with tauri.scroll-smoke.conf.json,
- * then copies it into a fresh temporary directory so appDirectoriesOverride isolates all
- * app data. GOSSLAN_SCROLL_EXE bypasses that build only for an already-built smoke exe.
- * GOSSLAN_SCROLL_EXE bypasses that build only for an already-built smoke exe.
+ * The default Windows run builds two release exes with fixed CDP ports 9561/9562,
+ * then copies them into fresh temporary directories so appDirectoriesOverride isolates all
+ * app data. GOSSLAN_SCROLL_EXE_A/B bypass each build for already-built smoke exes.
  * Optional: GOSSLAN_WEBVIEW2_VERSION,
  *           GOSSLAN_SCROLL_MESSAGES/TODOS/FILES, GOSSLAN_SCROLL_TIMEOUT_MS.
  * A non-Windows normal run reports NOT RUN and exits 2; it never claims a pass.
@@ -180,13 +179,20 @@ export function runStaticSelfProof() {
   const smokeConfig = JSON.parse(fs.readFileSync(path.join(ROOT, "src-tauri/tauri.scroll-smoke.conf.json"), "utf8"));
   const devProbe = fs.readFileSync(path.join(ROOT, "scripts/check-ui-runtime.mjs"), "utf8");
   const smoke = fs.readFileSync(path.join(ROOT, "scripts/check-ui-scroll-win.mjs"), "utf8");
-  const buildBody = smoke.match(/function buildSmokeExe\(\) \{[\s\S]*?\n\}/)?.[0] || "";
+  const buildBody = smoke.match(/function buildSmokeExe\([\s\S]*?\n\}/)?.[0] || "";
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "gosslan-smoke-config-selfproof-"));
+  let generatedConfigs;
+  try {
+    generatedConfigs = writeSmokeConfigs(configDir).map((file) => JSON.parse(fs.readFileSync(file, "utf8")));
+  } finally {
+    fs.rmSync(configDir, { recursive: true, force: true });
+  }
   const wiring = [
     ["npm production entry is registered", pkg.scripts["test:ui-scroll:win"] === "node scripts/check-ui-scroll-win.mjs"],
     ["Windows CI invokes the production entry", /^\s*npm run test:ui-scroll:win\s*$/m.test(workflow) && workflow.includes("gosslan-windows-scroll-smoke")],
-    ["launcher isolates instance DB and WebView2 UDF", launcher.includes("GOSSLAN_INSTANCE") && launcher.includes("WEBVIEW2_USER_DATA_FOLDER") && launcher.includes("DevToolsActivePort")],
+    ["launcher isolates instance DB and WebView2 UDF", launcher.includes("GOSSLAN_INSTANCE") && launcher.includes("WEBVIEW2_USER_DATA_FOLDER") && launcher.includes("[int]$CdpPort")],
     ["smoke config and copied exe isolate the whole app directory", smokeConfig.app?.appDirectoriesOverride === "scroll-smoke-data" && buildBody.includes('"--config"') && launcher.includes("Copy-Item -LiteralPath $Exe") && launcher.includes("Start-Process -FilePath $smokeExe")],
-    ["WebView2 uses an ephemeral CDP port and instance ids cannot wrap TCP ports", smokeConfig.app?.windows?.some((w) => w.label === "main" && w.additionalBrowserArgs?.includes("--remote-debugging-port=0")) && smoke.includes("1 + (process.pid % 500)")],
+    ["dual smoke builds use distinct fixed CDP ports and bounded instance ids", generatedConfigs.every((c, i) => c.app.windows.some((w) => w.label === "main" && w.additionalBrowserArgs.includes(`--remote-debugging-port=${9561 + i}`))) && smoke.includes("buildSmokeExe(configA, exeA)") && smoke.includes("buildSmokeExe(configB, exeB)") && smoke.includes("launch(exeA, runRoot, instanceA, 9561)") && smoke.includes("launch(exeB, runRoot, instanceB, 9562)") && smoke.includes("1 + (process.pid % 500)")],
     ["startup diagnostics and temp cleanup are bounded", launcher.includes("$dataRoot") && launcher.includes("RedirectStandardOutput") && launcher.includes("$exited") && smoke.includes("captureInstanceDiagnostics") && smoke.includes('spawnSync("cmd.exe"') && smoke.includes("5 * 1024 * 1024") && smoke.includes("timeout: 30_000")],
     ["dev probe disclaims production evidence", devProbe.includes("DEV PROBE —— 不是生产态证据") && devProbe.includes("本结果不是生产态/WebView2 证据")],
     ["fresh empty databases boot before conversation rows exist", smoke.includes("async function ready(cdp, requireConversation = false)") && smoke.includes("if (requireConversation)") && smoke.includes("await ready(a, true); await ready(b, true)")],
@@ -262,18 +268,31 @@ function powershell(script) {
   return r.stdout.trim();
 }
 
-function buildSmokeExe() {
-  const config = "src-tauri/tauri.scroll-smoke.conf.json";
+function writeSmokeConfigs(dir) {
+  const base = JSON.parse(fs.readFileSync(path.join(ROOT, "src-tauri/tauri.scroll-smoke.conf.json"), "utf8"));
+  return [9561, 9562].map((port) => {
+    const config = structuredClone(base);
+    const main = config.app.windows.find((window) => window.label === "main");
+    if (!main?.additionalBrowserArgs || !/--remote-debugging-port=\d+/.test(main.additionalBrowserArgs)) throw new Error("smoke config must define a numeric CDP port");
+    main.additionalBrowserArgs = main.additionalBrowserArgs.replace(/--remote-debugging-port=\d+/, `--remote-debugging-port=${port}`);
+    const file = path.join(dir, `smoke-${port}.json`);
+    fs.writeFileSync(file, JSON.stringify(config, null, 2) + "\n");
+    return file;
+  });
+}
+
+function buildSmokeExe(config, destination) {
   console.log(`Building release smoke exe with ${config} (real dist, throwaway app directory)...`);
   const result = spawnSync("npm.cmd", ["run", "tauri", "--", "build", "--features", "bluetooth", "--no-bundle", "--target", "x86_64-pc-windows-msvc", "--config", config], {
     cwd: ROOT, stdio: "inherit", shell: true, timeout: 30 * 60_000,
   });
   if (result.error || result.status !== 0) throw new Error(`Windows smoke build failed: ${result.error?.message || `exit ${result.status}`}`);
+  fs.copyFileSync(path.join(ROOT, "src-tauri/target/x86_64-pc-windows-msvc/release/gosslan.exe"), destination);
 }
 
-async function launch(exe, runRoot, instance) {
+async function launch(exe, runRoot, instance, port) {
   const launcher = path.join(ROOT, "scripts/start-ui-scroll-smoke.ps1");
-  const command = `& '${launcher.replaceAll("'", "''")}' -Exe '${exe.replaceAll("'", "''")}' -RunRoot '${runRoot.replaceAll("'", "''")}' -Instance ${instance}`;
+  const command = `& '${launcher.replaceAll("'", "''")}' -Exe '${exe.replaceAll("'", "''")}' -RunRoot '${runRoot.replaceAll("'", "''")}' -Instance ${instance} -CdpPort ${port}`;
   const out = powershell(command);
   return JSON.parse(out);
 }
@@ -499,28 +518,33 @@ async function captureInstanceDiagnostics(instances, artifactDir) {
   return captured;
 }
 
-async function runtimeSmoke(exe, report, artifactDir, ledger) {
+async function runtimeSmoke(exeA, exeB, report, artifactDir, ledger) {
   const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gosslan-ui-scroll-"));
   const instanceA = 1 + (process.pid % 500);
   const instanceB = instanceA + 1;
   let pa, pb, seeded;
   try {
-    pa = await launch(exe, runRoot, instanceA);
-    pb = await launch(exe, runRoot, instanceB);
+    pa = await launch(exeA, runRoot, instanceA, 9561);
+    pb = await launch(exeB, runRoot, instanceB, 9562);
     const portA = pa.cdpPort;
     const portB = pb.cdpPort;
     report.instances = [pa, pb];
     console.log("smoke: instances launched");
     const exited = report.instances.filter((inst) => inst.exited);
     if (exited.length) throw new Error(`smoke instance exited during startup: ${JSON.stringify(exited)}`);
-    const browser = await waitFor(() => fetch(`http://127.0.0.1:${portA}/json/version`).then((r) => r.json()).catch(() => null), "WebView2 version endpoint", 30_000);
-    report.webview2 = { ...(report.webview2 || {}), browser: browser?.Browser, protocol: browser?.["Protocol-Version"] };
-    console.log("smoke: WebView2 endpoint ready");
-    ledger.add("WebView2 runtime version is recorded", !!browser?.Browser, report.webview2);
-    if (process.env.GOSSLAN_WEBVIEW2_VERSION && !String(browser?.Browser || "").includes(process.env.GOSSLAN_WEBVIEW2_VERSION)) {
-      throw new Error(`WebView2 version mismatch: wanted ${process.env.GOSSLAN_WEBVIEW2_VERSION}, got ${browser?.Browser}`);
+    const [browserA, browserB] = await Promise.all([
+      waitFor(() => fetch(`http://127.0.0.1:${portA}/json/version`).then((r) => r.json()).catch(() => null), "WebView2 A version endpoint", 30_000),
+      waitFor(() => fetch(`http://127.0.0.1:${portB}/json/version`).then((r) => r.json()).catch(() => null), "WebView2 B version endpoint", 30_000),
+    ]);
+    report.cdpEndpoints = [browserA, browserB];
+    report.webview2 = { ...(report.webview2 || {}), browser: browserA?.Browser, protocol: browserA?.["Protocol-Version"] };
+    console.log("smoke: both WebView2 endpoints ready");
+    ledger.add("both fixed WebView2 CDP endpoints respond", !!browserA?.Browser && !!browserB?.Browser, report.cdpEndpoints.map((b) => b?.Browser));
+    if (process.env.GOSSLAN_WEBVIEW2_VERSION && ![browserA?.Browser, browserB?.Browser].every((version) => String(version || "").includes(process.env.GOSSLAN_WEBVIEW2_VERSION))) {
+      throw new Error(`WebView2 version mismatch: wanted ${process.env.GOSSLAN_WEBVIEW2_VERSION}, got ${browserA?.Browser} / ${browserB?.Browser}`);
     }
-    report.webview2Process = powershell(`Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like '*${portA}*' } | Select-Object -First 1 -ExpandProperty CommandLine`);
+    report.webview2Processes = [portA, portB].map((port) => powershell(`Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like '*${port}*' } | Select-Object -First 1 -ExpandProperty CommandLine`));
+    report.webview2Process = report.webview2Processes[0];
     const timeoutMs = num("GOSSLAN_SCROLL_TIMEOUT_MS", 600_000);
     const messageCount = num("GOSSLAN_SCROLL_MESSAGES", 140);
     const todoCount = num("GOSSLAN_SCROLL_TODOS", 72);
@@ -539,7 +563,7 @@ async function runtimeSmoke(exe, report, artifactDir, ledger) {
     ledger.add("all app data stays inside the throwaway run directory", insideThrowawayRoot, [locations.dir, locationsB.dir]);
     ledger.add("both instances use separate database files", fs.existsSync(isolatedDb) && fs.existsSync(isolatedDbB) && isolatedDb !== isolatedDbB, report.isolatedDb);
     ledger.add("real IPC: distinct instance identities and group/file seeds", seeded.deviceA !== seeded.deviceB && seeded.seededFiles >= fileCount, { deviceA: seeded.deviceA, deviceB: seeded.deviceB, files: seeded.seededFiles });
-    ledger.add("WebView2 runs with the isolated per-instance UDF", String(report.webview2Process || "").includes(pa.userDataDir), report.webview2Process);
+    ledger.add("WebView2 runs with each isolated per-instance UDF", report.webview2Processes.every((command, i) => String(command || "").includes([pa, pb][i].userDataDir)), report.webview2Processes);
     const csp = await a.eval("window.__scrollSmoke.violations");
     report.cspViolations = csp;
     ledger.add("Tauri CSP blocks runtime inline style (not a dev empty policy)", csp.some((v) => String(v.directive).startsWith("style-src") && v.blocked === "inline"), csp.slice(0, 5));
@@ -620,25 +644,32 @@ async function main() {
     process.exitCode = 2;
     return;
   }
-  const exe = process.env.GOSSLAN_SCROLL_EXE || path.join(ROOT, "src-tauri/target/x86_64-pc-windows-msvc/release/gosslan.exe");
   const artifactDir = path.join(ROOT, `test-results/ui-scroll-win/run-${new Date().toISOString().replaceAll(/[:.]/g, "-")}`);
   fs.mkdirSync(artifactDir, { recursive: true });
+  const exeA = process.env.GOSSLAN_SCROLL_EXE_A || path.join(artifactDir, "smoke-a.exe");
+  const exeB = process.env.GOSSLAN_SCROLL_EXE_B || path.join(artifactDir, "smoke-b.exe");
   const ledger = new Ledger();
   const report = {
-    status: "NOT RUN", platform: process.platform, node: process.version, exe,
+    status: "NOT RUN", platform: process.platform, node: process.version, exe: [exeA, exeB],
     checks: ledger.checks, notRun: [],
   };
   try {
-    if (!process.env.GOSSLAN_SCROLL_EXE) buildSmokeExe();
-    const problems = validateProductionArtifacts({ exe });
+    if (!process.env.GOSSLAN_SCROLL_EXE_A || !process.env.GOSSLAN_SCROLL_EXE_B) {
+      const [configA, configB] = writeSmokeConfigs(artifactDir);
+      report.smokeConfigs = [configA, configB].map((file) => ({ file, sha256: sha256(file) }));
+      if (!process.env.GOSSLAN_SCROLL_EXE_A) buildSmokeExe(configA, exeA);
+      if (!process.env.GOSSLAN_SCROLL_EXE_B) buildSmokeExe(configB, exeB);
+    }
+    const problems = [...validateProductionArtifacts({ exe: exeA }), ...validateProductionArtifacts({ exe: exeB })];
     if (problems.length) throw new Error(`production artifact preflight failed:\n- ${problems.join("\n- ")}`);
-    report.exeSha256 = sha256(exe);
+    report.exeSha256 = [sha256(exeA), sha256(exeB)];
+    ledger.add("dual smoke builds produce distinct executables", report.exeSha256[0] !== report.exeSha256[1], report.exeSha256);
     report.distIndexSha256 = sha256(path.join(ROOT, "dist/index.html"));
     report.distAssets = fs.readdirSync(path.join(ROOT, "dist/assets")).sort().map((f) => ({ file: f, sha256: sha256(path.join(ROOT, "dist/assets", f)) }));
     report.csp = JSON.parse(fs.readFileSync(path.join(ROOT, "src-tauri/tauri.conf.json"), "utf8")).app.security.csp;
-    const version = powershell(`(Get-Item -LiteralPath '${exe.replaceAll("'", "''")}').VersionInfo.FileVersion`);
+    const version = powershell(`(Get-Item -LiteralPath '${exeA.replaceAll("'", "''")}').VersionInfo.FileVersion`);
     report.webview2 = { fileVersion: version };
-    await runtimeSmoke(exe, report, artifactDir, ledger);
+    await runtimeSmoke(exeA, exeB, report, artifactDir, ledger);
     report.status = ledger.checks.every((c) => c.ok) ? "PASS" : "FAIL";
   } catch (e) {
     report.status = "FAIL"; report.error = e.stack || String(e);
