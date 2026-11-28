@@ -41,6 +41,8 @@ export function windowsPathIsWithin(root, candidate) {
   return target === base || target.startsWith(`${base}/`);
 }
 
+const VISIBLE_MATCHES = `(selector) => [...document.querySelectorAll(selector)].filter(e => { const r=e.getBoundingClientRect(); const s=getComputedStyle(e); return r.width>0 && r.height>0 && s.visibility!=='hidden' && s.display!=='none'; })`;
+
 export function cspProblems(csp) {
   const directives = new Map(csp.split(";").map((part) => {
     const [name, ...values] = part.trim().toLowerCase().split(/\s+/);
@@ -208,6 +210,7 @@ export function runStaticSelfProof() {
     ["startup diagnostics and temp cleanup are bounded", launcher.includes("$dataRoot") && launcher.includes("RedirectStandardOutput") && launcher.includes("$exited") && smoke.includes("captureInstanceDiagnostics") && smoke.includes('spawnSync("cmd.exe"') && smoke.includes("5 * 1024 * 1024") && smoke.includes("timeout: 30_000")],
     ["dev probe disclaims production evidence", devProbe.includes("DEV PROBE —— 不是生产态证据") && devProbe.includes("本结果不是生产态/WebView2 证据")],
     ["fresh empty databases boot before conversation rows exist", smoke.includes("async function ready(cdp, requireConversation = false)") && smoke.includes("if (requireConversation)") && smoke.includes("await ready(a, true); await ready(b, true)")],
+    ["history paging uses a visible viewport and reports failure state", (smoke.match(/VISIBLE_MATCHES/g) || []).length >= 8 && smoke.includes("timeline did not page back to seeded head") && smoke.includes("JSON.stringify(state)")],
   ];
   for (const [name, ok] of wiring) {
     if (!ok) throw new Error(`wiring control failed: ${name}`);
@@ -436,7 +439,7 @@ async function shot(cdp, file) {
 
 async function checkScroller(cdp, ledger, artifactDir, label, selector, options = {}) {
   const readExpr = `(() => {
-    const matches = document.querySelectorAll(${JSON.stringify(selector)});
+    const matches = ${VISIBLE_MATCHES}(${JSON.stringify(selector)});
     const root = ${options.lastDialog ? "matches[matches.length - 1]" : "matches[0]"};
     if (!root) return { present:false };
     const host = root.matches('.n-scrollbar') ? root : (root.querySelector('.n-scrollbar') || root.closest('.n-scrollbar') || root);
@@ -457,7 +460,7 @@ async function checkScroller(cdp, ledger, artifactDir, label, selector, options 
   const before = await cdp.eval(readExpr);
   ledger.add(`${label}: flex height chain is active`, before.hostDisplay === "flex" && before.containerDisplay === "flex" && before.hostIsolation === "isolate", before);
   ledger.add(`${label}: no unexpected horizontal scrollbar`, before.scrollW <= before.clientW + 1 && before.nativeW <= 1 && before.nativeH <= 1 && before.docW <= before.viewW + 1, before);
-  await cdp.eval(`(() => { const m=document.querySelectorAll(${JSON.stringify(selector)}); const h=${options.lastDialog ? "m[m.length-1]" : "m[0]"}; const e=h.querySelector('.n-scrollbar-container')||h; e.scrollTop=0; e.dispatchEvent(new Event('scroll',{bubbles:true})); })()`);
+  await cdp.eval(`(() => { const m=${VISIBLE_MATCHES}(${JSON.stringify(selector)}); const h=${options.lastDialog ? "m[m.length-1]" : "m[0]"}; const e=h.querySelector('.n-scrollbar-container')||h; e.scrollTop=0; e.dispatchEvent(new Event('scroll',{bubbles:true})); })()`);
   await sleep(500);
   const first = await cdp.eval(readExpr);
   ledger.add(`${label}: first edge reachable`, first.top <= 1, first.top);
@@ -465,12 +468,12 @@ async function checkScroller(cdp, ledger, artifactDir, label, selector, options 
     const visible = await cdp.eval(`(() => { const e=[...document.querySelectorAll('*')].find(x=>x.children.length===0 && x.textContent.includes(${JSON.stringify(options.startText)})); if(!e)return false; const r=e.getBoundingClientRect(); const s=e.closest('.n-scrollbar-container'); if(!s)return false; const q=s.getBoundingClientRect(); return r.bottom<=q.bottom+1 && r.top>=q.top-1 && r.left>=q.left-1 && r.right<=q.right+1; })()`);
     ledger.add(`${label}: seeded head is visible`, visible, options.startText);
   }
-  const point = await cdp.eval(`(() => { const m=document.querySelectorAll(${JSON.stringify(selector)}); const h=${options.lastDialog ? "m[m.length-1]" : "m[0]"}; const e=h.querySelector('.n-scrollbar-container')||h; const r=e.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+Math.min(r.height/2,160)}; })()`);
+  const point = await cdp.eval(`(() => { const m=${VISIBLE_MATCHES}(${JSON.stringify(selector)}); const h=${options.lastDialog ? "m[m.length-1]" : "m[0]"}; const e=h.querySelector('.n-scrollbar-container')||h; const r=e.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+Math.min(r.height/2,160)}; })()`);
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: point.x, y: point.y, deltaX: 0, deltaY: 700 });
   await sleep(500);
   const wheeled = await cdp.eval(readExpr);
   ledger.add(`${label}: WebView2 wheel moves the real container`, wheeled.top > first.top + 80, { first: first.top, wheeled: wheeled.top });
-  await cdp.eval(`(() => { const m=document.querySelectorAll(${JSON.stringify(selector)}); const h=${options.lastDialog ? "m[m.length-1]" : "m[0]"}; const e=h.querySelector('.n-scrollbar-container')||h; e.scrollTop=e.scrollHeight; e.dispatchEvent(new Event('scroll',{bubbles:true})); })()`);
+  await cdp.eval(`(() => { const m=${VISIBLE_MATCHES}(${JSON.stringify(selector)}); const h=${options.lastDialog ? "m[m.length-1]" : "m[0]"}; const e=h.querySelector('.n-scrollbar-container')||h; e.scrollTop=e.scrollHeight; e.dispatchEvent(new Event('scroll',{bubbles:true})); })()`);
   await sleep(700);
   const last = await cdp.eval(readExpr);
   ledger.add(`${label}: last edge reachable`, Math.abs(last.top + last.clientH - last.scrollH) <= 3, { top: last.top, clientH: last.clientH, scrollH: last.scrollH });
@@ -490,23 +493,34 @@ async function clickButtonByTitle(cdp, titles) {
 
 async function openGroup(cdp, groupName) {
   await cdp.eval(`(() => { const row=[...document.querySelectorAll('[data-conv-row]')].find(x=>x.textContent.includes(${JSON.stringify(groupName)}) && x.getBoundingClientRect().width>0 && x.getBoundingClientRect().height>0); if(!row)throw new Error('seeded group row missing'); row.click(); })()`);
-  await waitFor(() => cdp.eval(`document.body.innerText.includes(${JSON.stringify(groupName)}) && !!document.querySelector('.vlist-no-anchor .n-scrollbar-container')`), "group timeline", 45_000);
+  await waitFor(() => cdp.eval(`document.body.innerText.includes(${JSON.stringify(groupName)}) && ${VISIBLE_MATCHES}('.vlist-no-anchor').length>0`), "group timeline", 45_000);
+  await sleep(1000);
 }
 
 async function pageToSeededHead(cdp, selector, text) {
-  for (let i = 0; i < 10; i += 1) {
-    const visible = await cdp.eval(`(() => {
-      const e=[...document.querySelectorAll('*')].find(x=>x.children.length===0 && x.textContent.includes(${JSON.stringify(text)}));
-      if(!e)return false;
-      const s=e.closest('.n-scrollbar-container'); if(!s)return false;
-      const r=e.getBoundingClientRect(), q=s.getBoundingClientRect();
-      return r.bottom<=q.bottom+1 && r.top>=q.top-1 && r.left>=q.left-1 && r.right<=q.right+1;
-    })()`);
-    if (visible) return;
-    await cdp.eval(`(() => { const h=document.querySelector(${JSON.stringify(selector)}); const e=h.querySelector('.n-scrollbar-container')||h; e.scrollTop=0; e.dispatchEvent(new Event('scroll',{bubbles:true})); })()`);
-    await sleep(800);
+  const read = `(() => {
+    const hosts=${VISIBLE_MATCHES}(${JSON.stringify(selector)});
+    const h=hosts[0]; if(!h)return {visible:false,reason:'no visible host',hostCount:0};
+    const e=h.querySelector('.n-scrollbar-container')||h;
+    const target=[...document.querySelectorAll('*')].find(x=>x.children.length===0 && x.textContent.includes(${JSON.stringify(text)}));
+    const r=target?.getBoundingClientRect(), q=e.getBoundingClientRect();
+    return {visible:!!target && target.closest('.n-scrollbar-container')===e && r.bottom<=q.bottom+1 && r.top>=q.top-1 && r.left>=q.left-1 && r.right<=q.right+1,
+      hostCount:hosts.length,top:e.scrollTop,scrollH:e.scrollHeight,clientH:e.clientHeight,
+      target:target?{top:r.top,bottom:r.bottom,left:r.left,right:r.right}:null,viewport:{top:q.top,bottom:q.bottom,left:q.left,right:q.right}};
+  })()`;
+  let state = await cdp.eval(read);
+  if (!state.hostCount) throw new Error(`timeline has no visible host: ${JSON.stringify(state)}`);
+  const point = await cdp.eval(`(() => { const h=${VISIBLE_MATCHES}(${JSON.stringify(selector)})[0]; const r=h.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+Math.min(r.height/2,160)}; })()`);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: point.x, y: point.y, deltaX: 0, deltaY: -700 });
+  await sleep(200);
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    state = await cdp.eval(read);
+    if (state.visible) return;
+    await cdp.eval(`(() => { const h=${VISIBLE_MATCHES}(${JSON.stringify(selector)})[0]; if(!h)return; const e=h.querySelector('.n-scrollbar-container')||h; e.scrollTop=0; e.dispatchEvent(new Event('scroll',{bubbles:true})); })()`);
+    await sleep(250);
   }
-  throw new Error(`timeline did not page back to seeded head ${text}`);
+  throw new Error(`timeline did not page back to seeded head ${text}: ${JSON.stringify(state)}`);
 }
 
 async function closeTop(cdp) {
@@ -620,11 +634,11 @@ async function runtimeSmoke(exeA, exeB, report, artifactDir, ledger) {
     await waitFor(() => a.eval("document.documentElement.classList.contains('is-mobile') && innerWidth<=767 && innerHeight<=700"), "short desktop window/mobile layout", 20_000);
     report.shortWindow = await a.eval("({width:innerWidth,height:innerHeight,mobile:document.documentElement.classList.contains('is-mobile')})");
     await clickButtonByTitle(a, ["Group Tasks", "群任务"]);
-    await waitFor(() => a.eval("!!document.querySelector('[data-todo-row]')"), "embedded task board", 45_000);
+    await waitFor(() => a.eval(`${VISIBLE_MATCHES}('[data-todo-row]').length>0`), "embedded task board", 45_000);
     await checkScroller(a, ledger, artifactDir, "task-board-short-window", ".gosslan-dialog-page .gosslan-os", { overflow: true, startText: `SCROLL-TODO-${String(todoCount - 1).padStart(4, "0")}`, endText: "SCROLL-TODO-0000" });
-    await a.eval(`(() => { const b=document.querySelector('[data-todo-row] button'); if(!b)throw new Error('todo row button missing'); b.click(); })()`);
-    await waitFor(() => a.eval("document.querySelectorAll('[role=dialog]').length>=2"), "nested task detail", 15_000);
-    const dialogs = await a.eval(`[...document.querySelectorAll('[role=dialog]')].map(e=>{const r=e.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,viewW:innerWidth,viewH:innerHeight,scrollH:e.scrollHeight,clientH:e.clientHeight}})`);
+    await a.eval(`(() => { const b=${VISIBLE_MATCHES}('[data-todo-row]')[0]?.querySelector('button'); if(!b)throw new Error('todo row button missing'); b.click(); })()`);
+    await waitFor(() => a.eval(`${VISIBLE_MATCHES}('[role=dialog]').length>=2`), "nested task detail", 15_000);
+    const dialogs = await a.eval(`${VISIBLE_MATCHES}('[role=dialog]').map(e=>{const r=e.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,viewW:innerWidth,viewH:innerHeight,scrollH:e.scrollHeight,clientH:e.clientHeight}})`);
     ledger.add("short window: nested task detail remains inside viewport", dialogs.length >= 2 && dialogs.every((r) => r.left >= -1 && r.top >= -1 && r.right <= r.viewW + 1 && r.bottom <= r.viewH + 1), dialogs);
     await checkScroller(a, ledger, artifactDir, "task-detail-short-window", "[role=dialog]", { overflow: true, lastDialog: true });
     await shot(a, path.join(artifactDir, "nested-task-detail.png"));

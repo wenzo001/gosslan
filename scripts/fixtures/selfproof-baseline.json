@@ -140,7 +140,7 @@
     "test:ui-scroll:win:selfproof": {
       "exit": 0,
       "red": 0,
-      "total": 18
+      "total": 19
     }
   }
 }
