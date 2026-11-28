@@ -14,6 +14,13 @@
 
 ## [Unreleased]
 
+## [7.4.11] - 2026-11-28
+
+### 修复：Windows WebView2 CDP 与实例端口
+- WebView2 改用配置中的 `remote-debugging-port=0`，从每实例 UDF 的 `DevToolsActivePort`
+  读取真实端口，不再依赖未生效的环境变量。
+- smoke 实例号限制在 1–500，避免 TCP 端口 `59992 + instance×10` 回绕到 65535。
+
 ## [7.4.10] - 2026-11-28
 
 ### 修复：Windows smoke 超时

@@ -13,14 +13,13 @@
  * then copies it into a fresh temporary directory so appDirectoriesOverride isolates all
  * app data. GOSSLAN_SCROLL_EXE bypasses that build only for an already-built smoke exe.
  * GOSSLAN_SCROLL_EXE bypasses that build only for an already-built smoke exe.
- * Optional: GOSSLAN_SCROLL_CDP_A/B, GOSSLAN_WEBVIEW2_VERSION,
+ * Optional: GOSSLAN_WEBVIEW2_VERSION,
  *           GOSSLAN_SCROLL_MESSAGES/TODOS/FILES, GOSSLAN_SCROLL_TIMEOUT_MS.
  * A non-Windows normal run reports NOT RUN and exits 2; it never claims a pass.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import net from "node:net";
 import crypto from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -185,8 +184,9 @@ export function runStaticSelfProof() {
   const wiring = [
     ["npm production entry is registered", pkg.scripts["test:ui-scroll:win"] === "node scripts/check-ui-scroll-win.mjs"],
     ["Windows CI invokes the production entry", /^\s*npm run test:ui-scroll:win\s*$/m.test(workflow) && workflow.includes("gosslan-windows-scroll-smoke")],
-    ["launcher isolates instance DB and WebView2 UDF", launcher.includes("GOSSLAN_INSTANCE") && launcher.includes("WEBVIEW2_USER_DATA_FOLDER") && launcher.includes("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")],
+    ["launcher isolates instance DB and WebView2 UDF", launcher.includes("GOSSLAN_INSTANCE") && launcher.includes("WEBVIEW2_USER_DATA_FOLDER") && launcher.includes("DevToolsActivePort")],
     ["smoke config and copied exe isolate the whole app directory", smokeConfig.app?.appDirectoriesOverride === "scroll-smoke-data" && buildBody.includes('"--config"') && launcher.includes("Copy-Item -LiteralPath $Exe") && launcher.includes("Start-Process -FilePath $smokeExe")],
+    ["WebView2 uses an ephemeral CDP port and instance ids cannot wrap TCP ports", smokeConfig.app?.windows?.some((w) => w.label === "main" && w.additionalBrowserArgs?.includes("--remote-debugging-port=0")) && smoke.includes("1 + (process.pid % 500)")],
     ["startup diagnostics and temp cleanup are bounded", launcher.includes("$dataRoot") && launcher.includes("RedirectStandardOutput") && launcher.includes("$exited") && smoke.includes("captureInstanceDiagnostics") && smoke.includes('spawnSync("cmd.exe"') && smoke.includes("5 * 1024 * 1024") && smoke.includes("timeout: 30_000")],
     ["dev probe disclaims production evidence", devProbe.includes("DEV PROBE —— 不是生产态证据") && devProbe.includes("本结果不是生产态/WebView2 证据")],
     ["fresh empty databases boot before conversation rows exist", smoke.includes("async function ready(cdp, requireConversation = false)") && smoke.includes("if (requireConversation)") && smoke.includes("await ready(a, true); await ready(b, true)")],
@@ -256,13 +256,6 @@ class Cdp {
   close() { this.ws.close(); }
 }
 
-const portOpen = (port) => new Promise((resolve) => {
-  const s = net.connect(port, "127.0.0.1");
-  s.once("connect", () => { s.destroy(); resolve(true); });
-  s.once("error", () => resolve(false));
-  s.setTimeout(500, () => { s.destroy(); resolve(false); });
-});
-
 function powershell(script) {
   const r = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 30_000 });
   if (r.status !== 0) throw new Error(`PowerShell failed: ${r.stderr || r.stdout}`);
@@ -278,9 +271,9 @@ function buildSmokeExe() {
   if (result.error || result.status !== 0) throw new Error(`Windows smoke build failed: ${result.error?.message || `exit ${result.status}`}`);
 }
 
-async function launch(exe, runRoot, instance, port) {
+async function launch(exe, runRoot, instance) {
   const launcher = path.join(ROOT, "scripts/start-ui-scroll-smoke.ps1");
-  const command = `& '${launcher.replaceAll("'", "''")}' -Exe '${exe.replaceAll("'", "''")}' -RunRoot '${runRoot.replaceAll("'", "''")}' -Instance ${instance} -CdpPort ${port}`;
+  const command = `& '${launcher.replaceAll("'", "''")}' -Exe '${exe.replaceAll("'", "''")}' -RunRoot '${runRoot.replaceAll("'", "''")}' -Instance ${instance}`;
   const out = powershell(command);
   return JSON.parse(out);
 }
@@ -324,9 +317,9 @@ async function ready(cdp, requireConversation = false) {
   }
 }
 
-async function seedPeer(groupName, messages, todos, files, runRoot, timeoutMs) {
-  const a = await Cdp.connect(num("GOSSLAN_SCROLL_CDP_A", 9561), 30_000);
-  const b = await Cdp.connect(num("GOSSLAN_SCROLL_CDP_B", 9562), 30_000);
+async function seedPeer(groupName, messages, todos, files, runRoot, timeoutMs, portA, portB) {
+  const a = await Cdp.connect(portA, 30_000);
+  const b = await Cdp.connect(portB, 30_000);
   try {
     await ready(a); await ready(b);
     const [da, db] = await Promise.all([invoke(a, "get_device_info"), invoke(b, "get_device_info")]);
@@ -508,15 +501,14 @@ async function captureInstanceDiagnostics(instances, artifactDir) {
 
 async function runtimeSmoke(exe, report, artifactDir, ledger) {
   const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gosslan-ui-scroll-"));
-  const instanceA = 960061 + (process.pid % 1000);
+  const instanceA = 1 + (process.pid % 500);
   const instanceB = instanceA + 1;
-  const portA = num("GOSSLAN_SCROLL_CDP_A", 9561);
-  const portB = num("GOSSLAN_SCROLL_CDP_B", 9562);
-  for (const port of [portA, portB]) if (await portOpen(port)) throw new Error(`CDP port ${port} already occupied; refuse to read a stale instance`);
   let pa, pb, seeded;
   try {
-    pa = await launch(exe, runRoot, instanceA, portA);
-    pb = await launch(exe, runRoot, instanceB, portB);
+    pa = await launch(exe, runRoot, instanceA);
+    pb = await launch(exe, runRoot, instanceB);
+    const portA = pa.cdpPort;
+    const portB = pb.cdpPort;
     report.instances = [pa, pb];
     console.log("smoke: instances launched");
     const exited = report.instances.filter((inst) => inst.exited);
@@ -533,7 +525,7 @@ async function runtimeSmoke(exe, report, artifactDir, ledger) {
     const messageCount = num("GOSSLAN_SCROLL_MESSAGES", 140);
     const todoCount = num("GOSSLAN_SCROLL_TODOS", 72);
     const fileCount = num("GOSSLAN_SCROLL_FILES", 64);
-    seeded = await seedPeer("F06-SCROLL-GROUP", messageCount, todoCount, fileCount, runRoot, timeoutMs);
+    seeded = await seedPeer("F06-SCROLL-GROUP", messageCount, todoCount, fileCount, runRoot, timeoutMs, portA, portB);
     console.log("smoke: IPC seed complete");
     Object.assign(report, { groupId: seeded.group.id, deviceA: seeded.deviceA, deviceB: seeded.deviceB, seededFiles: seeded.seededFiles });
     const a = seeded.a;

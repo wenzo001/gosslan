@@ -1,5 +1,11 @@
 {
   "app": {
-    "appDirectoriesOverride": "scroll-smoke-data"
+    "appDirectoriesOverride": "scroll-smoke-data",
+    "windows": [
+      {
+        "label": "main",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port=0 --remote-allow-origins=*"
+      }
+    ]
   }
 }
