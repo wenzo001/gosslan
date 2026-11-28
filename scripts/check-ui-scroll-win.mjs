@@ -187,7 +187,7 @@ export function runStaticSelfProof() {
     ["Windows CI invokes the production entry", /^\s*npm run test:ui-scroll:win\s*$/m.test(workflow) && workflow.includes("gosslan-windows-scroll-smoke")],
     ["launcher isolates instance DB and WebView2 UDF", launcher.includes("GOSSLAN_INSTANCE") && launcher.includes("WEBVIEW2_USER_DATA_FOLDER") && launcher.includes("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")],
     ["smoke config and copied exe isolate the whole app directory", smokeConfig.app?.appDirectoriesOverride === "scroll-smoke-data" && buildBody.includes('"--config"') && launcher.includes("Copy-Item -LiteralPath $Exe") && launcher.includes("Start-Process -FilePath $smokeExe")],
-    ["startup diagnostics preserve the override root, output and exit state", launcher.includes("$dataRoot") && launcher.includes("RedirectStandardOutput") && launcher.includes("$exited") && smoke.includes("captureInstanceDiagnostics")],
+    ["startup diagnostics and temp cleanup are bounded", launcher.includes("$dataRoot") && launcher.includes("RedirectStandardOutput") && launcher.includes("$exited") && smoke.includes("captureInstanceDiagnostics") && smoke.includes('spawnSync("cmd.exe"') && smoke.includes("5 * 1024 * 1024") && smoke.includes("timeout: 30_000")],
     ["dev probe disclaims production evidence", devProbe.includes("DEV PROBE —— 不是生产态证据") && devProbe.includes("本结果不是生产态/WebView2 证据")],
     ["fresh empty databases boot before conversation rows exist", smoke.includes("async function ready(cdp, requireConversation = false)") && smoke.includes("if (requireConversation)") && smoke.includes("await ready(a, true); await ready(b, true)")],
   ];
@@ -264,7 +264,7 @@ const portOpen = (port) => new Promise((resolve) => {
 });
 
 function powershell(script) {
-  const r = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], { encoding: "utf8", windowsHide: true });
+  const r = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 30_000 });
   if (r.status !== 0) throw new Error(`PowerShell failed: ${r.stderr || r.stdout}`);
   return r.stdout.trim();
 }
@@ -488,7 +488,15 @@ async function captureInstanceDiagnostics(instances, artifactDir) {
       if (source && fs.existsSync(source)) fs.copyFileSync(source, path.join(dir, path.basename(source)));
     }
     const logs = path.join(inst.dataRoot || path.dirname(inst.exe), "logs");
-    if (fs.existsSync(logs)) fs.cpSync(logs, path.join(dir, "logs"), { recursive: true });
+    if (fs.existsSync(logs)) {
+      const logDir = path.join(dir, "logs");
+      fs.mkdirSync(logDir, { recursive: true });
+      for (const entry of fs.readdirSync(logs, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        const source = path.join(logs, entry.name);
+        if (fs.statSync(source).size <= 5 * 1024 * 1024) fs.copyFileSync(source, path.join(logDir, entry.name));
+      }
+    }
     let process = "";
     try {
       process = powershell(`Get-Process -Id ${inst.pid} -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,HasExited,ExitCode | ConvertTo-Json -Compress`);
@@ -510,10 +518,12 @@ async function runtimeSmoke(exe, report, artifactDir, ledger) {
     pa = await launch(exe, runRoot, instanceA, portA);
     pb = await launch(exe, runRoot, instanceB, portB);
     report.instances = [pa, pb];
+    console.log("smoke: instances launched");
     const exited = report.instances.filter((inst) => inst.exited);
     if (exited.length) throw new Error(`smoke instance exited during startup: ${JSON.stringify(exited)}`);
     const browser = await waitFor(() => fetch(`http://127.0.0.1:${portA}/json/version`).then((r) => r.json()).catch(() => null), "WebView2 version endpoint", 30_000);
     report.webview2 = { ...(report.webview2 || {}), browser: browser?.Browser, protocol: browser?.["Protocol-Version"] };
+    console.log("smoke: WebView2 endpoint ready");
     ledger.add("WebView2 runtime version is recorded", !!browser?.Browser, report.webview2);
     if (process.env.GOSSLAN_WEBVIEW2_VERSION && !String(browser?.Browser || "").includes(process.env.GOSSLAN_WEBVIEW2_VERSION)) {
       throw new Error(`WebView2 version mismatch: wanted ${process.env.GOSSLAN_WEBVIEW2_VERSION}, got ${browser?.Browser}`);
@@ -524,6 +534,7 @@ async function runtimeSmoke(exe, report, artifactDir, ledger) {
     const todoCount = num("GOSSLAN_SCROLL_TODOS", 72);
     const fileCount = num("GOSSLAN_SCROLL_FILES", 64);
     seeded = await seedPeer("F06-SCROLL-GROUP", messageCount, todoCount, fileCount, runRoot, timeoutMs);
+    console.log("smoke: IPC seed complete");
     Object.assign(report, { groupId: seeded.group.id, deviceA: seeded.deviceA, deviceB: seeded.deviceB, seededFiles: seeded.seededFiles });
     const a = seeded.a;
     const [locations, locationsB] = await Promise.all([invoke(a, "get_log_locations"), invoke(seeded.b, "get_log_locations")]);
@@ -584,10 +595,16 @@ async function runtimeSmoke(exe, report, artifactDir, ledger) {
     ];
     await invoke(a, "plugin:window|set_size", { label: "main", value: { Logical: { width: 1000, height: 680 } } });
   } finally {
+    console.log("smoke: stopping instances");
     if (seeded) { seeded.a.close(); seeded.b.close(); }
     await stopInstance(pa); await stopInstance(pb);
+    console.log("smoke: capturing diagnostics");
     report.diagnostics = await captureInstanceDiagnostics([pa, pb], artifactDir);
-    fs.rmSync(runRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    console.log("smoke: cleaning temp directory");
+    const cleanup = spawnSync("cmd.exe", ["/d", "/s", "/c", `rd /s /q "${runRoot}"`], {
+      windowsHide: true, encoding: "utf8", timeout: 30_000,
+    });
+    if (cleanup.error || cleanup.status !== 0) console.log(`smoke temp cleanup deferred: ${cleanup.error?.message || `exit ${cleanup.status}`}`);
   }
 }
 
