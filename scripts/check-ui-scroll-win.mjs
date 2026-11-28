@@ -31,7 +31,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const sha256 = (file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 
 export function windowsPathIsWithin(root, candidate) {
-  const key = (value) => path.win32.resolve(value).replace(/^\\\\\?\\/i, "").replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+  const key = (value) => {
+    let resolved = value;
+    try { resolved = fs.realpathSync.native(value); } catch {}
+    return path.win32.resolve(resolved).replace(/^\\\\\?\\/i, "").replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+  };
   const base = key(root);
   const target = key(candidate);
   return target === base || target.startsWith(`${base}/`);
@@ -480,18 +484,25 @@ async function checkScroller(cdp, ledger, artifactDir, label, selector, options 
 }
 
 async function clickButtonByTitle(cdp, titles) {
-  const clicked = await cdp.eval(`(() => { const wanted=${JSON.stringify(titles)}; const b=[...document.querySelectorAll('button')].find(x=>wanted.includes(x.title)); if(!b)return false; b.click(); return true; })()`);
-  if (!clicked) throw new Error(`button not found by title: ${titles.join(" / ")}`);
+  const clicked = await cdp.eval(`(() => { const wanted=${JSON.stringify(titles)}; const b=[...document.querySelectorAll('button')].find(x=>wanted.includes(x.title) && x.getBoundingClientRect().width>0 && x.getBoundingClientRect().height>0 && getComputedStyle(x).visibility!=='hidden'); if(!b)return false; b.click(); return true; })()`);
+  if (!clicked) throw new Error(`visible button not found by title: ${titles.join(" / ")}`);
 }
 
 async function openGroup(cdp, groupName) {
-  await cdp.eval(`(() => { const row=[...document.querySelectorAll('[data-conv-row]')].find(x=>x.textContent.includes(${JSON.stringify(groupName)})); if(!row)throw new Error('seeded group row missing'); row.click(); })()`);
+  await cdp.eval(`(() => { const row=[...document.querySelectorAll('[data-conv-row]')].find(x=>x.textContent.includes(${JSON.stringify(groupName)}) && x.getBoundingClientRect().width>0 && x.getBoundingClientRect().height>0); if(!row)throw new Error('seeded group row missing'); row.click(); })()`);
   await waitFor(() => cdp.eval(`document.body.innerText.includes(${JSON.stringify(groupName)}) && !!document.querySelector('.vlist-no-anchor .n-scrollbar-container')`), "group timeline", 45_000);
 }
 
 async function pageToSeededHead(cdp, selector, text) {
-  for (let i = 0; i < 6; i += 1) {
-    if (await cdp.eval(`document.body.innerText.includes(${JSON.stringify(text)})`)) return;
+  for (let i = 0; i < 10; i += 1) {
+    const visible = await cdp.eval(`(() => {
+      const e=[...document.querySelectorAll('*')].find(x=>x.children.length===0 && x.textContent.includes(${JSON.stringify(text)}));
+      if(!e)return false;
+      const s=e.closest('.n-scrollbar-container'); if(!s)return false;
+      const r=e.getBoundingClientRect(), q=s.getBoundingClientRect();
+      return r.bottom<=q.bottom+1 && r.top>=q.top-1 && r.left>=q.left-1 && r.right<=q.right+1;
+    })()`);
+    if (visible) return;
     await cdp.eval(`(() => { const h=document.querySelector(${JSON.stringify(selector)}); const e=h.querySelector('.n-scrollbar-container')||h; e.scrollTop=0; e.dispatchEvent(new Event('scroll',{bubbles:true})); })()`);
     await sleep(800);
   }
