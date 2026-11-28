@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "gosslan"
-version = "7.4.19"
+version = "7.4.20"
 dependencies = [
  "argon2",
  "async-trait",

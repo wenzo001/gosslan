@@ -212,6 +212,7 @@ export function runStaticSelfProof() {
     ["dev probe disclaims production evidence", devProbe.includes("DEV PROBE —— 不是生产态证据") && devProbe.includes("本结果不是生产态/WebView2 证据")],
     ["fresh empty databases boot before conversation rows exist", smoke.includes("async function ready(cdp, requireConversation = false)") && smoke.includes("if (requireConversation)") && smoke.includes("await ready(a, true); await ready(b, true)")],
     ["history paging uses a visible viewport and reports failure state", (smoke.match(/VISIBLE_MATCHES/g) || []).length >= 8 && smoke.includes("timeline did not page back to seeded head") && smoke.includes("JSON.stringify({ state, database, pageText })") && smoke.includes("deltaY: atTop ? 1 : -1200")],
+    ["long timeline asserts its real seeded head and tail", smoke.includes('const timelineHead = "SCROLL-FILE-0000.txt"') && smoke.includes("startText: timelineHead") && smoke.includes("endText: timelineTail")],
   ];
   for (const [name, ok] of wiring) {
     if (!ok) throw new Error(`wiring control failed: ${name}`);
@@ -626,8 +627,10 @@ async function runtimeSmoke(exeA, exeB, report, artifactDir, ledger) {
     ledger.add("runtime resources come from dist, not Vite source", resources.length > 0 && resources.every((u) => !/\/(?:src|node_modules\/\.vite)\//.test(u) && !u.includes("@vite/client")), resources.slice(0, 12));
 
     await openGroup(a, "F06-SCROLL-GROUP");
-    await pageToSeededHead(a, ".vlist-no-anchor", "SCROLL-MSG-0000", `group:${seeded.group.id}`);
-    await checkScroller(a, ledger, artifactDir, "long-session", ".vlist-no-anchor", { overflow: true, startText: "SCROLL-MSG-0000", endText: `SCROLL-MSG-${String(messageCount - 1).padStart(4, "0")}` });
+    const timelineHead = "SCROLL-FILE-0000.txt";
+    const timelineTail = `SCROLL-MSG-${String(messageCount - 1).padStart(4, "0")}`;
+    await pageToSeededHead(a, ".vlist-no-anchor", timelineHead, `group:${seeded.group.id}`);
+    await checkScroller(a, ledger, artifactDir, "long-session", ".vlist-no-anchor", { overflow: true, startText: timelineHead, endText: timelineTail });
 
     await clickButtonByTitle(a, ["Group Files", "群文件"]);
     await waitFor(() => a.eval("document.body.innerText.includes('SCROLL-FILE-0000.txt')"), "group files modal", 30_000);
