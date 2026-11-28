@@ -251,7 +251,7 @@ export const useChatStore = defineStore("chat", () => {
   const groupHistoryStarting = ref<Record<string, true>>({});
   const activeConv = ref<string | null>(null);
   // 群聊里有人 @ 我且未读的会话 id 集合 → 列表摘要前显示 [有人@我]。
-  // 纯前端运行时标志（不落库）：打开会话即清除，重启后随未读一起消失。
+  // 启动时从 mention_receipts 恢复；打开会话即清除，重启后保留未读提醒。
   const mentionedConvs = ref(new Set<string>());
 
   const activeConversation = computed(

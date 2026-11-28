@@ -278,7 +278,7 @@
 
   <!-- ⑤ 数据契约 -->
   <section class="tab" id="t-db" role="tabpanel">
-    <p class="lede">SQLite 只存<b>文本、密钥、关系与队列</b>；二进制一律落盘（<code>storage/mod.rs</code> 的硬原则）。全库 21 张表（2026-11-03 真库 <code>sqlite_master</code> 现算）：<b>零 CHECK、零 FOREIGN KEY</b>，状态枚举与级联删除全靠应用层 SQL 自己守 —— 所以下面"状态取值"和"谁写"两列就是真正的契约。</p>
+    <p class="lede">SQLite 只存<b>文本、密钥、关系与队列</b>；二进制一律落盘（<code>storage/mod.rs</code> 的硬原则）。全库 23 张表（2026-11-28 源码 <code>SCHEMA</code> 与内容库建表路径现算）：<b>零 CHECK、零 FOREIGN KEY</b>，状态枚举与级联删除全靠应用层 SQL 自己守 —— 所以下面"状态取值"和"谁写"两列就是真正的契约。</p>
     <div id="dblist"></div>
   </section>
 
@@ -510,7 +510,7 @@ const MODS = [
     role: "一条全局 <code>Mutex&lt;Connection&gt;</code>；SCHEMA 幂等建表 + <code>user_version</code> 版本化迁移 + 降级守卫；每域一份 SQL 分册共享一个扁平 <code>crate::db::</code> 命名空间。",
     files: ["src-tauri/src/db.rs", "src-tauri/src/db/*.rs", "src-tauri/src/export.rs"],
     in: ["&Connection 已由调用方上锁 → db::insert_message_and_outbox 等", "PRAGMA user_version（>DB_VERSION 直接拒绝启动，且必须早于任何写）"],
-    out: ["21 张表（db.rs 20 + 内容库 1）· 真库 25 个索引（2026-11-03 sqlite_master 现算；源码 33 条 CREATE INDEX 里 8 条被迁移 drop）", "Lamport next_clock/observe_clock", "级联删除（无外键 ⇒ 手写）"],
+    out: ["23 张表（db.rs 22 + 内容库 1）· 索引以当前 SCHEMA 与迁移现算为准", "Lamport next_clock/observe_clock", "级联删除（无外键 ⇒ 手写）"],
     data: ["⚠️ 窗口路径必须 try_lock + 安全降级（同步步命令跑在 wry 主线程，持锁等待=整个应用冻）", "命名：get_/list_/insert_/upsert_/mark_/delete_"] },
   { id: "dom-platform", l: "dom", n: "平台外壳", s: "menu · tray · macos_window · bookmark · notifications · user_dirs · open_path · android 桥（打开文件 / 后台前台服务）",
     role: "四端差异全收在这一层：macOS 圆角/菜单/security-scoped bookmark、Android JNI（文件打开 + 局域网通道期间的前台服务，见 ADR-0022）、通知与托盘、目录解析。",
@@ -945,7 +945,7 @@ const SEM = {
   get_group_todo_messages: { d: "按会话 id 批量取 <code>kind IN (todo, todo_update, todo_reply)</code> 的原始行，给前端算「与我相关」徽标与折叠任务回复用。"
     + "<b>为什么必须有它</b>：会话消息缓存有上限（<code>enforceMessageCacheBound</code> 会挤掉冷会话），拿内存数据算徽标 = 缓存没到就是一片空，那是假状态；"
     + "折叠与判定<b>仍只有前端 <code>utils/todos.ts::foldTodos</code> 那一份</b>（这里不重复实现）" },
-  send_group_message: { d: "群消息（走统一的 <code>send_group_payload</code>：取群密钥 → 信封 → 每人一行 group_outbox → broadcast_gossip）。<code>mentions</code>=这条<b>文本</b> @ 了谁（设备 id，三态：缺省=不发这个键=对端按昵称兜底；空数组=明确谁都没 @）；只进加密明文，<b>不落库</b>。★ 但同一句话里的另一份信息<b>落库待遇相反</b>：落点 <code>mention_targets</code>（#122 第二段，<code>messages</code> 表那一列，迁移 v10→v11）是那句话的历史事实，重启后仍按身份标；两份的分界写在 <code>state::MessageRecord</code> 的字段文档上。）" },
+  send_group_message: { d: "群消息（走统一的 <code>send_group_payload</code>：取群密钥 → 信封 → 每人一行 group_outbox → broadcast_gossip）。<code>mentions</code>=这条<b>文本</b> @ 了谁（设备 id，三态：缺省=不发这个键=对端按昵称兜底；空数组=明确谁都没 @）；只进加密明文、不写进消息行；未读提醒另存 <code>mention_receipts</code>。★ 但同一句话里的另一份信息<b>落库待遇相反</b>：落点 <code>mention_targets</code>（#122 第二段，<code>messages</code> 表那一列，迁移 v10→v11）是那句话的历史事实，重启后仍按身份标；两份的分界写在 <code>state::MessageRecord</code> 的字段文档上。）" },
   send_group_announcement: { d: "发布群公告（<b>仅群主</b>）：权限口径与改名逐字同构（<code>group.creator == 我</code>）。"
     + "公告是发给全群的权威信息，人人可发就失去意义；<b>群主离线就是发不了</b> —— 无中心即无中心授权，不降级成谁都能发" },
   send_group_todo: { d: "建任务。<code>kind=todo</code> 属 <b>Card 类</b>（计未读）。通知只给<b>相关人</b>：创建人 + 被指派人（判据 <code>utils/todos::todoCardConcernsMe</code>）—— 2026-11-02 之前实现是全群每个人都弹，与本图那句「通知被指派人」不符。<code>linked_from</code>=基于另一条任务新建时记下来源 todo_id（两条各自独立管理，只是溯源指针；命令层校验它真实存在）。", w: "messages(JSON)" },
@@ -1130,9 +1130,11 @@ const TABLES = [
   ["friends", "好友关系（两侧各存一份，无中心权威）", "PK <code>device_id</code>", "<code>nickname · avatar(base64) · x25519_pubkey · ed25519_pubkey · added_at</code>", "<code>add_friend</code>（命令 / transport / gossip）；<code>update_friend_pubkeys</code> 从在线广播学；<code>remove_friend</code>"],
   ["conversations", "会话行：单聊 = 对端 id，群聊 = <code>group:&lt;id&gt;</code>", "PK <code>id</code>", "<code>kind · name · avatar · last_msg · last_ts · unread · updated_at · pinned</code>（pinned 是本地语义，不广播）", "<code>ensure_conversation</code> + 每条消息 <code>touch_conversation</code>；<code>delete_conversation</code> 手写级联"],
   ["messages", "聊天正文，<b>同时是卡片存储</b>（任务 / 公告 / 钉 / 反应 / 合并）", "PK <code>id</code> · UNIQUE <code>msg_id</code> · idx <code>(conv_id,ts)</code>、<code>(conv_id,seq)</code> · <b>v11 起多一列 <code>mention_targets</code></b>（JSON，可空、不回填）", "<code>conv_id · sender_id · receiver_id · kind · content(JSON) · ts · <b>seq</b> · status ∈ sent|delivered|queued|read|failed|recalled</code>", "<code>insert_message(_and_outbox|_if_new)</code>；<code>set_message_status</code>；⚠️ <b>failed 只由清扫器写</b>。<code>(conv_id,seq)</code> 只由迁移 v2→v3 建（它建在迁移才加的列上，进 SCHEMA 会让老库开不起来）⇒ 新库靠 <code>ensure_post_schema_shape</code> 补，已由具名判据钉住：<code>fresh_db_has_every_hot_query_index</code> + <code>fresh_schema_alone_has_exactly_the_migrated_shape</code>（后者第一次跑就红在唯一一项 <code>index idx_messages_conv_seq</code> 上）"],
+  ["mention_receipts", "「有人@我且未读」的持久提醒（不重放历史）", "PK <code>msg_id</code>", "<code>conv_id · created_at · cleared_at</code>", "消息与 receipt 同事务写入；启动恢复未读集合，打开会话/删除数据时清除"],
   ["message_render", "每条消息的渲染形态（代码/文本）的 LWW 落位表", "PK <code>msg_id</code>", "<code>seq · mode ∈ code|text</code>", "<code>apply_message_render</code>（先比 seq 再写）；写成功才 emit <code>message-render-changed</code>"],
   ["conversation_clocks", "每会话单调 Lamport 计数 = <b>排序与清空边界的权威</b>", "PK <code>conv_id</code>", "<code>seq</code>", "启动时从 messages 重建；<code>next_clock</code>（发）/ <code>observe_clock</code>（收）"],
   ["group_recalled_messages", "撤回的<b>唯一事实</b>（G-Set，只增不减）", "PK <code>(conv_id,msg_id)</code>", "<code>recaller_id · seq</code>", "<code>insert_recall</code> + <code>materialize_recall</code> 物化到 messages。原因：撤回可能比被撤回的消息先到，光 UPDATE 会命中 0 行"],
+  ["pending_group_recalls", "群主/管理员撤回的有界重放队列", "PK <code>(conv_id,target_msg_id,recaller_id)</code>", "<code>event_id · seq · envelope_json · received_at · expires_at · attempts · next_attempt_at</code>", "TTL/全局/群/发送者容量封顶；权限追上、目标到货、转让/任免与启动时复核后重放"],
   ["groups", "群", "PK <code>id</code>", "<code>name · creator · created_at</code>", "<code>create_group / upsert_group / rename_group / set_group_creator / delete_group</code>"],
   ["group_members", "群成员", "PK <code>(group_id,device_id)</code>", "—", "<code>add_group_member / remove_group_member</code>"],
   ["group_reads", "每成员读位置高水位", "PK <code>(group_id,reader_id)</code>", "<code>last_read_ts</code>", "<code>upsert_group_read</code>（只前进）；随 <code>delete_group</code> 清"],
@@ -1149,7 +1151,7 @@ const TABLES = [
   ["content_transfers", "内容生命周期层自己的表（ADR-0019，由 <code>content/store.rs::ensure_schema</code> 建）", "PK <code>(cid,peer_id,direction)</code> · idx <code>status</code>", "<code>received · attempts · next_attempt_at · last_error · path · status ∈ queued|active|verifying|complete|incomplete|rejected</code>", "<code>upsert / record_local / record_failure / touch_received / mark_complete</code>（文件域调用）。<code>transfer_id</code> 列是 ensure_schema 里的<b>防御式 ALTER</b>，不走 MIGRATIONS"],
 ];
 const DISK = [
-  ["<code>app_data/gosslan.db</code> (+ -wal / -shm)", "上面 21 张表", "<code>db::init</code>；多开实例 = <code>gosslan-{N}.db</code>，TCP 端口 +instance×10；WAL + <code>synchronous=NORMAL</code>"],
+  ["<code>app_data/gosslan.db</code> (+ -wal / -shm)", "上面 23 张表", "<code>db::init</code>；多开实例 = <code>gosslan-{N}.db</code>，TCP 端口 +instance×10；WAL + <code>synchronous=NORMAL</code>"],
   ["<code>app_data/downloads</code>", "接收落位 + <code>{transfer_id}.part</code> 续传临时文件", "默认接收目录，可改（<code>user_dirs::RECEIVE</code> + macOS 书签）。<b>.part 的键是 transfer_id，绝不从最终名派生</b>（否则两张同名图会互相打乱）；每小时清 24h 前的残留"],
   ["<code>app_data/downloads/&lt;unique&gt;</code>", "最终文件", "<code>finish_receiver_into</code>：长度对 + sha256 对 → <code>sync_all()</code> → <code>rename</code>。<b>rename 那一刻才是「完成」</b>"],
   ["<code>app_data/cache</code>", "旧版媒体缓存 + <code>todo-paste/</code>（任务贴图，按 sha256 命名）", "6h 一轮按 retention / 配额回收；<b>只删文件，删了才 VACUUM</b>；递归遍历<b>跳过符号链接</b>（该目录是远端输入可达的）"],
@@ -1593,7 +1595,7 @@ function buildEvents() {
 /* ---------- 数据表 ---------- */
 function buildDb() {
   $("#dblist").innerHTML =
-    '<h2 class="sec">SQLite · 21 张表（真源：<code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量 + 内容库 <code>content/store.rs</code>；迁移靠 <code>PRAGMA user_version</code>；当前 <code>DB_VERSION</code> <b>不抄在这里</b>——<code>grep -n "pub const DB_VERSION" src-tauri/src/db.rs</code>）</h2>' +
+    '<h2 class="sec">SQLite · 23 张表（真源：<code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量 + 内容库 <code>content/store.rs</code>；迁移靠 <code>PRAGMA user_version</code>；当前 <code>DB_VERSION</code> <b>不抄在这里</b>——<code>grep -n "pub const DB_VERSION" src-tauri/src/db.rs</code>）</h2>' +
     '<div class="tablewrap"><table><thead><tr><th>表</th><th>用途</th><th>主键 / 索引</th><th>关键列与状态取值</th><th>谁写 · 谁清</th></tr></thead><tbody>' +
     TABLES.map((t) =>
       "<tr><td class='c'>" + t[0] + "</td><td>" + t[1] + "</td><td class='io'>" + t[2] + "</td><td class='io'>" + t[3] + "</td><td>" + t[4] + "</td></tr>").join("") +

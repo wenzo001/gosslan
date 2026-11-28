@@ -570,6 +570,56 @@ fn admin_group_key_snapshot_cannot_remove_the_owner() {
 }
 
 #[test]
+fn admin_group_snapshots_cannot_rename_the_group() {
+    let conn = db();
+    create_group(
+        &conn,
+        "g1",
+        "旧名",
+        "owner",
+        &["owner".into(), "me".into(), "admin".into()],
+    )
+    .unwrap();
+    add_group_admin(&conn, "g1", "admin").unwrap();
+    let members = vec!["owner".to_string(), "me".to_string(), "admin".to_string()];
+    let key = apply_group_key_snapshot(
+        &conn,
+        "g1",
+        "admin",
+        "me",
+        "伪造名",
+        &members,
+        &[],
+        99,
+        true,
+        Some("rotated-key"),
+    )
+    .unwrap();
+    assert!(key.applied, "管理员仍可轮换群密钥同步成员快照");
+    assert_eq!(get_group(&conn, "g1").unwrap().name, "旧名");
+    assert_eq!(get_setting(&conn, "gk:g1").as_deref(), Some("rotated-key"));
+
+    let gossip =
+        apply_group_gossip_snapshot(&conn, "g1", "admin", "owner", "伪造名", &members, true)
+            .unwrap();
+    assert!(gossip.applied, "管理员仍可同步群成员快照");
+    assert_eq!(get_group(&conn, "g1").unwrap().name, "旧名");
+}
+
+#[test]
+fn gossip_first_membership_keeps_the_declared_creator() {
+    let conn = db();
+    let members = vec!["owner".to_string(), "me".to_string(), "member".to_string()];
+    let outcome =
+        apply_group_gossip_snapshot(&conn, "g1", "member", "owner", "群名", &members, false)
+            .unwrap();
+    assert!(outcome.applied);
+    let group = get_group(&conn, "g1").unwrap();
+    assert_eq!(group.creator, "owner");
+    assert_eq!(group.name, "群名");
+}
+
+#[test]
 fn gossip_group_snapshot_is_atomic_for_members_and_group_row() {
     let conn = db();
     conn.execute_batch(

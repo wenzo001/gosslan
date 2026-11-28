@@ -12,9 +12,8 @@ $udf = Join-Path $RunRoot "webview2-$Instance"
 $appData = Join-Path $RunRoot "appdata-$Instance"
 $appRoot = Join-Path $RunRoot "app-$Instance"
 New-Item -ItemType Directory -Force -Path $udf, $appData, $appRoot | Out-Null
-# tauri.scroll-smoke.conf.json resolves appDirectoriesOverride relative to the binary.
-# Copying the release exe into this per-instance run directory gives each process a whole
-# throwaway app directory, not just a uniquely named DB inside the user's normal profile.
+# Copy the release exe into this per-instance run directory. Database/device isolation comes
+# from GOSSLAN_INSTANCE below; renderer state is isolated by the per-instance WebView2 UDF.
 $smokeExe = Join-Path $appRoot "gosslan.exe"
 Copy-Item -LiteralPath $Exe -Destination $smokeExe -Force
 # GOSSLAN_INSTANCE is the application's existing isolation contract: separate DB,

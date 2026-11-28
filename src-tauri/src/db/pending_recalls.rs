@@ -295,14 +295,52 @@ mod pending_recall_tests {
         );
         assert!(replay_pending_group_recalls(&conn, "group:g1", 100).unwrap().is_empty());
         assert_eq!(get_message_record(&conn, "m1").unwrap().kind, "text");
+        let (attempts, next_attempt): (i64, i64) = conn
+            .query_row(
+                "SELECT attempts, next_attempt_at FROM pending_group_recalls
+                 WHERE conv_id='group:g1' AND target_msg_id='m1' AND recaller_id='next'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(attempts, 1);
+        assert_eq!(next_attempt, 2_100);
+        assert!(replay_pending_group_recalls(&conn, "group:g1", 2_099).unwrap().is_empty());
 
         set_group_creator(&conn, "g1", "next").unwrap();
         assert_eq!(
-            replay_pending_group_recalls(&conn, "group:g1", 5_000).unwrap(),
+            replay_pending_group_recalls(&conn, "group:g1", 2_100).unwrap(),
             vec!["m1".to_string()]
         );
         assert_eq!(get_message_record(&conn, "m1").unwrap().kind, "recalled");
         assert!(replay_pending_group_recalls(&conn, "group:g1", 6_000).unwrap().is_empty());
+    }
+
+    #[test]
+    fn pending_recall_backoff_grows_exponentially_and_caps() {
+        let conn = db();
+        create_group(&conn, "g1", "G", "owner", &["owner".into(), "next".into(), "me".into()]).unwrap();
+        insert_message_if_new(&conn, &message("m1", "group:g1")).unwrap();
+        enqueue_pending_group_recall(&conn, "group:g1", "m1", "next", "e1", 2, "{}", 0).unwrap();
+
+        let mut now = 0;
+        for expected_attempts in 1..=10 {
+            assert!(replay_pending_group_recalls(&conn, "group:g1", now).unwrap().is_empty());
+            let (attempts, next_attempt): (i64, i64) = conn
+                .query_row(
+                    "SELECT attempts, next_attempt_at FROM pending_group_recalls
+                     WHERE conv_id='group:g1' AND target_msg_id='m1' AND recaller_id='next'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            let expected_delay = (1_i64 << expected_attempts.min(16))
+                .saturating_mul(1_000)
+                .min(PENDING_RECALL_REPLAY_BACKOFF_MAX_MS);
+            assert_eq!(attempts, expected_attempts);
+            assert_eq!(next_attempt, now + expected_delay);
+            now = next_attempt;
+        }
     }
 
     #[test]
@@ -368,5 +406,64 @@ mod pending_recall_tests {
             |_| Ok(()),
         ).optional().unwrap().is_some();
         assert!(!oldest);
+    }
+
+    #[test]
+    fn pending_recall_capacity_enforces_group_and_sender_limits() {
+        let sender_db = db();
+        for i in 0..=PENDING_RECALL_SENDER_CAP {
+            enqueue_pending_group_recall(
+                &sender_db,
+                &format!("group:g{i}"),
+                &format!("m{i}"),
+                "same-sender",
+                &format!("e{i}"),
+                1,
+                "{}",
+                1_000 + i as i64,
+            )
+            .unwrap();
+        }
+        let sender_count: i64 = sender_db
+            .query_row("SELECT COUNT(*) FROM pending_group_recalls", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sender_count as usize, PENDING_RECALL_SENDER_CAP);
+        assert!(sender_db
+            .query_row(
+                "SELECT 1 FROM pending_group_recalls WHERE target_msg_id='m0'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .unwrap()
+            .is_none());
+
+        let group_db = db();
+        for i in 0..=PENDING_RECALL_GROUP_CAP {
+            enqueue_pending_group_recall(
+                &group_db,
+                "group:same-group",
+                &format!("m{i}"),
+                &format!("r{i}"),
+                &format!("e{i}"),
+                1,
+                "{}",
+                1_000 + i as i64,
+            )
+            .unwrap();
+        }
+        let group_count: i64 = group_db
+            .query_row("SELECT COUNT(*) FROM pending_group_recalls", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(group_count as usize, PENDING_RECALL_GROUP_CAP);
+        assert!(group_db
+            .query_row(
+                "SELECT 1 FROM pending_group_recalls WHERE target_msg_id='m0'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .unwrap()
+            .is_none());
     }
 }

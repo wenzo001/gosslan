@@ -18,7 +18,7 @@
  *
  * 每档"该红还是该绿"**不写进基线**，由 npm 命令串现推（只有两个来源，就不会互相不一致）：
  *   `--round=X-lie` / `--fault=X-lie` → 反证档，**必须红**（red > 0）
- *   `--*-selfcheck`                   → 判据自查档，**必须绿**（它注入的是假夹具，
+ *   `--*-selfcheck` / `--selfproof`  → 判据自查档，**必须绿**（它注入的是假夹具，
  *                                       绿 = "判据真的把假的判成了假"）
  *   两种都不像 → 直接红着退出：口径认不出来的档不许被默认判成任何一种。
  *
@@ -87,11 +87,11 @@ if (ENTRIES.length === 0) {
 function classify(name) {
   const cmd = pkg.scripts[name];
   const isLie = /-lie\b/.test(cmd);
-  const isSelfCheck = /--\S*selfcheck\b/.test(cmd);
+  const isSelfCheck = /--\S*self(?:check|proof)\b/.test(cmd);
   if (isLie === isSelfCheck) {
     return {
       error: `${name} 的口径推不出来（命令：${cmd}）—— 反证档的命令要含 \`-lie\`、`
-        + `判据自查档要含 \`--*-selfcheck\`，两者都不像就不许默认按任何一种记账`,
+        + `判据自查档要含 \`--*-selfcheck\` 或 \`--selfproof\`，两者都不像就不许默认按任何一种记账`,
     };
   }
   return { kind: isLie ? "lie" : "selfcheck", mustRed: isLie };
@@ -149,6 +149,8 @@ function parseVerdict(out) {
   if (green) return { red: 0, total: Number(green[1]), unit: "条断言", green: true };
   const chkRed = /✗ [^\n]*?自证红 (\d+) 条/.exec(out);
   if (chkRed) return { red: Number(chkRed[1]), total: null, unit: "格", green: false };
+  const proofGreen = /PASS static\/structural self-proof: (\d+)\/(\d+) controls/.exec(out);
+  if (proofGreen) return { red: 0, total: Number(proofGreen[2]), unit: "格", green: true };
   const chkGreen = /✅ [^\n]*?自证[^\n]*/.exec(out);
   if (chkGreen) {
     const cells = /(\d+) 格/.exec(chkGreen[0]);

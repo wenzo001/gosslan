@@ -1179,10 +1179,13 @@ async fn deliver_event(
                                 // 权限被拒不能只写日志（用户只会看到「没建成」却不知为什么）：写 last_error。
                                 let sd = s.clone();
                                 let bid = record.bot_id.clone();
-                                let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                                let wrote = tokio::task::spawn_blocking(move || -> Result<(), String> {
                                     let dbc = sd.db.lock().unwrap_or_else(|e| e.into_inner());
                                     write_bot_last_error(&dbc, &bid, "建任务被拒：本机已不是该群管理员")
                                 }).await;
+                                if matches!(wrote, Ok(Ok(()))) {
+                                    publish_bot_change(&s.app, &record.bot_id);
+                                }
                                 s.logger.info("bot", format!("群机器人 {} 的建任务被拒（已非管理员）", record.bot_id));
                             }
                         }
@@ -1624,6 +1627,20 @@ mod bot_cmd_tests {
     }
 
     #[test]
+    fn bot_list_cache_expires_and_rejects_stale_generation() {
+        let mut state = BotListCacheState::default();
+        let views = vec![BotView::from(&sample_bot())];
+        state.store_if_current(0, 100, views.clone());
+        assert_eq!(state.cached(100).unwrap().len(), 1);
+        assert!(state.cached(100 + BOT_LIST_CACHE_MS).is_none());
+
+        let generation = state.generation;
+        state.invalidate();
+        state.store_if_current(generation, 200, views);
+        assert!(state.value.is_none(), "失效前的旧 DB 读不得回填新缓存");
+    }
+
+    #[test]
     fn bot_list_cross_window_calls_share_one_backend_cache() {
         let src = include_str!("bots.rs");
         let prod = &src[..src.find("mod bot_cmd_tests").unwrap_or(src.len())];
@@ -1631,13 +1648,16 @@ mod bot_cmd_tests {
         let rest = &prod[start..];
         let end = rest.find("/// 免打扰").expect("列表命令边界漂移");
         let list = &rest[..end];
-        assert!(list.contains("cache.gate.lock().await"), "跨窗口并发列表必须共用单飞闸");
-        assert!(prod.contains("BOT_LIST_CACHE_MS"), "列表缓存必须有明确时效，不能永久陈旧");
+        let gate = list
+            .find("let _gate = cache.gate.lock().await;")
+            .expect("跨窗口并发列表必须持有单飞闸直到 DB 读完成");
+        let db_read = list.find("db::list_bots(").expect("缓存未命中必须真读库");
+        assert!(gate < db_read, "单飞闸必须在 DB 读之前取得");
+        assert!(!list[gate..db_read].contains("drop(_gate)"), "DB 读完成前不得释放单飞闸");
         assert!(list.contains("state.cached(now)"), "缓存命中必须走统一状态");
         assert!(list.contains("store_if_current(generation"), "旧 DB 读不得在失效后回填缓存");
-        assert!(list.contains("db::list_bots("), "缓存未命中必须真读库");
-        assert_eq!(prod.matches("publish_bot_change(&").count(), 8,
-            "创建/DND/状态/动作错误/资料/删除/轮询统计/轮询错误八条写路径必须广播");
+        assert_eq!(prod.matches("publish_bot_change(&").count(), 9,
+            "创建/DND/状态/动作错误/资料/删除/轮询统计/轮询错误九条写路径必须广播");
     }
 
     #[test]

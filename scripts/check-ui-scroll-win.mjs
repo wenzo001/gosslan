@@ -9,9 +9,9 @@
  * Windows:
  *   npm run test:ui-scroll:win
  *   npm run test:ui-scroll:win:selfproof   # static/structural negative controls, any OS
- * The default Windows run first builds a release exe with tauri.scroll-smoke.conf.json,
- * then copies it into a fresh temporary directory so appDirectoriesOverride isolates all
- * app data. GOSSLAN_SCROLL_EXE bypasses that build only for an already-built smoke exe.
+ * The default Windows run first builds the normal release exe, then launches isolated
+ * instances with separate databases, device identities and WebView2 profiles.
+ * GOSSLAN_SCROLL_EXE bypasses that build only for an already-built smoke exe.
  * Optional: GOSSLAN_SCROLL_CDP_A/B, GOSSLAN_WEBVIEW2_VERSION,
  *           GOSSLAN_SCROLL_MESSAGES/TODOS/FILES, GOSSLAN_SCROLL_TIMEOUT_MS.
  * A non-Windows normal run reports NOT RUN and exits 2; it never claims a pass.
@@ -120,8 +120,6 @@ export function validateProductionArtifacts({ root = ROOT, exe, dist = path.join
   problems.push(...cspProblems(config.app.security.csp));
   if (config.build?.frontendDist !== "../dist") problems.push("Tauri frontendDist must point to ../dist");
   if (config.build?.beforeBuildCommand !== "npm run build") problems.push("Tauri must build the real frontend before packaging");
-  const smokeConfig = JSON.parse(fs.readFileSync(path.join(root, "src-tauri/tauri.scroll-smoke.conf.json"), "utf8"));
-  if (smokeConfig.app?.appDirectoriesOverride !== "scroll-smoke-data") problems.push("smoke build lost its throwaway app-directory override");
   const index = path.join(dist, "index.html");
   if (!fs.existsSync(index)) return [...problems, "dist/index.html missing; run npm run build"];
   const html = fs.readFileSync(index, "utf8");
@@ -177,14 +175,14 @@ export function runStaticSelfProof() {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
   const workflow = fs.readFileSync(path.join(ROOT, ".github/workflows/build.yml"), "utf8");
   const launcher = fs.readFileSync(path.join(ROOT, "scripts/start-ui-scroll-smoke.ps1"), "utf8");
-  const smokeConfig = JSON.parse(fs.readFileSync(path.join(ROOT, "src-tauri/tauri.scroll-smoke.conf.json"), "utf8"));
   const devProbe = fs.readFileSync(path.join(ROOT, "scripts/check-ui-runtime.mjs"), "utf8");
   const smoke = fs.readFileSync(path.join(ROOT, "scripts/check-ui-scroll-win.mjs"), "utf8");
+  const buildBody = smoke.match(/function buildSmokeExe\(\) \{[\s\S]*?\n\}/)?.[0] || "";
   const wiring = [
     ["npm production entry is registered", pkg.scripts["test:ui-scroll:win"] === "node scripts/check-ui-scroll-win.mjs"],
-    ["Windows CI invokes the production entry", workflow.includes("npm run test:ui-scroll:win") && workflow.includes("gosslan-windows-scroll-smoke")],
+    ["Windows CI invokes the production entry", /^\s*npm run test:ui-scroll:win\s*$/m.test(workflow) && workflow.includes("gosslan-windows-scroll-smoke")],
     ["launcher isolates instance DB and WebView2 UDF", launcher.includes("GOSSLAN_INSTANCE") && launcher.includes("WEBVIEW2_USER_DATA_FOLDER") && launcher.includes("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")],
-    ["smoke config and copied exe isolate the whole app directory", smokeConfig.app?.appDirectoriesOverride === "scroll-smoke-data" && launcher.includes("Copy-Item -LiteralPath $Exe") && launcher.includes("Start-Process -FilePath $smokeExe")],
+    ["smoke build uses the CLI-supported base config", !buildBody.includes('"--config"') && !fs.existsSync(path.join(ROOT, "src-tauri/tauri.scroll-smoke.conf.json"))],
     ["dev probe disclaims production evidence", devProbe.includes("DEV PROBE —— 不是生产态证据") && devProbe.includes("本结果不是生产态/WebView2 证据")],
     ["fresh empty databases boot before conversation rows exist", smoke.includes("async function ready(cdp, requireConversation = false)") && smoke.includes("if (requireConversation)") && smoke.includes("await ready(a, true); await ready(b, true)")],
   ];
@@ -267,9 +265,8 @@ function powershell(script) {
 }
 
 function buildSmokeExe() {
-  const config = "src-tauri/tauri.scroll-smoke.conf.json";
-  console.log(`Building release smoke exe with ${config} (real dist, throwaway app directory)...`);
-  const result = spawnSync("npm.cmd", ["run", "tauri", "--", "build", "--features", "bluetooth", "--no-bundle", "--target", "x86_64-pc-windows-msvc", "--config", config], {
+  console.log("Building normal release smoke exe (real dist, isolated instance databases and WebView2 profiles)...");
+  const result = spawnSync("npm.cmd", ["run", "tauri", "--", "build", "--features", "bluetooth", "--no-bundle", "--target", "x86_64-pc-windows-msvc"], {
     cwd: ROOT, stdio: "inherit", shell: true, timeout: 30 * 60_000,
   });
   if (result.error || result.status !== 0) throw new Error(`Windows smoke build failed: ${result.error?.message || `exit ${result.status}`}`);

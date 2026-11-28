@@ -373,7 +373,7 @@ pub fn apply_group_key_snapshot(
     if is_owner {
         replace_group_admins_in_tx(&tx, group_id, admins)?;
     }
-    if got_group_name {
+    if got_group_name && is_owner {
         rename_group_in_tx(&tx, group_id, display_name)?;
     }
     if let Some(key_b64) = group_key_b64 {
@@ -411,12 +411,20 @@ pub fn apply_group_gossip_snapshot(
             first_membership,
         });
     }
+    let is_owner = known
+        .as_ref()
+        .map_or(sender_id == declared_creator, |group| group.creator == sender_id);
     let effective_name = known
         .as_ref()
-        .filter(|_| !is_manager)
+        .filter(|_| !is_owner)
         .map(|group| group.name.as_str())
         .unwrap_or(display_name);
-    upsert_group_in_tx(&tx, group_id, effective_name, declared_creator, members)?;
+    let effective_creator = if known.is_some() && !is_owner {
+        sender_id
+    } else {
+        declared_creator
+    };
+    upsert_group_in_tx(&tx, group_id, effective_name, effective_creator, members)?;
     if is_manager {
         replace_group_members_in_tx(&tx, group_id, members)?;
     }

@@ -921,7 +921,10 @@ fn group_snapshots_use_one_transaction_and_emit_only_after_success() {
         assert!(!key.contains(forbidden), "GroupKey 快照不得再拆成独立写：{forbidden}");
     }
     assert!(key.contains("Ok(outcome) if outcome.applied"));
-    assert!(key.contains("state.app.emit(\"groups-updated\""));
+    let emit_at = key
+        .find("state.app.emit(\"groups-updated\"")
+        .expect("快照成功后必须广播群更新");
+    assert!(match_at < emit_at, "groups-updated 必须在快照结果判定之后才广播");
 
     let gossip = rust_fn_body(&src, "async fn handle_gossip(");
     assert!(gossip.contains("db::apply_group_gossip_snapshot("));

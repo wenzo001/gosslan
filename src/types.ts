@@ -182,7 +182,7 @@ export interface MessageRecord {
    *
    * 三态（`messageMentionsMe` 按它判红点）：数组 = 发送方的权威回答（空数组即"没 @ 任何人"）；
    * `undefined` / `null` = 不知道（发送方是不认识该字段的旧版本，或这条来自库里 ——
-   * **它不落库**，只随本次投递过来，因为「有人@我」本来就是摄入时的一次性判定，重启即清空）。
+   * 名单只随本次投递过来；未读提醒另由 `mention_receipts` 持久化，打开会话即清除）。
    */
   mention_ids?: string[] | null;
   /**
@@ -192,7 +192,7 @@ export interface MessageRecord {
    * JS 按 UTF-16，偏移跨语言传必错）。
    * ★ 与 `mention_ids` **不同**的一点（4.31.2 起）：**这一份落库**（`messages.mention_targets`，
    * 迁移 v10→v11）。因为"哪一段算谁"是那句话的历史事实，不落库就等于重启后同一句话换了意思；
-   * 而"`有人@我`"是一次性判定，重启不该再亮。老行 / 老对端 / 那一列写坏 ⇒ `null` = 不知道
+   * 而"`有人@我`"的未读状态由 `mention_receipts` 单独保存，打开即清、重启恢复。老行 / 老对端 / 那一列写坏 ⇒ `null` = 不知道
    * ⇒ 呈现层退回按昵称判（与旧版本同一兜底路径）。
    */
   mention_targets?: { id: string; name: string; n: number }[] | null;

@@ -107,7 +107,7 @@ cargo test --features bluetooth   # Rust 测试（在 src-tauri 下运行）
 ```
 
 打包用 `npm run dist:mac`、`npm run dist:win` 或 `npm run android:build:release`。
-CI 会在每次 push 和 tag 上跑前端、Rust、Android 与构建门禁；双实例 E2E 和生产 WebView2 滚动 smoke 按本地/出包层运行，具体覆盖以验证脚本输出为准。
+Verify 工作流在每次 push 与 pull request 上跑前端、Rust、Android 门禁；打包工作流在 `main` push 与版本 tag 上运行，Windows x64 打包任务还会执行生产 WebView2 滚动 smoke。双实例 E2E 仍归本地/发版专项层，具体覆盖以验证脚本输出为准。
 
 改代码前先读 [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) 与
 [AI_RULES.md](AI_RULES.md)：架构、不变量与测试/文档同步流程都在那里。

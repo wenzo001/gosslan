@@ -31,7 +31,7 @@ fn reject(s: &AppState, group_id: &str, action: &str, reason: &str, msg: &str) -
 ///
 /// `mentions` = 这条**文本** @ 了哪些人（设备 id），随载荷带给全部成员，接收端据此判
 /// 「有人@我」。它是三态的：缺省（旧前端 / 非选择器入口）= 不发这个键 = 接收端按昵称兜底；
-/// 空数组 = 明确回答"谁都没 @"。为什么这一份**不落库**（而 #122 的落点那一份落），
+/// 空数组 = 明确回答"谁都没 @"。名单不写进消息行，未读提醒另存 `mention_receipts`；
 /// 见 `state::MessageRecord` 的 `mention_targets` 字段文档；为什么上限 64，见 `protocol::gossip_plaintext`。
 
 #[tauri::command(async)]

@@ -23,8 +23,9 @@
  *    「默认轮 N 断言 / 脏前缀轮 N 断言 / 续传轮 N 断言」必须等于现算值，且这些标注**一种都不许消失**
  *    （否则「删掉标签」就是绕过这条守卫的最短路径）。归堆范围随搬家一起改口（同判据 E 那条先例）：
  *    · 还没拆的族 —— 从驱动 `scripts/e2e-multi-instance.mjs` 的「顶层 `if (MODE) {` … 顶格 `}`」取块；
- *    · 已拆的族 —— 每个 `scripts/e2e/rounds/<族>.mjs` 一整册就是那一轮，MODE 从册里那行
- *      `export const MODE = "…"` 现读（**这条是册头写给判据 C 的契约，不是注释**）。
+ *    · 已拆的族 —— 每个 `scripts/e2e/rounds/<族>.mjs` 主体属于册头那轮，MODE 从
+ *      `export const MODE = "…"` 现读；群聊分册里的 `ACK_DROP` 条件块单独归到丢首 Ack 轮，
+ *      不能把条件断言算进普通群聊轮（**这条是册头写给判据 C 的契约，不是注释**）。
  *    并且钉死「一个 MODE 只许有一个家」：同一 MODE 既在驱动有块、又有分册 ⇒ 红（半搬状态）。
  *
  * **D. harness 的每条正向轮次都必须被门禁 `local` 层点名**（§十五）。
@@ -169,6 +170,7 @@ const MODE_LABEL = {
   // `--round=group` 不是注入而是**旅程轮**（§九 群聊），但它同样必须在这里登记：
   // 不登记的表现就是"这一轮的断言数永远不会被对账"，与漏登记一条注入完全等价。
   GROUP: "群聊轮",
+  ACK_DROP: "丢首 Ack 轮",
   // `--round=gossip3`（#75 三实例链式轮）同理：它挂在**发版前**那一层，不在本地层里，
   // 但"没被门禁点名"不等于"可以不登记"——恰恰相反，越少人跑的轮次越需要有人数它的断言。
   CHAIN: "链式轮",
@@ -238,6 +240,7 @@ function harnessAsserts() {
   const dir = path.join(ROOT, ROUND_DIR);
   const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".mjs")).sort() : [];
   const fileModes = new Map();
+  const fileConditionalModes = new Set();
   for (const f of files) {
     const text = fs.readFileSync(path.join(dir, f), "utf8");
     const m = text.match(/^export const MODE = "([A-Z][A-Z_]*)";$/m);
@@ -250,9 +253,25 @@ function harnessAsserts() {
     fileModes.set(modeName, f);
     if (driverModes.has(modeName)) throw new Error(`${modeName} 半搬：驱动里还有 if (${modeName}) 块，${f} 也已经存在`);
     let n = 0;
+    let conditionalMode = null;
+    let conditionalIndent = 0;
     for (const line of text.split("\n")) {
       if (/^\s*\/\//.test(line)) continue;
-      n += (line.match(/\bcheck\(\s*"/g) || []).length;
+      const open = line.match(/^(\s*)if \(([A-Z][A-Z_]*)\) \{$/);
+      if (open && modeName === "GROUP" && open[2] === "ACK_DROP") {
+        conditionalMode = open[2];
+        conditionalIndent = open[1].length;
+        fileConditionalModes.add(conditionalMode);
+        continue;
+      }
+      if (conditionalMode && /^\s*}\s*$/.test(line)
+        && line.length - line.trimStart().length === conditionalIndent) {
+        conditionalMode = null;
+        continue;
+      }
+      const count = (line.match(/\bcheck\(\s*"/g) || []).length;
+      if (conditionalMode) per[conditionalMode] = (per[conditionalMode] || 0) + count;
+      else n += count;
     }
     per[modeName] = n;
   }
@@ -265,7 +284,7 @@ function harnessAsserts() {
   }
   // 反向也钉（搬家改严）：MODE_LABEL 里登记过的每一轮，必须能在驱动或 rounds/ 里找到一个家。
   // 漏这条的表现是"分册被删掉 ⇒ 那一轮的断言数静默变成 0，而文档里那句 N 条断言跟着改 0 就绿了"。
-  const homeless = Object.keys(MODE_LABEL).filter((m2) => !driverModes.has(m2) && !fileModes.has(m2));
+  const homeless = Object.keys(MODE_LABEL).filter((m2) => !driverModes.has(m2) && !fileModes.has(m2) && !fileConditionalModes.has(m2));
   if (homeless.length) {
     throw new Error(
       `MODE_LABEL 登记了 ${homeless.join(" / ")}，但驱动与 ${ROUND_DIR}/ 里都没有它的块或分册 ⇒ ` +
@@ -273,7 +292,10 @@ function harnessAsserts() {
     );
   }
   const out = { 默认轮: common };
-  for (const [m2, label] of Object.entries(MODE_LABEL)) out[label] = common + (per[m2] || 0);
+  for (const [m2, label] of Object.entries(MODE_LABEL)) {
+    out[label] = common + (per[m2] || 0)
+      + (m2 === "ACK_DROP" ? (per.GROUP || 0) : 0);
+  }
   return out;
 }
 

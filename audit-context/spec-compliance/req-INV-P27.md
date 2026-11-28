@@ -8,7 +8,7 @@
 > * **纯判定不许自己读 DOM**：摄入层的规则住在 `utils/messages.ts::freshMentionedConvs`，
 >   可见性由调用方以 `activeVisible` 传进来。
 > * **缺省值只能选"更安静"的那一侧**：`activeVisible` 缺省为 `true`（= 沿用修复前的"开着就抑制"）。
-> ⚠️ 边界（这几句要一起读）：本条只管**抑制**；红点是**摄入时刻的一次性判定**、不落库 ⇒ 重启不重放；
+> ⚠️ 边界（这几句要一起读）：本条只管**抑制**；未读红点由 `mention_receipts` 持久化 ⇒ 重启恢复未读、不重放历史；
 > "用户真的在看"**不等于**"消息已送达"。"
 > — docs/protocol-invariants.md §26（INV-P27 紧接 INV-P26）/ INV-P27, line 1239
 

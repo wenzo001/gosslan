@@ -116,7 +116,7 @@
 
 2026-11-27 修订后的本地判据：
 
-- `db::pending_recall_tests::*`：权限追上后重放、先撤后到、TTL/信封上限、容量淘汰；
+- `db::pending_recalls::pending_recall_tests::*`：权限追上后重放、先撤后到、TTL/信封上限、容量淘汰、指数退避；
 - `tests::pending_recall_replay_is_wired_to_rejection_transfer_target_and_startup`：拒绝入队、目标到货、
   转让与启动四条接线；
 - `protocol_tests` / `src/utils/recall.test.ts`：授权矩阵、可撤分母、跨会话与界面契约；
