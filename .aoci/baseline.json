@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-28T04:53:05Z",
+  "updated_at": "2026-11-28T05:01:33Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -17,9 +17,9 @@
     },
     ".github/workflows/build-android.yml": {
       "role": "index",
-      "sha256": "813260b8c9d49c722671c9882781f4a3abf7f10ee97efd1b39a62a487b0448b5",
-      "size": 10784,
-      "normalized_sha256": "813260b8c9d49c722671c9882781f4a3abf7f10ee97efd1b39a62a487b0448b5"
+      "sha256": "343e638284106c627e140add0360a2556d2373aad1c6b5bcfb74040361a90e8c",
+      "size": 11049,
+      "normalized_sha256": "343e638284106c627e140add0360a2556d2373aad1c6b5bcfb74040361a90e8c"
     },
     ".github/workflows/build-linux.yml": {
       "role": "index",
@@ -107,9 +107,9 @@
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "3a1abbdc040750ce1a0a78c25be29ac1d562e10e1581d7bf1c38e047c7aded75",
-      "size": 102729,
-      "normalized_sha256": "3a1abbdc040750ce1a0a78c25be29ac1d562e10e1581d7bf1c38e047c7aded75"
+      "sha256": "152b88e80adcba4c4e74509cfe7bdadce3c7e23dbe30f8ea38a765abf7f992fd",
+      "size": 104238,
+      "normalized_sha256": "152b88e80adcba4c4e74509cfe7bdadce3c7e23dbe30f8ea38a765abf7f992fd"
     },
     "CONTEXT.md": {
       "role": "index",
@@ -137,9 +137,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "e30cc5b27b03b672b2d5c16ae90b92cc70c1a2a453106e71aa239e1f356595a1",
-      "size": 569162,
-      "normalized_sha256": "e30cc5b27b03b672b2d5c16ae90b92cc70c1a2a453106e71aa239e1f356595a1"
+      "sha256": "871f768c92baf29ba2f8957e4c80f2df43696c74a4453596e67f6cca9d2cb9f3",
+      "size": 569571,
+      "normalized_sha256": "871f768c92baf29ba2f8957e4c80f2df43696c74a4453596e67f6cca9d2cb9f3"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2603,15 +2603,15 @@
     },
     "package-lock.json": {
       "role": "index",
-      "sha256": "238457eac40b9da4d884e6626711b02d058f92cabbc41c04f960ed651772a0b9",
-      "size": 161921,
-      "normalized_sha256": "238457eac40b9da4d884e6626711b02d058f92cabbc41c04f960ed651772a0b9"
+      "sha256": "4f8d6fea8f0d99cd8e4ab9c54d73065e397f66733487cde4546977a8f8ffb6a8",
+      "size": 161922,
+      "normalized_sha256": "4f8d6fea8f0d99cd8e4ab9c54d73065e397f66733487cde4546977a8f8ffb6a8"
     },
     "package.json": {
       "role": "index",
-      "sha256": "bebda9baac0a2da96dfa8eaabc705ef2ec876902d44543481bf79d8b53018e28",
-      "size": 9950,
-      "normalized_sha256": "bebda9baac0a2da96dfa8eaabc705ef2ec876902d44543481bf79d8b53018e28"
+      "sha256": "2df380f3fb7ed5822e8cbfe51529c8f2222c513253d43a813d97be576546a5b4",
+      "size": 9951,
+      "normalized_sha256": "2df380f3fb7ed5822e8cbfe51529c8f2222c513253d43a813d97be576546a5b4"
     },
     "perf/README.md": {
       "role": "index",
@@ -3065,9 +3065,9 @@
     },
     "scripts/build-android-releases.sh": {
       "role": "index",
-      "sha256": "c1843f21b4d8d5073753154ad9bd5a03c008f41e3e2c2a9cb9f3ef9ea8f1a318",
-      "size": 20821,
-      "normalized_sha256": "c1843f21b4d8d5073753154ad9bd5a03c008f41e3e2c2a9cb9f3ef9ea8f1a318"
+      "sha256": "89e91ed02444cefc5f7af2527ce15de3a448556c3388726674b5d64aef7320e1",
+      "size": 20823,
+      "normalized_sha256": "89e91ed02444cefc5f7af2527ce15de3a448556c3388726674b5d64aef7320e1"
     },
     "scripts/build-android.ps1": {
       "role": "index",
@@ -3281,9 +3281,9 @@
     },
     "scripts/check-ui-scroll-win.mjs": {
       "role": "index",
-      "sha256": "f5c2e2bb02ab1ee14c3b706594acafb55d74f52f83e8eb05b322582a7f7aa08b",
-      "size": 41211,
-      "normalized_sha256": "f5c2e2bb02ab1ee14c3b706594acafb55d74f52f83e8eb05b322582a7f7aa08b"
+      "sha256": "8e0232ed76a4b28c8c0ff3f45996ad524bdfc620f76bbda21617c7e2bb7e9bcf",
+      "size": 44298,
+      "normalized_sha256": "8e0232ed76a4b28c8c0ff3f45996ad524bdfc620f76bbda21617c7e2bb7e9bcf"
     },
     "scripts/ci-run.sh": {
       "role": "index",
@@ -3743,9 +3743,9 @@
     },
     "scripts/start-ui-scroll-smoke.ps1": {
       "role": "index",
-      "sha256": "89e8afe3792de148e8bf2320ac55297fadd96579511b39ce373b09afba9b668b",
-      "size": 1829,
-      "normalized_sha256": "89e8afe3792de148e8bf2320ac55297fadd96579511b39ce373b09afba9b668b"
+      "sha256": "b693c909ac545cbe6b16fc699622ded6ebd41124d7b54d1fe4d7c04bdb2de0a8",
+      "size": 2369,
+      "normalized_sha256": "b693c909ac545cbe6b16fc699622ded6ebd41124d7b54d1fe4d7c04bdb2de0a8"
     },
     "scripts/sync-gitee.mjs": {
       "role": "index",
@@ -4142,15 +4142,15 @@
     },
     "src-tauri/gen/android/buildSrc/src/main/java/com/gosslan/app/kotlin/BuildTask.kt": {
       "role": "index",
-      "sha256": "4dab5a7ad55564f032bbb7957c4df48867faa5cfd5e0d6db650b4fcb78d06d58",
-      "size": 2231,
-      "normalized_sha256": "4dab5a7ad55564f032bbb7957c4df48867faa5cfd5e0d6db650b4fcb78d06d58"
+      "sha256": "a1cf46b967aadf941f6673162743190c411eff0c6aeac7c975f2c46ab0a8686d",
+      "size": 2381,
+      "normalized_sha256": "a1cf46b967aadf941f6673162743190c411eff0c6aeac7c975f2c46ab0a8686d"
     },
     "src-tauri/gen/android/buildSrc/src/main/java/com/gosslan/app/kotlin/RustPlugin.kt": {
       "role": "index",
-      "sha256": "3488450f755ee6ed9eeaaad99e7adcc27de827f98f4657d9a4fb4af47c2f8663",
-      "size": 3336,
-      "normalized_sha256": "3488450f755ee6ed9eeaaad99e7adcc27de827f98f4657d9a4fb4af47c2f8663"
+      "sha256": "00ea433f5330296860585eb81b80111ce72aec4860a7cf646b91c9e80010012c",
+      "size": 3405,
+      "normalized_sha256": "00ea433f5330296860585eb81b80111ce72aec4860a7cf646b91c9e80010012c"
     },
     "src-tauri/gen/android/gradle.properties": {
       "role": "index",
