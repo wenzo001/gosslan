@@ -211,7 +211,7 @@ export function runStaticSelfProof() {
     ["startup diagnostics and temp cleanup are bounded", launcher.includes("$dataRoot") && launcher.includes("RedirectStandardOutput") && launcher.includes("$exited") && smoke.includes("captureInstanceDiagnostics") && smoke.includes('spawnSync("cmd.exe"') && smoke.includes("5 * 1024 * 1024") && smoke.includes("timeout: 30_000")],
     ["dev probe disclaims production evidence", devProbe.includes("DEV PROBE —— 不是生产态证据") && devProbe.includes("本结果不是生产态/WebView2 证据")],
     ["fresh empty databases boot before conversation rows exist", smoke.includes("async function ready(cdp, requireConversation = false)") && smoke.includes("if (requireConversation)") && smoke.includes("await ready(a, true); await ready(b, true)")],
-    ["history paging uses a visible viewport and reports failure state", (smoke.match(/VISIBLE_MATCHES/g) || []).length >= 8 && smoke.includes("timeline did not page back to seeded head") && smoke.includes("JSON.stringify(state)")],
+    ["history paging uses a visible viewport and reports failure state", (smoke.match(/VISIBLE_MATCHES/g) || []).length >= 8 && smoke.includes("timeline did not page back to seeded head") && smoke.includes("JSON.stringify(state)") && smoke.includes("deltaY: atTop ? 1 : -1200")],
   ];
   for (const [name, ok] of wiring) {
     if (!ok) throw new Error(`wiring control failed: ${name}`);
@@ -518,8 +518,13 @@ async function pageToSeededHead(cdp, selector, text) {
   while (Date.now() < deadline) {
     state = await cdp.eval(read);
     if (state.visible) return;
-    await cdp.eval(`(() => { const h=${VISIBLE_MATCHES}(${JSON.stringify(selector)})[0]; if(!h)return; const e=h.querySelector('.n-scrollbar-container')||h; e.scrollTop=0; e.dispatchEvent(new Event('scroll',{bubbles:true})); })()`);
-    await sleep(250);
+    const atTop = state.top <= 1;
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: point.x, y: point.y, deltaX: 0, deltaY: atTop ? 1 : -1200 });
+    if (atTop) {
+      await sleep(50);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: point.x, y: point.y, deltaX: 0, deltaY: -1201 });
+    }
+    await sleep(150);
   }
   throw new Error(`timeline did not page back to seeded head ${text}: ${JSON.stringify(state)}`);
 }
