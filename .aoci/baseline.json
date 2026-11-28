@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-28T14:11:24Z",
+  "updated_at": "2026-11-28T14:40:39Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -107,9 +107,9 @@
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "966f1d9125396ec6dc7c017c8154c6a5d2fd52efada9cb3c659c9d34006e9fe8",
-      "size": 118988,
-      "normalized_sha256": "966f1d9125396ec6dc7c017c8154c6a5d2fd52efada9cb3c659c9d34006e9fe8"
+      "sha256": "14a9d7f1e92197815e3bd537dabdcf112d889f9a984d94c34944c6fbe7717a15",
+      "size": 119302,
+      "normalized_sha256": "14a9d7f1e92197815e3bd537dabdcf112d889f9a984d94c34944c6fbe7717a15"
     },
     "CONTEXT.md": {
       "role": "index",
@@ -137,9 +137,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "1ee5a19bd3b91afe156b18a1bd227ed2b9886bf1ecdc0700be3e03ec29d0f66f",
-      "size": 566254,
-      "normalized_sha256": "1ee5a19bd3b91afe156b18a1bd227ed2b9886bf1ecdc0700be3e03ec29d0f66f"
+      "sha256": "c20232fdcb2a3fa2b8f7f5f646c96f2a901d4a1882dd6b834289e3c331b1e397",
+      "size": 566290,
+      "normalized_sha256": "c20232fdcb2a3fa2b8f7f5f646c96f2a901d4a1882dd6b834289e3c331b1e397"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2597,15 +2597,15 @@
     },
     "package-lock.json": {
       "role": "index",
-      "sha256": "3c21fd4214c6103e6636ba64d1aa95e19a38be339263de1c0ec36571292b5371",
+      "sha256": "98eb0b101f66ac6ab1ae1f6004fb3d4b1d1c4e4e41c07ba9c864e06a6ed521ac",
       "size": 162912,
-      "normalized_sha256": "3c21fd4214c6103e6636ba64d1aa95e19a38be339263de1c0ec36571292b5371"
+      "normalized_sha256": "98eb0b101f66ac6ab1ae1f6004fb3d4b1d1c4e4e41c07ba9c864e06a6ed521ac"
     },
     "package.json": {
       "role": "index",
-      "sha256": "08a10e94d89c74939bd05a57e404c1de4053d144515cb3a8bf89c1979d2c4a32",
+      "sha256": "c500b412e659830dc15ae1103fe3eef90d6bc3949112a3b6036b14766c587b0e",
       "size": 9780,
-      "normalized_sha256": "08a10e94d89c74939bd05a57e404c1de4053d144515cb3a8bf89c1979d2c4a32"
+      "normalized_sha256": "c500b412e659830dc15ae1103fe3eef90d6bc3949112a3b6036b14766c587b0e"
     },
     "perf/README.md": {
       "role": "index",
@@ -3275,9 +3275,9 @@
     },
     "scripts/check-ui-scroll-win.mjs": {
       "role": "index",
-      "sha256": "dd184480d2a63450912f994606217735008d047c0039736a83da122b041d3d88",
-      "size": 52123,
-      "normalized_sha256": "dd184480d2a63450912f994606217735008d047c0039736a83da122b041d3d88"
+      "sha256": "3a79e52a0e8c1158c1d605bb8465acb84d5ade30cbab7251e1c70c32c9fd7d1a",
+      "size": 52195,
+      "normalized_sha256": "3a79e52a0e8c1158c1d605bb8465acb84d5ade30cbab7251e1c70c32c9fd7d1a"
     },
     "scripts/ci-run.sh": {
       "role": "index",
@@ -3815,15 +3815,15 @@
     },
     "src-tauri/Cargo.lock": {
       "role": "index",
-      "sha256": "4379bc680d718315da62494def93dcf60cc15819da78b071636208d757954d11",
+      "sha256": "ba638ae10fa5df56d6da735217bb9e55e74ea1aea84db10d28ad9ada9352dcfe",
       "size": 162186,
-      "normalized_sha256": "4379bc680d718315da62494def93dcf60cc15819da78b071636208d757954d11"
+      "normalized_sha256": "ba638ae10fa5df56d6da735217bb9e55e74ea1aea84db10d28ad9ada9352dcfe"
     },
     "src-tauri/Cargo.toml": {
       "role": "index",
-      "sha256": "d0f23515bcbecbf51e352a2b498798389be368ebd382204a0fc43b175bf55bff",
+      "sha256": "94d66523b937045e242ce8141f38d99097b9a569cf364e58beb0a88c3e2fe5c5",
       "size": 20961,
-      "normalized_sha256": "d0f23515bcbecbf51e352a2b498798389be368ebd382204a0fc43b175bf55bff"
+      "normalized_sha256": "94d66523b937045e242ce8141f38d99097b9a569cf364e58beb0a88c3e2fe5c5"
     },
     "src-tauri/Info.plist": {
       "role": "index",
@@ -5824,9 +5824,9 @@
     },
     "src-tauri/tauri.conf.json": {
       "role": "index",
-      "sha256": "bcd6882cad7d1ed8244155e642c233ce339318508fa4ecdc23f83fb5b48b8ba1",
+      "sha256": "b8bf578199263af8194e745346aa792db46933b2fc92d8c35bffd5f44640b34a",
       "size": 3011,
-      "normalized_sha256": "bcd6882cad7d1ed8244155e642c233ce339318508fa4ecdc23f83fb5b48b8ba1"
+      "normalized_sha256": "b8bf578199263af8194e745346aa792db46933b2fc92d8c35bffd5f44640b34a"
     },
     "src-tauri/tauri.nodrop.conf.json": {
       "role": "index",

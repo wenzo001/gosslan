@@ -213,7 +213,7 @@ export function runStaticSelfProof() {
     ["fresh empty databases boot before conversation rows exist", smoke.includes("async function ready(cdp, requireConversation = false)") && smoke.includes("if (requireConversation)") && smoke.includes("await ready(a, true); await ready(b, true)")],
     ["history paging uses a visible viewport and reports failure state", (smoke.match(/VISIBLE_MATCHES/g) || []).length >= 8 && smoke.includes("timeline did not page back to seeded head") && smoke.includes("JSON.stringify({ state, database, pageText })") && smoke.includes("deltaY: atTop ? 1 : -1200")],
     ["long timeline asserts its real seeded head and tail", smoke.includes('const timelineHead = "SCROLL-FILE-0000.txt"') && smoke.includes("startText: timelineHead") && smoke.includes("endText: timelineTail")],
-    ["group files waits for a visible dialog and reports its state", smoke.includes("readFilesModal") && smoke.includes("group files modal not ready") && smoke.includes(".gosslan-dialog-card")],
+    ["group files waits for a visible dialog and reports its state", smoke.includes("readFilesModal") && smoke.includes("group files modal not ready") && smoke.includes(".gosslan-dialog-card") && smoke.includes(".gosslan-dialog-card .gosslan-os.max-h-80")],
   ];
   for (const [name, ok] of wiring) {
     if (!ok) throw new Error(`wiring control failed: ${name}`);
@@ -649,7 +649,7 @@ async function runtimeSmoke(exeA, exeB, report, artifactDir, ledger) {
       throw new Error(`group files modal not ready: ${JSON.stringify(filesModal)}`);
     }
     try {
-      await checkScroller(a, ledger, artifactDir, "group-files", ".gosslan-dialog-card .gosslan-os", { overflow: true, startText: `SCROLL-FILE-${String(fileCount - 1).padStart(4, "0")}.txt`, endText: "SCROLL-FILE-0000.txt" });
+      await checkScroller(a, ledger, artifactDir, "group-files", ".gosslan-dialog-card .gosslan-os.max-h-80", { overflow: true, startText: `SCROLL-FILE-${String(fileCount - 1).padStart(4, "0")}.txt`, endText: "SCROLL-FILE-0000.txt" });
     } catch (error) {
       filesModal = await readFilesModal();
       throw new Error(`${error.message}; modal=${JSON.stringify(filesModal)}`);
